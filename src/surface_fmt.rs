@@ -51,13 +51,6 @@ pub fn fmt_dict(
                 }
                 out.push(':');
             }
-            HashableValue::Bool(b) => {
-                if *b {
-                    out.push_str("Boolean.True:");
-                } else {
-                    out.push_str("Boolean.False:");
-                }
-            }
             HashableValue::Variant { tag, payload } => match payload {
                 None => {
                     out.push_str(tag);
@@ -1458,12 +1451,6 @@ impl Value {
             Value::TypeContext(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Bool(b) => Ok(if *b {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }),
-            Value::Seq { .. } => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Expression(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }

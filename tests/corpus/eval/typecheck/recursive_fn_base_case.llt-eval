@@ -1,0 +1,8 @@
+# B-520: recursive function with a base case should infer a concrete return type
+[
+  f: [fn [let stop@Boolean val]
+    [if stop val [f true val]]]
+  result: [f false 42]
+]
+=== out
+Dict({"f": Fn, "result": Int(42)})

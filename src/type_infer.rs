@@ -357,16 +357,24 @@ pub struct InferState {
     /// the result here. The eval pipeline reads this map to populate TypeAssert.resolved_type,
     /// enabling structural type checking via is_consistent_subtype.
     pub expects_resolved: HashMap<crate::ast::Span, crate::types::Type>,
-    /// Resolution table for slot-indexed TypeEnv lookups (optional fast path).
+    /// Resolution table for slot-indexed TypeEnv lookups.
     ///
-    /// When set, the CEK machine's VarRef handler uses the resolved (level, slot)
-    /// coordinates to call `env.get_type_at(level, slot)` — O(1) per-level — before
-    /// falling back to the O(chain) name-based `env.get(name)`.
+    /// The CEK machine's VarRef handler uses the resolved (level, slot) coordinates to
+    /// call `env.get_scheme_at(level, slot)` — O(1) per-level. This is the single
+    /// authority for VarRef type resolution (no name-based fallback for user bindings).
     ///
-    /// The table is populated by `resolve_surface_program` before type checking begins.
-    /// It may be `None` for contexts that do not have a resolved program (e.g., tests
-    /// that construct a TypeEnv and InferState directly without parsing).
-    pub resolution_table: Option<std::sync::Arc<crate::ast::ResolutionTable>>,
+    /// Always populated: entry points run the resolver before type-checking. Tests that
+    /// construct InferState directly get an empty table (no VarRef resolution → all lookups
+    /// fall through to extras).
+    pub resolution_table: std::sync::Arc<crate::ast::ResolutionTable>,
+    /// Scope frames from the resolver pass: one frame per document-level intermediate dict.
+    /// Each frame maps binding names to their absolute resolver-assigned slot numbers.
+    /// Populated from `resolve_surface_program`; retained for future use or introspection.
+    /// Dict bindings now go to extras via `insert_scheme_named_only` (not slot-indexed).
+    pub resolver_frames: Vec<indexmap::IndexMap<String, u32>>,
+    /// Index into `resolver_frames` — retained for future use; not advanced during dict
+    /// processing since all dict bindings now use `insert_scheme_named_only`.
+    pub current_resolver_frame: usize,
     /// Main runtime environment (from HEAD~1 InferState design).
     /// Cross-stage bridge: type-stage can resolve types from main env.
     pub main_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
@@ -390,8 +398,6 @@ pub struct InferState {
     pub bounds: std::collections::HashMap<String, crate::bas::TypeVarBounds>,
     /// Set of TypeVar names currently being processed by FD improvement (compatibility field).
     pub fd_in_progress: std::collections::HashSet<String>,
-    /// Expansion stack for type alias cycle detection (compatibility field from HEAD~1).
-    pub expansion_stack: Vec<(std::sync::Arc<crate::type_def::TyConDef>, String)>,
     /// Type constructor environment (from HEAD~1 design).
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
@@ -441,7 +447,9 @@ impl InferState {
             registered_nominal_tags: HashMap::new(),
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             expects_resolved: HashMap::new(),
-            resolution_table: None,
+            resolution_table: std::sync::Arc::new(std::collections::HashMap::new()),
+            resolver_frames: Vec::new(),
+            current_resolver_frame: 0,
             main_env: None,
             eval_ctx: None,
             type_stage_scope: Vec::new(),
@@ -449,7 +457,6 @@ impl InferState {
             bounds: std::collections::HashMap::new(),
             fd_in_progress: std::collections::HashSet::new(),
             tycon_env: std::collections::HashMap::new(),
-            expansion_stack: Vec::new(),
             scope_frames: None,
             dispatch_obligations: Vec::new(),
         }
@@ -644,7 +651,9 @@ impl InferState {
             let mut inst_env = crate::types::InstanceEnv::new();
             let env_guard = self.env.read().unwrap();
             for (_mangled, decl) in env_guard.all_instances() {
-                let _ = inst_env.insert(decl);
+                inst_env
+                    .insert(decl)
+                    .expect("duplicate instance during env cache rebuild — env invariant violated");
             }
             self.cached_instance_env = Some(inst_env);
         }
@@ -756,19 +765,6 @@ impl InferState {
         self.type_vars.get(name).and_then(|e| e.binding.clone())
     }
 
-    /// Apply the substitution to a type using a visited set to prevent infinite recursion.
-    pub fn apply_with_visited(
-        &self,
-        ty: &Type,
-        _visited_types: &mut std::collections::HashSet<String>,
-        _visited_rows: &mut std::collections::HashSet<String>,
-    ) -> Type {
-        // Use the subst to apply type_map bindings
-        self.subst.apply(ty)
-        // Note: ignores visited_types for now — the Substitution::apply_inner doesn't track
-        // cycles. If needed, use apply_type_with_visited from type_unify.rs instead.
-    }
-
     /// Bind a TypeVar to a type.
     ///
     /// Writes the binding to both `type_vars[name].binding` (so that snapshot/restore
@@ -779,17 +775,6 @@ impl InferState {
             entry.binding = Some(ty.clone());
         }
         self.subst.type_map.borrow_mut().insert(name, ty);
-    }
-
-    /// Check if the type variable table has exceeded a maximum size.
-    /// Compatibility shim — the current design uses a simple heuristic.
-    pub fn check_type_vars_size(
-        &self,
-        _span: crate::ast::Span,
-    ) -> Result<(), crate::error::TypeDiagnostic> {
-        // Current InferState doesn't have a unified type_vars table with explicit size tracking.
-        // Return Ok — callers that need this check should track via the substitution.
-        Ok(())
     }
 
     /// Set the level for a TypeVar name and ensure it exists in `type_vars`.
@@ -902,8 +887,8 @@ mod tests {
         let mut state = InferState::new();
         let span_a = Span::rust_source(file!(), line!());
         let span_b = Span::rust_source(file!(), line!() + 1);
-        let _tv0 = state.fresh_type_var(&span_a);
-        let _tv1 = state.fresh_type_var(&span_b);
+        let _ty_a = state.fresh_type_var(&span_a);
+        let _ty_b = state.fresh_type_var(&span_b);
 
         let count_before = state.levels.len();
         state.compact_levels();
@@ -915,7 +900,7 @@ mod tests {
         );
     }
 
-    /// B-559: Substitution::apply_row must substitute through RowTail::Uniform
+    /// Substitution::apply_row must substitute through RowTail::Uniform
     /// to prevent TypeVars from leaking out of their scope during generalization.
     #[test]
     fn test_apply_row_substitutes_uniform_tail() {

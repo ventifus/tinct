@@ -1,4 +1,4 @@
 --- uses: ["core"] pragma: ["no-prelude"]
-[[builtin-int-add 1 2]]
+[result: [builtin-int-add 1 2]]
 === out
-Int(3)
+Dict({"result": Int(3)})

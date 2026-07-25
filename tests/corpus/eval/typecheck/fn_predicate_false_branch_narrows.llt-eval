@@ -4,7 +4,7 @@
 #
 # NOTE: This test verifies runtime behavior. types_are_disjoint now includes Function vs
 # primitive disjointness (fn-narrowing-followup Task 2), so the type checker knows that
-# Int ∩ Function = ∅, enabling precise false-branch narrowing via Negation(AnyFn).
+# Int ∩ Function = ∅, enabling precise false-branch narrowing via Negation(Callable).
 #
 # Test 1: Int is never a function — false branch is taken
 # Test 2: String is never a function — false branch is taken

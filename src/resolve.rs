@@ -197,7 +197,15 @@ impl SurfaceResolver {
         let mut scope: indexmap::IndexMap<String, VarAddr> =
             indexmap::IndexMap::with_capacity(keys.len());
         for (i, key) in keys.iter().enumerate() {
-            scope.insert(key.clone(), VarAddr::LetrecGroupMember(offset + i as u32));
+            // depth=0 is a placeholder; resolve_name overwrites depth with the actual
+            // scope-stack traversal distance when the name is looked up.
+            scope.insert(
+                key.clone(),
+                VarAddr::LetrecGroupMember {
+                    depth: 0,
+                    slot: offset + i as u32,
+                },
+            );
         }
         self.scopes.push((scope, kind));
     }
@@ -224,7 +232,8 @@ impl SurfaceResolver {
     fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
         let converted: indexmap::IndexMap<String, VarAddr> = frame
             .iter()
-            .map(|(k, &slot)| (k.clone(), VarAddr::LetrecGroupMember(slot)))
+            // depth=0 placeholder; resolve_name overwrites depth with traversal offset at lookup.
+            .map(|(k, &slot)| (k.clone(), VarAddr::LetrecGroupMember { depth: 0, slot }))
             .collect();
         self.scopes.push((converted, ScopeKind::Other));
     }
@@ -265,11 +274,21 @@ impl SurfaceResolver {
             .find_map(|(offset, (scope, _))| {
                 scope.get(name).map(|addr| {
                     let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
-                    (frame_abs_idx, addr.clone())
+                    (frame_abs_idx, offset as u32, addr.clone())
                 })
             });
 
-        let (match_depth, addr) = found?;
+        let (match_depth, traversal_offset, addr) = found?;
+        // Inject the correct depth into LetrecGroupMember entries. The stored depth=0 is a
+        // placeholder written at scope-construction time; the actual traversal offset is only
+        // known at lookup time (here). The evaluator ignores depth and uses slot directly.
+        let addr = match addr {
+            VarAddr::LetrecGroupMember { slot, .. } => VarAddr::LetrecGroupMember {
+                depth: traversal_offset,
+                slot,
+            },
+            other => other,
+        };
 
         if self.env_scope_depth.map_or(false, |d| match_depth == d) {
             self.referenced_env_names.insert(name.to_string());
@@ -492,11 +511,19 @@ impl SurfaceResolver {
                 }
                 scope.get(name).map(|addr| {
                     let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
-                    (frame_abs_idx, addr.clone())
+                    (frame_abs_idx, offset as u32, addr.clone())
                 })
             });
 
-        let (match_depth, addr) = found?;
+        let (match_depth, traversal_offset, addr) = found?;
+        // Inject the correct depth into LetrecGroupMember entries (same as resolve_name).
+        let addr = match addr {
+            VarAddr::LetrecGroupMember { slot, .. } => VarAddr::LetrecGroupMember {
+                depth: traversal_offset,
+                slot,
+            },
+            other => other,
+        };
 
         if self.env_scope_depth.map_or(false, |d| match_depth == d) {
             self.referenced_env_names.insert(name.to_string());
@@ -1502,7 +1529,7 @@ impl SurfaceResolver {
             .map(|(m, _)| {
                 m.iter()
                     .filter_map(|(k, addr)| {
-                        if let VarAddr::LetrecGroupMember(slot) = addr {
+                        if let VarAddr::LetrecGroupMember { slot, .. } = addr {
                             Some((k.clone(), *slot))
                         } else {
                             None
@@ -2279,8 +2306,8 @@ mod tests {
             .expect("$x should be resolved (it's a sibling key)");
         assert_eq!(
             addr,
-            &VarAddr::LetrecGroupMember(0),
-            "x should be LetrecGroupMember(0) (first key in dict scope)"
+            &VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
+            "x should be LetrecGroupMember {{ depth: 0, slot: 0 }} (first key in same dict scope)"
         );
     }
 
@@ -2419,8 +2446,8 @@ mod tests {
             let addr = table.get(id).expect("$x should be resolved (dict binding)");
             assert_eq!(
                 addr,
-                &VarAddr::LetrecGroupMember(0),
-                "$x is first binding, LetrecGroupMember(0)"
+                &VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
+                "$x is first binding, LetrecGroupMember {{ depth: 0, slot: 0 }}"
             );
         }
     }
@@ -2466,8 +2493,8 @@ mod tests {
         // The first dict creates a scope with `a` as LetrecGroupMember(0)
         assert_eq!(
             addr,
-            &VarAddr::LetrecGroupMember(0),
-            "a is first key from prior expr, LetrecGroupMember(0)"
+            &VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
+            "a is first key from prior expr, LetrecGroupMember {{ depth: 0, slot: 0 }}"
         );
     }
 
@@ -2842,8 +2869,8 @@ mod tests {
         let x_addr = table.get(x_id).expect("$x should be resolved");
         assert_eq!(
             x_addr,
-            &VarAddr::LetrecGroupMember(0),
-            "$x should be LGM(0) — first entry of outer dict"
+            &VarAddr::LetrecGroupMember { depth: 1, slot: 0 },
+            "$x should be LGM {{ depth: 1, slot: 0 }} — first entry of outer dict, seen from inner dict"
         );
 
         // Find the VarRef that is the VALUE of `ref` in the inner dict.
@@ -2881,8 +2908,8 @@ mod tests {
         let x_addr = table.get(x_id).expect("$x should be resolved");
         assert_eq!(
             x_addr,
-            &VarAddr::LetrecGroupMember(1),
-            "$x must be LGM(1) — outer dict starts at offset 1 (R=1 root entries)"
+            &VarAddr::LetrecGroupMember { depth: 1, slot: 1 },
+            "$x must be LGM(depth=1, slot=1) — x is in the outer dict (one scope up from the reference site)"
         );
     }
 

@@ -1,7 +1,7 @@
 --- stage: "type"
 [
   TypeNode: [type
-    Int String Float Bytes Never Top Unknown Proxy AnyFn
+    Int String Float Bytes Never Top Unknown Proxy Callable
     [Dict fields: Any  open: Any  key-type: Any  value-type: Any]
     [TypeConstructor name: Any]
     [TypeApplication ctor: Any  args: Any]]

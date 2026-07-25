@@ -308,7 +308,7 @@ pub(crate) async fn build_tls_config(
         opts_dict.get(&crate::value::HashableValue::Str("no-system-roots".into()))
     {
         let val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
-        matches!(val, crate::value::Value::Bool(true))
+        matches!(val, crate::value::Value::Int(n) if n != 0)
     } else {
         false
     };
@@ -347,7 +347,7 @@ pub(crate) async fn build_tls_config(
         opts_dict.get(&crate::value::HashableValue::Str("mozilla-roots".into()))
     {
         let val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
-        matches!(val, crate::value::Value::Bool(true))
+        matches!(val, crate::value::Value::Int(n) if n != 0)
     } else {
         false
     };

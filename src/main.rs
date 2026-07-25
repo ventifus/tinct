@@ -1985,11 +1985,10 @@ async fn run_eval(
         // tycon_env seeded with builtin_core TyCons (Program, DirCap, etc.) so runtime
         // value_matches_type checks have definition spans for clear error messages.
         // Accumulated further by builtin-typecheck-doc calls during loading.
+        let (core_type_env, core_tycon_env) = tinct::build_builtin_core_envs().await;
         ctx.init_type_context(tinct::TypeContextData {
-            inference_env: tinct::get_builtin_core_type_env()
-                .await
-                .expect("builtin_core type env unavailable at startup"),
-            tycon_env: tinct::get_builtin_core_tycon_env().unwrap_or_default(),
+            inference_env: core_type_env,
+            tycon_env: core_tycon_env,
             type_stage_scope: Vec::new(),
             type_diagnostics: Vec::new(),
         });
@@ -2327,9 +2326,7 @@ async fn run_fmt(
 
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
-        let env_arc = tinct::get_builtin_core_type_env()
-            .await
-            .expect("builtin core type env unavailable");
+        let env_arc = tinct::get_builtin_core_type_env().await;
         let (diagnostics, _type_map, _doc_map, _scheme_map) =
             tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
@@ -2458,9 +2455,7 @@ async fn run_lint(
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let program = tinct::desugar::desugar_program_full(&output.program);
-    let env_arc = tinct::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let env_arc = tinct::get_builtin_core_type_env().await;
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
         tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
@@ -2646,9 +2641,7 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let program = tinct::desugar::desugar_program_full(&output.program);
-    let env_arc = tinct::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let env_arc = tinct::get_builtin_core_type_env().await;
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
         tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 
@@ -2922,9 +2915,7 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let program = tinct::desugar::desugar_program_full(&output.program);
     // Type check to get DocMap (for doc strings).
-    let env_arc = tinct::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let env_arc = tinct::get_builtin_core_type_env().await;
     let (_diagnostics, _type_map, doc_map, _scheme_map) =
         tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
 

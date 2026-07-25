@@ -7,219 +7,9 @@ use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, Sur
 use crate::error::TypeDiagnostic;
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
-use crate::type_def::{TyConDef, Variance};
+use crate::type_def::TyConDef;
 use crate::types::{Constraint, InferState, Kind, Row, Type};
 use crate::value::{HashableValue, Thunk, Value};
-
-/// Polarity context for variance analysis (T-952, Dolan 2017 §4).
-#[allow(dead_code)]
-#[derive(Clone, Copy)]
-enum Polarity {
-    Positive,
-    Negative,
-}
-
-impl Polarity {
-    #[allow(dead_code)]
-    fn flip(self) -> Self {
-        match self {
-            Polarity::Positive => Polarity::Negative,
-            Polarity::Negative => Polarity::Positive,
-        }
-    }
-}
-
-/// Infer variance for each type parameter by performing polarity analysis on the alias body.
-///
-/// Implements Dolan 2017 §4 polarity analysis. Walks the body type with a current
-/// polarity context, classifying each TypeVar's occurrences:
-/// - Appears only in positive positions → Covariant
-/// - Appears only in negative positions → Contravariant
-/// - Appears in both → Invariant
-/// - Never appears → Phantom
-///
-/// `params` are the FRESH TypeVar names (e.g., `?a₀`, `?b₁`) that params were remapped to.
-/// Called after alias body resolution so we operate on real `Type` values.
-#[allow(dead_code)]
-pub(crate) fn infer_variance(
-    body: &Type,
-    params: &[String],
-    tycon_env: &HashMap<String, Arc<TyConDef>>,
-) -> Vec<Variance> {
-    let n = params.len();
-    let mut pos_seen = vec![false; n];
-    let mut neg_seen = vec![false; n];
-
-    walk_polarity(
-        body,
-        Polarity::Positive,
-        params,
-        &mut pos_seen,
-        &mut neg_seen,
-        tycon_env,
-    );
-
-    pos_seen
-        .iter()
-        .zip(neg_seen.iter())
-        .map(|(&pos, &neg)| match (pos, neg) {
-            (true, false) => Variance::Covariant,
-            (false, true) => Variance::Contravariant,
-            (true, true) => Variance::Invariant,
-            (false, false) => Variance::Phantom,
-        })
-        .collect()
-}
-
-/// Recursive polarity walker for variance inference.
-#[allow(dead_code)]
-fn walk_polarity(
-    ty: &Type,
-    pol: Polarity,
-    params: &[String],
-    pos_seen: &mut Vec<bool>,
-    neg_seen: &mut Vec<bool>,
-    tycon_env: &HashMap<String, Arc<TyConDef>>,
-) {
-    match ty {
-        Type::TypeVar(name, _) => {
-            if let Some(i) = params.iter().position(|p| p == name) {
-                match pol {
-                    Polarity::Positive => pos_seen[i] = true,
-                    Polarity::Negative => neg_seen[i] = true,
-                }
-            }
-        }
-        Type::Dict(row) => {
-            // Record fields are in covariant (positive) position.
-            for t in row.fields.values() {
-                walk_polarity(t, pol, params, pos_seen, neg_seen, tycon_env);
-            }
-            // Uniform tail key and value types also in covariant position.
-            // The key type can be a TypeVar (e.g. `[type [let k v] {_@k: v}]`), so both must
-            // be visited. Mirrors the B-328 fix in type_unify.rs (lower_levels_check_occurs).
-            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
-                if let Some(k) = key {
-                    walk_polarity(k, pol, params, pos_seen, neg_seen, tycon_env);
-                }
-                walk_polarity(value, pol, params, pos_seen, neg_seen, tycon_env);
-            }
-        }
-        Type::Function {
-            params: fn_params,
-            ret,
-            ..
-        } => {
-            // Function parameters are contravariant (flip polarity).
-            for (_, pt) in fn_params {
-                walk_polarity(pt, pol.flip(), params, pos_seen, neg_seen, tycon_env);
-            }
-            // Return type is covariant.
-            walk_polarity(ret, pol, params, pos_seen, neg_seen, tycon_env);
-        }
-        Type::App(f, arg) => {
-            // Check if f is a TyCon with known variance for the argument.
-            if let Type::TyCon(tcon_name) = f.as_ref() {
-                if let Some(def) = tycon_env.get(tcon_name).cloned() {
-                    // Single-argument application: use the first declared variance.
-                    if let Some(var) = def.variance.first() {
-                        let effective_pol = match var {
-                            Variance::Covariant => pol,
-                            Variance::Contravariant => pol.flip(),
-                            Variance::Invariant => {
-                                // Both polarities — invariant in the argument.
-                                walk_polarity(
-                                    arg,
-                                    Polarity::Positive,
-                                    params,
-                                    pos_seen,
-                                    neg_seen,
-                                    tycon_env,
-                                );
-                                walk_polarity(
-                                    arg,
-                                    Polarity::Negative,
-                                    params,
-                                    pos_seen,
-                                    neg_seen,
-                                    tycon_env,
-                                );
-                                return;
-                            }
-                            Variance::Phantom => return, // Phantom: argument is not used.
-                        };
-                        walk_polarity(arg, effective_pol, params, pos_seen, neg_seen, tycon_env);
-                        return;
-                    }
-                }
-            }
-            // Unknown constructor or multi-arg App(App(..)) chain — conservative: treat as invariant.
-            // Walk both f and arg so that TypeVars inside f (e.g., App(App(TyCon("Map"), a), b)
-            // where f = App(TyCon("Map"), a)) are visited and do not register as Phantom.
-            walk_polarity(f, Polarity::Positive, params, pos_seen, neg_seen, tycon_env);
-            walk_polarity(f, Polarity::Negative, params, pos_seen, neg_seen, tycon_env);
-            walk_polarity(
-                arg,
-                Polarity::Positive,
-                params,
-                pos_seen,
-                neg_seen,
-                tycon_env,
-            );
-            walk_polarity(
-                arg,
-                Polarity::Negative,
-                params,
-                pos_seen,
-                neg_seen,
-                tycon_env,
-            );
-        }
-        Type::Union(members) | Type::Intersection(members) => {
-            // Union/Intersection members preserve the current polarity (join/meet).
-            for m in members {
-                walk_polarity(m, pol, params, pos_seen, neg_seen, tycon_env);
-            }
-        }
-        Type::Negation(inner) => {
-            // Negation flips polarity.
-            walk_polarity(inner, pol.flip(), params, pos_seen, neg_seen, tycon_env);
-        }
-        // NominalVariant fields are in covariant position — values stored in a variant
-        // constructor are accessible (read), so they vary covariantly.
-        // This ensures that `a` in `Result[Ok value: a]` is not classified as Phantom.
-        Type::NominalVariant {
-            tycon: _,
-            ctor: _,
-            fields,
-        } => {
-            for t in fields.fields.values() {
-                walk_polarity(t, pol, params, pos_seen, neg_seen, tycon_env);
-            }
-            // Also traverse RowTail::Uniform key and value types (T-1032).
-            // The key type can be a TypeVar (e.g. `[type [let k v] {_@k: v}]`), so both must
-            // be visited. Mirrors the B-328 fix in type_unify.rs (lower_levels_check_occurs).
-            if let crate::type_def::RowTail::Uniform {
-                key,
-                value: value_ty,
-            } = &fields.tail
-            {
-                if let Some(k) = key {
-                    walk_polarity(k, pol, params, pos_seen, neg_seen, tycon_env);
-                }
-                walk_polarity(value_ty, pol, params, pos_seen, neg_seen, tycon_env);
-            }
-        }
-        // S-860: equirecursive-types-core — recurse into the body.
-        // The `var` binder is the μ-binder name, not a type parameter; only the body is walked.
-        // Variance of type parameters inside the body is unchanged by the μ-binder.
-        Type::Recursive { var: _, body } => {
-            walk_polarity(body, pol, params, pos_seen, neg_seen, tycon_env);
-        }
-        // Concrete types (Int, Str, Bool, etc.), TyCon, Unknown, Top, Error — no TypeVar involvement.
-        _ => {}
-    }
-}
 
 /// Resolve a function metadata dict `fn@[return: ... constraint: ... doc: ...]`.
 ///
@@ -240,7 +30,7 @@ pub(crate) async fn resolve_fn_metadata(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
 ) -> Result<(Type, Option<String>), TypeDiagnostic> {
     let mut return_type: Option<Type> = None;
     let mut doc_string: Option<String> = None;
@@ -578,11 +368,10 @@ pub(crate) async fn resolve_fn_metadata(
                                     ));
                                 };
 
-                                // Parse the class name(s) — can be a single name, [each ...], or [...]
-                                // The parser represents `[each Comparable Printable]` as
-                                // SurfaceExpression::Call { func: VarRef("each"),
-                                // args: [VarRef("Comparable"), VarRef("Printable")] }.
-                                // We accept both Dict form (legacy) and Call form (natural parse).
+                                // Parse the class name(s) — can be a single name or [each ...].
+                                // The parser produces Call for bracket forms with bare names:
+                                // `[each Comparable Printable]` →
+                                // Call { func: VarRef("each"), args: [VarRef("Comparable"), VarRef("Printable")] }.
                                 match &c_entry.node.value.expr {
                                     SurfaceExpression::VarRef { name, .. } => {
                                         // Single class: [a: Comparable]
@@ -593,64 +382,6 @@ pub(crate) async fn resolve_fn_metadata(
                                             name.clone(),
                                             type_var.clone(),
                                         );
-                                    }
-                                    SurfaceExpression::Dict(class_list) => {
-                                        // Require [each ...] keyword form
-                                        let class_entries = if !class_list.is_empty()
-                                            && class_list[0].node.key.is_none()
-                                        {
-                                            if let SurfaceExpression::VarRef { name, .. } =
-                                                &class_list[0].node.value.expr
-                                            {
-                                                if name == "each" {
-                                                    // [a: [each Comparable Printable]] — skip 'each'
-                                                    &class_list[1..]
-                                                } else {
-                                                    // [a: [Comparable Printable]] — no 'each', error
-                                                    return Err(TypeDiagnostic::error("type-error",
-                                                        "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
-                                                        class_list[0].span.clone(),
-                                                    ));
-                                                }
-                                            } else {
-                                                return Err(TypeDiagnostic::error("type-error",
-                                                    "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
-                                                    class_list[0].span.clone(),
-                                                ));
-                                            }
-                                        } else {
-                                            return Err(TypeDiagnostic::error(
-                                                "type-error",
-                                                "constraint class list cannot be empty".to_string(),
-                                                c_entry.node.value.span.clone(),
-                                            ));
-                                        };
-
-                                        // Multiple classes: iterate and add each
-                                        for class_entry in class_entries {
-                                            if class_entry.node.key.is_some() {
-                                                return Err(TypeDiagnostic::error("type-error",
-                                                    "constraint class list must contain only positional entries".to_string(),
-                                                    class_entry.span.clone(),
-                                                ));
-                                            }
-                                            match &class_entry.node.value.expr {
-                                                SurfaceExpression::VarRef { name, .. } => {
-                                                    // Unknown class names deferred to instance resolution.
-                                                    state.add_constraint_to(
-                                                        constraints,
-                                                        name.clone(),
-                                                        type_var.clone(),
-                                                    );
-                                                }
-                                                _ => {
-                                                    return Err(TypeDiagnostic::error("type-error",
-                                                        "constraint class must be a class name (e.g., Comparable)".to_string(),
-                                                        class_entry.node.value.span.clone(),
-                                                    ));
-                                                }
-                                            }
-                                        }
                                     }
                                     // Call form: `[each Comparable Printable]` →
                                     // Call(VarRef("each"), [VarRef("Comparable"), VarRef("Printable")]).
@@ -983,7 +714,7 @@ async fn resolve_fn_type(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     match ann {
         Annotation::PropertyDict(surface_entries) => {
@@ -1086,7 +817,7 @@ async fn resolve_annotation_as_type(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     match ann {
         Annotation::Simple(name) => {
@@ -1097,8 +828,8 @@ async fn resolve_annotation_as_type(
                 state,
                 constraints,
                 ann_mapping,
-                &row_ref,
                 type_params_scope,
+                &row_ref,
             )
             .await
         }
@@ -1195,7 +926,7 @@ pub(crate) async fn resolve_annotation(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     match ann {
         Annotation::Simple(name) => {
@@ -1206,8 +937,8 @@ pub(crate) async fn resolve_annotation(
                 state,
                 constraints,
                 ann_mapping,
-                &row_ref,
                 type_params_scope,
+                &row_ref,
             )
             .await
         }
@@ -1447,7 +1178,7 @@ async fn resolve_property_dict_as_record(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     let dict_result = resolve_type_dict(
         entries,
@@ -1485,13 +1216,23 @@ async fn resolve_property_dict_as_record(
                 // PropertyDict([{key:None, val:VarRef("my-combinator")}, ...]) rather than as
                 // a Dict expression. We must detect this case and synthesize a Call node so
                 // the evaluator sees a function call, not an integer-keyed dict.
-                let _ = e; // suppress the type-dict resolution error
+                //
+                // `e` is the probe error from resolve_type_dict — it is not a real error when
+                // eval_type_stage_expr succeeds (the dict was a type-stage expression, not a
+                // type dict). If eval_type_stage_expr also fails, propagate `e` as the original
+                // cause rather than silencing it.
                 let synth_node = synthesize_type_stage_node(entries, span.clone());
-                // Return Unknown when type-stage evaluation fails: eval error or
-                // the result is TypeNode.Recursive/RecursiveRef (deferred).
-                Ok(eval_type_stage_expr(&synth_node, state)
-                    .await
-                    .unwrap_or(Type::Unknown))
+                match eval_type_stage_expr(&synth_node, state).await {
+                    Ok(ty) => Ok(ty),
+                    Err(eval_err) => {
+                        // Both resolve_type_dict and eval_type_stage_expr failed.
+                        // Return eval_err as primary — it reflects the most recent and
+                        // most specific resolution attempt (the type-stage expression
+                        // path). Attach the type-dict probe error `e` as a note so
+                        // both failures are visible to the user.
+                        Err(eval_err.with_note(format!("also tried as type dict: {}", e.message)))
+                    }
+                }
             }
         }
     }
@@ -1575,46 +1316,61 @@ async fn instantiate_tycon_def(
             // Look up the type argument for that param in type_subst.
             // Only Var positions have a param name to look up; Ground positions are already resolved.
             if let Some(crate::type_class::ConstraintArg::Var(param_name)) = vars.first() {
-                if let Some(arg_type) = type_subst.get(param_name) {
-                    // Build a temporary InstanceEnv snapshot from state.env to avoid borrow
-                    // conflict: resolve_instance takes &self on InstanceEnv AND &mut state
-                    // simultaneously, which Rust's borrow checker would reject if both were
-                    // fields of InferState. The snapshot is built once per constraint check.
-                    let instance_env = state.get_working_instance_env();
-                    let error_span = origin_span.clone().unwrap_or_else(|| rust_span!());
-                    match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state))
-                        .await
-                    {
-                        Ok(Some(_)) => {
-                            // Constraint satisfied — continue.
-                        }
-                        Ok(None) => {
-                            let constraint_label = origin_name.as_deref().unwrap_or(&class.name);
-                            return Err(TypeDiagnostic::error(
-                                "type-error",
-                                format!(
-                                    "type argument `{arg_type}` does not satisfy constraint \
-                                     `{constraint_label}` — no instance found for class `{}`",
-                                    class.name
-                                ),
-                                error_span,
-                            ));
-                        }
-                        Err(ambiguity_msg) => {
-                            return Err(TypeDiagnostic::error(
-                                "type-error",
-                                format!(
-                                    "ambiguous instances for constraint `{}` with type \
-                                     argument `{arg_type}`: {ambiguity_msg}",
-                                    class.name
-                                ),
-                                error_span,
-                            ));
+                match type_subst.get(param_name) {
+                    Some(arg_type) => {
+                        // Build a temporary InstanceEnv snapshot from state.env to avoid borrow
+                        // conflict: resolve_instance takes &self on InstanceEnv AND &mut state
+                        // simultaneously, which Rust's borrow checker would reject if both were
+                        // fields of InferState. The snapshot is built once per constraint check.
+                        let instance_env = state.get_working_instance_env();
+                        let error_span = origin_span.clone().unwrap_or_else(|| rust_span!());
+                        match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state))
+                            .await
+                        {
+                            Ok(Some(_)) => {
+                                // Constraint satisfied — continue.
+                            }
+                            Ok(None) => {
+                                let constraint_label =
+                                    origin_name.as_deref().unwrap_or(&class.name);
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
+                                    format!(
+                                        "type argument `{arg_type}` does not satisfy constraint \
+                                         `{constraint_label}` — no instance found for class `{}`",
+                                        class.name
+                                    ),
+                                    error_span,
+                                ));
+                            }
+                            Err(ambiguity_msg) => {
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
+                                    format!(
+                                        "ambiguous instances for constraint `{}` with type \
+                                         argument `{arg_type}`: {ambiguity_msg}",
+                                        class.name
+                                    ),
+                                    error_span,
+                                ));
+                            }
                         }
                     }
+                    None => {
+                        // param_name is not in type_subst — this is an internal invariant
+                        // violation: params and type_subst are constructed together from the same
+                        // TyConDef, so every constraint var must have a corresponding substitution
+                        // entry. Propagate as an internal error rather than silently skipping.
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
+                            format!(
+                                "internal: constraint param '{param_name}' missing from \
+                                 substitution during TyCon instantiation"
+                            ),
+                            origin_span.clone().unwrap_or_else(|| rust_span!()),
+                        ));
+                    }
                 }
-                // If param_name is not in type_subst, it's a bug (params and constraints were
-                // built together in register_type_aliases_env). We silently skip for robustness.
             }
         }
         // HasField constraints (if any) are not relevant to type alias instantiation — skip.
@@ -1935,7 +1691,7 @@ async fn resolve_type_head(
         _ => {
             // Not found in any scope — undefined type name.
             Err(TypeDiagnostic::error(
-                "type-error",
+                "undefined-type",
                 format!("undefined type: {}", name),
                 span,
             ))
@@ -1950,8 +1706,8 @@ pub(crate) async fn resolve_type_name(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
     row_ann_mapping: &Option<&HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     match name {
         // All fundamental types (Integer, String, Float, Bytes, Never, Any,
@@ -2034,14 +1790,14 @@ pub(crate) async fn resolve_type_name(
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
                         Err(TypeDiagnostic::error(
-                            "type-error",
+                            "undefined-type",
                             format!("undefined type: {name}"),
                             span,
                         ))
                     }
                 } else {
                     Err(TypeDiagnostic::error(
-                        "type-error",
+                        "undefined-type",
                         format!("undefined type: {name}"),
                         span,
                     ))
@@ -2081,6 +1837,10 @@ pub(crate) async fn resolve_type_expr(
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeDiagnostic> {
     match &node.expr {
+        // Integer literals in type position → Type::IntLiteral.
+        // Enables `@[or 0 1]` and similar union-of-literals annotations in the static
+        // annotation path (no type-stage evaluation needed).
+        SurfaceExpression::Int(n) => Ok(Type::IntLiteral(*n)),
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
         // VarRef still goes to resolve_type_name for type alias lookup.
         SurfaceExpression::StringLiteral { content: s, .. } => Ok(Type::StringLiteral(s.clone())),
@@ -2148,22 +1908,30 @@ pub(crate) async fn resolve_type_expr(
                 state,
                 constraints,
                 ann_mapping,
-                &row_ref,
                 type_params_scope,
+                &row_ref,
             )
             .await
             {
                 Ok(ty) => Ok(ty),
                 Err(e) if crate::eval::is_constructor_name(name) => {
-                    let _ = e;
-                    Ok(Type::NominalVariant {
-                        tycon: lookup_tycon_for_ctor(state, name),
-                        ctor: name.clone(),
-                        fields: Row {
-                            fields: indexmap::IndexMap::new(),
-                            tail: crate::type_def::RowTail::Empty,
-                        },
-                    })
+                    // Recover only for "undefined-type" errors on constructor-shaped names
+                    // (uppercase initial character). These arise when a bare uppercase name
+                    // like `None` or `Red` is used in annotation position before the type
+                    // declaration is registered — the name is a unit nominal variant.
+                    // Propagate all other errors (e.g., kind mismatches, internal errors).
+                    if e.kind == "undefined-type" {
+                        Ok(Type::NominalVariant {
+                            tycon: lookup_tycon_for_ctor(state, name),
+                            ctor: name.clone(),
+                            fields: Row {
+                                fields: indexmap::IndexMap::new(),
+                                tail: crate::type_def::RowTail::Empty,
+                            },
+                        })
+                    } else {
+                        Err(e)
+                    }
                 }
                 Err(e) => Err(e),
             }
@@ -2626,7 +2394,7 @@ pub(crate) async fn resolve_type_dict(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
     tycon_name: &str,
 ) -> Result<Type, TypeDiagnostic> {
     if let Some(fn_type) = Box::pin(try_resolve_fn_type_expr(
@@ -2974,17 +2742,17 @@ pub(crate) async fn resolve_type_dict(
                         // Only fall through to NominalVariant if resolve_type_name fails.
                         let row_ref: Option<&HashMap<String, String>> =
                             row_ann_mapping.as_ref().map(|m| &**m);
-                        if let Ok(ty) = resolve_type_name(
+                        let name_result = resolve_type_name(
                             &tag,
                             span.clone(),
                             state,
                             constraints,
                             ann_mapping,
-                            &row_ref,
                             type_params_scope,
+                            &row_ref,
                         )
-                        .await
-                        {
+                        .await;
+                        if let Ok(ty) = name_result {
                             return Ok(ty);
                         }
                         // resolve_type_name failed — fall through to NominalVariant check below.
@@ -3386,40 +3154,39 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
 
 /// Extract and materialize the payload dict from a `Value::Variant` with a payload.
 ///
-/// Returns `None` if:
+/// Returns `Ok(None)` if:
 /// - The value is not a Variant, or has no payload.
-/// - The payload cannot be materialized (eval error).
 /// - The materialized payload is not a Dict.
+///
+/// Returns `Err` if payload or field materialization fails — propagates the eval error
+/// so callers can surface it as a diagnostic rather than silently dropping it.
 ///
 /// Used by `typenode_value_to_type` to access named fields of structural TypeNode variants.
 async fn variant_payload_dict(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Option<HashMap<String, Value>> {
+) -> crate::error::EvalResult<Option<HashMap<String, Value>>> {
     let payload_id = match val {
         Value::Variant {
             payload: Some(id), ..
         } => id.clone(),
-        _ => return None,
+        _ => return Ok(None),
     };
     let payload_thunk = payload_id;
-    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx)
-        .await
-        .ok()?;
+    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await?;
     match payload_val {
         Value::Dict(dict) => {
             // Extract each string-keyed field, materializing the field value.
             let mut fields = HashMap::new();
             for (key, thunk) in &dict {
                 if let HashableValue::Str(k) = key {
-                    if let Ok(v) = crate::eval::materialize(thunk, None, ctx).await {
-                        fields.insert(k.to_string(), v);
-                    }
+                    let v = crate::eval::materialize(thunk, None, ctx).await?;
+                    fields.insert(k.to_string(), v);
                 }
             }
-            Some(fields)
+            Ok(Some(fields))
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -3429,15 +3196,17 @@ async fn variant_payload_dict(
 /// `TypeApplication.args` are now integer-keyed Dicts of TypeNode values.
 /// Each value is converted via `typenode_value_to_type`.
 ///
-/// Returns `None` if any element fails to convert or the input is not a Dict.
+/// Returns `Ok(None)` if the input is not a Dict or a TypeNode element is unrecognized.
+/// Returns `Err` if any element or its sub-materialization fails — propagates eval errors.
 async fn collect_typenode_seq(
     dict_val: Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Option<Vec<Type>> {
+    type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeStageEntry>],
+) -> crate::error::EvalResult<Option<Vec<Type>>> {
     // T-1555: Value::Annotated is removed; no unwrapping needed.
     let dict = match dict_val {
         Value::Dict(d) => d,
-        _ => return None,
+        _ => return Ok(None),
     };
 
     let mut result = Vec::new();
@@ -3445,12 +3214,16 @@ async fn collect_typenode_seq(
     loop {
         match dict.get(&HashableValue::Int(i)) {
             Some(thunk) => {
-                let val = crate::eval::materialize(thunk, None, ctx).await.ok()?;
-                let ty = Box::pin(typenode_value_to_type(&val, ctx)).await?;
-                result.push(ty);
-                i += 1;
+                let val = crate::eval::materialize(thunk, None, ctx).await?;
+                match Box::pin(typenode_value_to_type(&val, ctx, type_stage_scope)).await? {
+                    Some(ty) => {
+                        result.push(ty);
+                        i += 1;
+                    }
+                    None => return Ok(None),
+                }
             }
-            None => return Some(result),
+            None => return Ok(Some(result)),
         }
     }
 }
@@ -3460,72 +3233,108 @@ async fn collect_typenode_seq(
 /// Called after evaluating a type-stage expression to convert the resulting runtime
 /// `Value` back into a `Type` for use by the type checker.
 ///
-/// Returns `None` if the value is not a recognizable TypeNode constructor.
+/// Returns `Ok(None)` if the value is not a recognizable TypeNode constructor.
+/// Returns `Err` if any field or nested materialization fails — propagates eval errors
+/// so callers can surface them as diagnostics rather than silently dropping them.
 pub(crate) async fn typenode_value_to_type(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Option<Type> {
+    type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeStageEntry>],
+) -> crate::error::EvalResult<Option<Type>> {
     Box::pin(async move {
         match val {
             Value::Variant { tycon, ctor, .. } if tycon.as_ref() == "TypeNode" => {
+                // NOTE: ctor holds the UNQUALIFIED constructor name (e.g., "Unknown", not "TypeNode.Unknown").
+                // Values are created by eval_core.rs which splits "TypeNode.Unknown" into
+                // tycon="TypeNode", ctor="Unknown". All match arms use unqualified names.
                 match ctor.as_ref() {
-                    // callers fall through to as_type_dispatch. Note: as_type_dispatch currently
-                    // cannot resolve TypeNode.Bool to a concrete Type via the prelude as-type chain,
-                    // so compound TypeNode expressions containing Bool sub-nodes will fail resolution.
-                    // A future fix would look up Boolean via the TyCon env directly.
-                    "TypeNode.Bool" => None,
-                    "TypeNode.Unknown" => Some(Type::Unknown),
-                    // TypeNode.Top is the sound lattice top (τ <: Top for all τ).
+                    "Unknown" => Ok(Some(Type::Unknown)),
+                    // Top is the sound lattice top (τ <: Top for all τ).
                     // Rust represents this as Type::Any (which IS the top type in the lattice).
-                    // Distinct from TypeNode.Unknown (the gradual ? type, not in the subtype lattice).
-                    "TypeNode.Top" => Some(Type::Any),
-                    "TypeNode.Never" => Some(Type::Never),
-                    "TypeNode.Absent" => Some(Type::Dict(Row {
+                    // Distinct from Unknown (the gradual ? type, not in the subtype lattice).
+                    "Top" => Ok(Some(Type::Any)),
+                    "Never" => Ok(Some(Type::Never)),
+                    "Absent" => Ok(Some(Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
-                    })),
-                    "TypeNode.Bytes" => Some(Type::Bytes),
-                    "TypeNode.Proxy" => Some(Type::Proxy),
+                    }))),
+                    "Bytes" => Ok(Some(Type::Bytes)),
+                    "Proxy" => Ok(Some(Type::Proxy)),
                     // Any callable — variadic function with zero required params.
-                    "TypeNode.AnyFn" => Some(Type::Function {
+                    "Callable" => Ok(Some(Type::Function {
                         params: vec![],
                         ret: Box::new(Type::Any),
                         typed_variadics: vec![],
                         rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
                         required_count: 0,
-                    }),
+                    })),
 
                     // ── Union ─────────────────────────────────────────────────────────────
                     // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
-                    "TypeNode.Union" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let types_val = fields.get("types")?.clone();
-                        let members = collect_typenode_seq(types_val, ctx).await?;
+                    "Union" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let types_val = match fields.get("types") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let members =
+                            match collect_typenode_seq(types_val, ctx, type_stage_scope).await? {
+                                Some(v) => v,
+                                None => return Ok(None),
+                            };
                         if members.is_empty() {
-                            return None; // Empty union is ill-formed — fall back to Unknown.
+                            return Ok(None); // Empty union is ill-formed — fall back to Unknown.
                         }
-                        Some(Type::normalize_union(members))
+                        Ok(Some(Type::normalize_union(members)))
                     }
 
                     // ── Intersect ────────────────────────────────────────────────────────
                     // TypeNode.Intersect { types: [Seq TypeNode] } → Type::normalize_intersection(members)
-                    "TypeNode.Intersect" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let types_val = fields.get("types")?.clone();
-                        let members = collect_typenode_seq(types_val, ctx).await?;
+                    "Intersect" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let types_val = match fields.get("types") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let members =
+                            match collect_typenode_seq(types_val, ctx, type_stage_scope).await? {
+                                Some(v) => v,
+                                None => return Ok(None),
+                            };
                         if members.is_empty() {
-                            return None; // Empty intersection is ill-formed — fall back to Unknown.
+                            return Ok(None); // Empty intersection is ill-formed — fall back to Unknown.
                         }
-                        Some(Type::normalize_intersection(members))
+                        Ok(Some(Type::normalize_intersection(members)))
                     }
 
                     // ── Negation ─────────────────────────────────────────────────────────
                     // TypeNode.Negation { inner: TypeNode } → Type::Negation(Box<Type>)
-                    "TypeNode.Negation" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let inner_val = fields.get("inner")?.clone();
-                        let inner_type = typenode_value_to_type(&inner_val, ctx).await?;
-                        Some(Type::Negation(Box::new(inner_type)))
+                    "Negation" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let inner_val = match fields.get("inner") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let inner_type = match typenode_value_to_type(
+                            &inner_val,
+                            ctx,
+                            type_stage_scope,
+                        )
+                        .await?
+                        {
+                            Some(t) => t,
+                            None => return Ok(None),
+                        };
+                        Ok(Some(Type::Negation(Box::new(inner_type))))
                     }
 
                     // ── Dict ─────────────────────────────────────────────────────────────
@@ -3537,10 +3346,19 @@ pub(crate) async fn typenode_value_to_type(
                     //   key-type present → Uniform { key: Some(K), value: V }  (typed Map[K:V])
                     //   open: 1, no key-type → Uniform { key: None, value: Any } (open record)
                     //   open: 0, no key-type → Empty                            (closed / Null)
-                    "TypeNode.Dict" => {
-                        let payload_fields = variant_payload_dict(val, ctx).await?;
-                        let fields_val = payload_fields.get("fields")?.clone();
-                        let open_val = payload_fields.get("open")?.clone();
+                    "Dict" => {
+                        let payload_fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let fields_val = match payload_fields.get("fields") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let open_val = match payload_fields.get("open") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
 
                         // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
                         let record_fields = match fields_val {
@@ -3549,10 +3367,14 @@ pub(crate) async fn typenode_value_to_type(
                                     indexmap::IndexMap::new();
                                 for (key, thunk) in dict {
                                     if let HashableValue::Str(k) = key {
-                                        let v = crate::eval::materialize(thunk, None, ctx)
-                                            .await
-                                            .ok()?;
-                                        let ty = typenode_value_to_type(&v, ctx).await?;
+                                        let v = crate::eval::materialize(thunk, None, ctx).await?;
+                                        let ty =
+                                            match typenode_value_to_type(&v, ctx, type_stage_scope)
+                                                .await?
+                                            {
+                                                Some(t) => t,
+                                                None => return Ok(None),
+                                            };
                                         out.insert(k.to_string(), ty);
                                     }
                                 }
@@ -3572,14 +3394,24 @@ pub(crate) async fn typenode_value_to_type(
                             .or_else(|| payload_fields.get("key"))
                             .cloned()
                         {
-                            let key_ty = typenode_value_to_type(&key_type_val, ctx).await?;
+                            let key_ty =
+                                match typenode_value_to_type(&key_type_val, ctx, type_stage_scope)
+                                    .await?
+                                {
+                                    Some(t) => t,
+                                    None => return Ok(None),
+                                };
                             // value-type / value: defaults to Any when absent.
                             let value_ty = if let Some(vt_val) = payload_fields
                                 .get("value-type")
                                 .or_else(|| payload_fields.get("value"))
                                 .cloned()
                             {
-                                typenode_value_to_type(&vt_val, ctx).await?
+                                match typenode_value_to_type(&vt_val, ctx, type_stage_scope).await?
+                                {
+                                    Some(t) => t,
+                                    None => return Ok(None),
+                                }
                             } else {
                                 Type::Any
                             };
@@ -3587,9 +3419,7 @@ pub(crate) async fn typenode_value_to_type(
                                 key: Some(Box::new(key_ty)),
                                 value: Box::new(value_ty),
                             }
-                        } else if matches!(&open_val, Value::Bool(true))
-                            || matches!(&open_val, Value::Int(n) if *n != 0)
-                        {
+                        } else if matches!(&open_val, Value::Int(n) if *n != 0) {
                             // Open record: any field value is allowed (Top = Any).
                             // Dict <: open-record: Null <: Record <: Dict hierarchy.
                             crate::type_def::RowTail::Uniform {
@@ -3600,75 +3430,120 @@ pub(crate) async fn typenode_value_to_type(
                             crate::type_def::RowTail::Empty
                         };
 
-                        Some(Type::Dict(Row {
+                        Ok(Some(Type::Dict(Row {
                             fields: record_fields,
                             tail,
-                        }))
+                        })))
                     }
 
                     // ── Arrow ─────────────────────────────────────────────────────────────
                     // TypeNode.Arrow { params: [Seq TypeNode], result: TypeNode }
                     // → Type::Function { params: Vec<(None, Type)>, ret: Box<Type>, variadic: false }
-                    "TypeNode.Arrow" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let params_val = fields.get("params")?.clone();
-                        let result_val = fields.get("result")?.clone();
+                    "Arrow" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let params_val = match fields.get("params") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let result_val = match fields.get("result") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
 
-                        let param_types = collect_typenode_seq(params_val, ctx).await?;
-                        let ret_type = typenode_value_to_type(&result_val, ctx).await?;
+                        let param_types =
+                            match collect_typenode_seq(params_val, ctx, type_stage_scope).await? {
+                                Some(v) => v,
+                                None => return Ok(None),
+                            };
+                        let ret_type =
+                            match typenode_value_to_type(&result_val, ctx, type_stage_scope).await?
+                            {
+                                Some(t) => t,
+                                None => return Ok(None),
+                            };
 
                         let params: Vec<(Option<String>, Type)> =
                             param_types.into_iter().map(|t| (None, t)).collect();
 
                         let required_count = params.len();
-                        Some(Type::Function {
+                        Ok(Some(Type::Function {
                             params,
                             ret: Box::new(ret_type),
                             typed_variadics: vec![],
                             rest: None,
                             required_count,
-                        })
+                        }))
                     }
 
                     // ── TypeConstructor ───────────────────────────────────────────────────
                     // TypeNode.TypeConstructor { name: String }
                     // Bare (transient): name without '.' → Type::TyCon(name) for expansion
                     // Qualified (leaf): name with '.' → Type::NominalVariant or TyCon leaf
-                    "TypeNode.TypeConstructor" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let name_val = fields.get("name")?;
-                        let name = name_val.as_str()?.to_string();
-                        // Map known primitive names to their concrete Type variants.
-                        // (These arise when param-token TypeConstructors from parametric bodies
-                        // are passed to typenode_value_to_type without being substituted first.)
-                        match name.as_str() {
-                            "Int" | "Integer" => Some(Type::Int),
-                            "Float" => Some(Type::Float),
-                            "String" | "Str" => Some(Type::Str),
-                            "Unknown" => Some(Type::Unknown),
-                            "Never" => Some(Type::Never),
-                            "Absent" => Some(Type::Dict(Row {
-                                fields: indexmap::IndexMap::new(),
-                                tail: crate::type_def::RowTail::Empty,
-                            })),
-                            _ => Some(Type::TyCon(name)),
+                    "TypeConstructor" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let name_val = match fields.get("name") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let name = match name_val.as_str() {
+                            Some(s) => s.to_string(),
+                            None => return Ok(None),
+                        };
+                        // Look up the name in the type-stage scope chain.
+                        // The type-stage scope (e.g., Integer → TypeStageEntry::Resolved(Type::Int))
+                        // is the canonical source of truth — not a hardcoded Rust table.
+                        // This covers primitive aliases (Integer, Float, String, etc.) and any
+                        // user-defined or prelude-defined type-stage names.
+                        for scope in type_stage_scope {
+                            if let Some(entry) = scope.get(&name) {
+                                if let crate::type_infer::TypeStageEntry::Resolved(ty) = entry {
+                                    return Ok(Some(ty.clone()));
+                                }
+                            }
                         }
+                        // Not found in the type-stage scope — treat as an opaque TyCon.
+                        // This is correct for types declared in the runtime section (e.g., Color,
+                        // BuilderHandle) that are not yet in the type-stage scope chain.
+                        Ok(Some(Type::TyCon(name)))
                     }
 
                     // ── TypeApplication ───────────────────────────────────────────────────
                     // TypeNode.TypeApplication { ctor: TypeNode, args: [Seq TypeNode] }
                     // → left-associative Type::App chain: App(App(ctor, args[0]), args[1])...
-                    "TypeNode.TypeApplication" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let ctor_val = fields.get("ctor")?.clone();
-                        let args_val = fields.get("args")?.clone();
+                    "TypeApplication" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let ctor_val = match fields.get("ctor") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let args_val = match fields.get("args") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
 
-                        let ctor_type = typenode_value_to_type(&ctor_val, ctx).await?;
-                        let arg_types = collect_typenode_seq(args_val, ctx).await?;
+                        let ctor_type =
+                            match typenode_value_to_type(&ctor_val, ctx, type_stage_scope).await? {
+                                Some(t) => t,
+                                None => return Ok(None),
+                            };
+                        let arg_types =
+                            match collect_typenode_seq(args_val, ctx, type_stage_scope).await? {
+                                Some(v) => v,
+                                None => return Ok(None),
+                            };
 
                         if arg_types.is_empty() {
                             // Zero-arg application — return the constructor itself.
-                            return Some(ctor_type);
+                            return Ok(Some(ctor_type));
                         }
 
                         // Build left-associative App chain.
@@ -3676,22 +3551,34 @@ pub(crate) async fn typenode_value_to_type(
                         for arg in arg_types {
                             result = Type::App(Box::new(result), Box::new(arg));
                         }
-                        Some(result)
+                        Ok(Some(result))
                     }
 
                     // ── TypeVar ───────────────────────────────────────────────────────────
                     // TypeNode.TypeVar { name: String, level: Int }
                     // → Type::TypeVar(name, level)
-                    "TypeNode.TypeVar" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let name_val = fields.get("name")?;
-                        let level_val = fields.get("level")?;
-                        let name = name_val.as_str()?.to_string();
+                    "TypeVar" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let name_val = match fields.get("name") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let level_val = match fields.get("level") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let name = match name_val.as_str() {
+                            Some(s) => s.to_string(),
+                            None => return Ok(None),
+                        };
                         let level = match level_val {
-                            Value::Int(n) => *n as u32,
+                            Value::Int(n) => n as u32,
                             _ => 0u32,
                         };
-                        Some(Type::TypeVar(name, level))
+                        Ok(Some(Type::TypeVar(name, level)))
                     }
 
                     // ── Recursive ────────────────────────────────────────────────────────
@@ -3701,16 +3588,37 @@ pub(crate) async fn typenode_value_to_type(
                     // The `var` field is a String binder name (e.g., "𝜇List"). The `body`
                     // field is a TypeNode that may contain TypeNode.RecursiveRef nodes with
                     // the same `name`, which map to Type::TypeVar(name, 0) sentinels.
-                    "TypeNode.Recursive" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let var_val = fields.get("var")?;
-                        let var = var_val.as_str()?.to_string();
-                        let body_val = fields.get("body")?.clone();
-                        let body = Box::pin(typenode_value_to_type(&body_val, ctx)).await?;
-                        Some(Type::Recursive {
+                    "Recursive" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let var_val = match fields.get("var") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let body_val = match fields.get("body") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let var = match var_val.as_str() {
+                            Some(s) => s.to_string(),
+                            None => return Ok(None),
+                        };
+                        let body = match Box::pin(typenode_value_to_type(
+                            &body_val,
+                            ctx,
+                            type_stage_scope,
+                        ))
+                        .await?
+                        {
+                            Some(t) => t,
+                            None => return Ok(None),
+                        };
+                        Ok(Some(Type::Recursive {
                             var,
                             body: Box::new(body),
-                        })
+                        }))
                     }
 
                     // ── RecursiveRef ──────────────────────────────────────────────────────
@@ -3722,15 +3630,24 @@ pub(crate) async fn typenode_value_to_type(
                     // this is represented as TypeVar(name, 0) — the same sentinel produced by
                     // expand_named Step 4 (cycle detection). Level 0 is used because recursive
                     // self-references are not inference variables and must never be generalized.
-                    "TypeNode.RecursiveRef" => {
-                        let fields = variant_payload_dict(val, ctx).await?;
-                        let name_val = fields.get("name")?;
-                        let name = name_val.as_str()?.to_string();
-                        Some(Type::TypeVar(name, 0))
+                    "RecursiveRef" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let name_val = match fields.get("name") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        let name = match name_val.as_str() {
+                            Some(s) => s.to_string(),
+                            None => return Ok(None),
+                        };
+                        Ok(Some(Type::TypeVar(name, 0)))
                     }
 
                     // Unknown tag — not a recognized TypeNode constructor.
-                    _ => None,
+                    _ => Ok(None),
                 }
             }
 
@@ -3766,14 +3683,26 @@ pub(crate) async fn typenode_value_to_type(
                     }
                 }
                 if all_match {
-                    prefix.map(Type::TyCon)
+                    Ok(prefix.map(Type::TyCon))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
 
+            // Integer literal in TypeNode position → Type::IntLiteral.
+            // Arises when the type-stage evaluator produces a raw Value::Int (e.g., inside
+            // a TypeNode.Union types sequence: `[or 0 1]` evaluates each member to Value::Int).
+            Value::Int(n) => Ok(Some(Type::IntLiteral(*n))),
+
+            // String literal in TypeNode position → Type::StringLiteral.
+            // Arises when the type-stage evaluator produces a raw Value::String (e.g., inside
+            // a TypeNode.Union types sequence: `[or "ok" "err"]` evaluates each member to Value::String).
+            Value::String { source, start, end } => {
+                Ok(Some(Type::StringLiteral(source[*start..*end].to_string())))
+            }
+
             // Not a recognizable TypeNode or ADT value.
-            _ => None,
+            _ => Ok(None),
         }
     })
     .await
@@ -3805,12 +3734,17 @@ pub(crate) async fn typenode_value_to_type(
 ///    the sole argument. Returns a normalised TypeNode.
 /// 4. Converts the normalised TypeNode value to a `Type` via `typenode_value_to_type`.
 ///
-/// Returns `None` if:
+/// Returns `Ok(None)` if:
 /// - `state.type_stage_scope` is empty or does not contain `as-typenode`.
 /// - The `as-typenode` entry is `Resolved` (not a function).
 /// - `state.eval_ctx` is `None`.
-/// - Thunk materialisation fails.
+/// - The resolver function is not a single-parameter `Value::Function`.
 /// - The result is unrecognised (would cause recursion; stopped at this depth).
+///
+/// Returns `Err` if any evaluation step fails — resolver thunk materialisation,
+/// function invocation, result thunk materialisation, or `typenode_value_to_type`
+/// field materialisation. All eval errors propagate; callers convert them to
+/// `TypeDiagnostic` via `.map_err`.
 ///
 /// ## Protocol contract (Axiom 1 / D-7)
 ///
@@ -3820,7 +3754,10 @@ pub(crate) async fn typenode_value_to_type(
 /// Rust defines the protocol; the prelude implements it.  A custom prelude must provide an
 /// `as-typenode` function under this exact name to participate in TypeNode dispatch.
 /// Tracked as decision D-7.
-pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Option<Type> {
+pub(crate) async fn as_type_dispatch(
+    val: &Value,
+    state: &mut InferState,
+) -> crate::error::EvalResult<Option<Type>> {
     // Step 1: locate the `as-typenode` resolver in the type-stage scope chain.
     let resolver_thunk = {
         let mut found = None;
@@ -3832,22 +3769,23 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
                         break;
                     }
                     // Resolved entry is a ground Type, not a function — cannot call it.
-                    crate::type_infer::TypeStageEntry::Resolved(_) => return None,
+                    crate::type_infer::TypeStageEntry::Resolved(_) => return Ok(None),
                     _ => continue,
                 }
             }
         }
         match found {
             Some(t) => t,
-            None => return None,
+            None => return Ok(None),
         }
     };
 
     // Step 2: materialise the thunk to get the resolver function value.
-    let eval_ctx = state.eval_ctx.clone()?;
-    let fn_val = crate::eval::materialize(&resolver_thunk, None, &eval_ctx)
-        .await
-        .ok()?;
+    let eval_ctx = match state.eval_ctx.clone() {
+        Some(ctx) => ctx,
+        None => return Ok(None),
+    };
+    let fn_val = crate::eval::materialize(&resolver_thunk, None, &eval_ctx).await?;
 
     // Step 3: call the resolver with the TypeNode value as its sole argument.
     // Invoke inline rather than via a helper so the result conversion uses
@@ -3864,7 +3802,7 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
             ..
         } => {
             if params.len() != 1 {
-                return None; // as-typenode must be a single-parameter function
+                return Ok(None); // as-typenode must be a single-parameter function
             }
             let call_ctx = crate::eval_call::CallContext {
                 params,
@@ -3875,19 +3813,19 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
             };
-            crate::eval_call::invoke_function(&call_ctx).await.ok()?
+            crate::eval_call::invoke_function(&call_ctx).await?
         }
-        _ => return None,
+        _ => return Ok(None),
     };
 
-    let result_val = crate::eval::materialize(&result_thunk, None, &eval_ctx)
-        .await
-        .ok()?;
+    let result_val = crate::eval::materialize(&result_thunk, None, &eval_ctx).await?;
 
     // Convert using typenode_value_to_type ONLY — no as_type_dispatch fallback here.
     // This prevents infinite recursion: if the resolver itself returns an unrecognised tag,
-    // we return None rather than attempting further dispatch.
-    typenode_value_to_type(&result_val, &eval_ctx).await
+    // we return Ok(None) rather than attempting further dispatch.
+    // Pass empty type_stage_scope: as_type_dispatch is itself the dispatch path for
+    // unrecognised TypeConstructor names; recursing into scope lookup here would loop.
+    typenode_value_to_type(&result_val, &eval_ctx, &[]).await
 }
 
 /// Evaluate a type-stage `SurfaceNode` annotation expression and convert the result to
@@ -3915,9 +3853,9 @@ pub(crate) async fn as_type_dispatch(val: &Value, state: &mut InferState) -> Opt
 /// - Evaluation of the expression fails (runtime error in type-stage code).
 /// - The evaluated value cannot be converted to a Type (unrecognized TypeNode tag).
 ///
-/// In the fallback call sites (`resolve_property_dict_as_record`), errors are caught with
-/// `.unwrap_or(Type::Unknown)`, preserving existing gradual-typing behaviour for
-/// annotations that cannot be resolved to a precise type.
+/// Errors propagate to callers. `resolve_property_dict_as_record` falls back to
+/// type-stage evaluation when type-dict resolution fails; on eval failure it returns
+/// the eval error as the primary diagnostic with the dict-resolution error as a note.
 pub(crate) async fn eval_type_stage_expr(
     node: &Arc<SurfaceNode>,
     state: &mut InferState,
@@ -3972,11 +3910,28 @@ pub(crate) async fn eval_type_stage_expr(
     // If the direct structural conversion fails (unrecognised TypeNode tag), try
     // as_type_dispatch to normalise the value through the prelude's `as-typenode`
     // function before giving up.
-    if let Some(ty) = typenode_value_to_type(&typenode_val, &ctx).await {
-        return Ok(ty);
+    // Propagate eval errors from typenode_value_to_type and as_type_dispatch as TypeDiagnostics.
+    match typenode_value_to_type(&typenode_val, &ctx, &state.type_stage_scope)
+        .await
+        .map_err(|e| {
+            TypeDiagnostic::error(
+                "type-error",
+                format!("type-stage field materialization failed: {e}"),
+                node_span.clone(),
+            )
+        })? {
+        Some(ty) => return Ok(ty),
+        None => {}
     }
-    if let Some(ty) = as_type_dispatch(&typenode_val, state).await {
-        return Ok(ty);
+    match as_type_dispatch(&typenode_val, state).await.map_err(|e| {
+        TypeDiagnostic::error(
+            "type-error",
+            format!("type-stage field materialization failed: {e}"),
+            node_span.clone(),
+        )
+    })? {
+        Some(ty) => return Ok(ty),
+        None => {}
     }
     Err(TypeDiagnostic::error(
         "type-error",
@@ -4000,7 +3955,7 @@ async fn try_resolve_fn_type_expr(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
+    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
 ) -> Result<Option<Type>, TypeDiagnostic> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,

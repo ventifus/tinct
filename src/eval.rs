@@ -1192,7 +1192,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                         "Fn" => matches!(value, Value::Function { .. } | Value::Builtin(_)),
                         "File" => matches!(value, Value::File(_)),
                         // Opaque builtin types. Discriminant strings must match the entries
-                        // registered in build_builtin_core_type_env_inner (imports.rs) and the
+                        // registered in build_builtin_core_envs_inner (imports.rs) and the
                         // TypeNode tags in typenode_leaf_to_type (type_normalize.rs).
                         // Note: Value::Builder is the Rust variant for BuilderHandle (type_name
                         // returns "Builder" but the TyCon is "BuilderHandle" — see value_tycon_name).
@@ -1784,7 +1784,7 @@ pub(crate) fn match_pattern<'a>(
                     Some(Some(addr)) => {
                         // Look up the pinned thunk using the resolver-assigned VarAddr.
                         let pinned_thunk = match addr {
-                            VarAddr::LetrecGroupMember(slot) => {
+                            VarAddr::LetrecGroupMember { slot, .. } => {
                                 let slot = *slot as usize;
                                 if slot >= frame.group.len() {
                                     return Err(EvalError::internal(
@@ -3339,7 +3339,7 @@ mod tests {
         use crate::eval_call::func_label_core;
         let label = func_label_core(&CoreExpr::Var {
             name: "f".to_string(),
-            addr: crate::ast::VarAddr::LetrecGroupMember(0),
+            addr: crate::ast::VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
             annotation: None,
         });
         assert_eq!(label.as_deref(), Some("f"));

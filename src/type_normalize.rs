@@ -318,6 +318,14 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
         "TypeNode.Unknown" => Some(Type::Unknown),
         "TypeNode.Top" => Some(Type::Any),
         "TypeNode.Proxy" => Some(Type::Proxy),
+        // Any callable — variadic function with zero required params (top of the function lattice).
+        "TypeNode.Callable" => Some(Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            typed_variadics: vec![],
+            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
+            required_count: 0,
+        }),
         // Dict with any payload → open structural dict (any keys, any values)
         "TypeNode.Dict" => Some(Type::Dict(crate::types::Row {
             fields: indexmap::IndexMap::new(),
@@ -328,7 +336,7 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
         })),
         // Opaque builtin types — each maps to a TyCon that value_matches_type dispatches
         // via TyConDef.builtin_type. The discriminant string here must match the string
-        // registered in build_builtin_core_type_env_inner and the arm in value_matches_type.
+        // registered in build_builtin_core_envs_inner and the arm in value_matches_type.
         "TypeNode.Program" => Some(Type::TyCon("Program".to_string())),
         "TypeNode.Document" => Some(Type::TyCon("Document".to_string())),
         "TypeNode.TypeContext" => Some(Type::TyCon("TypeContext".to_string())),

@@ -42,7 +42,7 @@
   Unknown: TypeNode.Unknown
   Proxy:   TypeNode.Proxy
   # Any callable — variadic function accepting any arguments
-  Fn:      TypeNode.AnyFn
+  Callable: TypeNode.Callable
   # Named-field TypeNode constructors: accessed via qualified TypeNode.X names.
   # TypeNode is declared in this same letrec dict, so it is in scope via letrec mutual recursion.
   Null:    [TypeNode.Dict fields: []  open: 0]
@@ -1887,7 +1887,7 @@ str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match 
 bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
 null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False ...: Boolean.True] Boolean.False]]
 dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  ...: Boolean.False]]
-fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x@[is: Fn]] [match x [@Fn _]: Boolean.True  ...: Boolean.False]]
+fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x@[is: Callable]] [match x [@Callable _]: Boolean.True  ...: Boolean.False]]
 proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  ...: Boolean.False]]
 seq?@[doc: "Check if value is a Seq"]:  [fn@Boolean [let x@[is: Seq]] [match x [@Seq _]:     Boolean.True  ...: Boolean.False]]
 bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x@[is: Bytes]] [match x [@Bytes _]:  Boolean.True  ...: Boolean.False]]

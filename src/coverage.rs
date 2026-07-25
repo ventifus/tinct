@@ -1558,7 +1558,10 @@ mod tests {
     /// Build a VarRef expression with a resolved Resolution.
     fn varref_resolved(name: &str, _level: u32, slot: u32) -> SurfaceExpression {
         let r = crate::ast::Resolution::new();
-        r.set(Some(crate::ast::VarAddr::LetrecGroupMember(slot)));
+        r.set(Some(crate::ast::VarAddr::LetrecGroupMember {
+            depth: 0,
+            slot,
+        }));
         SurfaceExpression::VarRef {
             name: name.to_string(),
             escaped: false,

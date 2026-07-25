@@ -234,7 +234,7 @@ Type predicates encode a specific proposition; plain comparisons and runtime tes
 | `[int? x]`    | `Decidable [Int? %0]`    | `x : Int` in true branch    |
 | `[str? x]`    | `Decidable [Str? %0]`    | `x : Str` in true branch    |
 | `[dict? x]`   | `Decidable [Record? %0]` | `x : Record(open)` in true branch |
-| `[fn? x]`     | `Decidable [Fn? %0]`     | `x : AnyFn` in true branch  |
+| `[fn? x]`     | `Decidable [Fn? %0]`     | `x : Callable` in true branch  |
 | `[null? x]`   | `Decidable [Null? %0]`   | `x : Null` in true branch   |
 | `[seq? x]`    | `Decidable [Seq? %0]`    | `x : Seq(Unknown)` in true branch |
 | `[= x 5]`     | `Decidable Unit`          | none (plain boolean)        |

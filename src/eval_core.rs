@@ -676,7 +676,7 @@ pub(crate) fn eval_core_expr<'a>(
             // cumulative offsets above them. No outer-frame traversal needed.
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
-                    VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize),
+                    VarAddr::LetrecGroupMember { slot, .. } => frame.group.get(*slot as usize),
                     VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                 };
@@ -850,7 +850,9 @@ pub(crate) fn eval_core_expr<'a>(
                     .iter()
                     .map(|(name, original_addr)| {
                         let found = match original_addr {
-                            VarAddr::LetrecGroupMember(i) => frame.group.get(*i as usize),
+                            VarAddr::LetrecGroupMember { slot, .. } => {
+                                frame.group.get(*slot as usize)
+                            }
                             VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                             VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                         };
@@ -1073,11 +1075,11 @@ mod tests {
             params: Arc::new(vec![]),
         });
 
-        // Build a Var node: addr = LetrecGroupMember(0).
+        // Build a Var node: addr = LetrecGroupMember { depth: 0, slot: 0 }.
         let var_expr = Spanned::new(
             CoreExpr::Var {
                 name: "test-binding".to_string(),
-                addr: VarAddr::LetrecGroupMember(0),
+                addr: VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
                 annotation: None,
             },
             span.clone(),

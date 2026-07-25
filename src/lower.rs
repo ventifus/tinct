@@ -133,11 +133,11 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 /// `call_dispatch.set(debruijn_to_var_addr(level, slot))`, not in the lowerer.
 ///
 /// Mapping:
-/// - level=0 → `VarAddr::LetrecGroupMember(slot)` (current letrec group)
+/// - level=0 → `VarAddr::LetrecGroupMember { depth: 0, slot }` (current letrec group)
 /// - level>0 → `VarAddr::ClosureCapture(slot)` (outer scope)
 pub(crate) fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
     if level == 0 {
-        VarAddr::LetrecGroupMember(slot)
+        VarAddr::LetrecGroupMember { depth: 0, slot }
     } else {
         VarAddr::ClosureCapture(slot)
     }
@@ -2043,9 +2043,9 @@ mod tests {
     #[test]
     fn test_lower_varref_with_resolution() {
         let span = rust_span!();
-        // Build a VarRef node with pre-set inline resolution (LetrecGroupMember(3)).
+        // Build a VarRef node with pre-set inline resolution (LetrecGroupMember { depth: 0, slot: 3 }).
         let resolution = Resolution::new();
-        resolution.set(Some(VarAddr::LetrecGroupMember(3)));
+        resolution.set(Some(VarAddr::LetrecGroupMember { depth: 0, slot: 3 }));
         let node = make_node(
             SurfaceExpression::VarRef {
                 name: "x".into(),
@@ -2063,8 +2063,8 @@ mod tests {
         match lowered.node {
             CoreExpr::Var { name, addr, .. } => {
                 assert_eq!(name, "x");
-                // resolution was LetrecGroupMember(3) → addr is LetrecGroupMember(3)
-                assert_eq!(addr, VarAddr::LetrecGroupMember(3));
+                // resolution was LetrecGroupMember { depth: 0, slot: 3 } → addr is the same
+                assert_eq!(addr, VarAddr::LetrecGroupMember { depth: 0, slot: 3 });
             }
             _ => panic!("expected CoreExpr::Var, got {:?}", lowered.node),
         }

@@ -780,7 +780,7 @@ fn get_bool_field(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
-    Ok(matches!(val, Value::Bool(true)))
+    Ok(matches!(val, Value::Int(n) if n != 0))
 }
 
 fn get_dict_field(
@@ -1251,7 +1251,7 @@ pub(crate) fn get_bool_field_with_aliases(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
-    Ok(matches!(val, Value::Bool(true)))
+    Ok(matches!(val, Value::Int(n) if n != 0))
 }
 
 pub(crate) fn get_int_field_with_aliases(

@@ -1890,7 +1890,7 @@ async fn bas_cvar1_rewrite(
             check_constraints_on_var(var_name, &promoted, state, constraints, span.clone(), depth)
                 .await?;
             state.bind_type_var(var_name.clone(), promoted);
-            return state.check_type_vars_size(span);
+            return Ok(());
         } else {
             // Multiple TypeVars: add as lower bound (inequality constraint)
             state
@@ -1989,7 +1989,7 @@ async fn bas_cvar2_rewrite(
             check_constraints_on_var(var_name, &promoted, state, constraints, span.clone(), depth)
                 .await?;
             state.bind_type_var(var_name.clone(), promoted);
-            return state.check_type_vars_size(span);
+            return Ok(());
         } else {
             // Multiple TypeVars: add as upper bound
             state
@@ -2087,12 +2087,8 @@ pub async fn unify(
         ));
     }
     // Apply current substitution to both sides (Robinson step: chase bound vars).
-    // Shared visited set avoids redundant allocation across both apply() calls.
-    let mut visited_types = HashSet::new();
-    let mut visited_rows = HashSet::new(); // kept for apply_with_visited API compatibility
-    let a_substituted = state.apply_with_visited(a, &mut visited_types, &mut visited_rows);
-    visited_types.clear();
-    let b_substituted = state.apply_with_visited(b, &mut visited_types, &mut visited_rows);
+    let a_substituted = state.apply(a);
+    let b_substituted = state.apply(b);
 
     // Normalize both types (for TypeStageApp reduction).
     // allow_eval is set to false inside unify to prevent runtime errors from propagating
@@ -2217,7 +2213,6 @@ pub async fn unify(
                 transfer_class_constraints(name_b, name_a, constraints);
                 state.bind_type_var(name_b.clone(), Type::TypeVar(name_a.clone(), level_a));
             }
-            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -2257,7 +2252,6 @@ pub async fn unify(
                 check_constraints_on_var(name, &b, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(name.clone(), b);
             }
-            state.check_type_vars_size(span)?;
             Ok(())
         }
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
@@ -2292,7 +2286,6 @@ pub async fn unify(
                 check_constraints_on_var(name, &a, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(name.clone(), a);
             }
-            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -2690,7 +2683,6 @@ pub async fn unify(
                 transfer_class_constraints(n, m, constraints);
                 state.bind_type_var(n.clone(), Type::Operator(m.clone()));
             }
-            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -2718,7 +2710,6 @@ pub async fn unify(
                 check_constraints_on_var(m, &b, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(m.clone(), b.clone());
             }
-            state.check_type_vars_size(span)?;
             Ok(())
         }
         // UNIFY-OPERATOR-SYM: symmetric case
@@ -2743,7 +2734,6 @@ pub async fn unify(
                 check_constraints_on_var(m, &a, state, constraints, span.clone(), depth).await?;
                 state.bind_type_var(m.clone(), a.clone());
             }
-            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -3171,11 +3161,8 @@ pub async fn constrain(
     span: Span,
 ) -> Result<(), TypeDiagnostic> {
     // Apply current substitution to both sides.
-    let mut visited_types = HashSet::new();
-    let mut visited_rows = HashSet::new();
-    let sub_substituted = state.apply_with_visited(sub, &mut visited_types, &mut visited_rows);
-    visited_types.clear();
-    let sup_substituted = state.apply_with_visited(sup, &mut visited_types, &mut visited_rows);
+    let sub_substituted = state.apply(sub);
+    let sup_substituted = state.apply(sup);
 
     // Normalize both types.
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());

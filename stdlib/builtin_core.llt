@@ -19,7 +19,7 @@
     Top
     Unknown
     Proxy
-    AnyFn
+    Callable
     Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
     TypeConstructor: [name: Any]
     TypeApplication: [ctor: Any  args: Any]
@@ -118,16 +118,16 @@
   builtin-int-to-float: [fn@Float   [let n@Integer] ...]
 
   # ── Comparison — monomorphic typed variants ───────────────────────────────
-  # Rust returns 1 (true) or 0 (false) as Integer.
-  builtin-lt:        [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-int-gt:    [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-gt:  [fn@Integer [let a@Float   b@Float  ] ...]
-  builtin-str-gt:    [fn@Integer [let a@String  b@String ] ...]
-  builtin-int-gte:   [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-gte: [fn@Integer [let a@Float   b@Float  ] ...]
-  builtin-str-gte:   [fn@Integer [let a@String  b@String ] ...]
-  builtin-eq-int:    [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-eq-string: [fn@Integer [let a@String  b@String]  ...]
+  # Rust returns 1 (true) or 0 (false) as Integer — typed as [or 0 1] for precision.
+  builtin-lt:        [fn@[or 0 1] [let a@Integer b@Integer] ...]
+  builtin-int-gt:    [fn@[or 0 1] [let a@Integer b@Integer] ...]
+  builtin-float-gt:  [fn@[or 0 1] [let a@Float   b@Float  ] ...]
+  builtin-str-gt:    [fn@[or 0 1] [let a@String  b@String ] ...]
+  builtin-int-gte:   [fn@[or 0 1] [let a@Integer b@Integer] ...]
+  builtin-float-gte: [fn@[or 0 1] [let a@Float   b@Float  ] ...]
+  builtin-str-gte:   [fn@[or 0 1] [let a@String  b@String ] ...]
+  builtin-eq-int:    [fn@[or 0 1] [let a@Integer b@Integer] ...]
+  builtin-eq-string: [fn@[or 0 1] [let a@String  b@String]  ...]
 
   # ── Dict primitives ───────────────────────────────────────────────────────
   builtin-keys:              [fn@Dict    [let xs@Dict] ...]
@@ -136,14 +136,14 @@
   builtin-bytes-length:      [fn@Integer [let b@Bytes] ...]
   # builtin-merge: implemented in tinct prelude and loader/test-loader (using builder API).
   # builtin-append: implemented in tinct prelude (derived from builtin-merge).
-  builtin-get:               [fn@Any     [let k@Any xs@Dict] ...]
-  builtin-has-key?:          [fn@Integer [let k@Any xs@Dict] ...]
-  builtin-get-by-field:      [fn@Any     [let field@String k@Any xs@Dict] ...]
-  builtin-dict-has-nth?:     [fn@Integer [let d@Dict n@Integer] ...]
-  builtin-dict-nth:          [fn@Any     [let d@Dict n@Integer] ...]
-  builtin-dict-has-key-nth?: [fn@Integer [let d@Dict n@Integer] ...]
-  builtin-dict-key-nth:      [fn@Any     [let d@Dict n@Integer] ...]
-  builtin-dict-has-kv-nth?:  [fn@Integer [let d@Dict n@Integer] ...]
+  builtin-get:                [fn@Any [let k@Any xs@Dict] ...]
+  builtin-has-key?:          [fn@[or 0 1] [let k@Any xs@Dict] ...]
+  builtin-get-by-field:      [fn@Any      [let field@String k@Any xs@Dict] ...]
+  builtin-dict-has-nth?:     [fn@[or 0 1] [let d@Dict n@Integer] ...]
+  builtin-dict-nth:          [fn@Any      [let d@Dict n@Integer] ...]
+  builtin-dict-has-key-nth?: [fn@[or 0 1] [let d@Dict n@Integer] ...]
+  builtin-dict-key-nth:      [fn@Any      [let d@Dict n@Integer] ...]
+  builtin-dict-has-kv-nth?:  [fn@[or 0 1] [let d@Dict n@Integer] ...]
   builtin-dict-kv-nth:       [fn@Any     [let d@Dict n@Integer] ...]
   builtin-build-dict:        [fn@Dict    [let entries@Dict] ...]
 
@@ -153,7 +153,7 @@
   builtin-builder-delete:    [fn@BuilderHandle [let builder@BuilderHandle key@Any] ...]
   builtin-builder-finish:    [fn@Dict    [let builder@BuilderHandle] ...]
   builtin-builder-snapshot:  [fn@Dict    [let builder@BuilderHandle] ...]
-  builtin-builder-has?:      [fn@Integer [let builder@BuilderHandle key@Any] ...]
+  builtin-builder-has?:      [fn@[or 0 1] [let builder@BuilderHandle key@Any] ...]
   builtin-builder-get:       [fn@Any     [let builder@BuilderHandle key@Any] ...]
   builtin-builder-get-or:    [fn@Any     [let builder@BuilderHandle default@Any key@Any] ...]
 
@@ -176,17 +176,18 @@
   builtin-check-type:      [fn@Any     [let type-name@String x@Any] ...]
   builtin-variant-payload: [fn@Any     [let variant@Any] ...]
   builtin-tag-of:          [fn@String  [let x@Any] ...]
-  builtin-variant?:        [fn@Integer [let x@Any] ...]
-  builtin-llt-repr:        [fn@String  [let x@Any] ...]
+  builtin-variant?:        [fn@[or 0 1] [let x@Any] ...]
+  builtin-llt-repr:        [fn@String   [let x@Any] ...]
 
   # ── Capability ─────────────────────────────────────────────────────────────
   # cap-env-has?: true (1) if the named capability key is present in the env dict.
   # env: flat Dict<String, thunk> — the accumulated env dict passed to builtin-eval.
-  builtin-cap-env-has?:  [fn@Integer [let name@String env@Dict] ...]
+  builtin-cap-env-has?:  [fn@[or 0 1] [let name@String env@Dict] ...]
 
   # ── I/O ───────────────────────────────────────────────────────────────────
   builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
   builtin-list-dir:      [fn@Dict    [let cap@DirCap path@String] ...]
+  builtin-file-open:     [fn@File    [let cap@DirCap path@String modes@Dict mode@Integer flags@Integer] ...]
   builtin-file-read:     [fn@Bytes   [let file@File n@Integer] ...]
   builtin-write-stdout:  [fn@[bind: [h] return: h] [let s@String h] ...]
   builtin-write-stderr:  [fn@[bind: [h] return: h] [let s@String h] ...]
@@ -231,6 +232,10 @@
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
   builtin-get-type-context: [fn@TypeContext [] ...]
   builtin-make-type-ctx:    [fn@TypeContext [] ...]
+  # builtin-tc-update-type-stage-env: wire a type-stage env Dict into a TypeContext.
+  # Makes type-stage declarations (Integer, String, DirCap, etc.) visible during
+  # subsequent typecheck passes. Called after evaluating all type-stage documents.
+  builtin-tc-update-type-stage-env: [fn@TypeContext [let tc@TypeContext env@Dict] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

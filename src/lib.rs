@@ -110,7 +110,7 @@ pub use eval::{
 pub use builtins::build_core_env;
 
 /// Bootstrap type environment from builtin_core.llt.
-pub use imports::{get_builtin_core_tycon_env, get_builtin_core_type_env};
+pub use imports::{build_builtin_core_envs, get_builtin_core_tycon_env, get_builtin_core_type_env};
 
 /// Error types with source spans and stack traces.
 pub use error::{
@@ -323,9 +323,7 @@ pub async fn run_loader_pipeline(
     // Typecheck the loader program, seeded with the builtin core type env so that
     // builtin-* names are in scope. Type errors are real errors — if the loader has
     // type errors, we cannot proceed.
-    let builtin_env_base = crate::imports::get_builtin_core_type_env()
-        .await
-        .ok_or_else(|| "failed to load builtin core type env".to_string())?;
+    let (builtin_env_base, seed_tycon_env) = crate::imports::build_builtin_core_envs().await;
     // Chain injected types (from caller) above the builtin env so the type-checker
     // sees %programs, %cwd, etc. without any builtin_core declarations.
     let builtin_env = {
@@ -338,7 +336,6 @@ pub async fn run_loader_pipeline(
         }
         Arc::new(std::sync::RwLock::new(wrapper))
     };
-    let seed_tycon_env = crate::imports::get_builtin_core_tycon_env().unwrap_or_default();
     let (loader_diagnostics, _loader_annotation_table, loader_tycon_env) =
         typecheck::typecheck_surface_program_annotation_table_with_env(
             &loader_program,
@@ -403,9 +400,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
-    let env_arc = imports::get_builtin_core_type_env()
-        .await
-        .expect("get_builtin_core_type_env() returned None");
+    let env_arc = imports::get_builtin_core_type_env().await;
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_surface_program(&program, env_arc).await;
     if diagnostics.is_empty() {
@@ -431,9 +426,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     // Type check the surface program.
-    let env_arc2 = imports::get_builtin_core_type_env()
-        .await
-        .expect("get_builtin_core_type_env() returned None");
+    let env_arc2 = imports::get_builtin_core_type_env().await;
     let (diagnostics, _type_map, _doc_map, _scheme_map) =
         typecheck::typecheck_surface_program(&program, env_arc2).await;
     if !crate::error::has_type_errors(&diagnostics) {
@@ -674,14 +667,6 @@ where
             value::Value::TypeContext(_) => Err(Box::new(
                 error::EvalError::value_not_serializable("TypeContext".to_string(), span),
             )),
-            value::Value::Bool(_) => Err(Box::new(error::EvalError::value_not_serializable(
-                "Bool".to_string(),
-                span,
-            ))),
-            value::Value::Seq { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-                "Seq".to_string(),
-                span,
-            ))),
             value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
                 "Expression".to_string(),
                 span,

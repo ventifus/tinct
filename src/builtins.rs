@@ -4942,16 +4942,15 @@ mod tests {
     async fn build_core_env_has_builtins() {
         let env = build_core_env();
         let env_ref = env.read().unwrap();
-        // After T-1557, Env is type-metadata only. Check that builtin names are
-        // registered in the slotted IndexMap (so the resolver can assign coordinates).
-        let slot_names = env_ref.slot_names();
+        // After T-1897, Env builtins are in extras (name-only, no resolver slot).
+        // Check that builtin names are reachable via has_name.
         assert!(
-            slot_names.iter().any(|n| n == "builtin-raise"),
-            "missing builtin builtin-raise in core env slots"
+            env_ref.has_name("builtin-raise"),
+            "missing builtin builtin-raise in core env"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
         assert!(
-            !slot_names.iter().any(|n| n == "map"),
+            !env_ref.has_name("map"),
             "map should not be in core env (requires run_loader_pipeline)"
         );
     }
@@ -5454,13 +5453,8 @@ mod tests {
         let core_env = build_core_env();
         let env = core_env.read().unwrap();
 
-        // After T-1557, Env is type-metadata only. Verify builtin names are present
-        // in the slotted IndexMap (resolver coordinate assignment).
-        let slot_names = env.slot_names();
-
-        // Core builtins that must exist in the slotted IndexMap.
-        // These are the names that the resolver maps to (level, slot) coordinates
-        // so that eval can look them up in the root FlatEnv.
+        // After T-1897, builtins are in extras (name-only, no resolver slot).
+        // Verify builtin names are reachable via has_name.
         let required_names: &[&str] = &[
             "builtin-raise",
             "builtin-type-of",
@@ -5475,20 +5469,14 @@ mod tests {
 
         for name in required_names {
             assert!(
-                slot_names.iter().any(|n| n == name),
-                "core env slots are missing expected builtin: {name}"
+                env.has_name(name),
+                "core env is missing expected builtin: {name}"
             );
         }
 
         // Prelude functions must NOT be in core env (they come from run_loader_pipeline).
-        assert!(
-            !slot_names.iter().any(|n| n == "map"),
-            "map should not be in core env slots"
-        );
-        assert!(
-            !slot_names.iter().any(|n| n == "filter"),
-            "filter should not be in core env slots"
-        );
+        assert!(!env.has_name("map"), "map should not be in core env");
+        assert!(!env.has_name("filter"), "filter should not be in core env");
     }
 
     // ========== dict-nth/dict-key-nth/dict-kv-nth tests ==========

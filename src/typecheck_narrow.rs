@@ -372,17 +372,19 @@ pub(crate) fn extract_binding_types<'a>(
                 {
                     let ann = crate::ast::Annotation::Simple(name.clone());
                     let mut constraints: Vec<Constraint> = Vec::new();
-                    match typecheck_annot::resolve_annotation(
+                    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+                    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+                    let ann_result = typecheck_annot::resolve_annotation(
                         &ann,
                         func.span.clone(),
-                        state,
+                        &mut *state,
                         &mut constraints,
-                        &mut None,
-                        &mut None,
+                        &mut ann_m,
+                        &mut row_m,
                         None,
                     )
-                    .await
-                    {
+                    .await;
+                    match ann_result {
                         Ok(ty) => Some(ty),
                         Err(_) => None,
                     }
@@ -403,13 +405,15 @@ pub(crate) fn extract_binding_types<'a>(
                 ..
             } => {
                 let mut constraints: Vec<Constraint> = Vec::new();
+                let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+                let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
                 let ty = match typecheck_annot::resolve_annotation(
                     &ann.node,
                     ann.span.clone(),
-                    state,
+                    &mut *state,
                     &mut constraints,
-                    &mut None,
-                    &mut None,
+                    &mut ann_m,
+                    &mut row_m,
                     None,
                 )
                 .await

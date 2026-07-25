@@ -1980,34 +1980,6 @@ async fn test_tycondef_partialeq_different_variance() {
     assert_ne!(def1, def2);
 }
 
-/// T-1098: RowTail::Uniform polarity — infer_variance on a Uniform-tailed record
-/// should report the value type param as Covariant (positive position).
-#[tokio::test]
-async fn test_infer_variance_uniform_tail_covariant() {
-    let tycon_env = std::collections::HashMap::new();
-
-    // Type alias body: {x: a, _: a} — both named field and Uniform tail use param "a"
-    // in positive position, so inferred variance should be Covariant.
-    let mut fields = IndexMap::new();
-    fields.insert("x".to_string(), Type::TypeVar("_t0".to_string(), 0));
-    let body = Type::Dict(crate::type_def::Row {
-        fields,
-        tail: crate::type_def::RowTail::Uniform {
-            key: None,
-            value: Box::new(Type::TypeVar("_t0".to_string(), 0)),
-        },
-    });
-
-    let variances =
-        crate::typecheck::typecheck_annot::infer_variance(&body, &["_t0".to_string()], &tycon_env);
-    assert_eq!(variances.len(), 1);
-    assert_eq!(
-        variances[0],
-        Variance::Covariant,
-        "Uniform tail value type param should be Covariant (positive polarity)"
-    );
-}
-
 // ============================================================================
 // T-1112: UNIFY-TYCON-EXPAND tests
 // ============================================================================
@@ -3132,12 +3104,16 @@ async fn test_constrain_recursive_left_only_opens_and_constrains() {
     .await;
 
     // The opened type is Union([Int, fresh_α]). constrain(Union([Int, fresh_α]), Int) falls through
-    // to unify() which calls U-SUBSUME or TypeVar binding. The key properties to verify:
-    // (a) no infinite recursion — the call terminates, (b) the fresh TypeVar from the opening is
-    // registered in state after the call.
-    // We do not assert Ok/Err because Union-left constrain has known limitations (falls to unify).
-    // We only assert termination + fresh TypeVar existence.
-    let _ = result; // termination asserted implicitly — if we reach here, no stack overflow.
+    // to unify(), which uses the symmetric C-VAR1 rewriting arm:
+    //   members = [Int, fresh_α], concrete = Int
+    //   is_subtype(Int, Int) = true → no binding needed → Ok(())
+    // So the overall constrain call succeeds: the recursive type is compatible with Int because
+    // Int is already covered by the non-TypeVar members of the union.
+    assert!(
+        result.is_ok(),
+        "C-Recursive left-only: constrain(Recursive{{mu, Union([Int, mu])}}, Int) expected Ok; got: {:?}",
+        result
+    );
 
     // After opening, state must have at least one TypeVar registered (the fresh one from Recursive).
     assert!(

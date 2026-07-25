@@ -229,13 +229,12 @@ impl EvalFrame {
 
 /// Dict key type: any fully-materialised tinct value that implements Hash + Eq.
 /// This is the canonical hashable key used in `Value::Dict` and `IndexMap<HashableValue, Arc<Thunk>>`.
-/// Only these Value variants may appear as dict keys. Function, Handle, Task, and lazy Seq
+/// Only these Value variants may appear as dict keys. Function, Handle, Task, and Builder
 /// cannot be hashed (no structural identity).
 #[derive(Debug, Clone)]
 pub enum HashableValue {
     Int(i64),
     Str(Arc<str>),
-    Bool(bool),
     /// Float key stored as raw IEEE 754 bits (u64) for bitwise equality and hashing.
     /// TotalF64 semantics: NaN == NaN iff both have the same bit pattern. Two floats that
     /// represent different bit patterns are unequal as keys even if they would compare equal
@@ -266,7 +265,6 @@ impl PartialEq for HashableValue {
         match (self, other) {
             (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
             (HashableValue::Str(a), HashableValue::Str(b)) => a == b,
-            (HashableValue::Bool(a), HashableValue::Bool(b)) => a == b,
             // Bitwise equality: Float(a) == Float(b) iff their bit representations are identical.
             // This makes NaN == NaN when both have the same bit pattern (TotalF64 semantics).
             (HashableValue::Float(a), HashableValue::Float(b)) => a == b,
@@ -311,7 +309,6 @@ impl PartialOrd for HashableValue {
         match (self, other) {
             (HashableValue::Int(a), HashableValue::Int(b)) => a.partial_cmp(b),
             (HashableValue::Str(a), HashableValue::Str(b)) => a.partial_cmp(b),
-            (HashableValue::Bool(a), HashableValue::Bool(b)) => a.partial_cmp(b),
             // Float keys are ordered by their bit representation (not by f64 value order).
             // This is not meaningful as a numeric ordering, but provides a total order
             // over Float keys so that IndexMap can sort them if needed.
@@ -324,15 +321,11 @@ impl PartialOrd for HashableValue {
 impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Use explicit u8 discriminants instead of std::mem::discriminant.
-        // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4, Float=5
+        // Discriminants: Int=0, Str=2, Dict=3, Variant=4, Float=5
         match self {
             HashableValue::Int(n) => {
                 0u8.hash(state);
                 n.hash(state);
-            }
-            HashableValue::Bool(b) => {
-                1u8.hash(state);
-                b.hash(state);
             }
             HashableValue::Str(s) => {
                 2u8.hash(state);
@@ -381,13 +374,6 @@ impl fmt::Display for HashableValue {
             HashableValue::Int(n) => write!(f, "{n}"),
             HashableValue::Str(s) => write!(f, "{s}"),
             HashableValue::Float(bits) => write!(f, "{}", f64::from_bits(*bits)),
-            HashableValue::Bool(b) => {
-                if *b {
-                    write!(f, "Boolean.True")
-                } else {
-                    write!(f, "Boolean.False")
-                }
-            }
             HashableValue::Dict(pairs) => {
                 write!(f, "[")?;
                 for (i, (k, v)) in pairs.iter().enumerate() {
@@ -754,8 +740,6 @@ pub enum Value {
         start: usize,
         end: usize,
     },
-    /// Internal boolean value — used by Rust-level boolean predicates returning true/false
-    Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
     Dict(IndexMap<HashableValue, Arc<Thunk>>),
     /// Transient builder for efficient mutable dict construction.
@@ -775,11 +759,6 @@ pub enum Value {
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
-    /// Lazy linked-list sequence (head element, tail sequence)
-    Seq {
-        head: std::sync::Arc<Thunk>,
-        tail: std::sync::Arc<Thunk>,
-    },
     /// Proxy object — field access calls the handler function with the field name
     Proxy { handler: std::sync::Arc<Thunk> },
     /// Capability-bound directory handle (object capability model)
@@ -924,7 +903,6 @@ impl Clone for Value {
                 start: *start,
                 end: *end,
             },
-            Value::Bool(b) => Value::Bool(*b),
             Value::Dict(map) => Value::Dict(map.clone()),
             Value::Builder(b) => Value::Builder(Arc::clone(b)),
             Value::Function {
@@ -939,10 +917,6 @@ impl Clone for Value {
                 annotation: annotation.clone(),
             },
             Value::Builtin(def) => Value::Builtin(*def),
-            Value::Seq { head, tail } => Value::Seq {
-                head: std::sync::Arc::clone(head),
-                tail: std::sync::Arc::clone(tail),
-            },
             Value::Proxy { handler } => Value::Proxy {
                 handler: std::sync::Arc::clone(handler),
             },
@@ -1102,12 +1076,10 @@ impl Value {
             Value::U64(_) => "Int",
             Value::Float(_) => "Float",
             Value::String { .. } => "String",
-            Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
             Value::Builtin(_) => "Builtin",
-            Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap(_) => "NetCap",
@@ -1208,7 +1180,6 @@ impl fmt::Debug for Value {
                 let s = &source[*start..*end];
                 f.debug_tuple("String").field(&s).finish()
             }
-            Value::Bool(b) => f.debug_tuple("Bool").field(b).finish(),
             Value::Dict(map) => {
                 let keys: Vec<&HashableValue> = map.keys().collect();
                 f.debug_tuple("Dict").field(&keys).finish()
@@ -1225,7 +1196,6 @@ impl fmt::Debug for Value {
                 write!(f, "Function({})", names.join(", "))
             }
             Value::Builtin(def) => write!(f, "Builtin({})", def.name),
-            Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
@@ -1300,7 +1270,6 @@ impl fmt::Display for Value {
                 let s = &source[*start..*end];
                 write!(f, "{s:?}")
             }
-            Value::Bool(b) => write!(f, "{b}"),
             Value::Dict(map) => {
                 write!(f, "[")?;
                 for (i, (key, _)) in map.iter().enumerate() {
@@ -1326,7 +1295,6 @@ impl fmt::Display for Value {
                 write!(f, "] ...]")
             }
             Value::Builtin(def) => write!(f, "<builtin {}>", def.name),
-            Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
@@ -1411,7 +1379,6 @@ impl PartialEq for Value {
                     end: end_b,
                 },
             ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
-            (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (
@@ -2432,33 +2399,6 @@ mod tests {
             compute_hash(&b),
             "Str(\"foo\") and Str(\"bar\") should have different hashes"
         );
-    }
-
-    #[test]
-    fn hashable_value_eq_implies_hash_eq_bool() {
-        let a = HashableValue::Bool(true);
-        let b = HashableValue::Bool(true);
-        assert_eq!(a, b);
-        assert_eq!(compute_hash(&a), compute_hash(&b));
-
-        let c = HashableValue::Bool(false);
-        let d = HashableValue::Bool(false);
-        assert_eq!(c, d);
-        assert_eq!(compute_hash(&c), compute_hash(&d));
-
-        assert_ne!(a, c);
-        assert_ne!(compute_hash(&a), compute_hash(&c));
-    }
-
-    #[test]
-    fn hashable_value_cross_type_inequality_bool() {
-        let bool_val = HashableValue::Bool(true);
-        let int_val = HashableValue::Int(1);
-        let str_val = HashableValue::Str("true".into());
-        assert_ne!(bool_val, int_val);
-        assert_ne!(bool_val, str_val);
-        assert_ne!(compute_hash(&bool_val), compute_hash(&int_val));
-        assert_ne!(compute_hash(&bool_val), compute_hash(&str_val));
     }
 
     #[test]

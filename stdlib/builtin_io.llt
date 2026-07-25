@@ -3,13 +3,14 @@
 # Note: builtin-write-stdout, builtin-write-stderr are in builtin_core.llt (Core-46).
 # builtin-file-open, builtin-file-read, builtin-list-dir, builtin-path-dir, builtin-narrow
 # are also in builtin_core.llt (Core-46 — needed by loader.llt with only --- uses: ["core"]).
+# builtin-file-open is declared only in builtin_core.llt; it is NOT redeclared here.
 
 [
   # ── Opaque OS file handle ──────────────────────────────────────────────────
   File: [type File]
 
   # ── Filesystem: open / read / write / close ────────────────────────────────
-  builtin-file-open:     [fn@File    [let cap@DirCap path@String modes@Dict mode@Integer flags@Integer] ...]
+  # builtin-file-open: declared in builtin_core.llt (registered in core_builtins()).
   builtin-file-read:     [fn@Bytes   [let f@File n@Integer] ...]
   builtin-file-write:    [fn@Integer [let f@File s@String] ...]
   builtin-file-flush:    [fn@Integer [let f@File] ...]

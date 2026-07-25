@@ -205,6 +205,29 @@ pub(crate) enum TypeCheckCont {
     UnquoteSplice,
 }
 
+// ===== typecheck_for_errors =====
+
+/// Run type inference for side effects only. Discards the inferred Type.
+///
+/// Used for condition expressions, guard expressions, argument expressions when the callee
+/// type is unknown/any/typevar, and similar cases where inference is needed only to populate
+/// `type_map` and propagate errors via `errors` — not for downstream type inference.
+///
+/// This is the single canonical suppression point for the `run_typecheck` return value.
+/// All call sites that previously used `let _ty = Box::pin(run_typecheck(...)).await` must
+/// use this helper instead — it makes the intentional discard explicit and compiler-verified.
+pub(crate) async fn typecheck_for_errors(
+    node: &Arc<SurfaceNode>,
+    env: &Arc<RwLock<Env>>,
+    state: &mut InferState,
+    errors: &mut Vec<TypeDiagnostic>,
+    type_map: &mut Option<&mut TypeMap>,
+    stack: &mut Vec<TypeCheckCont>,
+) {
+    // Called for error-collection and type_map side effects only.
+    Box::pin(run_typecheck(node, env, state, errors, type_map, stack)).await;
+}
+
 // ===== run_typecheck =====
 
 /// Main CEK loop for type inference.
@@ -346,13 +369,15 @@ async fn infer_step(
 
             // Resolve annotation asynchronously before evaluating inner.
             let mut constraints: Vec<Constraint> = Vec::new();
+            let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+            let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
             let annotation_result = typecheck_annot::resolve_annotation(
                 &annotation.node,
                 annotation.span.clone(),
-                state,
+                &mut *state,
                 &mut constraints,
-                &mut None,
-                &mut None,
+                &mut ann_m,
+                &mut row_m,
                 None,
             )
             .await;
@@ -403,14 +428,8 @@ async fn infer_step(
                     // Extend env with schemes (preserving let-polymorphism)
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
-                        new_env_inner.insert_scheme(name.clone(), scheme.clone());
+                        new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
                     }
-                    super::register_type_aliases_env(
-                        intermediate,
-                        &mut new_env_inner,
-                        state,
-                        errors,
-                    );
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 } else {
                     // Non-Dict intermediate: push continuation, return Eval — no recursion.
@@ -457,15 +476,7 @@ async fn infer_step(
                 }
             }
 
-            // Special-case: [if cond t f] with path-sensitive narrowing (handled inline)
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if name == "if" && args.len() == 3 && named_args.is_empty() {
-                    let ty =
-                        infer_if_expr(&args[0], &args[1], &args[2], env, state, errors, type_map)
-                            .await;
-                    return TypeCheckAction::Done(ty);
-                }
-
                 // Special-case: builtin-get / get / get?
                 if (name == "builtin-get" || name == "get" || name == "get?")
                     && args.len() == 2
@@ -543,7 +554,7 @@ async fn infer_step(
                     name,
                     params,
                     superclasses,
-                    methods,
+                    methods: _,
                     determines,
                     resolver,
                     resolver_injective,
@@ -559,18 +570,17 @@ async fn infer_step(
                         })
                         .collect();
                     super::infer_class_decl_from_surface(
-                        name,
-                        params,
-                        &sc_flat,
-                        methods,
-                        determines,
-                        resolver,
-                        *resolver_injective,
-                        structural,
-                        node.span.clone(),
-                        env,
+                        &super::ClassDeclSurface {
+                            name,
+                            params,
+                            superclasses: &sc_flat,
+                            determines,
+                            resolver,
+                            resolver_injective: *resolver_injective,
+                            structural,
+                            span: node.span.clone(),
+                        },
                         state,
-                        type_map,
                     )
                 }
                 SurfaceDeclaration::InstanceDecl { class_name, arms } => {
@@ -995,10 +1005,8 @@ async fn apply_cont(
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, field_ty) in fields {
                         let scheme = generalize(enclosing_level, field_ty, state);
-                        new_env_inner.insert_scheme(name.clone(), scheme);
+                        new_env_inner.insert_scheme_named_only(name.clone(), scheme);
                     }
-                    // register_type_aliases_env is a no-op for non-Dict nodes (intermediate was
-                    // not a Dict expression, so the node has no type alias entries to register).
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 }
                 Type::Unknown | Type::Any => {}
@@ -1017,14 +1025,8 @@ async fn apply_cont(
                     errors.append(&mut dict_errs);
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
-                        new_env_inner.insert_scheme(name.clone(), scheme.clone());
+                        new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
                     }
-                    super::register_type_aliases_env(
-                        intermediate,
-                        &mut new_env_inner,
-                        state,
-                        errors,
-                    );
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 } else {
                     // Another non-Dict intermediate — push new continuation, return Eval.
@@ -1186,25 +1188,28 @@ async fn infer_var_ref(
     state: &mut InferState,
     errors: &mut Vec<TypeDiagnostic>,
 ) -> Type {
-    // Name-based lookup first, then slot-based fallback for ɪ-prefixed class methods.
-    let name_scheme = env.read().unwrap().get_scheme(name);
-    let scheme: Option<TypeScheme> = if name_scheme.is_some() {
-        name_scheme
-    } else {
-        let mut slot_scheme: Option<TypeScheme> = None;
-        if let Some(ref table) = state.resolution_table {
-            let id = node_id(node);
-            if let Some(addr) = table.get(&id) {
-                let (level, slot) = match addr {
-                    crate::ast::VarAddr::LetrecGroupMember(i) => (0u32, *i),
-                    crate::ast::VarAddr::ClosureCapture(i) => (1u32, *i),
-                    // B-593: Parameter maps to level=2 to avoid collision with LGM at level=0.
-                    crate::ast::VarAddr::Parameter(i) => (2u32, *i),
-                };
-                slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
-            }
+    // Resolver-address primary: resolution_table → get_scheme_at(depth, slot).
+    // Extras fallback: get_extras_scheme(name) for narrowing overrides and class dispatch.
+    let id = node_id(node);
+    let scheme: Option<TypeScheme> = if let Some(addr) = state.resolution_table.get(&id) {
+        let (level, slot) = match addr {
+            crate::ast::VarAddr::LetrecGroupMember { depth, slot } => (*depth, *slot),
+            crate::ast::VarAddr::ClosureCapture(i) => (1u32, *i),
+            // B-593: Parameter maps to level=2 to avoid collision with LGM at level=0.
+            crate::ast::VarAddr::Parameter(i) => (2u32, *i),
+        };
+        let slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
+        if slot_scheme.is_some() {
+            slot_scheme
+        } else {
+            // Slot lookup failed — fall through to extras (narrowing, dispatch, name-only)
+            env.read().unwrap().get_extras_scheme(name)
         }
-        slot_scheme
+    } else {
+        // No resolver address — check extras only (narrowing overrides, class dispatch).
+        // Every user-visible name must have a resolver address; if this fires for a
+        // name that should be resolved, it is a bug in the resolver pass.
+        env.read().unwrap().get_extras_scheme(name)
     };
 
     if let Some(scheme) = scheme {
@@ -1264,11 +1269,9 @@ async fn infer_var_ref(
 
         result_type
     } else {
-        // If the resolver successfully resolved this variable (OnceLock = Some(Some(level, slot))),
-        // the variable genuinely exists in scope — the type checker simply doesn't have its type
-        // scheme (e.g., it's a prelude function whose scheme wasn't propagated). The resolver is
-        // the authority on variable existence. Return Unknown (gradual typing) rather than a false
-        // "undefined variable" diagnostic that would mask real type errors.
+        // T-1897: If the resolver successfully resolved this variable, the variable
+        // genuinely exists in scope — the type checker simply doesn't have its type scheme.
+        // Return Unknown (gradual typing) rather than a false "undefined variable" diagnostic.
         if let crate::ast::SurfaceExpression::VarRef { resolution, .. } = &node.expr {
             if let Some(Some(_)) = resolution.get() {
                 return Type::Unknown;
@@ -1287,141 +1290,39 @@ async fn infer_var_ref(
             ));
         }
 
-        // Gradual typing: use inline annotation if present
+        // Gradual typing: use inline annotation if present.
+        // The annotation resolves to whatever type the annotation expression denotes.
+        // No name-based special-casing — the annotation resolution machinery handles
+        // all type expressions including function types via `resolve_annotation`.
         if let Some(ann) = annotation {
             let mut constraints: Vec<Constraint> = Vec::new();
-            if name == "Fn" || name == "Function" {
-                let ret_ty = match typecheck_annot::resolve_annotation(
-                    &ann.node,
-                    ann.span.clone(),
-                    state,
-                    &mut constraints,
-                    &mut None,
-                    &mut None,
-                    None,
-                )
-                .await
-                {
-                    Ok(ty) => ty,
-                    Err(e) => {
-                        errors.push(e);
-                        Type::Unknown
-                    }
-                };
-                state
-                    .failed_bindings
-                    .insert(name.to_string(), node.span.clone());
-                Type::Function {
-                    params: vec![],
-                    ret: Box::new(ret_ty),
-                    typed_variadics: vec![],
-                    rest: None,
-                    required_count: 0,
+            let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+            let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+            let ty = match typecheck_annot::resolve_annotation(
+                &ann.node,
+                ann.span.clone(),
+                &mut *state,
+                &mut constraints,
+                &mut ann_m,
+                &mut row_m,
+                None,
+            )
+            .await
+            {
+                Ok(ty) => ty,
+                Err(e) => {
+                    errors.push(e);
+                    Type::Unknown
                 }
-            } else {
-                let ty = match typecheck_annot::resolve_annotation(
-                    &ann.node,
-                    ann.span.clone(),
-                    state,
-                    &mut constraints,
-                    &mut None,
-                    &mut None,
-                    None,
-                )
-                .await
-                {
-                    Ok(ty) => ty,
-                    Err(e) => {
-                        errors.push(e);
-                        Type::Unknown
-                    }
-                };
-                state
-                    .failed_bindings
-                    .insert(name.to_string(), node.span.clone());
-                ty
-            }
+            };
+            state
+                .failed_bindings
+                .insert(name.to_string(), node.span.clone());
+            ty
         } else {
             errors.push(err.clone());
             Type::error_with(vec![err])
         }
-    }
-}
-
-// ===== Inline helper: [if cond t f] with narrowing =====
-
-async fn infer_if_expr(
-    cond_node: &Arc<SurfaceNode>,
-    true_node: &Arc<SurfaceNode>,
-    false_node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Type {
-    // Condition type is intentionally not used for narrowing here — narrowings are
-    // extracted structurally from cond_node below. run_typecheck is called for its
-    // side effects (populating type_map and propagating errors via &mut errors).
-    let _: Type = {
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            cond_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    };
-
-    let narrowings = typecheck_narrow::extract_narrowings(cond_node, env);
-
-    let true_ty = if narrowings.is_empty() {
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            true_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    } else {
-        let narrowed_env = typecheck_narrow::apply_narrowings(env, &narrowings, state);
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            true_node,
-            &narrowed_env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    };
-
-    let false_ty = {
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            false_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    };
-
-    let true_ty = typecheck_call::widen_literal_types(true_ty);
-    let false_ty = typecheck_call::widen_literal_types(false_ty);
-
-    if true_ty == false_ty {
-        true_ty
-    } else {
-        Type::normalize_union(vec![true_ty, false_ty])
     }
 }
 
@@ -1550,15 +1451,7 @@ async fn infer_get_in_call(
 
     if let Some(keys) = literal_path {
         let mut local_stack = Vec::new();
-        let _ = Box::pin(run_typecheck(
-            path_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await;
+        typecheck_for_errors(path_node, env, state, errors, type_map, &mut local_stack).await;
         if keys.is_empty() {
             return dict_ty;
         }
@@ -1581,15 +1474,7 @@ async fn infer_get_in_call(
     }
 
     let mut local_stack = Vec::new();
-    let _ = Box::pin(run_typecheck(
-        path_node,
-        env,
-        state,
-        errors,
-        type_map,
-        &mut local_stack,
-    ))
-    .await;
+    typecheck_for_errors(path_node, env, state, errors, type_map, &mut local_stack).await;
     Type::Unknown
 }
 
@@ -1612,26 +1497,18 @@ async fn eval_args_for_errors(
 ) {
     for arg in args {
         let mut local_stack = Vec::new();
-        let _ = Box::pin(run_typecheck(
-            arg,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await;
+        typecheck_for_errors(arg, env, state, errors, type_map, &mut local_stack).await;
     }
     for na in named_args {
         let mut local_stack = Vec::new();
-        let _ = Box::pin(run_typecheck(
+        typecheck_for_errors(
             &na.node.value,
             env,
             state,
             errors,
             type_map,
             &mut local_stack,
-        ))
+        )
         .await;
     }
 }
@@ -1783,26 +1660,26 @@ async fn apply_cont_call_func(
             // Unbound TypeVar: infer args for side effects, return fresh TypeVar for return
             for arg in &args {
                 let mut local_stack = Vec::new();
-                let _ = Box::pin(run_typecheck(
+                typecheck_for_errors(
                     arg,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                ))
+                )
                 .await;
             }
             for na in &named_args {
                 let mut local_stack = Vec::new();
-                let _ = Box::pin(run_typecheck(
+                typecheck_for_errors(
                     &na.node.value,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                ))
+                )
                 .await;
             }
             let ret_var = ctx
@@ -1815,26 +1692,26 @@ async fn apply_cont_call_func(
         Type::Unknown => {
             for arg in &args {
                 let mut local_stack = Vec::new();
-                let _ = Box::pin(run_typecheck(
+                typecheck_for_errors(
                     arg,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                ))
+                )
                 .await;
             }
             for na in &named_args {
                 let mut local_stack = Vec::new();
-                let _ = Box::pin(run_typecheck(
+                typecheck_for_errors(
                     &na.node.value,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                ))
+                )
                 .await;
             }
             ctx.state.diagnostics.push(crate::error::TypeDiagnostic {
@@ -1851,26 +1728,26 @@ async fn apply_cont_call_func(
         Type::Any => {
             for arg in &args {
                 let mut local_stack = Vec::new();
-                let _ = Box::pin(run_typecheck(
+                typecheck_for_errors(
                     arg,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                ))
+                )
                 .await;
             }
             for na in &named_args {
                 let mut local_stack = Vec::new();
-                let _ = Box::pin(run_typecheck(
+                typecheck_for_errors(
                     &na.node.value,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                ))
+                )
                 .await;
             }
             TypeCheckAction::Done(Type::Unknown)
@@ -2241,14 +2118,14 @@ async fn finalize_call_no_positional_args(
                     ));
                 } else {
                     let mut local_stack = Vec::new();
-                    let _ = Box::pin(run_typecheck(
+                    typecheck_for_errors(
                         &na.node.value,
                         env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
                         &mut local_stack,
-                    ))
+                    )
                     .await;
                 }
             }
@@ -2669,7 +2546,7 @@ async fn infer_fn_push_cont(
                 let result = typecheck_annot::resolve_fn_metadata(
                     entries,
                     ret_ann.span.clone(),
-                    state,
+                    &mut *state,
                     &mut constraints,
                     &mut ann_mapping_opt,
                     &mut row_ann_mapping_opt,
@@ -2684,23 +2561,25 @@ async fn infer_fn_push_cont(
                     }
                 }
             }
-            _ => match typecheck_annot::resolve_annotation(
-                &ret_ann.node,
-                ret_ann.span.clone(),
-                state,
-                &mut constraints,
-                &mut ann_mapping_opt,
-                &mut row_ann_mapping_opt,
-                None,
-            )
-            .await
-            {
-                Ok(ty) => Some(ty),
-                Err(e) => {
-                    errors.push(e);
-                    None
+            _ => {
+                let result = typecheck_annot::resolve_annotation(
+                    &ret_ann.node,
+                    ret_ann.span.clone(),
+                    &mut *state,
+                    &mut constraints,
+                    &mut ann_mapping_opt,
+                    &mut row_ann_mapping_opt,
+                    None,
+                )
+                .await;
+                match result {
+                    Ok(ty) => Some(ty),
+                    Err(e) => {
+                        errors.push(e);
+                        None
+                    }
                 }
-            },
+            }
         };
         resolved
     } else {
@@ -2719,21 +2598,21 @@ async fn infer_fn_push_cont(
     let mut rest: Option<Box<(String, Type)>> = None;
     let mut fixed_param_idx: usize = 0;
 
-    for p in params {
+    for p in params.iter() {
         let param_ty = if p.node.variadic {
             if let Some(ann) = &p.node.annotation {
                 // Annotated variadic (e.g., ...xs@[Seq Int]): resolve annotation for the bucket type.
-                match typecheck_annot::resolve_annotation(
+                let ann_result = typecheck_annot::resolve_annotation(
                     &ann.node,
                     ann.span.clone(),
-                    state,
+                    &mut *state,
                     &mut constraints,
                     &mut ann_mapping_opt,
                     &mut row_ann_mapping_opt,
                     None,
                 )
-                .await
-                {
+                .await;
+                match ann_result {
                     Ok(ty) => ty,
                     Err(e) => {
                         errors.push(e);
@@ -2749,17 +2628,17 @@ async fn infer_fn_push_cont(
                 state.fresh_type_var(&p.span)
             }
         } else if let Some(ann) = &p.node.annotation {
-            match typecheck_annot::resolve_annotation(
+            let ann_result = typecheck_annot::resolve_annotation(
                 &ann.node,
                 ann.span.clone(),
-                state,
+                &mut *state,
                 &mut constraints,
                 &mut ann_mapping_opt,
                 &mut row_ann_mapping_opt,
                 None,
             )
-            .await
-            {
+            .await;
+            match ann_result {
                 Ok(ty) => ty,
                 Err(e) => {
                     errors.push(e);
@@ -2789,7 +2668,8 @@ async fn infer_fn_push_cont(
             } else {
                 None
             });
-        fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
+        fn_env_inner
+            .insert_scheme_named_only(p.node.name.clone(), TypeScheme::mono(param_ty.clone()));
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
             if p.node.annotation.is_some() {
@@ -2875,18 +2755,8 @@ async fn setup_match_arm_env(
 
     // Guard inference and narrowing (guard is inferred for its type-map side effects only)
     let arm_env = if let Some(guard) = &arm.guard {
-        let _ = {
-            let mut local_stack = Vec::new();
-            Box::pin(run_typecheck(
-                guard,
-                &arm_env,
-                state,
-                errors,
-                type_map,
-                &mut local_stack,
-            ))
-            .await
-        };
+        let mut local_stack = Vec::new();
+        typecheck_for_errors(guard, &arm_env, state, errors, type_map, &mut local_stack).await;
         let guard_narrowings = typecheck_narrow::extract_narrowings(guard, &arm_env);
         if guard_narrowings.is_empty() {
             arm_env
@@ -2928,6 +2798,62 @@ async fn setup_match_arm_env(
                     },
                 }));
                 Type::normalize_intersection(vec![remaining_scrutinee.clone(), neg_tag])
+            }
+            // Dict pattern — narrow the scrutinee by excluding the matched shape.
+            //
+            // A dict pattern `[ok: v]` matches any value that has at least the key `ok`.
+            // After the arm fires, the remaining scrutinee is everything that does NOT
+            // have that key set: `remaining ∩ ¬{ok: Any, _: Any}`.
+            //
+            // The negated type is an open dict (Uniform tail, value=Any) containing only
+            // the static keys from the pattern.  Values cannot be narrowed here because the
+            // pattern binds them via variables — only key presence is relevant.
+            //
+            // Soundness: the negation is conservative.  It only excludes values that are
+            // *guaranteed* to have matched (dicts with ALL the pattern keys present).
+            // If no static keys can be extracted the arm falls through to no narrowing.
+            crate::ast::SurfaceExpression::Dict(entries) => {
+                // Extract static key names: VarRef (bare word) or StringLiteral keys.
+                let key_names: Vec<String> = entries
+                    .iter()
+                    .filter_map(|e| {
+                        e.node.key.as_ref().and_then(|k| match &k.expr {
+                            crate::ast::SurfaceExpression::VarRef { name, .. } => {
+                                Some(name.clone())
+                            }
+                            crate::ast::SurfaceExpression::StringLiteral { content, .. } => {
+                                Some(content.clone())
+                            }
+                            _ => None,
+                        })
+                    })
+                    .collect();
+
+                if key_names.is_empty() {
+                    // No static keys (e.g. empty dict pattern or all computed keys).
+                    // Cannot narrow — the `...` arm keeps the full scrutinee.
+                    remaining_scrutinee.clone()
+                } else {
+                    // Build an open dict type that has exactly the pattern's static keys
+                    // (each mapped to Any) plus a Uniform tail allowing any other fields.
+                    // This represents "any dict that has at least these keys".
+                    let mut key_fields: indexmap::IndexMap<String, Type> =
+                        indexmap::IndexMap::new();
+                    for name in key_names {
+                        key_fields.insert(name, Type::Any);
+                    }
+                    let dict_with_keys = Type::Dict(crate::type_def::Row {
+                        fields: key_fields,
+                        tail: crate::type_def::RowTail::Uniform {
+                            key: None,
+                            value: Box::new(Type::Any),
+                        },
+                    });
+                    Type::normalize_intersection(vec![
+                        remaining_scrutinee.clone(),
+                        Type::Negation(Box::new(dict_with_keys)),
+                    ])
+                }
             }
             // Wildcard forms: VarRef, Placeholder
             crate::ast::SurfaceExpression::VarRef { .. }
@@ -3039,7 +2965,8 @@ fn build_case_arm_env(
     } else {
         let mut child_inner = Env::with_parent(Arc::clone(env));
         for name in binding_names {
-            child_inner.insert(name, state.fresh_type_var(&node.span));
+            child_inner
+                .insert_scheme_named_only(name, TypeScheme::mono(state.fresh_type_var(&node.span)));
         }
         Arc::new(RwLock::new(child_inner))
     }
@@ -3105,7 +3032,16 @@ fn compute_type_assert_mismatch(
             }
         }
         _ => {
-            if !Type::is_consistent_subtype(actual, expected, None) {
+            // For union types: TypeAssert might succeed if ANY member is consistent with
+            // expected. Only error if NO member could possibly match (assertion is dead code).
+            let definitely_fails = if let Type::Union(members) = actual {
+                !members
+                    .iter()
+                    .any(|m| Type::is_consistent_subtype(m, expected, None))
+            } else {
+                !Type::is_consistent_subtype(actual, expected, None)
+            };
+            if definitely_fails {
                 Some(vec![TypeDiagnostic::error(
                     "unification-failure",
                     format!("cannot unify {} with {}", expected, actual),
@@ -3540,6 +3476,7 @@ pub(crate) async fn entry_key_name(
     auto_index: &mut i64,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
+    errors: &mut Vec<TypeDiagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
     match &entry.key {
@@ -3548,12 +3485,11 @@ pub(crate) async fn entry_key_name(
             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
             SurfaceExpression::Int(n) => Some(n.to_string()),
             _ => {
-                let mut errors = Vec::new();
                 match Box::pin(run_typecheck(
                     key_node,
                     env,
                     state,
-                    &mut errors,
+                    errors,
                     type_map,
                     &mut Vec::new(),
                 ))
@@ -3608,15 +3544,25 @@ pub(crate) async fn run_typecheck_dict(
     state.level += 1;
 
     let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
+
     // Extra schemes from ADT constructors — injected in Pass 2, merged into final schemes.
     // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
     let mut ctor_schemes: indexmap::IndexMap<String, TypeScheme> = indexmap::IndexMap::new();
     let mut key_entries: Vec<(Option<String>, bool, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
 
     // Pass 0: Key resolution
     for entry in entries {
-        let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map).await;
+        let key_name = entry_key_name(
+            &entry.node,
+            &mut auto_index,
+            env,
+            state,
+            &mut errors,
+            type_map,
+        )
+        .await;
         let is_alias = matches!(
             &entry.node.value.expr,
             SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::TypeAlias { .. })
@@ -3679,7 +3625,7 @@ pub(crate) async fn run_typecheck_dict(
                     dict_env
                         .write()
                         .unwrap()
-                        .insert_scheme(name.clone(), TypeScheme::mono(fn_type));
+                        .insert_scheme_named_only(name.clone(), TypeScheme::mono(fn_type));
                 } else {
                     let fresh_var = state.fresh_type_var(&entry.span);
                     if !is_alias {
@@ -3688,7 +3634,7 @@ pub(crate) async fn run_typecheck_dict(
                     dict_env
                         .write()
                         .unwrap()
-                        .insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
+                        .insert_scheme_named_only(name.clone(), TypeScheme::mono(fresh_var));
                 }
             }
         }
@@ -3718,10 +3664,10 @@ pub(crate) async fn run_typecheck_dict(
                             );
                             let fresh_var = state.fresh_type_var(&entry.span);
                             fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
-                            dict_env
-                                .write()
-                                .unwrap()
-                                .insert_scheme(binding_name, TypeScheme::mono(fresh_var));
+                            dict_env.write().unwrap().insert_scheme_named_only(
+                                binding_name,
+                                TypeScheme::mono(fresh_var),
+                            );
                         }
                     }
                 }
@@ -3751,7 +3697,7 @@ pub(crate) async fn run_typecheck_dict(
                 .slots
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _))| (name.clone(), i as u32))
+                .filter_map(|(i, entry)| entry.as_ref().map(|(name, _)| (name.clone(), i as u32)))
                 .collect()
         };
         if let Some(ref mut frames) = state.scope_frames {
@@ -3763,8 +3709,6 @@ pub(crate) async fn run_typecheck_dict(
     } else {
         false
     };
-
-    let mut errors: Vec<TypeDiagnostic> = Vec::new();
 
     // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
@@ -3793,18 +3737,21 @@ pub(crate) async fn run_typecheck_dict(
                     let mut ann_map_for_body = alias_ann_map.clone();
                     let resolved_body: Type = match &body.expr {
                         SurfaceExpression::Dict(entries) => {
-                            match super::typecheck_annot::resolve_type_dict(
+                            let mut ann_map_opt =
+                                Some(&mut ann_map_for_body as &mut HashMap<String, String>);
+                            let mut row_m: Option<&mut HashMap<String, String>> = None;
+                            let dict_result = super::typecheck_annot::resolve_type_dict(
                                 entries,
                                 body.span.clone(),
-                                state,
+                                &mut *state,
                                 &mut alias_constraints,
-                                &mut Some(&mut ann_map_for_body),
-                                &mut None,
+                                &mut ann_map_opt,
+                                &mut row_m,
                                 None,
                                 alias_name,
                             )
-                            .await
-                            {
+                            .await;
+                            match dict_result {
                                 Ok(t) => t,
                                 Err(e) => {
                                     errors.push(e);
@@ -3961,10 +3908,10 @@ pub(crate) async fn run_typecheck_dict(
                                     );
                                 }
                             }
-                            dict_env
-                                .write()
-                                .unwrap()
-                                .insert_scheme(name.clone(), TypeScheme::mono(value_scheme_ty));
+                            dict_env.write().unwrap().insert_scheme_named_only(
+                                name.clone(),
+                                TypeScheme::mono(value_scheme_ty),
+                            );
                         }
                     }
                 }
@@ -4005,7 +3952,7 @@ pub(crate) async fn run_typecheck_dict(
                         name,
                         params,
                         superclasses,
-                        methods,
+                        methods: _,
                         determines,
                         resolver,
                         resolver_injective,
@@ -4021,18 +3968,17 @@ pub(crate) async fn run_typecheck_dict(
                             })
                             .collect();
                         super::infer_class_decl_from_surface(
-                            name,
-                            params,
-                            &sc_flat,
-                            methods,
-                            determines,
-                            resolver,
-                            *resolver_injective,
-                            structural,
-                            entry.node.value.span.clone(),
-                            &dict_env,
+                            &super::ClassDeclSurface {
+                                name,
+                                params,
+                                superclasses: &sc_flat,
+                                determines,
+                                resolver,
+                                resolver_injective: *resolver_injective,
+                                structural,
+                                span: entry.node.value.span.clone(),
+                            },
                             state,
-                            type_map,
                         )
                     }
                     SurfaceDeclaration::InstanceDecl { class_name, arms } => {
@@ -4202,11 +4148,14 @@ pub(crate) async fn run_typecheck_dict(
                                                     param_narrowings: Vec::new(),
                                                 };
 
-                                                // Insert into dict_env
+                                                // Insert into dict_env — class method names are
+                                                // not resolver-assigned slots (ClassDecl does not
+                                                // inject method names into surface_dict_static_keys),
+                                                // so use insert_scheme_named_only (extras path).
                                                 dict_env
                                                     .write()
                                                     .unwrap()
-                                                    .insert_scheme(method_name, scheme);
+                                                    .insert_scheme_named_only(method_name, scheme);
                                             }
                                             Err(type_err) => {
                                                 errors.push(type_err);
@@ -4524,7 +4473,14 @@ pub(crate) async fn run_typecheck_dict(
         // Pass 4_i: Generalize this SCC's entries before processing the next SCC.
         for &idx in &scc.indices {
             let entry = &entries[idx];
-            let (ref key_name, _, _) = key_entries[idx];
+            let (ref key_name, is_alias, _) = key_entries[idx];
+
+            // TypeAlias entries have their correct schemes already registered in Pass 2.
+            // Skipping here prevents field_types["TypeName"] (which holds the inferred
+            // value type, not the alias type) from overwriting the correct Pass 2 scheme.
+            if is_alias {
+                continue;
+            }
 
             if let Some(name) = key_name {
                 if let Some(ty) = field_types.get(name) {
@@ -4603,13 +4559,19 @@ pub(crate) async fn run_typecheck_dict(
                                             span: narrows_node.span.clone(),
                                         };
                                         let mut constraints: Vec<Constraint> = Vec::new();
+                                        let mut ann_m2: Option<
+                                            &mut std::collections::HashMap<String, String>,
+                                        > = None;
+                                        let mut row_m2: Option<
+                                            &mut std::collections::HashMap<String, String>,
+                                        > = None;
                                         let narrow_ty = match typecheck_annot::resolve_annotation(
                                             &ann_span.node,
                                             ann_span.span.clone(),
-                                            state,
+                                            &mut *state,
                                             &mut constraints,
-                                            &mut None,
-                                            &mut None,
+                                            &mut ann_m2,
+                                            &mut row_m2,
                                             None,
                                         )
                                         .await
@@ -4639,14 +4601,20 @@ pub(crate) async fn run_typecheck_dict(
                                                 span: is_node.span.clone(),
                                             };
                                             let mut constraints: Vec<Constraint> = Vec::new();
+                                            let mut ann_m: Option<
+                                                &mut std::collections::HashMap<String, String>,
+                                            > = None;
+                                            let mut row_m: Option<
+                                                &mut std::collections::HashMap<String, String>,
+                                            > = None;
                                             let narrow_ty =
                                                 match typecheck_annot::resolve_annotation(
                                                     &ann_span.node,
                                                     ann_span.span.clone(),
-                                                    state,
+                                                    &mut *state,
                                                     &mut constraints,
-                                                    &mut None,
-                                                    &mut None,
+                                                    &mut ann_m,
+                                                    &mut row_m,
                                                     None,
                                                 )
                                                 .await
@@ -4681,7 +4649,7 @@ pub(crate) async fn run_typecheck_dict(
                         dict_env
                             .write()
                             .unwrap()
-                            .insert_scheme(name.clone(), scheme);
+                            .insert_scheme_named_only(name.clone(), scheme);
                         continue;
                     }
 
@@ -4703,7 +4671,7 @@ pub(crate) async fn run_typecheck_dict(
                     dict_env
                         .write()
                         .unwrap()
-                        .insert_scheme(name.clone(), scheme);
+                        .insert_scheme_named_only(name.clone(), scheme);
                 }
             }
         }
@@ -4715,7 +4683,7 @@ pub(crate) async fn run_typecheck_dict(
             if let Some(name) = key_name {
                 if let Some(def) = state.tycon_env.get(name.as_str()) {
                     if def.params.is_empty() {
-                        dict_env.write().unwrap().insert_scheme(
+                        dict_env.write().unwrap().insert_scheme_named_only(
                             name.clone(),
                             TypeScheme::mono(adt_value_type(&def.body)),
                         );

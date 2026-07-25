@@ -1500,7 +1500,7 @@ pub(crate) fn builtin_var_resolution(
                 use crate::ast::VarAddr;
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 let (addr_type, index) = match addr {
-                    VarAddr::LetrecGroupMember(i) => ("letrec", i),
+                    VarAddr::LetrecGroupMember { slot, .. } => ("letrec", slot),
                     VarAddr::ClosureCapture(i) => ("closure", i),
                     VarAddr::Parameter(i) => ("param", i),
                 };
@@ -1701,8 +1701,6 @@ fn type_name(val: &Value) -> String {
         // Annotated is transparent — delegate to inner value's type_name.
         Value::Annotated { inner, .. } => return type_name(inner),
         Value::TypeContext(_) => "TypeContext",
-        Value::Bool(_) => "Bool",
-        Value::Seq { .. } => "Seq",
         Value::Expression(_) => "Expression",
         Value::Arena { .. } => "Arena",
         Value::CoreDocument { .. } => "CoreDocument",
@@ -2622,9 +2620,7 @@ pub(crate) fn builtin_make_type_ctx(
         // For loader's fundamental-tc, use [builtin-get-type-context] instead —
         // it returns the TypeContext that main.rs pre-populated from builtin_core.llt.
         let tc = TypeContextData {
-            inference_env: crate::imports::get_builtin_core_type_env()
-                .await
-                .expect("builtin_core type env unavailable"),
+            inference_env: crate::imports::get_builtin_core_type_env().await,
             tycon_env: std::collections::HashMap::new(),
             type_stage_scope: Vec::new(),
             type_diagnostics: Vec::new(),
@@ -3914,8 +3910,7 @@ fn validate_value(
                                 field_schema.get(&HashableValue::Str("required".into()))
                             {
                                 let req_val = materialize(req_thunk, Some(&span), &ctx).await?;
-                                matches!(&req_val, Value::Bool(true))
-                                    || matches!(&req_val, Value::Int(n) if *n != 0)
+                                matches!(&req_val, Value::Int(n) if *n != 0)
                             } else {
                                 false
                             };

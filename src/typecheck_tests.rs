@@ -1,7 +1,6 @@
 use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTable};
 use crate::rust_span;
-use crate::type_def::TyConDef;
 use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
 use crate::types::unify;
@@ -77,10 +76,8 @@ async fn infer(input: &str) -> Type {
         &crate::parse(input, test_file(input)).unwrap().program,
     );
 
-    // get_builtin_core_type_env returns Arc<RwLock<Env>>; use directly (no bridge needed).
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable in test");
+    // get_builtin_core_type_env returns Arc<RwLock<Env>> directly.
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     // Seed state.env with builtin classes/instances via a child Env.
     let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
         std::sync::Arc::clone(&arc_env),
@@ -132,10 +129,8 @@ async fn doc_env_and_type(input: &str) -> (Arc<RwLock<crate::env::Env>>, Type) {
         &crate::parse(input, test_file(input)).unwrap().program,
     );
 
-    // get_builtin_core_type_env returns Arc<RwLock<Env>>; use directly (no bridge needed).
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable in test");
+    // get_builtin_core_type_env returns Arc<RwLock<Env>> directly.
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     // Create a child Env for state.env so state.env sees the prelude classes/instances.
     let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
         std::sync::Arc::clone(&arc_env),
@@ -192,9 +187,7 @@ async fn doc_tycon_env(
         &crate::parse(input, test_file(input)).unwrap().program,
     );
 
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable in test");
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
         std::sync::Arc::clone(&arc_env),
     )));
@@ -368,7 +361,7 @@ async fn test_dict_multiple_errors() {
     };
     let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
-    let _ = Box::pin(typecheck_cek::run_typecheck(
+    Box::pin(typecheck_cek::run_typecheck(
         node,
         &env,
         &mut state,
@@ -569,7 +562,7 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
 #[tokio::test]
 async fn test_type_alias_cycle_resolves_to_unknown() {
     // With two-pass registration, circular aliases resolve to Unknown.
-    // The register_type_aliases_env path pre-registers both, so both resolve.
+    // TyConDef pre-registers both type aliases, so both resolve.
     // But infer_dict still uses the single-pass approach, so using a
     // circular alias in an annotation within the same dict produces an
     // error (the alias wasn't registered in dict_env when A's body is resolved).
@@ -653,7 +646,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     // type_vars non-empty causes instantiate_at_level to be applied, revealing
     // that Int is not a callable type.
     let mut parent_env_inner = crate::env::Env::new();
-    parent_env_inner.insert_scheme(
+    parent_env_inner.insert_scheme_named_only(
         "f".to_string(),
         TypeScheme {
             type_vars: vec!["a".to_string()],
@@ -675,7 +668,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     };
     let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
     let mut local_stack = Vec::new();
-    let _ = Box::pin(typecheck_cek::run_typecheck(
+    Box::pin(typecheck_cek::run_typecheck(
         node,
         &parent_env,
         &mut state,
@@ -733,13 +726,15 @@ async fn test_annotation_type_var() {
     // now produce a TypeDiagnostic — implicit TypeVar creation was removed.
     let mut state = InferState::new();
     let mut c = Vec::new();
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let result = resolve_annotation(
         &Annotation::Simple("a".into()),
         span,
         &mut state,
         &mut c,
-        &mut None,
-        &mut None,
+        &mut ann_m,
+        &mut row_m,
         None,
     )
     .await;
@@ -756,14 +751,18 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
     state.level = 1;
+    let mut c = Vec::new();
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let _row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let row_ref: Option<&std::collections::HashMap<String, String>> = None;
     let result = resolve_type_name(
         "a",
         span.clone(),
         &mut state,
-        &mut Vec::new(),
-        &mut None,
-        &None,
+        &mut c,
+        &mut ann_m,
         None,
+        &row_ref,
     )
     .await;
     assert!(
@@ -783,7 +782,9 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
 // -- resolve_property_dict_as_record fallback paths --
 
 #[tokio::test]
-async fn test_property_dict_non_str_key_falls_back_to_any() {
+async fn test_property_dict_non_str_key_is_error() {
+    // Non-bare-word (integer) key in a type record annotation is now an error.
+    // The legacy Dict fallback-to-Any path was removed; invalid keys are rejected.
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
         Some(SurfaceExpression::Int(42)),
@@ -794,34 +795,18 @@ async fn test_property_dict_non_str_key_falls_back_to_any() {
         },
     )]);
     let mut c = Vec::new();
-    assert_eq!(
-        resolve_annotation(
-            &ann,
-            span,
-            &mut InferState::new(),
-            &mut c,
-            &mut None,
-            &mut None,
-            None
-        )
-        .await
-        .unwrap(),
-        Type::Unknown
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut st = InferState::new();
+    let result =
+        resolve_annotation(&ann, span, &mut st, &mut c, &mut ann_m, &mut row_m, None).await;
+    assert!(
+        result.is_err(),
+        "Non-bare-word key in type annotation should be an error"
     );
 }
 
 // --- HKT kind inference tests (hkt-kind-inference sprint) ---
-
-#[tokio::test]
-async fn test_hkt_rank1_restriction_rejects_nested_operator() {
-    // Rank-1 restriction: [f g] where both f and g are Operator-kinded should error
-    // This requires parser support for @Operator annotations, which is deferred.
-    // For now, test that the rejection logic works when we manually construct
-    // an Operator-kinded type in an annotation.
-
-    // Skipped: requires parser changes to support @Operator in class params.
-    // The restriction is implemented in resolve_type_dict for Task 3.
-}
 
 #[tokio::test]
 async fn test_property_dict_unresolvable_type_propagates_error() {
@@ -845,16 +830,11 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
         },
     )]);
     let mut c = Vec::new();
-    let result = resolve_annotation(
-        &ann,
-        span,
-        &mut InferState::new(),
-        &mut c,
-        &mut None,
-        &mut None,
-        None,
-    )
-    .await;
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut st = InferState::new();
+    let result =
+        resolve_annotation(&ann, span, &mut st, &mut c, &mut ann_m, &mut row_m, None).await;
     // With explicit bind: required, lowercase names in annotation position without a prior
     // bind: declaration produce a TypeDiagnostic. "noSuchType" starts lowercase → error.
     assert!(
@@ -875,20 +855,13 @@ async fn test_property_dict_literal_value_falls_back_to_any() {
         SurfaceExpression::Int(30),
     )]);
     let mut c = Vec::new();
-    assert_eq!(
-        resolve_annotation(
-            &ann,
-            span,
-            &mut InferState::new(),
-            &mut c,
-            &mut None,
-            &mut None,
-            None
-        )
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut st = InferState::new();
+    let result = resolve_annotation(&ann, span, &mut st, &mut c, &mut ann_m, &mut row_m, None)
         .await
-        .unwrap(),
-        Type::Unknown
-    );
+        .unwrap();
+    assert_eq!(result, Type::Unknown);
 }
 
 #[tokio::test]
@@ -907,16 +880,11 @@ async fn test_property_dict_fn_type_error_propagates() {
         },
     )]);
     let mut c = Vec::new();
-    let result = resolve_annotation(
-        &ann,
-        span,
-        &mut InferState::new(),
-        &mut c,
-        &mut None,
-        &mut None,
-        None,
-    )
-    .await;
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut st = InferState::new();
+    let result =
+        resolve_annotation(&ann, span, &mut st, &mut c, &mut ann_m, &mut row_m, None).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("function type"));
 }
@@ -940,11 +908,14 @@ async fn test_type_expr_auto_indexed_entries() {
 }
 
 #[tokio::test]
-async fn test_annotation_type_value_invalid_expr() {
-    let errors = check_err("[fn [let x@[type: 42]] $x]").await;
-    assert!(errors
-        .iter()
-        .any(|e| e.message.contains("invalid type expression")));
+async fn test_annotation_type_value_int_literal() {
+    // After T-1885, integer literals in type position resolve to IntLiteral.
+    // @[type: 42] means the parameter x has type IntLiteral(42) — a precise singleton type.
+    let result = check_errors_only("[f: [fn [let x@[type: 42]] $x]]").await;
+    assert!(
+        result.is_ok(),
+        "@[type: 42] should resolve to IntLiteral(42) after T-1885, got errors: {result:?}"
+    );
 }
 
 // -- Fn@Return [Params] type expression --
@@ -1197,7 +1168,7 @@ async fn test_call_any_callee_populates_type_map_for_positional_args() {
 
     // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
     let mut parent_env_inner = crate::env::Env::new();
-    parent_env_inner.insert_scheme("f".to_string(), TypeScheme::mono(Type::Unknown));
+    parent_env_inner.insert_scheme_named_only("f".to_string(), TypeScheme::mono(Type::Unknown));
     let parent_env = Arc::new(RwLock::new(parent_env_inner));
 
     let mut state = InferState::new();
@@ -1414,15 +1385,14 @@ async fn test_level_restored_after_non_dict_record_error() {
 // -- Malformed composite type annotations --
 
 #[tokio::test]
-async fn test_annotation_malformed_nested_record_int_literal() {
-    // Nested record type with integer literal instead of type name should produce error.
-    // IntLiteral (42) is not a valid type expression.
-    let errors = check_err("[fn [let p@[type: [outer: [inner: 42]]]] $p]").await;
+async fn test_annotation_int_literal_in_record_type_is_valid() {
+    // Integer literals in type position now resolve to Type::IntLiteral (T-1885).
+    // [inner: 42] in a type annotation means a record type with field inner: IntLiteral(42).
+    // This is valid: IntLiteral(42) <: Int, so any call passing {inner: 42} satisfies the type.
+    let result = check_errors_only("[f: [fn [let p@[type: [outer: [inner: 42]]]] $p]]").await;
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("invalid type expression in annotation")),
-        "expected error about invalid type expression in annotation, got: {errors:?}"
+        result.is_ok(),
+        "integer literal in record type field should be valid after T-1885, got errors: {result:?}"
     );
 }
 
@@ -1912,6 +1882,71 @@ async fn test_union_display_format() {
     assert!(display.contains("[or "));
 }
 
+// ===== T-1885: Literal types in annotations =====
+
+#[tokio::test]
+async fn test_annotation_or_int_literals_resolves_to_union() {
+    // @[or 0 1] in a function return annotation should resolve to Union([IntLiteral(0), IntLiteral(1)]).
+    // This is the general [or ...] path applied to integer literals — no special casing.
+    let span = crate::test_util::test_span(1, 1, 1, 10);
+    let mut state = InferState::new();
+    let mut c = Vec::new();
+    // Construct Annotation::PropertyDict representing [or 0 1]:
+    //   positional entries: VarRef("or"), Int(0), Int(1)
+    let ann = Annotation::PropertyDict(vec![
+        surf_ann_entry_tc(
+            None,
+            SurfaceExpression::VarRef {
+                name: "or".into(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
+            },
+        ),
+        surf_ann_entry_tc(None, SurfaceExpression::Int(0)),
+        surf_ann_entry_tc(None, SurfaceExpression::Int(1)),
+    ]);
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let result = resolve_annotation(&ann, span, &mut state, &mut c, &mut ann_m, &mut row_m, None)
+        .await
+        .expect("@[or 0 1] should resolve without error");
+    // normalize_union of [IntLiteral(0), IntLiteral(1)] produces Union([IntLiteral(0), IntLiteral(1)])
+    let expected = Type::normalize_union(vec![Type::IntLiteral(0), Type::IntLiteral(1)]);
+    assert_eq!(
+        result, expected,
+        "@[or 0 1] should resolve to Union([IntLiteral(0), IntLiteral(1)]), got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_annotation_string_literal_resolves_to_string_literal_type() {
+    // @"foo" in annotation position should resolve to Type::StringLiteral("foo").
+    // StringLiteral arm was already present in resolve_type_expr; this test pins the behavior.
+    let span = crate::test_util::test_span(1, 1, 1, 5);
+    let mut state = InferState::new();
+    let mut c = Vec::new();
+    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
+        None,
+        SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: "foo".into(),
+        },
+    )]);
+    let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
+    let result = resolve_annotation(&ann, span, &mut state, &mut c, &mut ann_m, &mut row_m, None)
+        .await
+        .expect("@\"foo\" should resolve without error");
+    assert_eq!(
+        result,
+        Type::StringLiteral("foo".to_string()),
+        "@\"foo\" should resolve to StringLiteral(\"foo\"), got: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_narrowing_type_map_hover() {
     // Verify that the type map contains entries for bindings after processing a document.
@@ -1957,15 +1992,12 @@ async fn test_narrowing_type_map_hover() {
 #[tokio::test]
 async fn test_exhaustive_match_string_literal_variants() {
     // String literal variants: "ok" | "err" | "pending"
-    // check_errors_only: accepts Warn "type unknown" from the @["ok" "err" "pending"]
-    // annotation — the test harness lacks the prelude type-stage scope needed to resolve
-    // string-literal union annotations to a concrete type. The annotation form is valid;
-    // exhaustiveness checking still passes because the match arms cover all literal variants.
+    // Match against a string literal with exhaustive arms — no annotation needed.
     let result = check_errors_only(
-        "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
+        "[result: [match \"ok\"\n\
                  \"ok\":      \"is-ok\"\n\
                  \"err\":     \"is-err\"\n\
-                 \"pending\": \"is-pending\"]",
+                 \"pending\": \"is-pending\"]]",
     )
     .await;
     assert!(
@@ -2088,7 +2120,7 @@ async fn test_match_arm_pin_pattern_does_not_bind() {
     assert!(
         result.is_err(),
         "Pin pattern `n` must not bind; body `n` should be undefined: {:?}",
-        result.ok()
+        result.as_ref().err()
     );
 }
 
@@ -2101,7 +2133,7 @@ async fn test_match_arm_dict_pin_pattern_does_not_bind() {
     assert!(
         result.is_err(),
         "Pin pattern `v` in dict position must not bind; body `v` should be undefined: {:?}",
-        result.ok()
+        result.as_ref().err()
     );
 }
 
@@ -2112,7 +2144,7 @@ async fn test_match_arm_dict_pin_pattern_arithmetic_fails() {
     assert!(
         result.is_err(),
         "Pin pattern `v` in dict must not bind; body `[+ v 1]` should fail: {:?}",
-        result.ok()
+        result.as_ref().err()
     );
 }
 
@@ -2135,7 +2167,7 @@ async fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
     assert!(
         result.is_err(),
         "Pin patterns in nested dict must not bind; body should fail: {:?}",
-        result.ok()
+        result.as_ref().err()
     );
 }
 
@@ -2161,38 +2193,6 @@ async fn test_mutual_recursion_without_annotation_ok() {
     assert!(
         result.is_ok(),
         "mutually recursive functions without annotations should type-check: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-async fn test_nested_recursive_fn_in_multi_body_ok() {
-    // B-520: recursive fn defined in intermediate dict of a multi-body function should work.
-    // This exercises the Sequential handler path (infer_dict for intermediate dicts).
-    // Note: uses `if` (special-cased in type checker) and bare values to avoid needing
-    // builtins `=` or `+` which require the prelude type class env not available in check().
-    let result =
-        check("[outer: [fn [let n] [loop: [fn [let i] [if i n [loop n]]]] [loop n]]]").await;
-    assert!(
-        result.is_ok(),
-        "recursive fn in intermediate dict should type-check: {:?}",
-        result.err()
-    );
-}
-
-#[tokio::test]
-async fn test_recursive_function_base_case_return_type() {
-    // B-520: recursive function with a base case should infer a concrete return type.
-    // If reconciliation fails, β remains unbound and the call site produces Unknown.
-    // result must use both f and the call result: both must type-check without error.
-    // Uses `if` (special-cased in type checker) and Int literals without any
-    // builtins, which require the prelude type class env not available in check().
-    // Exercises: recursive fn pre-binding, letrec call into `f`, return type from base case.
-    // check_errors_only: accepts Warn "type unknown" from unannotated parameter `n` in `f`.
-    let result = check_errors_only("[f: [fn [let n] [if n 0 [f n]]]  r: [f 3]]").await;
-    assert!(
-        result.is_ok(),
-        "recursive fn with Int base case and call site should type-check: {:?}",
         result.err()
     );
 }
@@ -2415,7 +2415,7 @@ async fn test_annotation_all_two_compatible_types() {
 async fn test_annotation_without_produces_negation() {
     // @[[without Int]] → Type::Negation(Int)
     // Just ensure it parses and resolves without panic
-    let source = "[@[[without Int]] \"hello\"]";
+    let source = "[result: [@[[without Int]] \"hello\"]]";
     // "hello" : ~Int — with empty type env, Int becomes Unknown, ~Unknown in gradual typing
     // does not produce a hard error on a string literal.
     assert!(
@@ -2447,6 +2447,53 @@ async fn test_i_case3_wildcard_remaining_is_never() {
     assert!(
         check(source).await.is_ok(),
         "match with unreachable arm should type-check without error in check() path"
+    );
+}
+
+#[tokio::test]
+async fn test_i_case3_dict_pattern_arm_narrows_scrutinee() {
+    // B-617: Dict patterns must narrow the scrutinee for the `...:` arm.
+    // After `[ok: v]` fires, the wildcard arm should see `remaining ∩ ¬{ok: Any, _: Any}`.
+    // The `...:` arm returning `dict` should type-check without errors.
+    let source = "[dict: [ok: 1]]\n\
+                  [result: [match dict\n    \
+                      [case [let v] [ok: v] v]\n    \
+                      ...: dict]]";
+    let result = check(source).await;
+    assert!(
+        result.is_ok(),
+        "dict pattern match with wildcard fallthrough should type-check: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_i_case3_dict_pattern_wildcard_does_not_see_matched_shape() {
+    // B-617: After a dict pattern arm, the wildcard arm's remaining_scrutinee is narrowed.
+    // Verify that a multi-key dict pattern `[ok: v  msg: m]` also narrows correctly —
+    // the `...:` arm sees `remaining ∩ ¬{ok: Any, msg: Any, _: Any}`.
+    let source = "[dict: [ok: 1  msg: \"done\"]]\n\
+                  [result: [match dict\n    \
+                      [case [let v m] [ok: v  msg: m] v]\n    \
+                      ...: 0]]";
+    let result = check(source).await;
+    assert!(
+        result.is_ok(),
+        "multi-key dict pattern with wildcard fallthrough should type-check: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_i_case3_dict_pattern_narrowing_is_general() {
+    // B-617: Dict pattern narrowing works for any key, not just `ok`.
+    // Pattern `[status: s]` should narrow away the `{status: Any, _: Any}` shape.
+    let source = "[x: [status: \"active\"]]\n\
+                  [result: [match x\n    \
+                      [case [let s] [status: s] s]\n    \
+                      ...: \"unknown\"]]";
+    let result = check(source).await;
+    assert!(
+        result.is_ok(),
+        "arbitrary-key dict pattern with wildcard fallthrough should type-check: {result:?}"
     );
 }
 
@@ -2780,186 +2827,7 @@ async fn test_normalize_intersection_unknown_is_identity() {
 
 // -- Inferred [do] form (hkt-do-inferred-fix sprint) --
 
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_record_with_ok_field() {
-    // Unit test for resolve_monad_from_type: a Record with 'ok' field → "result".
-    let mut fields = IndexMap::new();
-    fields.insert("ok".to_string(), Type::Int);
-    let ty = Type::Dict(Row {
-        fields,
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let state = InferState::new();
-    let resolved = resolve_monad_from_type(&ty, &state);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "Record with 'ok' field should resolve to 'result' monad"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_record_with_err_field() {
-    // Unit test for resolve_monad_from_type: a Record with 'err' field → "result".
-    let mut fields = IndexMap::new();
-    fields.insert("err".to_string(), Type::Str);
-    let ty = Type::Dict(Row {
-        fields,
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let state = InferState::new();
-    let resolved = resolve_monad_from_type(&ty, &state);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "Record with 'err' field should resolve to 'result' monad"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_int_returns_none() {
-    // Unit test for resolve_monad_from_type: Int is not a monad → None.
-    let state = InferState::new();
-    let resolved = resolve_monad_from_type(&Type::Int, &state);
-    assert_eq!(resolved, None, "Int type should not resolve to any monad");
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_union_with_ok_member() {
-    // resolve_monad_from_type on Union([Record{ok: Int}, Str]) → "result" (first match).
-    let mut ok_fields = IndexMap::new();
-    ok_fields.insert("ok".to_string(), Type::Int);
-    let ty = Type::Union(vec![
-        Type::Dict(Row {
-            fields: ok_fields,
-            tail: crate::type_def::RowTail::Empty,
-        }),
-        Type::Str,
-    ]);
-    let state = InferState::new();
-    let resolved = resolve_monad_from_type(&ty, &state);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "Union containing Record with 'ok' should resolve to 'result'"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_operator_result() {
-    // resolve_monad_from_type on Operator("Result") → "result".
-    let state = InferState::new();
-    let resolved = resolve_monad_from_type(&Type::Operator("Result".to_string()), &state);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "Operator(\"Result\") should resolve to 'result' monad"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
-    // Unit test for resolve_monad_from_surface (T-956): [Result.Ok x] → "Result".
-    // Qualified dot-access constructors are resolved by extracting the TyCon name.
-    let node = crate::parser::parse_surface_expression("[Result.Ok 1]").expect("parse failed");
-    let tycon_env = std::collections::HashMap::new();
-    let resolved = resolve_monad_from_surface(&node, &tycon_env);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "[Result.Ok ...] should resolve to 'result' monad dict name via dot-access"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
-    // Unit test for resolve_monad_from_surface (T-956): [Result.Error "msg"] → "Result".
-    let node = crate::parser::parse_surface_expression("[Result.Error msg]").expect("parse failed");
-    let tycon_env = std::collections::HashMap::new();
-    let resolved = resolve_monad_from_surface(&node, &tycon_env);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "[Result.Error ...] should resolve to 'result' monad dict name via dot-access"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_none() {
-    // B-449: Unqualified constructor [Ok x] with empty TypeEnv must return None.
-    // The hardcoded "Ok" | "Error" fallback has been removed; resolve_monad_from_surface
-    // is purely driven by type_env.resolve_constructor_tag.  With an empty env, "Ok" is
-    // not registered as a constructor in any TyCon, so None is returned.
-    let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
-    let tycon_env = std::collections::HashMap::new();
-    let resolved = resolve_monad_from_surface(&node, &tycon_env);
-    assert_eq!(
-        resolved, None,
-        "[Ok ...] with empty TypeEnv must return None — no hardcoded fallback (B-449)"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_unqualified_registered_result() {
-    // B-449: Unqualified [Ok x] resolves correctly when Result IS registered in TypeEnv.
-    // After the hardcoded fallback is removed, resolution goes through
-    // type_env.resolve_constructor_tag("Ok"), which finds "Result.Ok" when Result is visible.
-    let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
-
-    // Seed a tycon_env with a minimal Result TyCon that has an "Ok" constructor.
-    let mut tycon_env = std::collections::HashMap::new();
-    let result_tycon = Arc::new(TyConDef {
-        params: vec!["a".to_string()],
-        body: Type::Unknown,
-        constraints: vec![],
-        variance: vec![],
-        constructors: vec![
-            ("Result.Ok".to_string(), 1),
-            ("Result.Error".to_string(), 1),
-        ],
-        builtin_type: None,
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    });
-    tycon_env.insert("Result".to_string(), result_tycon);
-
-    let resolved = resolve_monad_from_surface(&node, &tycon_env);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "[Ok ...] must resolve to 'result' when Result is registered in TypeEnv (B-449)"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_non_constructor() {
-    // Unit test for resolve_monad_from_surface: bare VarRef → None.
-    let node = crate::parser::parse_surface_expression("$Ok").expect("parse failed");
-    let tycon_env = std::collections::HashMap::new();
-    let resolved = resolve_monad_from_surface(&node, &tycon_env);
-    assert_eq!(
-        resolved, None,
-        "Bare VarRef (not a constructor call) should not resolve"
-    );
-}
-
-#[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
-    // Unit test for resolve_monad_from_surface: [call $Ok 1] with implied: false → None.
-    //
-    // The surface fallback only recognizes implied constructor syntax ([Result.Ok 1] → implied: true).
-    // Explicit call form ([call $Ok 1] → implied: false) must not trigger monad resolution —
-    // it is a lower-level construct that should not be pattern-matched heuristically.
-    let node = crate::parser::parse_surface_expression("[call $Ok 1]").expect("parse failed");
-    let tycon_env = std::collections::HashMap::new();
-    let resolved = resolve_monad_from_surface(&node, &tycon_env);
-    assert_eq!(
-        resolved, None,
-        "[call $Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers surface fallback"
-    );
-}
+// -- S-783 regression tests (parser fix + annotation fix) --
 
 // -- S-783 regression tests (parser fix + annotation fix) --
 
@@ -3355,9 +3223,7 @@ async fn test_recursive_fn_no_stack_overflow() {
 
     // Invoke run_typecheck directly — exercises the CEK iterative path.
     // Should complete without panicking (no Rust stack overflow).
-    let _ =
-        typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack)
-            .await;
+    typecheck_cek::run_typecheck(&node, &env, &mut state, &mut errors, &mut None, &mut stack).await;
     // Errors are expected (undefined variables) — the test only asserts no panic.
 }
 
@@ -3599,9 +3465,7 @@ async fn test_unknown_annotation_no_error() {
 /// `Type::Function { .. }` would match both; checking `ret == Type::Int` does not.
 #[tokio::test]
 async fn test_b609_bootstrap_typecheck_resolves_integer_annotation() {
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable in test");
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     let scheme = env_get(&arc_env, "builtin-int-add")
         .expect("builtin-int-add must be present in bootstrap env");
     match &scheme.body {
@@ -4410,9 +4274,7 @@ async fn test_b477_user_instance_call_dispatch_set_with_scope_frames() {
         &crate::parse(src, Arc::from(file!())).unwrap().program,
     );
 
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
         &arc_env,
     ))));
@@ -4517,9 +4379,7 @@ async fn test_b599_instance_type_param_injected_into_scope() {
         &crate::parse(src, Arc::from(file!())).unwrap().program,
     );
 
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
         &arc_env,
     ))));
@@ -4590,9 +4450,7 @@ async fn test_b599_type_stage_scope_restored_after_instance_check() {
         &crate::parse(src, Arc::from(file!())).unwrap().program,
     );
 
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
         &arc_env,
     ))));
@@ -4645,9 +4503,7 @@ async fn test_t1853_unannotated_instance_method_params_get_expected_type() {
         &crate::parse(src, Arc::from(file!())).unwrap().program,
     );
 
-    let arc_env = crate::imports::get_builtin_core_type_env()
-        .await
-        .expect("builtin core type env unavailable");
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
     let child_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
         &arc_env,
     ))));
@@ -4703,5 +4559,53 @@ async fn test_t1853_unannotated_instance_method_params_get_expected_type() {
         matches!(method_type, Type::Function { ret, .. } if matches!(ret.as_ref(), Type::Int)),
         "T-1853: method signature must be a Function returning Int, got: {:?}",
         method_type
+    );
+}
+
+// B-616: document last expression must be a record type.
+// process_document now rejects non-Dict last expressions at the type level, producing
+// a clearer error than the runtime "builtin-eval: document last expression must evaluate to a Dict".
+
+#[tokio::test]
+async fn test_b616_non_dict_last_expression_is_type_error() {
+    // A bare integer literal as the sole document expression is not a Dict.
+    // The type checker must reject this with a "record type" error.
+    let errors = check_err("42").await;
+    assert!(
+        !errors.is_empty(),
+        "B-616: bare integer literal as document body should produce a type error"
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("record type")),
+        "B-616: error must mention 'record type', got: {:?}",
+        errors
+    );
+}
+
+#[tokio::test]
+async fn test_b616_dict_last_expression_is_valid() {
+    // A named-field dict as the last document expression is always valid.
+    // No type error should be produced.
+    check("[result: 42]")
+        .await
+        .expect("B-616: dict last expression must not produce a type error");
+}
+
+#[tokio::test]
+async fn test_b616_error_type_does_not_cascade() {
+    // When the last expression's type is Type::Error (e.g. an undefined variable),
+    // the Dict check must NOT add a second error. Type::Error is a cascade sentinel.
+    let errors = check_err("$undefined_var").await;
+    assert_eq!(
+        errors.len(),
+        1,
+        "B-616: Type::Error last expression must not add a second 'record type' error, \
+         got errors: {:?}",
+        errors
+    );
+    assert!(
+        errors[0].message.contains("undefined variable"),
+        "B-616: the sole error must be the undefined-variable error, got: {:?}",
+        errors[0].message
     );
 }

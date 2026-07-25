@@ -33,12 +33,6 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             ..
         } => {
             let tag = format!("{}.{}", tycon, ctor);
-            if tag == "Boolean.True" {
-                return Ok(HashableValue::Bool(true));
-            }
-            if tag == "Boolean.False" {
-                return Ok(HashableValue::Bool(false));
-            }
             let hv_payload = match payload {
                 None => None,
                 Some(p) => {
@@ -57,7 +51,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             })
         }
         _ => Err(EvalError::type_mismatch(
-            "String, Int, Float, Boolean, or Variant",
+            "String, Int, Float, or Variant",
             value.type_name(),
             span.clone(),
         )

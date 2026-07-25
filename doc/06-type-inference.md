@@ -154,6 +154,16 @@ fn annotation_to_variance(name: &str) -> Option<Variance> {
 
 If `annotation_to_variance` returns `None` AND the name is a registered class, the annotation is a typeclass constraint on the type parameter. If neither, it is a type error.
 
+**Literal types in annotation position (T-1885).** Integer and string literal values are valid in type annotation position and resolve to singleton literal types:
+
+- `@0` → `Type::IntLiteral(0)`
+- `@"foo"` → `Type::StringLiteral("foo")`
+- `@[or 0 1]` → `Type::Union([IntLiteral(0), IntLiteral(1)])`
+
+This enables precise return type annotations for boolean-result builtins. The comparison and equality builtins (`builtin-eq-int`, `builtin-eq-string`, `builtin-lt`, `builtin-lte`, `builtin-gt`, `builtin-gte`) declare return type `@[or 0 1]` rather than `@Integer`, so callers can use concrete `0:` / `1:` arms in `match` expressions and the type checker accepts them without a catch-all.
+
+Implementation: `resolve_type_name` in `src/typecheck_annot.rs` recognizes `SurfaceExpression::Int(n)` and `SurfaceExpression::Str(s)` in annotation position and produces the corresponding `Type::IntLiteral` / `Type::StringLiteral` directly.
+
 ## Unification: UNIFY-TYCON and UNIFY-UNIFORM
 
 **UNIFY-TYCON:** `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2`. Name-equality is the operative check; `Arc::ptr_eq` is also called via `tycon_env` lookup (B-343). No binding is produced — UNIFY-TYCON is a pure equality check with no substitution side-effects.
@@ -822,6 +832,18 @@ constrain_rows(sub_row, sup_row):
 - Ground-type pairs with no inference variables — `constrain()` applies the BAS `is_subtype` check first, then falls through to `unify()` for error generation on failure
 
 If a new compound variant is added to `Type`, a `constrain()` arm must be added before introducing the variant. Relying on `unify()`'s U-SUBSUME fallthrough for TypeVar-containing compound types is unsound — variance would be lost.
+
+### Match Arm Narrowing for Dict Patterns (B-617)
+
+When a `[match ...]` arm uses a dict pattern (`[case [let v] [k₁: τ₁ ... kₙ: τₙ] body]`), the type checker narrows the scrutinee type for all subsequent arms. After processing an arm that structurally matches on static keys `k₁...kₙ`, the remaining scrutinee is narrowed by intersecting with the negation of an open dict containing those keys:
+
+```text
+narrowed_scrutinee = scrutinee ∩ ¬{k₁: Any, ..., kₙ: Any, _: Any}
+```
+
+The negation type `¬{k₁: Any, ..., kₙ: Any, _: Any}` (a `Type::Negation` wrapping an open `Record` with a `RowTail::Uniform` tail) represents values that do NOT have all of `k₁...kₙ` as fields. The wildcard arm `...:` therefore sees only values not matched by any preceding dict arm.
+
+Only statically-known string keys from the arm pattern contribute to narrowing (dynamic keys via `[bracket ...]` forms are ignored for soundness). The narrowing is applied in `setup_match_arm_env` in `src/typecheck.rs` and uses `Type::Intersection` with `Type::Negation` to represent the residual type.
 
 ## Contractiveness
 

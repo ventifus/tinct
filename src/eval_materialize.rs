@@ -3287,8 +3287,8 @@ async fn bind_or_pin_name(
         // Pin: look up the name's value in the parent frame via its resolver-assigned addr.
         // `addr` is the VarAddr the resolver assigned to this name in the enclosing scope.
         let pinned_thunk = match addr {
-            VarAddr::LetrecGroupMember(i) => {
-                let i = *i as usize;
+            VarAddr::LetrecGroupMember { slot, .. } => {
+                let i = *slot as usize;
                 if i >= frame.group.len() {
                     return Err(EvalError::internal(
                         format!(

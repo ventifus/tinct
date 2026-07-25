@@ -370,7 +370,7 @@ pub(crate) async fn bind_args_thunks(
     // Named args always go into the rest bucket (keyed by their string name). They are not
     // type-discriminated into typed buckets because their names carry caller intent.
     //
-    // Typed buckets are bound as lazy Seq cons-lists (Value::Seq { head, tail }).
+    // Typed buckets are bound as lazy Seq cons-lists (Value::Variant Seq.Cons cells).
     // The rest bucket is bound as Dict{int: positional, string: named}.
     if has_any_variadic {
         let extra_positionals = &positional[max_positional.min(positional.len())..];
@@ -446,9 +446,8 @@ pub(crate) async fn bind_args_thunks(
 
         // BIND-RESULT: Bind each typed variadic bucket as a lazy Seq cons-list.
         //
-        // Value::Seq { head: Arc<Thunk>, tail: Arc<Thunk> } is the LLT cons-cell format.
-        // An empty bucket binds to the Seq nil sentinel: Value::Dict({}) — the same
-        // empty dict that terminates all Seq tails.
+        // Produces Value::Variant Seq.Cons/Seq.End cells matching the prelude's Seq type.
+        // An empty bucket binds to Seq.End (unit variant).
         //
         // Use p.slot (resolver-assigned) for each typed variadic param.
         for (bucket_args, p) in typed_buckets.into_iter().zip(typed_variadic_params.iter()) {
@@ -485,24 +484,49 @@ pub(crate) async fn bind_args_thunks(
 
 /// Build a lazy Seq cons-list from a slice of `Arc<Thunk>`.
 ///
-/// `Value::Seq { head: Arc<Thunk>, tail: Arc<Thunk> }` is the LLT cons-cell format.
-/// The tail of the last element is the Seq nil sentinel: `Value::Dict({})` — the same
-/// empty dict that all Seq tails terminate with, consistent with `builtin_seq_prim.rs`
-/// (head/tail raise on empty dict) and `empty?` in prelude (which checks `[seq? xs]`).
+/// Produces `Value::Variant` cells matching the prelude's `Seq` type declaration:
+///   `Seq: [type [let a] Cons: [head: a  tail: [Seq a]] End]`
+///
+/// - End: `Value::Variant { tycon: "Seq", ctor: "End", payload: None }`
+/// - Cons: `Value::Variant { tycon: "Seq", ctor: "Cons", payload: Some(dict{head, tail}) }`
 ///
 /// Elements are built right-to-left (fold from the tail). The resulting thunk is
-/// already materialized (wraps a concrete Value::Seq or Value::Dict), so no additional
+/// already materialized (wraps a concrete Value::Variant), so no additional
 /// forcing is needed when the caller fills the param slot.
+///
+/// NOTE: The "Seq", "Cons", "End" string literals here are a known protocol coupling to
+/// the prelude's Seq type declaration. This will be resolved when Seq construction moves
+/// fully to tinct (tracked separately).
 fn build_seq(args: &[Arc<Thunk>], span: &Span) -> Arc<Thunk> {
-    // The nil sentinel is an empty Dict — the universal Seq terminator.
-    let nil = Arc::new(Thunk::value(Value::Dict(IndexMap::new()), span.clone()));
+    // The nil sentinel is Seq.End — matches prelude's Seq.End unit constructor.
+    let nil = Arc::new(Thunk::value(
+        Value::Variant {
+            tycon: Arc::from("Seq"),
+            ctor: Arc::from("End"),
+            payload: None,
+        },
+        span.clone(),
+    ));
 
-    // Fold right-to-left to build: cons(args[0], cons(args[1], ... cons(args[n-1], nil)))
+    // Fold right-to-left to build: Cons(args[0], Cons(args[1], ... Cons(args[n-1], End)))
     args.iter().rev().fold(nil, |tail_thunk, head_thunk| {
+        // Build the payload dict: [head: head_thunk  tail: tail_thunk]
+        let mut payload_dict = IndexMap::new();
+        payload_dict.insert(
+            crate::value::HashableValue::Str(Arc::from("head")),
+            Arc::clone(head_thunk),
+        );
+        payload_dict.insert(
+            crate::value::HashableValue::Str(Arc::from("tail")),
+            tail_thunk,
+        );
+        let payload_val = Value::Dict(payload_dict);
+        let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
         Arc::new(Thunk::value(
-            Value::Seq {
-                head: Arc::clone(head_thunk),
-                tail: tail_thunk,
+            Value::Variant {
+                tycon: Arc::from("Seq"),
+                ctor: Arc::from("Cons"),
+                payload: Some(payload_thunk),
             },
             span.clone(),
         ))
@@ -536,7 +560,7 @@ mod tests {
         // Test func_label_core with a Var expression
         let expr = CoreExpr::Var {
             name: "my_func".to_string(),
-            addr: crate::ast::VarAddr::LetrecGroupMember(0),
+            addr: crate::ast::VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
             annotation: None,
         };
         let label = func_label_core(&expr);

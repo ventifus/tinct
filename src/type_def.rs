@@ -1005,8 +1005,10 @@ impl Type {
     /// B-451: Recursive arms unfold equirecursive types before consistent-subtype check,
     /// enabling runtime TypeAssert on recursive type aliases.
     pub fn is_consistent_subtype(sub: &Type, sup: &Type, tycon_env: Option<&TyConEnv>) -> bool {
-        // Unknown on either side: consistent (? ~<: T and T ~<: ? for all T)
-        if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
+        // Unknown or Any-as-sub: consistent (? ~<: T, Any ~<: T, T ~<: ? for all T).
+        // Any as sub: a dynamically-typed value is consistent with any expected type because
+        // the runtime TypeAssert may succeed — we cannot statically prove it will fail.
+        if matches!(sub, Type::Unknown | Type::Any) || matches!(sup, Type::Unknown) {
             return true;
         }
         // Unresolved TypeVar in annotation position: treat as Unknown (gradual)

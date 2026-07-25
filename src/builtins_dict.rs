@@ -68,15 +68,6 @@ fn value_to_hashable_key(
             ..
         } => {
             let tag = format!("{}.{}", tycon, ctor);
-            if payload.is_none() {
-                // Check for Boolean.True/False -> Bool
-                if tag == "Boolean.True" {
-                    return Ok(HashableValue::Bool(true));
-                }
-                if tag == "Boolean.False" {
-                    return Ok(HashableValue::Bool(false));
-                }
-            }
             // General variant key
             let hv_payload = match payload {
                 None => None,
@@ -101,7 +92,7 @@ fn value_to_hashable_key(
         }
         other => Err(EvalError::type_mismatch_ctx(
             builtin_name.to_string(),
-            "Int, Float, String, Boolean, or Variant",
+            "Int, Float, String, or Variant",
             other.type_name(),
             span,
         )
@@ -115,11 +106,6 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
         HashableValue::Int(n) => Value::Int(*n),
         HashableValue::Float(bits) => Value::Float(f64::from_bits(*bits)),
         HashableValue::Str(s) => string_val(s),
-        HashableValue::Bool(b) => Value::Variant {
-            tycon: "Boolean".into(),
-            ctor: if *b { "True" } else { "False" }.into(),
-            payload: None,
-        },
         HashableValue::Dict(pairs) => {
             let mut map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(pairs.len());
             for (k, v) in pairs {

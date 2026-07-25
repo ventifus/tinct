@@ -1249,8 +1249,10 @@ impl std::fmt::Debug for MatchableBinding {
 /// Replaces (level, slot) de Bruijn coordinates.
 ///
 /// All variable references use exactly three variants — no runtime frame traversal:
-/// - `LetrecGroupMember(slot)` — same letrec group (current dict/doc accumulated group).
+/// - `LetrecGroupMember { depth, slot }` — same letrec group (current dict/doc accumulated group).
 ///   Root-scope entries occupy slots 0..N-1; document dict entries at cumulative slots.
+///   `depth` is the scope-stack traversal distance from the referencing scope to the defining
+///   scope (0 = same frame, 1 = one level up). Used by the type-checker via `get_scheme_at`.
 /// - `ClosureCapture(slot)` — fn capture, resolved at fn creation time.
 /// - `Parameter(slot)` — fn argument.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1258,7 +1260,10 @@ pub enum VarAddr {
     /// Index into EvalFrame.group (current letrec group thunks).
     /// Root-scope entries (builtins and capabilities) occupy slots 0..N-1 in the
     /// accumulated_group; document dict entries follow at cumulative slot offsets.
-    LetrecGroupMember(u32),
+    /// `depth` is the resolver scope-stack traversal distance (0 = same frame, 1 = one
+    /// level up). The evaluator ignores `depth` and uses `slot` directly; the type-checker
+    /// uses `depth` to call `get_scheme_at(depth, slot)` for cross-scope references.
+    LetrecGroupMember { depth: u32, slot: u32 },
     /// Index into EvalFrame.closure_env (fn-captured outer scope thunks).
     /// Emitted exclusively for fn captures: a VarRef inside a fn body that refers to a
     /// name outside the fn boundary. `i` is the index into the fn's capture list

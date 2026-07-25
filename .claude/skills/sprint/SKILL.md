@@ -189,7 +189,7 @@ If every task only touches `.md` files, comments, mempalace, or non-code metadat
 
 **Every agent brief must include these axioms verbatim.** They are not optional guidance — they are the non-negotiable constraints that govern every implementation decision.
 
-- **Prelude speaks the Rust protocol**: Rust defines the protocol; prelude implements it. Rust never embeds prelude-specific behavior. Prelude works because it is correct tinct, not because Rust accommodates it.
+- **Prelude speaks the Rust protocol**: Rust defines the protocol; prelude implements it. Rust never embeds prelude-specific behavior. Prelude works because it is correct tinct, not because Rust accommodates it. The exact protocol boundary is defined in `doc/16b-rust-tinct-protocol.md`.
 - **No fast paths, no fallbacks, no backwards compatibility**: one correct path. Fast paths, fallback branches, and legacy shims create parallel implementations that diverge. Old behavior is replaced, not preserved.
 - **Correctness, not performance**: performance is not a design concern. Write the provably correct implementation. Never add complexity to skip a check or avoid an allocation.
 - **Loader/prelude agnosticism**: users can replace the loader and prelude with their own stack. Language features must be agnostic to what is in the loader and prelude — a feature that only works with the default prelude is not a language feature.

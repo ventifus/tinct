@@ -1,0 +1,11 @@
+# B-520: recursive function defined inside intermediate dict of a multi-body function.
+# Exercises the Sequential handler path (infer_dict for intermediate dicts).
+# count is self-referential — the intermediate dict must be letrec-scoped.
+[
+  outer: [fn [let n]
+    [count: [fn [let x] [if [= x 0] 0 [+ 1 [count [- x 1]]]]]]
+    [count n]]
+  result: [outer 5]
+]
+=== out
+Dict({"outer": Fn, "result": Int(5)})

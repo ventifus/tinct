@@ -51,6 +51,35 @@ pub type DocMap = HashMap<String, String>;
 /// Re-export SchemeMap from types for LSP consumers.
 pub use crate::types::SchemeMap;
 
+/// Return value of [`typecheck_surface_program_with_env`].
+///
+/// Groups the seven values that were previously returned as a tuple, eliminating the
+/// need for `#[allow(clippy::type_complexity)]` on the function's return position.
+pub struct TypecheckProgramResult {
+    pub diagnostics: Vec<TypeDiagnostic>,
+    pub type_map: TypeMap,
+    pub doc_map: DocMap,
+    pub scheme_map: SchemeMap,
+    pub state: InferState,
+    pub env: Arc<RwLock<Env>>,
+    pub annotation_table: TypeAnnotationTable,
+}
+
+/// Grouped surface data for a `[class ...]` declaration.
+///
+/// Passed to [`infer_class_decl_from_surface`] instead of individual arguments,
+/// eliminating the need for `#[allow(clippy::too_many_arguments)]`.
+pub(crate) struct ClassDeclSurface<'a> {
+    pub name: &'a str,
+    pub params: &'a [String],
+    pub superclasses: &'a [(String, String)],
+    pub determines: &'a [Arc<SurfaceNode>],
+    pub resolver: &'a Option<Arc<SurfaceNode>>,
+    pub resolver_injective: bool,
+    pub structural: &'a str,
+    pub span: Span,
+}
+
 /// Type-check a SurfaceProgram and return a TypeAnnotationTable.
 ///
 /// This is the runtime-v2 entry point for type checking used by the eval pipeline.
@@ -128,8 +157,9 @@ pub async fn typecheck_surface_program_annotation_table_with_env(
     state.type_stage_scope = type_stage_scope;
     // Compute and store the resolution table for slot-indexed VarRef lookup.
     // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
-    let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[]);
-    state.resolution_table = Some(std::sync::Arc::new(resolve_table));
+    let (resolve_table, frames) = crate::resolve::resolve_surface_program(program, &[]);
+    state.resolution_table = std::sync::Arc::new(resolve_table);
+    state.resolver_frames = frames;
 
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
@@ -167,18 +197,22 @@ pub async fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
 ) -> (Vec<TypeDiagnostic>, TypeMap, DocMap, SchemeMap) {
-    let (diagnostics, type_map, doc_map, scheme_map, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(
-            program,
-            parent_env,
-            true,
-            std::collections::HashMap::new(),
-            None,
-            None, // type_stage_scope_override
-        )
-        .await;
+    let result = typecheck_surface_program_with_env(
+        program,
+        parent_env,
+        true,
+        std::collections::HashMap::new(),
+        None,
+        None, // type_stage_scope_override
+    )
+    .await;
     // type_map is now populated during inference (enable_hover_map=true path).
-    (diagnostics, type_map, doc_map, scheme_map)
+    (
+        result.diagnostics,
+        result.type_map,
+        result.doc_map,
+        result.scheme_map,
+    )
 }
 
 /// Type-check a `SurfaceProgram` with full control over scheme-map generation,
@@ -208,7 +242,6 @@ pub async fn typecheck_surface_program(
 ///
 /// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
 /// needs span-keyed types, use [`typecheck_surface_program`] instead.
-#[allow(clippy::type_complexity)]
 pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
@@ -218,15 +251,7 @@ pub async fn typecheck_surface_program_with_env(
     type_stage_scope_override: Option<
         Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
     >,
-) -> (
-    Vec<TypeDiagnostic>,
-    TypeMap,
-    DocMap,
-    SchemeMap,
-    InferState,
-    Arc<RwLock<Env>>,
-    TypeAnnotationTable,
-) {
+) -> TypecheckProgramResult {
     let mut errors = Vec::new();
     let mut diagnostics = Vec::new();
     // Create a child Env scope for this type-checking session: reads walk through
@@ -269,8 +294,9 @@ pub async fn typecheck_surface_program_with_env(
             .map(|(i, def)| (def.name.to_string(), i as u32))
             .collect()
     };
-    let (resolve_table, _frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
-    state.resolution_table = Some(Arc::new(resolve_table));
+    let (resolve_table, frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
+    state.resolution_table = Arc::new(resolve_table);
+    state.resolver_frames = frames;
 
     if enable_hover_map {
         state.scheme_map = Some(SchemeMap::new());
@@ -327,15 +353,15 @@ pub async fn typecheck_surface_program_with_env(
     // child_env is state.env — classes/instances were written to it via the merge.
     state.invalidate_env_caches();
 
-    (
+    TypecheckProgramResult {
         diagnostics,
-        type_map_inner,
+        type_map: type_map_inner,
         doc_map,
         scheme_map,
         state,
-        child_env,
+        env: child_env,
         annotation_table,
-    )
+    }
 }
 
 /// Merge ALL scheme bindings from an `Arc<RwLock<Env>>` chain into a target `Arc<RwLock<Env>>`.
@@ -347,7 +373,7 @@ pub async fn typecheck_surface_program_with_env(
 ///
 /// Since `target_env.parent == parent_env`, schemes that already exist in the parent
 /// chain are already visible — no filtering is needed. Duplicate insertion is safe
-/// (insert_scheme and insert_scheme_named_only are idempotent for same-name, same-value).
+/// (insert_at_slot and insert_scheme_named_only are idempotent for same-name, same-value).
 fn merge_env_schemes_into_env(
     source_env: &Arc<RwLock<Env>>,
     target_env: &Arc<RwLock<Env>>,
@@ -376,7 +402,7 @@ fn merge_env_schemes_into_env(
         let frame = frame_arc.read().unwrap();
         for (name, slot) in frame.iter_slots() {
             if let Some(ref scheme) = slot.scheme {
-                guard.insert_scheme(name.to_string(), scheme.clone());
+                guard.insert_scheme_named_only(name.to_string(), scheme.clone());
             }
         }
         for (name, slot) in &frame.extras {
@@ -484,9 +510,8 @@ pub(crate) async fn process_document(
             }
             let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
             for (name, scheme) in &schemes {
-                new_env_inner.insert_scheme(name.clone(), scheme.clone());
+                new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
             }
-            register_type_aliases_env(intermediate, &mut new_env_inner, state, &mut errors);
             current_env = Arc::new(RwLock::new(new_env_inner));
         } else {
             // Non-dict (including Decl nodes): run_typecheck at incremented level.
@@ -509,9 +534,8 @@ pub(crate) async fn process_document(
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, field_ty) in fields {
                         let scheme = generalize(enclosing_level, field_ty, state);
-                        new_env_inner.insert_scheme(name.clone(), scheme);
+                        new_env_inner.insert_scheme_named_only(name.clone(), scheme);
                     }
-                    register_type_aliases_env(intermediate, &mut new_env_inner, state, &mut errors);
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 }
                 Type::Unknown | Type::Any => {}
@@ -561,21 +585,44 @@ pub(crate) async fn process_document(
         ty
     };
 
+    // Check that the last expression's type is a Dict subtype.
+    //
+    // A document's last expression must be a record (the exports dict). The runtime enforces
+    // the same constraint via builtin-eval, but catching it here produces a clearer error
+    // message and fails fast at compile time rather than at evaluation time.
+    //
+    // Type::Dict(_):        ok — any dict (open, closed, uniform-tail) satisfies the constraint.
+    // Type::Unknown:        ok — gradual escape hatch; cannot rule out a dict statically.
+    // Type::Any:            ok — top type; cannot rule out a dict.
+    // Type::TypeVar(_, _):  ok — inference variable; deferred to the constraint solver.
+    //                            is_subtype returns true for TypeVars (conservative approximation).
+    // Type::Error(_):       ok — cascade sentinel; an upstream error already reported.
+    // Everything else:      the type is known to be a non-dict → error.
+    match &result_ty {
+        Type::Dict(_) | Type::Unknown | Type::Any | Type::TypeVar(_, _) | Type::Error(_) => {}
+        _ => errors.push(TypeDiagnostic::error(
+            "type-error",
+            format!(
+                "document last expression must be a record type, got {}",
+                result_ty
+            ),
+            last_node.span.clone(),
+        )),
+    }
+
     // Build result_env with parent=parent_env (flat env chain invariant).
     let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
     if let Some(schemes) = last_dict_schemes {
         for (name, scheme) in schemes {
-            result_env_inner.insert_scheme(name, scheme);
+            result_env_inner.insert_scheme_named_only(name, scheme);
         }
     }
     if let Some((Type::Dict(Row { fields, .. }), enc_level)) = last_record_type {
         for (name, field_ty) in fields {
             let scheme = generalize(enc_level, &field_ty, state);
-            result_env_inner.insert_scheme(name, scheme);
+            result_env_inner.insert_scheme_named_only(name, scheme);
         }
     }
-    register_type_aliases_env(&last_node, &mut result_env_inner, state, &mut errors);
-
     (Arc::new(RwLock::new(result_env_inner)), result_ty, errors)
 }
 
@@ -702,24 +749,6 @@ fn extract_doc_from_surface_node(
 
 /// Pre-register type aliases in `target_env` before Pass 1 inference.
 ///
-/// Previously inserted stub `TypeAlias` entries for forward-reference resolution.
-/// TypeAlias was dead data (never read back after insertion) and has been deleted.
-/// Type alias information is stored in `TyConDef` via `InferState.tycon_env` and
-/// `TypeEnv.tycon_defs`, which are the authoritative lookup paths used by
-/// `expand_named` and `resolve_type_head`.
-///
-/// This function is retained as a no-op for call-site compatibility; callers
-/// will be cleaned up in a future sprint.
-#[allow(unused_variables)]
-pub(crate) fn register_type_aliases_env(
-    node: &Arc<SurfaceNode>,
-    target_env: &mut Env,
-    _state: &mut InferState,
-    _errors: &mut Vec<TypeDiagnostic>,
-) {
-    // No-op: TypeAlias struct deleted; TyConDef registration handles forward references.
-}
-
 /// Map a resolved `Type` to the dispatch tag string used in instance binding names.
 ///
 /// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
@@ -753,22 +782,24 @@ pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
 
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
 /// Called from process_document (via CEK Sequential) and typecheck_cek::run_typecheck_dict — no Expr bridge needed.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn infer_class_decl_from_surface(
-    name: &str,
-    params: &[String],
-    superclasses: &[(String, String)],
-    methods: &[Spanned<crate::ast::SurfaceEntry>],
-    determines: &[Arc<SurfaceNode>],
-    resolver: &Option<Arc<SurfaceNode>>,
-    resolver_injective: bool,
-    structural: &str,
-    span: Span,
-    _env: &Arc<RwLock<Env>>,
+    decl: &ClassDeclSurface<'_>,
     state: &mut InferState,
-    _type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeDiagnostic>> {
     use crate::types::{ClassDecl, Kind};
+
+    let ClassDeclSurface {
+        name,
+        params,
+        superclasses,
+        determines,
+        resolver,
+        resolver_injective,
+        structural,
+        span,
+        ..
+    } = decl;
+    let span = span.clone();
 
     if name.is_empty() {
         return Err(vec![TypeDiagnostic::error(
@@ -781,7 +812,6 @@ pub(crate) fn infer_class_decl_from_surface(
     // Method body validation is handled by dict inference (Pass 2, typecheck_dict.rs).
     // resolve_type_expr is async and cannot be called from sync infer_class_decl_from_surface.
     // method_signatures is populated as empty (matches existing ClassDecl construction sites).
-    let _ = methods; // suppress unused warning
 
     let existing_param_kinds: std::collections::HashMap<String, Kind> = {
         let env_guard = state.env.read().unwrap();
@@ -792,7 +822,7 @@ pub(crate) fn infer_class_decl_from_surface(
     };
 
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
-    for fd_node in determines {
+    for fd_node in *determines {
         match &fd_node.expr {
             SurfaceExpression::Dict(entries) if entries.len() == 2 => {
                 let determining = &entries[0].node.value;
@@ -828,7 +858,7 @@ pub(crate) fn infer_class_decl_from_surface(
         None
     };
 
-    let structural_discharge = match structural {
+    let structural_discharge = match *structural {
         "closed-dict" => crate::type_class::StructuralDischarge::ClosedDict,
         _ => crate::type_class::StructuralDischarge::None,
     };
@@ -848,7 +878,7 @@ pub(crate) fn infer_class_decl_from_surface(
             .collect(),
         determines: fd_indices,
         resolver: resolver_name,
-        resolver_injective,
+        resolver_injective: *resolver_injective,
         structural_discharge,
         method_signatures: vec![],
     };
@@ -978,32 +1008,6 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
     if has_fds {
         for (determining_indices, determined_indices) in &fd_list {
-            for (pattern_types, _arm_span, _) in &arm_data {
-                for &det_idx in determined_indices {
-                    if !determining_indices.contains(&det_idx) {
-                        // T016: only check concrete determined types, not TypeVars.
-                        // For polymorphic (TypeVar) determined types, coverage cannot be
-                        // verified statically without full annotation resolution. TypeVar
-                        // determined types are legitimate for catch-all instances.
-                        // T016 is meaningful only when the determined type is a concrete
-                        // type that can be compared against the determining positions.
-                        if let Type::TypeVar(det_name, _) = &pattern_types[det_idx] {
-                            let same_var_in_determining =
-                                determining_indices.iter().any(|&det_pos| {
-                                    matches!(&pattern_types[det_pos], Type::TypeVar(n, _) if n == det_name)
-                                });
-                            // Only fire T016 when the TypeVar names match but come from different
-                            // sources — i.e., the same named TypeVar appears in determining positions
-                            // but at the WRONG index, indicating a concrete coverage violation.
-                            // When all positions are fresh (non-matching) TypeVars, this is a
-                            // polymorphic catch-all — skip T016.
-                            let _ = (det_name, same_var_in_determining); // suppress unused warnings
-                                                                         // Skip T016 for TypeVar determined types (polymorphic catch-all)
-                        }
-                    }
-                }
-            }
-
             for i in 0..arm_data.len() {
                 for j in (i + 1)..arm_data.len() {
                     let (types_i, span_i, _) = &arm_data[i];
@@ -1211,7 +1215,11 @@ pub(crate) async fn infer_instance_decl_from_surface(
             // Insert into the parent dict env. The env parameter is the dict's environment,
             // so inserting here makes the ɪ-prefixed binding visible to the same scope as
             // the instance declaration itself (letrec scope).
-            env.write().unwrap().insert_scheme(binding_name, scheme);
+            // All dict bindings go to extras via insert_scheme_named_only; infer_var_ref
+            // finds them through get_extras_scheme when the slot lookup fails.
+            env.write()
+                .unwrap()
+                .insert_scheme_named_only(binding_name, scheme);
         }
 
         // B-599: Pop the type param scope frame pushed before method body checking.
@@ -1285,6 +1293,7 @@ pub(crate) fn contains_unknown_or_top(ty: &Type) -> bool {
     }
 }
 
+#[cfg(test)]
 /// Check that an expression has a compatible type with the expected type.
 ///
 /// Uses bidirectional type checking: synthesize the expression's type via `run_typecheck` (CEK),
@@ -1296,8 +1305,7 @@ pub(crate) fn contains_unknown_or_top(ty: &Type) -> bool {
 /// Special case for lambdas (doc/06 §[CHECK-FN]): when `node` is a `Fn` expression and
 /// `expected` is a concrete `Function` type, arity is checked before synthesis.
 /// Used at checking positions where the expected type is fully concrete: TypeAssert and
-/// default-value validation. Called from `typecheck_annot::resolve_type_assert`.
-#[allow(dead_code)]
+/// default-value validation. Called from test code only.
 pub(crate) async fn check_surface_expr(
     node: &Arc<SurfaceNode>,
     expected: &Type,
@@ -1432,99 +1440,6 @@ pub(crate) async fn check_surface_expr(
             Ok(())
         }
     }
-}
-
-/// Heuristically resolve which monad library a `Type` value corresponds to.
-///
-/// Used in `[do ...]` inference to determine which monad dict to inject when
-/// the call's head type is known.  Returns the lowercase monad dict name
-/// (e.g. `"result"`, `"option"`) or `None` if no match can be found.
-///
-/// Rules:
-/// - `Type::Operator(name)` → if name is `"Result"`, return `"result"` (extensible to other monads)
-/// - `Type::Record` with an `"ok"` or `"err"` field → `"result"`
-/// - `Type::Union` → first member that matches one of the above rules
-/// - Anything else → `None`
-#[cfg(test)]
-pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
-    match ty {
-        Type::Operator(name) => {
-            let lower = name.to_lowercase();
-            if lower == "result" {
-                Some("result".to_string())
-            } else {
-                None
-            }
-        }
-        Type::Dict(Row { fields, .. }) => {
-            if fields.contains_key("ok") || fields.contains_key("err") {
-                Some("result".to_string())
-            } else {
-                None
-            }
-        }
-        Type::Union(members) => members
-            .iter()
-            .find_map(|m| resolve_monad_from_type(m, _state)),
-        _ => None,
-    }
-}
-
-/// Heuristically resolve which monad library an implied-call `SurfaceNode` targets.
-///
-/// Inspects the function position of an implied call expression to determine which
-/// monad dict the constructor belongs to.  Returns the lowercase monad dict name
-/// (e.g. `"result"`) or `None` if the node is not an implied constructor call or the
-/// constructor cannot be resolved.
-///
-/// Rules:
-/// 1. Node must be a `SurfaceExpression::Call { implied: true, ... }`.
-/// 2. If the function position is a dot-access chain (e.g. `Result.Ok`), extract the
-///    leading type name and return `Some(name.to_lowercase())`.
-/// 3. If the function position is a plain `VarRef` (e.g. `Ok`), look up the qualified
-///    tag via `type_env.resolve_constructor_tag(name)`, extract the TyCon prefix, and
-///    return `Some(tycon.to_lowercase())`.
-/// 4. Otherwise return `None`.
-#[cfg(test)]
-pub(crate) fn resolve_monad_from_surface(
-    node: &std::sync::Arc<SurfaceNode>,
-    tycon_env: &std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
-) -> Option<String> {
-    let SurfaceExpression::Call {
-        func,
-        implied: true,
-        ..
-    } = &node.expr
-    else {
-        return None;
-    };
-
-    // Rule 2: dot-access chain like `Result.Ok`
-    if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&func.expr) {
-        if let Some(dot_pos) = tag.find('.') {
-            let tycon = &tag[..dot_pos];
-            return Some(tycon.to_lowercase());
-        }
-    }
-
-    // Rule 3: plain VarRef like `Ok` — resolve via tycon_env
-    if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-        // Inline resolve_constructor_tag: search tycon_defs for a matching ctor
-        for (_tycon_name, def) in tycon_env {
-            for (ctor_tag, _arity) in &def.constructors {
-                if let Some(unqualified) = ctor_tag.rfind('.').map(|pos| &ctor_tag[pos + 1..]) {
-                    if unqualified == name {
-                        if let Some(dot_pos) = ctor_tag.find('.') {
-                            let tycon = &ctor_tag[..dot_pos];
-                            return Some(tycon.to_lowercase());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

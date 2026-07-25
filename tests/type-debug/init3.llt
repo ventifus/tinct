@@ -1,6 +1,6 @@
 --- stage: "type"
 [
-  TypeNode: [type Int String Float Bytes Never Top Unknown Proxy AnyFn
+  TypeNode: [type Int String Float Bytes Never Top Unknown Proxy Callable
     [Dict fields: Any  open: Any  key-type: Any  value-type: Any]]
   Integer: TypeNode.Int
   String:  TypeNode.String
