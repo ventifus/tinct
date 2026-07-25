@@ -21,7 +21,7 @@ Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-cla
 | `Type::Union(Vec<Type>)` | union A \| B |
 | `Type::Intersection(Vec<Type>)` | intersection A & B |
 | `Type::Negation(Box<Type>)` | complement ~A (BAS) |
-| `Type::Function { params, ret, variadic, required_count }` | function type |
+| `Type::Function { params, ret, typed_variadics, rest, required_count }` | function type |
 | `Type::TyCon(String)` | type constructor name |
 | `Type::App(Box<Type>, Box<Type>)` | type constructor application |
 | `Type::Recursive { var, body }` | equirecursive type |
@@ -250,7 +250,7 @@ Implementation:
 | Function definitions | `Fn(params → ret)` |
 | Access chains (dot, bracket, range) | Field type or `Unknown` |
 
-**Confluence.** Both CALL-MONO and CALL-POLY use `check_expr`, which internally dispatches to unification when type variables are present (CALL-POLY) or to subsumption when the expected type is fully concrete (CALL-MONO). When unification resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a bidirectional subsumption fallback that checks `is_subtype` in both directions. This ensures argument ordering does not affect whether type checking succeeds. See the Unification section for details.
+**Confluence.** Both CALL-MONO and CALL-POLY use `check_expr`, which internally dispatches to unification when type variables are present (CALL-POLY) or to subsumption when the expected type is fully concrete (CALL-MONO). When unification resolves a type variable to a concrete type, subsequent unification attempts against that concrete type use [U-SUBSUME] — a unidirectional subsumption fallback that checks `is_subtype(σ, τ)`. Confluence is ensured by call sites establishing the correct sub/sup direction before calling unify(). See the Unification section for details.
 
 ## Inference Judgments: Γ ⊢ e ⇒ τ
 
@@ -361,23 +361,22 @@ S = unify(σ'₁ ≐ τ₁, ..., σ'ₙ ≐ τₙ)                  [with U-SUBS
 
 **Implementation note:** When the function expression is a VarRef to a polymorphic scheme (e.g., `[id 42]` where `id` is bound to `∀a. Fn(a → a)`), `check_call_with_scheme` is invoked directly with the scheme, bypassing the VAR-POLY instantiation step. This optimization instantiates the scheme once instead of twice (VAR-POLY followed by CALL-POLY). For other function expressions (inline lambdas, compound access chains), the normal path applies: infer the function expression (which may instantiate a scheme via VAR-POLY), then proceed to CALL-POLY. See `src/typecheck.rs` `infer_expr` Call case for the dispatch logic (lines ~441-451).
 
-Polymorphic path with unification: arguments are checked via `check_expr`, which internally dispatches to unification when the expected type contains type variables. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (bidirectional subsumption fallback). This is critical for confluence: when multiple arguments constrain the same type variable with different precision (e.g., `IntLiteral(42)` and `Int`), the subsumptive fallback ensures type checking succeeds regardless of argument order. See the Unification section for [U-SUBSUME] details.
+Polymorphic path with unification: arguments are checked via `check_expr`, which internally dispatches to unification when the expected type contains type variables. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (unidirectional subsumption fallback: σ <: τ). Call sites supply the correct sub/sup order for confluence. See the Unification section for [U-SUBSUME] details.
 
 Note: CALL-POLY routes all argument checking through `check_expr`, which internally dispatches to unification when the expected type contains type variables. CALL-MONO uses `check_expr` only for lambda arguments; non-lambda arguments take the inline infer+subsume path described above. `check_expr`'s unification dispatch is therefore relevant only on the CALL-POLY path — CALL-MONO guarantees no inference variables in the function type, so the subsumption check is always against a ground type.
 
-**CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is more permissive than CALL-MONO for most literal type pairs. The divergence arises because `unify()` has bidirectional literal promotion rules (5 type pairs × 2 directions = 10 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. Concrete-type pair behavior across both paths (rows marked **fails** reject under both CALL-MONO and CALL-POLY; the `IntLiteral`/`Float` pair is documented here because [U-SUBSUME] correctly rejects it after removal of the former unsound promotion arm):
+**CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is more permissive than CALL-MONO for most literal type pairs. The divergence arises because `unify()` uses [U-SUBSUME] (unidirectional `is_subtype(σ, τ)` fallback) while `check_expr` uses directional `is_subtype(actual, expected)`. Concrete-type pair behavior across both paths (rows marked **fails** reject under both CALL-MONO and CALL-POLY):
 
 | Argument type | Parameter type | `is_subtype` (CALL-MONO) | `unify` (CALL-POLY) |
 |---------------|---------------|--------------------------|---------------------|
-| `Int` | `IntLiteral(n)` | false (Int is wider) | succeeds (explicit arm: IntLiteral ↔ Int) |
-| `Number` | `IntLiteral(n)` | false | succeeds (explicit arm: IntLiteral ↔ Number) |
-| `Number` | `Int` | false | succeeds (explicit arm: Int ↔ Number) |
-| `Number` | `Float` | false | succeeds (explicit arm: Float ↔ Number) |
-| `Str` | `StringLiteral(s)` | false | succeeds (explicit arm: StringLiteral ↔ Str) |
-| `IntLiteral(n)` | `Float` | false (no subtype relation) | **fails** (no subtype relation in either direction) |
-| `Float` | `IntLiteral(n)` | false | **fails** (no subtype relation in either direction) |
+| `Int` | `IntLiteral(n)` | false (Int is wider) | **fails** (Int ≰ IntLiteral) |
+| `IntLiteral(n)` | `Int` | true | succeeds via [U-SUBSUME] |
+| `Number` | `Int` | false | **fails** (Number ≰ Int) |
+| `Int` | `Number` | true | succeeds via [U-SUBSUME] |
+| `IntLiteral(n)` | `Float` | false (no subtype relation) | **fails** (no subtype relation) |
+| `Float` | `IntLiteral(n)` | false | **fails** (no subtype relation) |
 
-In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. The [U-SUBSUME] fallback in `unify()` checks `is_subtype` in both directions for concrete type pairs, producing the same result as the explicit promotion arms for all valid subtype relationships. The `IntLiteral`/`Float` pair correctly fails under [U-SUBSUME] because they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`, but no `IntLiteral <: Float` rule exists). Full divergence elimination (making CALL-MONO and CALL-POLY agree on all cases) requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
+In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon. The [U-SUBSUME] fallback checks `is_subtype(σ, τ)` unidirectionally for concrete type pairs; call sites are responsible for supplying the correct sub/sup order.
 
 **CALL-MONO implementation path.** CALL-MONO uses a split dispatch: lambda arguments go through `check_expr` (bidirectional checking mode enables lambda parameter inference), while non-lambda arguments are handled by an inline infer+subsume path — `infer_expr` once, then `is_subtype`/consistency check directly — avoiding the double-inference that `check_expr` would cause if called after `infer_expr`. Since CALL-MONO's function type has no inference vars, parameter types are always ground, so unification is never needed; subsumption suffices. The table above illustrates the logical difference between subsumption and unification semantics for concrete type pairs.
 
@@ -488,7 +487,7 @@ When name = "Fn": interpret as function type constructor.
 
 ## Unification: unify(τ₁, τ₂, S) → S'
 
-Unification finds a most general substitution S such that S(τ₁) = S(τ₂). Before matching, both types are normalized via S (substitution applied). Unification follows **Robinson (1965)** for structural decomposition and variable binding, extended with pragmatic promotion rules (see bidirectional literal-to-parent promotions in the implementation below). Subtyping is handled by `check_expr` via the `[SUB]` rule and `is_subtype` for directional checks, and by `[U-SUBSUME]` for bidirectional compatibility within unification. This separation follows Pierce & Turner (2000) and Dunfield & Krishnaswami (2021).
+Unification finds a most general substitution S such that S(τ₁) = S(τ₂). Before matching, both types are normalized via S (substitution applied). Unification follows **Robinson (1965)** for structural decomposition and variable binding. Subtyping is handled by `check_expr` via the `[SUB]` rule and `is_subtype` for directional checks, and by `[U-SUBSUME]` for unidirectional subsumption within unification. This separation follows Pierce & Turner (2000) and Dunfield & Krishnaswami (2021).
 
 **Algorithm variant:** The overall inference algorithm is closer to **Algorithm J** (Milner 1978) than Algorithm W (Damas & Milner 1982): it uses a mutable global substitution (`InferState.subst`) accumulated across inferences with immediate unification on each constraint, rather than threading explicit substitutions compositionally. This is more efficient but harder to reason about formally. The five-pass dict inference (§Dict Inference) is a letrec extension following Tofte (1988).
 
@@ -514,29 +513,74 @@ unify(StringLiteral(s), StringLiteral(t), S) =
     error       if s ≠ t                         [U-STRLIT-NEQ]
 ```
 
-Bidirectional literal-to-parent promotions are implemented as explicit match arms in `unify()` (e.g., `IntLiteral(_)` with `Int`, `Float` with `Number`). These are fast-path optimizations for common subtype pairs that avoid the `has_inference_vars` guard and `is_subtype` call in [U-SUBSUME]. The [U-SUBSUME] rule below provides the general fallback for any concrete type pair.
-
 Structural:
 
 ```text
-unify(Fn(p₁...pₙ → r₁), Fn(q₁...qₙ → r₂), S) =
-    let S' = unify(p₁,q₁, ... pₙ,qₙ, S)
-    unify(r₁, r₂, S')                           [U-FN]
-    error if |p| ≠ |q|
+unify(Fn₁, Fn₂, S) =
+    constrain(Fn₁, Fn₂, S) then constrain(Fn₂, Fn₁, S)    [U-FN]
+
+unify(Fn, Fn) delegates entirely to bidirectional constrain — C-FN is applied twice,
+once in each direction. In each call the sub/sup roles are explicit:
+
+  constrain(Fn₁, Fn₂): Fn₁ is sub, Fn₂ is sup.
+      sup's (Fn₂) params constrained contravariantly against sub's (Fn₁) params:
+          constrain(Fn₂.pᵢ, Fn₁.pᵢ) for each i
+      sub's (Fn₁) return constrained covariantly against sup's (Fn₂) return:
+          constrain(Fn₁.return, Fn₂.return)
+
+  constrain(Fn₂, Fn₁): Fn₂ is sub, Fn₁ is sup.
+      sup's (Fn₁) params constrained contravariantly against sub's (Fn₂) params:
+          constrain(Fn₁.pᵢ, Fn₂.pᵢ) for each i
+      sub's (Fn₂) return constrained covariantly against sup's (Fn₁) return:
+          constrain(Fn₂.return, Fn₁.return)
+
+The two directions together enforce equality: each param type and return type is
+constrained in both directions, eliminating any asymmetry. Arity is checked inside
+C-FN via check_function_arity (error if |Fn₁.params| ≠ |Fn₂.params|).
+See §Constraint Generation: constrain(sub, sup) for the full C-FN specification.
 
 unify(Seq(τ₁), Seq(τ₂), S) = unify(τ₁, τ₂, S)  [U-SEQ]  (legacy; Seq is App(TyCon("Seq"),_) post-migration)
 
 unify(TyCon(n), TyCon(n), S) = S                 [U-TYCON]  (same name AND pointer-identical TyConDef)
 unify(TyCon(n1), TyCon(n2), S) = error           [U-TYCON-NEQ]  if n1 ≠ n2 or different definitions
 
-unify(App(f₁,a₁), App(f₂,a₂), S) =
-    let S' = unify(f₁, f₂, S)
-    unify(a₁, a₂, S')                            [U-APP]
+unify(App(f₁,a₁), App(f₂,a₂), S) =                  [U-APP]
+    if extract_tycon_spine(App₁) = (n₁, [α₁…αₘ]) and extract_tycon_spine(App₂) = (n₂, [β₁…βₙ])
+        and n₁ = n₂ and m = n:                          ← arity guard required
+        for each i: constrain(αᵢ, βᵢ) ∧ constrain(βᵢ, αᵢ)   (bidirectional per arg)
+    else (n₁ ≠ n₂, or mismatched arg count m ≠ n, or non-TyCon head):
+        unify(f₁, f₂, S) then unify(a₁, a₂, S)
+Note: n₁/n₂ are the TyCon names extracted from App₁/App₂; m/n are their respective arg
+counts. The else branch uses f₁,f₂ and a₁,a₂ from the outer App(f₁,a₁)/App(f₂,a₂)
+decomposition — these are not the spine elements α/β.
+The arity guard `m = n` must hold before the bidirectional constrain loop fires;
+mismatched-arity App falls to the unify(f₁,f₂)/unify(a₁,a₂) fallback.
+The fallback recurses via unify (not constrain) to avoid constrain→unify→constrain
+infinite loops when the App head is a TypeVar or has no registered TyConDef.
 
-unify(Record(r₁), Record(r₂), S) = unify_rows(r₁, r₂, S)     [U-REC]
+The C-App arm in constrain() owns all variance-directed dispatch: for each argument
+position i it looks up TyConDef.variance[i] and applies:
+    Covariant:     constrain(sub_argᵢ, sup_argᵢ)
+    Contravariant: constrain(sup_argᵢ, sub_argᵢ)   (swapped)
+    Invariant:     constrain(sub_argᵢ, sup_argᵢ) ∧ constrain(sup_argᵢ, sub_argᵢ)
+    Phantom:       Ok(())
+In unify(), all arg positions are treated symmetrically (bidirectional constrain on args).
+Variance is only meaningful inside constrain().
+
+unify(Record(r₁), Record(r₂), S) =
+    constrain_rows(r₁, r₂) ∧ constrain_rows(r₂, r₁)    (field subtyping, bidirectional)
+    then UNIFY-UNIFORM tail binding                       (TypeVar join for tail equality)
+                                                         [U-REC]
+
+unify(¬T₁, ¬T₂, S) =
+    constrain(T₂, T₁) ∧ constrain(T₁, T₂)   (bidirectional on inner types)
+                                               [U-NEG]
+Negation is contravariant in constrain() — C-Negation swaps directions. For unification
+(equality), both directions are applied: constrain(T₂,T₁) from [C-Negation] applied to
+¬T₁≤¬T₂, and constrain(T₁,T₂) from [C-Negation] applied to ¬T₂≤¬T₁.
 ```
 
-Record unification delegates to row unification. The `unify_rows` algorithm handles `RowTail::Uniform` in addition to the existing closed-row case — see [Type System Extensions](07-type-extensions.md) §Column Constraints for the full rules including the substitution-first branching for the TypeVar vs concrete split.
+Record unification performs bidirectional `constrain_rows` for field subtyping, then applies UNIFY-UNIFORM tail binding for any `RowTail::Uniform` TypeVar positions. The `constrain_rows` pairs handle field variance; the UNIFY-UNIFORM pass binds tail TypeVars via `unify()` (equality, not subsumption) because tail equality requires direct substitution, not bounds. See [Type System Extensions](07-type-extensions.md) §Column Constraints for the full rules including the substitution-first branching for the TypeVar vs concrete split.
 
 Row tail unification:
 
@@ -561,29 +605,30 @@ Subsumptive fallback for concrete types (no type variables on either side):
 
 ```text
 unify(σ, τ, S) where ¬has_inference_vars(σ) ∧ ¬has_inference_vars(τ):
-    if is_subtype(σ, τ) ∨ is_subtype(τ, σ): S   [U-SUBSUME]
-    else: error                                  [U-FAIL]
+    if is_subtype(σ, τ): S    [U-SUBSUME]  (unidirectional: σ must be subtype of τ)
+    else: error               [U-FAIL]
 ```
 
-[U-SUBSUME] is the bridge between unification and subtyping. It fires after all other rules (structural decomposition, type variable binding) have been tried — it is ordered last as a fallback, not a catch-all. Structural rules ([U-FN], [U-SEQ], [U-REC], literal identity) take priority over subsumptive matching. When two concrete types remain and they are in a subtype relationship in either direction, unification succeeds without modifying the substitution. This is essential for **confluence in CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] recognizes `IntLiteral(42) <: Int` and succeeds regardless of argument order.
+[U-SUBSUME] is the bridge between unification and subtyping. It fires after all other rules (structural decomposition, type variable binding) have been tried — it is ordered last as a fallback, not a catch-all. Structural rules ([U-FN], [U-SEQ], [U-REC], literal identity) take priority over subsumptive matching. When two concrete types remain and σ is a subtype of τ, unification succeeds without modifying the substitution. This is essential for **CALL-POLY**: when a type variable α is bound to `IntLiteral(42)` by one argument and later compared against `Int` by another (via substitution resolution), [U-SUBSUME] recognizes `IntLiteral(42) <: Int` and succeeds. The check is unidirectional (σ <: τ); call sites supply the correct order.
 
 **Relationship to Robinson unification.** Robinson (1965) is purely syntactic — it has no notion of subtyping, so `unify(IntLiteral(42), Int)` would simply fail (different constructors). [U-SUBSUME] extends Robinson with a ground-type compatibility check: when both sides are concrete and in a subtype relationship, unification succeeds without modifying the substitution. This is a pragmatic middle ground — Robinson handles structural decomposition and variable binding; [U-SUBSUME] handles the subtype lattice at ground types. The substitution is not modified by [U-SUBSUME], so existing variable bindings (which may carry literal precision) are preserved. This is the same approach Rust's type inference uses: subtyping constraints between concrete types are resolved as compatibility checks rather than LUB computation (Dolan & Mycroft 2017 describe the full alternative — algebraic subtyping — which tinct intentionally does not adopt; see `doc/whatif/algebraic-subtypes.md`).
 
-[U-SUBSUME] checks both directions because unification is symmetric — the two types arrive without a designated "actual" vs "expected" role. The bidirectional check covers both orderings: `unify(IntLiteral(42), Int)` succeeds (IntLiteral(42) <: Int) and `unify(Int, IntLiteral(42))` also succeeds (IntLiteral(42) <: Int, checked as `is_subtype(τ, σ)`). The substitution is unchanged because there are no type variables to bind.
+[U-SUBSUME] is unidirectional: it checks `is_subtype(σ, τ)` only. The caller is responsible for argument order — in contravariant positions, the arguments are swapped before calling unify(). `unify(IntLiteral(42), Int)` succeeds (IntLiteral(42) <: Int); `unify(Int, IntLiteral(42))` goes to [U-FAIL]. This is intentional: unify() is not inherently symmetric at the ground-type level; its symmetry comes from the call sites using bidirectional constrain(). The substitution is unchanged because there are no type variables to bind.
 
-**Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is bidirectional because it operates within unification where the original directionality is lost after structural decomposition. This is sound because the substitution is not modified — the bidirectional check only determines compatibility, not binding direction.
+**Interaction with [SUB]:** At CALL-MONO sites (fully concrete types, no unification needed), `check_expr` uses directional subsumption via `is_subtype(actual, expected)` — only the correct direction is checked. [U-SUBSUME] is also unidirectional (σ must be subtype of τ) — the correct argument order is established before calling unify().
 
-**Dual-path promotion design.** `unify()` also implements bidirectional promotion arms for 5 type pairs (`IntLiteral` with `Int` and `Number`; `Int` with `Number`; `Float` with `Number`; `StringLiteral` with `Str`) plus literal identity checks, directly as Robinson unification match cases. These are symmetric (either direction succeeds) and fire before [U-SUBSUME]. The dual-path design is intentional: promotions in `unify()` handle CALL-POLY argument matching where type variables have been resolved to concrete types by substitution, while [U-SUBSUME] via `is_subtype` handles the general fallback for concrete type pairs not covered by explicit arms. Both paths produce the same result for overlapping cases — neither modifies the substitution — but the explicit arms avoid the `has_inference_vars` guard and `is_subtype` call overhead for the most common promotion patterns. Note: `IntLiteral` with `Float` is intentionally NOT a promotion arm because `IntLiteral` is not a subtype of `Float` — they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`).
+Literal-to-parent promotions are handled entirely by [U-SUBSUME] — there are no separate fast-path arms in `unify()`.
 
 All other non-structural, non-subsumable combinations: error [U-FAIL]
 
-**Interaction with CALL-POLY:** Polymorphic call checking synthesizes all argument types, then unifies each against the corresponding instantiated parameter type. Type variable binding comes from [U-VAR]; concrete type compatibility (after substitution resolves variables) comes from [U-SUBSUME]. The bidirectional subsumption in [U-SUBSUME] ensures confluence — argument order does not affect whether type checking succeeds, only the precision of the resulting binding.
+**Interaction with CALL-POLY:** Polymorphic call checking synthesizes all argument types, then unifies each against the corresponding instantiated parameter type. Type variable binding comes from [U-VAR]; concrete type compatibility (after substitution resolves variables) comes from [U-SUBSUME]. Confluence at CALL-POLY sites is ensured by call sites establishing the correct sub/sup direction before calling unify() — [U-SUBSUME] itself is unidirectional.
 
 **`TypeStageApp` unification rules.** After `normalize()` runs, `unify_normalized` may still encounter irreducible `TypeStageApp` nodes (non-ground args). Four cases:
 
 ```text
 unify(TypeStageApp("F", a₁), TypeStageApp("F", a₂))   # same function, F injective:
-  → unify args pairwise                               [U-TSA-CONGRUENCE]
+  → bidirectional constrain on args: constrain(aᵢ,bᵢ) ∧ constrain(bᵢ,aᵢ) for each i
+                                                       [U-TSA-CONGRUENCE]
 
 unify(TypeStageApp("F", a₁), TypeStageApp("F", a₂))   # same function, F non-injective:
   → defer to InferState.deferred_equalities           [U-TSA-DEFER]
@@ -615,7 +660,8 @@ match (a, b) {
         let fresh = state.fresh_type_var();
         let a_open = substitute(b1, v1, &fresh);
         let b_open = substitute(b2, v2, &fresh);
-        unify(a_open, b_open, subst, state)
+        constrain(a_open, b_open)?;   // bidirectional: opened_a ≤ opened_b
+        constrain(b_open, a_open)     //               opened_b ≤ opened_a
     }
 
     // Arm 2 (TypeVar left): bind TypeVar to the right side.
@@ -637,14 +683,16 @@ match (a, b) {
     (TypeNode.Recursive { var: v1, body: b1 }, other) => {
         let fresh = state.fresh_type_var();
         let a_open = substitute(b1, v1, &fresh);
-        unify(a_open, other, subst, state)
+        constrain(a_open, other)?;   // bidirectional: opened_a ≤ other
+        constrain(other, a_open)     //               other ≤ opened_a
     }
 
     // Arm 5 (asymmetric right): right is Recursive, left is concrete.
     (other, TypeNode.Recursive { var: v2, body: b2 }) => {
         let fresh = state.fresh_type_var();
         let b_open = substitute(b2, v2, &fresh);
-        unify(other, b_open, subst, state)
+        constrain(other, b_open)?;   // bidirectional: other ≤ opened_b
+        constrain(b_open, other)     //               opened_b ≤ other
     }
 
     // Structural cases for concrete non-Recursive, non-TypeVar types...
@@ -658,10 +706,122 @@ Arms 2 and 3 (TypeVar binding) must appear before Arms 4 and 5 (asymmetric Recur
 ### Termination
 
 - **Arms 2 and 3** terminate immediately — one substitution entry added, no recursive call.
-- **Arms 4 and 5** replace `RecursiveRef(var)` with `TypeNode.TypeVar { name: fresh }` via `substitute`. After opening, the former recursive positions hold TypeVars. When descent encounters `fresh` paired against any type, Arm 2 or 3 fires. No further Recursive arm fires on that side. Termination follows by structural induction on the non-Recursive sides.
-- **Arm 1** (symmetric): the shared fresh TypeVar is substituted into both opened bodies. When descent reaches the TypeVar in either body, Arm 2 or 3 fires immediately.
+- **Arms 4 and 5** replace `RecursiveRef(var)` with `TypeNode.TypeVar { name: fresh }` via `substitute`. After opening, the former recursive positions hold TypeVars. The two bidirectional `constrain()` calls then descend into the opened body. When descent reaches the fresh TypeVar paired against any type, Arms 2 or 3 fire. No further Recursive arm fires on that side. Termination follows by structural induction on the non-Recursive sides.
+- **Arm 1** (symmetric): the shared fresh TypeVar is substituted into both opened bodies. The bidirectional `constrain()` calls descend; when the TypeVar is reached in either body, Arms 2 or 3 fire immediately.
 
 `unfold_once` — which replaces `RecursiveRef` with the full `Recursive` type, making the tree larger — is used only in subtype checking (where S-Assum prevents divergence), not in unification.
+
+### C-Recursive Arms in constrain()
+
+Three analogous arms in `constrain(sub, sup)` handle the equirecursive cases directionally:
+
+```text
+constrain(μv₁.body₁, μv₂.body₂) =
+    let α = fresh TypeVar
+    constrain(body₁[α/v₁], body₂[α/v₂])   [C-Recursive-Both]
+
+constrain(μv₁.body₁, other) where other is not Recursive =
+    let α = fresh TypeVar
+    constrain(body₁[α/v₁], other)           [C-Recursive-Left]
+
+constrain(other, μv₂.body₂) where other is not Recursive =
+    let α = fresh TypeVar
+    constrain(other, body₂[α/v₂])           [C-Recursive-Right]
+```
+
+Note that the C-Recursive arms in `constrain()` are directional (one call each), while `unify()` Arms 1/4/5 apply bidirectional constrain. The unify arms use bidirectional constrain because unification requires equality; the constrain arms are directional because constrain is the subtyping judgment (sub ≤ sup).
+
+## Constraint Generation: constrain(sub, sup)
+
+`constrain(sub, sup)` is the **directional** subtyping judgment: it asserts `sub ≤ sup`. Unlike `unify()`, which is symmetric and produces a substitution, `constrain()` propagates bounds into `InferState` and returns `Ok(())` or a type error. It is the primary structural judgment for all compound types; `unify()` delegates all compound-type structural decomposition to `constrain()`.
+
+**Judgment form:** `constrain(sub, sup, state, constraints, span) → Result<()>`
+
+### Structural Arms
+
+```text
+constrain(Fn(p₁…pₙ→r₁), Fn(q₁…qₙ→r₂)) =
+    Special case — zero-param variadic ("any-function": params=[], rest=Some(...)):
+        if sub is any-function or sup is any-function:
+            constrain(r₁, r₂)   (covariant return only — arity check skipped, params not constrained)
+        Any-function = params=[], rest=Some(...) (i.e., a zero-param variadic, used as the fn? marker).
+    General case (in code order: arity check fires first, then param/return constrain):
+        error if |p| ≠ |q|  (arity mismatch, via check_function_arity — fail fast before any constrain)
+        constrain(qᵢ, pᵢ) for each i   (contravariant params: sub params must accept sup params)
+        constrain(r₁, r₂)               (covariant return)          [C-FN]
+
+constrain(Dict(r₁), Dict(r₂)) =
+    constrain_rows(r₁, r₂)          (directional: sub_row ≤ sup_row)    [C-Dict]
+
+constrain(T·C{r₁}, T·C{r₂}) where same tycon T and ctor C =
+    constrain_rows(r₁, r₂)          (directional field subtyping)        [C-NominalVariant]
+
+constrain(App(F, a₁…aₙ), App(F, b₁…bₙ)) where F has registered TyConDef =
+    for each i, dispatch on TyConDef.variance[i]:
+        Covariant:     constrain(aᵢ, bᵢ)                                 [C-App-Cov]
+        Contravariant: constrain(bᵢ, aᵢ)   (swapped)                     [C-App-Contra]
+        Invariant:     constrain(aᵢ, bᵢ) ∧ constrain(bᵢ, aᵢ)            [C-App-Inv]
+        Phantom:       Ok(())                                             [C-App-Phantom]
+    error if i ≥ |TyConDef.variance|  (more args than declared variance positions)
+    Note: different TyCon names or no TyConDef → fall through to unify() for structural
+    recursion on components (not an error; avoids constrain→unify→constrain loop).
+
+constrain(μv₁.body₁, μv₂.body₂) =
+    let α = fresh TypeVar
+    constrain(body₁[α/v₁], body₂[α/v₂])   (open both, share fresh var)  [C-Recursive-Both]
+
+constrain(μv₁.body₁, other) where other is not Recursive =
+    let α = fresh TypeVar
+    constrain(body₁[α/v₁], other)                                         [C-Recursive-Left]
+
+constrain(other, μv₂.body₂) where other is not Recursive =
+    let α = fresh TypeVar
+    constrain(other, body₂[α/v₂])                                         [C-Recursive-Right]
+
+constrain(¬T₁, ¬T₂) =
+    constrain(T₂, T₁)   (contravariant: sub's negation ≤ sup's negation iff sup ≤ sub)
+                                                                           [C-Negation]
+
+constrain(TypeStageApp("F", a₁…aₙ), TypeStageApp("F", b₁…bₙ)) where same function F =
+    constrain(aᵢ, bᵢ) ∧ constrain(bᵢ, aᵢ) for each i   (invariant: bidirectional)
+                                                           [C-TypeStageApp]
+```
+
+### constrain_rows(sub_row, sup_row)
+
+`constrain_rows` implements directional record subtyping (sub_row ≤ sup_row):
+
+```text
+constrain_rows(sub_row, sup_row):
+    # Step 1: Width subtyping + depth subtyping on shared fields.
+    for each (k, sup_ty) in sup_row.fields:
+        if k ∈ sub_row.fields:
+            constrain(sub_row[k], sup_ty)          (covariant field subtyping)
+        elif sub_row.tail = Uniform{v}:
+            constrain(v, sup_ty)                   (uniform tail covers missing field)
+        else:
+            error "missing field k"                (no Uniform tail, no field: error)
+
+    # Step 2: Tail compatibility.
+    (_, RowTail::Empty)          → Ok(())          (sub may have more fields: width subtyping)
+    (sub_tail, RowTail::Uniform{sup_v}) →
+        for each sub_field_ty in sub_row.fields:
+            constrain(sub_field_ty, sup_v)         (all sub fields ≤ sup uniform value)
+        if sub_tail = Uniform{sub_v}:
+            constrain(sub_v, sup_v)                (sub uniform value ≤ sup uniform value)
+            if sup has key type sup_k:
+                constrain(sub_k, sup_k)  or error  (key type ≤)
+```
+
+### Invariant
+
+**Every compound `Type` variant that carries structural sub-terms must have an explicit `constrain()` arm.** Falling through to `unify()` is permitted only for:
+
+- `TypeVar`-to-`TypeVar` binding (C-Var1/C-Var2 handle union/intersection TypeVar cases above)
+- Atomic mismatches (e.g., `Int` vs `Str`) — `unify()` generates the structured error
+- Ground-type pairs with no inference variables — `constrain()` applies the BAS `is_subtype` check first, then falls through to `unify()` for error generation on failure
+
+If a new compound variant is added to `Type`, a `constrain()` arm must be added before introducing the variant. Relying on `unify()`'s U-SUBSUME fallthrough for TypeVar-containing compound types is unsound — variance would be lost.
 
 ## Contractiveness
 

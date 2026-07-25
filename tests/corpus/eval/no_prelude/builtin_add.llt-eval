@@ -1,4 +1,4 @@
---- pragma: ["no-prelude"]
-[builtin-int-add 1 2]
+--- uses: ["core"] pragma: ["no-prelude"]
+[[builtin-int-add 1 2]]
 === out
 Int(3)

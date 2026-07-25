@@ -476,7 +476,6 @@ async fn async_main() -> i32 {
     }
 }
 
-
 /// Open cap_std::fs::Dir entries for the given --cap-fs list.
 /// Skips injection when no_fs is true.
 /// Returns Vec<(name, Arc<cap_std::fs::Dir>, perms)>.
@@ -1975,10 +1974,7 @@ async fn run_eval(
 
     // Create the base eval context (owns the ScopeArena used by all %programs thunks).
     let eval_ctx = {
-        let mut ctx = EvalContext::new_with_options(
-            require_integrity,
-            env_allowed.clone(),
-        );
+        let mut ctx = EvalContext::new_with_options(require_integrity, env_allowed.clone());
         if let Some(ref collector) = profiling_collector {
             Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
         }

@@ -811,6 +811,19 @@ impl InferState {
     pub fn get_level(&self, name: &str) -> Option<u32> {
         self.levels.get(name).copied()
     }
+
+    /// Returns the level of a TypeVar, or 0 if the name is not registered.
+    ///
+    /// Level 0 is the correct default for unregistered TypeVar names. These occur as
+    /// binder variables in `Type::Recursive { var, body }` — the binder name is a
+    /// string, not a fresh TypeVar created by `fresh_type_var_with`, so it is never in
+    /// `state.levels`. The correct level for a binder is 0 (outermost scope), which
+    /// causes `lower_levels_check_occurs` to correctly cap any TypeVars in the body
+    /// to the binder's scope. Level 0 is also a safe default for TypeVars created
+    /// directly in tests without going through `fresh_type_var_with`.
+    pub fn get_level_for_occurs_check(&self, name: &str) -> u32 {
+        self.levels.get(name).copied().unwrap_or(0)
+    }
 }
 
 impl Default for InferState {

@@ -13,25 +13,21 @@
 //! (annotation resolution, async unify) directly. The CEK loop eliminates recursive
 //! calls to `run_typecheck` itself, not all async behavior.
 
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
     class_decl_name, node_id, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
-    SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam,
-    STANDARD_ANN_KEYS,
+    SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, STANDARD_ANN_KEYS,
 };
 use crate::coverage;
 use crate::env::Env;
 use crate::error::{DiagnosticLevel, TypeDiagnostic};
-use crate::type_def::{Row, RowTail, TyConDef};
+use crate::type_def::{Label, Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
     constrain, generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme,
-    Constraint,
-    InferState, Kind, Type, TypeScheme,
+    resolve_has_field, Constraint, InferState, Kind, Type, TypeScheme,
 };
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
@@ -56,7 +52,7 @@ pub(crate) struct Scc {
     pub(crate) indices: Vec<usize>,
 }
 
-/// Type alias for the instantiated function signature tuple used in `AfterCallFunc` handling:
+/// Type alias for the instantiated function signature tuple used in `CallFunc` handling:
 /// `(params, return_type, typed_variadics, rest, required_count)`.
 type InstFuncSig = (
     Vec<(Option<String>, crate::types::Type)>,
@@ -66,24 +62,33 @@ type InstFuncSig = (
     usize,
 );
 
+/// Instantiated function signature — groups the five signature fields that always travel
+/// together through call-checking helpers. Owned data; no lifetime parameters.
+struct FnSig {
+    params: Vec<(Option<String>, Type)>,
+    ret: Type,
+    typed_variadics: Vec<(String, Type)>,
+    rest: Option<Box<(String, Type)>>,
+    required_count: usize,
+}
+
+/// Shared mutable context threaded through type-checking helpers.
+/// Groups the three machinery parameters to keep function argument counts below threshold.
+struct TypeCheckCtx<'a, 'b> {
+    state: &'a mut InferState,
+    errors: &'a mut Vec<TypeDiagnostic>,
+    type_map: &'a mut Option<&'b mut TypeMap>,
+}
+
 // ===== TypeCheckCont enum =====
 
 /// Explicit continuation stack for the type checker CEK machine.
 ///
 /// Each variant stores the data needed to resume type checking after a child expression
 /// has been inferred. The continuation stack replaces recursive calls to `infer_step`.
-///
-/// Note: `AfterDictSccMember`, `AfterTypeAliasReg`, and `AfterClassInstancePreReg` are
-/// intentional placeholder variants for the future iterative SCC wiring (T-1644 follow-on).
-/// They have `apply_cont` handlers but are not yet pushed — `AfterDictPassZero` invokes
-/// `run_typecheck_dict` directly instead of threading through these continuations.
-/// The `#[allow(dead_code)]` below suppresses the "variant never constructed" warning
-/// for `AfterDictSccMember`, `AfterTypeAliasReg`, and `AfterClassInstancePreReg`.
-#[allow(dead_code)]
-#[allow(clippy::enum_variant_names)]
 pub(crate) enum TypeCheckCont {
-    /// After inferring a function body, restore saved level/expected_return and build fn type.
-    AfterFnBody {
+    /// Inferred a function body — restore saved level/expected_return and build fn type.
+    FnBody {
         saved_level: u32,
         saved_expected_return: Option<Type>,
         /// Pre-resolved return annotation type (overrides body type when concrete).
@@ -98,17 +103,16 @@ pub(crate) enum TypeCheckCont {
         node_span: Span,
     },
 
-    /// After inferring the function expression in a call, start processing arguments.
-    AfterCallFunc {
+    /// Inferred the function expression in a call — start processing arguments.
+    CallFunc {
         args: Vec<Arc<SurfaceNode>>,
         named_args: Vec<Spanned<SurfaceNamedArg>>,
         env: Arc<RwLock<Env>>,
-        span: Span,
         call_node: Arc<SurfaceNode>,
     },
 
-    /// After inferring one argument, continue with remaining or finalize the return type.
-    AfterCallArg {
+    /// Inferred one argument — continue with remaining or finalize the return type.
+    CallArg {
         /// 0-based index of the arg just inferred.
         idx: usize,
         /// Remaining positional args to infer (after the one just done).
@@ -131,15 +135,15 @@ pub(crate) enum TypeCheckCont {
         call_node: Arc<SurfaceNode>,
     },
 
-    /// After inferring the scrutinee of a match, start processing arms.
-    AfterMatchScrutinee {
+    /// Inferred the scrutinee of a match — start processing arms.
+    MatchScrutinee {
         arms: Vec<SurfaceMatchArm>,
         env: Arc<RwLock<Env>>,
         span: Span,
     },
 
-    /// After inferring one match arm body, continue with remaining arms.
-    AfterMatchArm {
+    /// Inferred one match arm body — continue with remaining arms.
+    MatchArm {
         remaining_arms: Vec<SurfaceMatchArm>,
         env: Arc<RwLock<Env>>,
         accumulated_types: Vec<Type>,
@@ -148,88 +152,22 @@ pub(crate) enum TypeCheckCont {
         span: Span,
     },
 
-    /// After inferring one member of an SCC, advance to the next.
-    AfterDictSccMember {
-        scc_indices: Vec<usize>,
-        current_member_pos: usize,
-        entries: Vec<Spanned<SurfaceEntry>>,
-        key_entries: Vec<(Option<String>, bool, bool)>,
-        // IndexMap preserves source insertion order for deterministic type diagnostic ordering.
-        field_types: indexmap::IndexMap<String, Type>,
-        schemes: indexmap::IndexMap<String, TypeScheme>,
-        scc_env: Arc<RwLock<Env>>,
-        dict_env: Arc<RwLock<Env>>,
-        local_subst: Substitution,
-        entry_constraints: HashMap<String, Vec<Constraint>>,
-        entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>>,
-        // IndexMap preserves insertion order for deterministic constructor scheme ordering.
-        ctor_schemes: indexmap::IndexMap<String, TypeScheme>,
-        // IndexMap preserves insertion order for deterministic type variable iteration.
-        fresh_vars_by_name: indexmap::IndexMap<String, Type>,
-        saved_level: u32,
-        remaining_sccs: Vec<Scc>,
-        enclosing_level: u32,
-        errors: Vec<TypeDiagnostic>,
-        span: Span,
-    },
-
-    /// After Pass 0 (key resolution), run the full multi-pass dict inference (T-1644).
+    /// Pass 0 (key resolution) complete — run full multi-pass dict inference (T-1644).
     ///
     /// Pushed by the `Dict` arm of `infer_step`. The handler calls `run_typecheck_dict`
     /// with all fields needed for the full Passes 1–4 dict inference algorithm.
-    AfterDictPassZero {
-        /// The original Dict node — retained for type_map span recording.
-        dict_node: Arc<SurfaceNode>,
+    DictPassZero {
         /// Dict entries — passed directly to run_typecheck_dict (avoids re-parse).
         entries: Vec<Spanned<SurfaceEntry>>,
-        /// Pre-computed key entries from Pass 0 in infer_step.
-        /// run_typecheck_dict recomputes them internally; this field is retained for
-        /// the AfterDictSccMember continuation path (future iterative SCC wiring).
-        #[allow(dead_code)]
-        key_entries: Vec<(Option<String>, bool, bool)>,
         env: Arc<RwLock<Env>>,
-        /// Enclosing level at the time the Dict arm fired.
-        #[allow(dead_code)]
-        enclosing_level: u32,
-        span: Span,
     },
 
-    /// After registering type aliases (Pass 2), proceed to class/instance pre-registration.
-    AfterTypeAliasReg {
-        entries: Vec<Spanned<SurfaceEntry>>,
-        key_entries: Vec<(Option<String>, bool, bool)>,
-        dict_env: Arc<RwLock<Env>>,
-        // IndexMap preserves insertion order for deterministic constructor scheme ordering.
-        ctor_schemes: indexmap::IndexMap<String, TypeScheme>,
-        // IndexMap preserves insertion order for deterministic type variable iteration.
-        fresh_vars_by_name: indexmap::IndexMap<String, Type>,
-        enclosing_level: u32,
-        span: Span,
-    },
-
-    /// After class/instance pre-registration (Pass 0c), start SCC processing.
-    AfterClassInstancePreReg {
-        sccs: Vec<Scc>,
-        entries: Vec<Spanned<SurfaceEntry>>,
-        key_entries: Vec<(Option<String>, bool, bool)>,
-        dict_env: Arc<RwLock<Env>>,
-        // IndexMap preserves insertion order for deterministic constructor scheme ordering.
-        ctor_schemes: indexmap::IndexMap<String, TypeScheme>,
-        // IndexMap preserves insertion order for deterministic type variable iteration.
-        fresh_vars_by_name: indexmap::IndexMap<String, Type>,
-        // IndexMap preserves source insertion order for deterministic type diagnostic ordering.
-        field_types: indexmap::IndexMap<String, Type>,
-        errors: Vec<TypeDiagnostic>,
-        enclosing_level: u32,
-        span: Span,
-    },
-
-    /// After evaluating a non-Dict intermediate body in a Sequential, extend env and continue.
+    /// Inferred a non-Dict intermediate body in a Sequential — extend env and continue.
     ///
     /// Pushed by `infer_step::Sequential` when encountering a non-Dict intermediate body.
     /// This replaces the `Box::pin(run_typecheck(...))` recursive call — the CEK machine
     /// must remain fully iterative (Ager et al. 2003).
-    AfterSequentialNonDictIntermediate {
+    SequentialNonDictIntermediate {
         /// Span of the just-evaluated intermediate (for `not_a_record` error attribution).
         intermediate_span: Span,
         /// Remaining intermediate bodies after the current one.
@@ -242,32 +180,29 @@ pub(crate) enum TypeCheckCont {
         enclosing_level: u32,
     },
 
-    /// After inferring the inner expression of a TypeAssert, validate against expected type.
-    AfterTypeAssertInner {
+    /// Inferred the inner expression of a TypeAssert — validate against expected type.
+    TypeAssertInner {
         expected: Type,
         has_default: bool,
         default_node: Option<Arc<SurfaceNode>>,
         env: Arc<RwLock<Env>>,
         span: Span,
-        /// Retained for future error reporting (annotating mismatch with annotation source location).
-        #[allow(dead_code)]
-        annotation_span: Span,
     },
 
-    /// After inferring the base expression of a Field access, look up the field type.
+    /// Inferred the base expression of a Field access — look up the field type.
     ///
     /// Resolves the field type from the inferred base type and returns it via
     /// `TypeCheckAction::Done`. All dot-access desugars to `builtin-get` (key-based lookup).
-    AfterFieldBase {
+    FieldBase {
         field: crate::ast::DotKey,
         span: Span,
     },
 
-    /// After inferring the inner expression of an Unquote, return its type.
-    AfterUnquote,
+    /// Inferred the inner expression of an Unquote — return its type.
+    Unquote,
 
-    /// After inferring the inner expression of an UnquoteSplice, return Unknown.
-    AfterUnquoteSplice,
+    /// Inferred the inner expression of an UnquoteSplice — return Unknown.
+    UnquoteSplice,
 }
 
 // ===== run_typecheck =====
@@ -379,12 +314,12 @@ async fn infer_step(
 
         // ===== Unquote / UnquoteSplice — compound =====
         SurfaceExpression::Unquote(inner) => {
-            stack.push(TypeCheckCont::AfterUnquote);
+            stack.push(TypeCheckCont::Unquote);
             TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
-            stack.push(TypeCheckCont::AfterUnquoteSplice);
+            stack.push(TypeCheckCont::UnquoteSplice);
             TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
         }
 
@@ -392,7 +327,7 @@ async fn infer_step(
         SurfaceExpression::Field { expr, field, .. } => match expr {
             None => TypeCheckAction::Done(Type::Unknown),
             Some(base) => {
-                stack.push(TypeCheckCont::AfterFieldBase {
+                stack.push(TypeCheckCont::FieldBase {
                     field: field.clone(),
                     span: node.span.clone(),
                 });
@@ -424,13 +359,12 @@ async fn infer_step(
 
             match annotation_result {
                 Ok(expected) => {
-                    stack.push(TypeCheckCont::AfterTypeAssertInner {
+                    stack.push(TypeCheckCont::TypeAssertInner {
                         expected,
                         has_default,
                         default_node,
                         env: Arc::clone(env),
                         span: node.span.clone(),
-                        annotation_span: annotation.span.clone(),
                     });
                     TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
                 }
@@ -462,14 +396,8 @@ async fn infer_step(
             for (i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-                    let (_, schemes, mut dict_errs) = run_typecheck_dict(
-                        entries,
-                        &current_env,
-                        state,
-                        type_map,
-                        intermediate.span.clone(),
-                    )
-                    .await;
+                    let (_, schemes, mut dict_errs) =
+                        run_typecheck_dict(entries, &current_env, state, type_map).await;
                     errors.append(&mut dict_errs);
 
                     // Extend env with schemes (preserving let-polymorphism)
@@ -490,7 +418,7 @@ async fn infer_step(
                     // extends env, and continues processing remaining intermediates.
                     let enc_level = state.level;
                     state.level += 1;
-                    stack.push(TypeCheckCont::AfterSequentialNonDictIntermediate {
+                    stack.push(TypeCheckCont::SequentialNonDictIntermediate {
                         intermediate_span: intermediate.span.clone(),
                         remaining_intermediates: intermediates[i + 1..]
                             .iter()
@@ -532,10 +460,9 @@ async fn infer_step(
             // Special-case: [if cond t f] with path-sensitive narrowing (handled inline)
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "if" && args.len() == 3 && named_args.is_empty() {
-                    let ty = infer_if_expr(
-                        &args[0], &args[1], &args[2], node, env, state, errors, type_map,
-                    )
-                    .await;
+                    let ty =
+                        infer_if_expr(&args[0], &args[1], &args[2], env, state, errors, type_map)
+                            .await;
                     return TypeCheckAction::Done(ty);
                 }
 
@@ -560,75 +487,35 @@ async fn infer_step(
             // General call: push AfterCallFunc, evaluate func
             let args_cloned: Vec<Arc<SurfaceNode>> = args.iter().map(Arc::clone).collect();
             let named_args_cloned: Vec<Spanned<SurfaceNamedArg>> = named_args.to_vec();
-            stack.push(TypeCheckCont::AfterCallFunc {
+            stack.push(TypeCheckCont::CallFunc {
                 args: args_cloned,
                 named_args: named_args_cloned,
                 env: Arc::clone(env),
-                span: node.span.clone(),
                 call_node: Arc::clone(node),
             });
             TypeCheckAction::Eval(Arc::clone(func), Arc::clone(env))
         }
 
-        // ===== Fn — resolve annotations, build env, push AfterFnBody, eval body =====
-        SurfaceExpression::Fn {
-            return_ann,
-            params,
-            body,
-            ..
-        } => {
-            infer_fn_push_cont(
-                return_ann, params, body, node, env, state, errors, type_map, stack,
-            )
-            .await
-        }
+        // ===== Fn — resolve annotations, build env, push FnBody, eval body =====
+        SurfaceExpression::Fn { .. } => infer_fn_push_cont(node, env, state, errors, stack).await,
 
-        // ===== Dict — push AfterDictPassZero, complete inference via run_typecheck_dict =====
+        // ===== Dict — push DictPassZero, complete inference via run_typecheck_dict =====
         //
-        // Pass 0 (key resolution) runs synchronously here. The full multi-pass dict inference
-        // (Passes 1–4) is performed by run_typecheck_dict in the AfterDictPassZero handler.
-        // We push the continuation and return Done(Unknown) immediately to trigger apply_cont —
-        // there is no child node to evaluate at this point (T-1644).
+        // Full multi-pass dict inference (Passes 0–4) is performed by run_typecheck_dict in
+        // the DictPassZero handler. Push the continuation and return Done(Unknown) immediately
+        // to trigger apply_cont — there is no child node to evaluate at this point (T-1644).
         SurfaceExpression::Dict(entries) => {
-            let key_entries = {
-                let mut auto_index: i64 = 0;
-                let mut result = Vec::with_capacity(entries.len());
-                for entry in entries {
-                    let key_name =
-                        entry_key_name(&entry.node, &mut auto_index, env, state, type_map).await;
-                    let is_alias = matches!(
-                        &entry.node.value.expr,
-                        SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::TypeAlias { .. })
-                    );
-                    let is_static_key = entry.node.key.as_ref().is_some_and(|k| {
-                        matches!(
-                            &k.expr,
-                            SurfaceExpression::StringLiteral { .. }
-                                | SurfaceExpression::VarRef { .. }
-                        )
-                    });
-                    result.push((key_name, is_alias, is_static_key));
-                }
-                result
-            };
-            let enclosing_level = state.level;
-            stack.push(TypeCheckCont::AfterDictPassZero {
-                dict_node: Arc::clone(node),
+            stack.push(TypeCheckCont::DictPassZero {
                 entries: entries.to_vec(),
-                key_entries,
                 env: Arc::clone(env),
-                enclosing_level,
-                span: node.span.clone(),
             });
-            // Return Done(Unknown) immediately to trigger apply_cont — Pass 0 is synchronous,
-            // there is no child node to evaluate. The handler does the actual inference.
             TypeCheckAction::Done(Type::Unknown)
         }
 
         // ===== Match — compound: eval scrutinee first =====
         SurfaceExpression::Match { scrutinee, arms } => {
             let arms_cloned: Vec<SurfaceMatchArm> = arms.to_vec();
-            stack.push(TypeCheckCont::AfterMatchScrutinee {
+            stack.push(TypeCheckCont::MatchScrutinee {
                 arms: arms_cloned,
                 env: Arc::clone(env),
                 span: node.span.clone(),
@@ -755,7 +642,7 @@ async fn apply_cont(
 ) -> TypeCheckAction {
     match cont {
         // ===== AfterFnBody =====
-        TypeCheckCont::AfterFnBody {
+        TypeCheckCont::FnBody {
             saved_level,
             saved_expected_return,
             return_ann,
@@ -910,12 +797,11 @@ async fn apply_cont(
             TypeCheckAction::Done(fn_type)
         }
 
-        // ===== AfterCallFunc =====
-        TypeCheckCont::AfterCallFunc {
+        // ===== CallFunc =====
+        TypeCheckCont::CallFunc {
             args,
             named_args,
             env,
-            span,
             call_node,
         } => {
             let func_ty = if state.subst_is_empty() {
@@ -924,14 +810,16 @@ async fn apply_cont(
                 state.apply(&child_ty)
             };
 
-            apply_cont_call_func(
-                func_ty, args, named_args, env, span, call_node, state, errors, type_map, stack,
-            )
-            .await
+            let mut ctx = TypeCheckCtx {
+                state,
+                errors,
+                type_map,
+            };
+            apply_cont_call_func(func_ty, args, named_args, env, call_node, &mut ctx, stack).await
         }
 
         // ===== AfterCallArg =====
-        TypeCheckCont::AfterCallArg {
+        TypeCheckCont::CallArg {
             idx,
             remaining_args,
             mut accumulated_arg_types,
@@ -952,7 +840,7 @@ async fn apply_cont(
                 let next_arg = Arc::clone(&remaining_args[0]);
                 let new_remaining: Vec<Arc<SurfaceNode>> =
                     remaining_args[1..].iter().map(Arc::clone).collect();
-                stack.push(TypeCheckCont::AfterCallArg {
+                stack.push(TypeCheckCont::CallArg {
                     idx: idx + 1,
                     remaining_args: new_remaining,
                     accumulated_arg_types,
@@ -971,26 +859,32 @@ async fn apply_cont(
             }
 
             // All positional args collected — unify and handle named args
-            apply_call_args_poly(
-                accumulated_arg_types,
-                arg_nodes,
-                param_types,
-                fn_ret,
+            let sig = FnSig {
+                params: param_types,
+                ret: fn_ret,
                 typed_variadics,
                 rest,
-                fn_required,
-                named_args,
-                env,
-                span,
+                required_count: fn_required,
+            };
+            let mut ctx = TypeCheckCtx {
                 state,
                 errors,
                 type_map,
+            };
+            apply_call_args_poly(
+                accumulated_arg_types,
+                arg_nodes,
+                sig,
+                named_args,
+                env,
+                span,
+                &mut ctx,
             )
             .await
         }
 
         // ===== AfterMatchScrutinee =====
-        TypeCheckCont::AfterMatchScrutinee { arms, env, span } => {
+        TypeCheckCont::MatchScrutinee { arms, env, span } => {
             let scrutinee_ty = state.subst.apply(&child_ty);
             if arms.is_empty() {
                 return TypeCheckAction::Done(Type::Unknown);
@@ -1017,7 +911,7 @@ async fn apply_cont(
                 }
                 Some((arm_env, next_remaining_scrutinee)) => {
                     let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].to_vec();
-                    stack.push(TypeCheckCont::AfterMatchArm {
+                    stack.push(TypeCheckCont::MatchArm {
                         remaining_arms,
                         env,
                         accumulated_types: Vec::new(),
@@ -1031,7 +925,7 @@ async fn apply_cont(
         }
 
         // ===== AfterMatchArm — process one arm body result and continue with next arm =====
-        TypeCheckCont::AfterMatchArm {
+        TypeCheckCont::MatchArm {
             remaining_arms,
             env,
             mut accumulated_types,
@@ -1069,7 +963,7 @@ async fn apply_cont(
                     }
                     Some((arm_env, next_remaining_scrutinee)) => {
                         let next_remaining: Vec<SurfaceMatchArm> = remaining_arms[1..].to_vec();
-                        stack.push(TypeCheckCont::AfterMatchArm {
+                        stack.push(TypeCheckCont::MatchArm {
                             remaining_arms: next_remaining,
                             env,
                             accumulated_types,
@@ -1083,112 +977,8 @@ async fn apply_cont(
             }
         }
 
-        // ===== AfterDictSccMember =====
-        TypeCheckCont::AfterDictSccMember {
-            scc_indices,
-            current_member_pos,
-            entries,
-            key_entries,
-            mut field_types,
-            schemes,
-            scc_env,
-            dict_env,
-            local_subst,
-            entry_constraints,
-            entry_inner_schemes,
-            ctor_schemes,
-            fresh_vars_by_name,
-            saved_level,
-            remaining_sccs,
-            enclosing_level,
-            errors: dict_errors,
-            span,
-        } => {
-            // Record the type for the completed member
-            let member_idx = scc_indices[current_member_pos];
-            let (ref key_name, is_alias, _) = key_entries[member_idx];
-            if let Some(name) = key_name {
-                if !is_alias {
-                    field_types.insert(name.clone(), child_ty);
-                }
-            }
-
-            let next_pos = current_member_pos + 1;
-            if next_pos < scc_indices.len() {
-                // Find next non-alias, non-Rest member in this SCC
-                let next_idx = scc_indices[next_pos];
-                let (ref _next_key, next_is_alias, _) = key_entries[next_idx];
-                let skip = next_is_alias
-                    || matches!(
-                        &entries[next_idx].node.value.expr,
-                        SurfaceExpression::Placeholder(..)
-                    )
-                    || matches!(
-                        &entries[next_idx].node.value.expr,
-                        SurfaceExpression::Decl(d)
-                            if matches!(
-                                d.as_ref(),
-                                SurfaceDeclaration::ClassDecl { .. }
-                                    | SurfaceDeclaration::InstanceDecl { .. }
-                            )
-                    );
-
-                if skip {
-                    // Re-push this continuation with advanced position, return Done to trigger re-pop
-                    stack.push(TypeCheckCont::AfterDictSccMember {
-                        scc_indices,
-                        current_member_pos: next_pos,
-                        entries,
-                        key_entries,
-                        field_types,
-                        schemes,
-                        scc_env,
-                        dict_env,
-                        local_subst,
-                        entry_constraints,
-                        entry_inner_schemes,
-                        ctor_schemes,
-                        fresh_vars_by_name,
-                        saved_level,
-                        remaining_sccs,
-                        enclosing_level,
-                        errors: dict_errors,
-                        span,
-                    });
-                    return TypeCheckAction::Done(Type::Unknown);
-                }
-
-                stack.push(TypeCheckCont::AfterDictSccMember {
-                    scc_indices,
-                    current_member_pos: next_pos,
-                    entries: entries.clone(),
-                    key_entries: key_entries.clone(),
-                    field_types,
-                    schemes,
-                    scc_env: Arc::clone(&scc_env),
-                    dict_env,
-                    local_subst,
-                    entry_constraints,
-                    entry_inner_schemes,
-                    ctor_schemes,
-                    fresh_vars_by_name,
-                    saved_level,
-                    remaining_sccs,
-                    enclosing_level,
-                    errors: dict_errors,
-                    span,
-                });
-                TypeCheckAction::Eval(Arc::clone(&entries[next_idx].node.value), scc_env)
-            } else {
-                // SCC complete — AfterDictSccMember is a placeholder for the future iterative
-                // SCC wiring. Full SCC processing is done by run_typecheck_dict, not via this
-                // continuation. This arm should never be reached in the current implementation.
-                TypeCheckAction::Done(Type::Unknown)
-            }
-        }
-
         // ===== AfterSequentialNonDictIntermediate =====
-        TypeCheckCont::AfterSequentialNonDictIntermediate {
+        TypeCheckCont::SequentialNonDictIntermediate {
             intermediate_span,
             remaining_intermediates,
             last,
@@ -1222,14 +1012,8 @@ async fn apply_cont(
             // Process remaining intermediates iteratively (Dict inline, non-Dict via continuation).
             for (i, intermediate) in remaining_intermediates.iter().enumerate() {
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-                    let (_, schemes, mut dict_errs) = run_typecheck_dict(
-                        entries,
-                        &current_env,
-                        state,
-                        type_map,
-                        intermediate.span.clone(),
-                    )
-                    .await;
+                    let (_, schemes, mut dict_errs) =
+                        run_typecheck_dict(entries, &current_env, state, type_map).await;
                     errors.append(&mut dict_errs);
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
@@ -1246,7 +1030,7 @@ async fn apply_cont(
                     // Another non-Dict intermediate — push new continuation, return Eval.
                     let enc_level = state.level;
                     state.level += 1;
-                    stack.push(TypeCheckCont::AfterSequentialNonDictIntermediate {
+                    stack.push(TypeCheckCont::SequentialNonDictIntermediate {
                         intermediate_span: intermediate.span.clone(),
                         remaining_intermediates: remaining_intermediates[i + 1..]
                             .iter()
@@ -1265,13 +1049,12 @@ async fn apply_cont(
         }
 
         // ===== AfterTypeAssertInner =====
-        TypeCheckCont::AfterTypeAssertInner {
+        TypeCheckCont::TypeAssertInner {
             expected,
             has_default,
             default_node,
             env,
             span,
-            annotation_span: _,
         } => {
             let actual = child_ty;
             let expected_resolved = state.subst.apply(&expected);
@@ -1342,7 +1125,7 @@ async fn apply_cont(
         }
 
         // ===== AfterFieldBase =====
-        TypeCheckCont::AfterFieldBase { field, span } => {
+        TypeCheckCont::FieldBase { field, span } => {
             let resolved_base = state.subst.apply(&child_ty);
             let ty = field_type_from_base(&resolved_base, &field, &span, errors);
 
@@ -1367,42 +1150,29 @@ async fn apply_cont(
         }
 
         // ===== AfterUnquote =====
-        TypeCheckCont::AfterUnquote => TypeCheckAction::Done(child_ty),
+        TypeCheckCont::Unquote => TypeCheckAction::Done(child_ty),
 
         // ===== AfterUnquoteSplice =====
-        TypeCheckCont::AfterUnquoteSplice => TypeCheckAction::Done(Type::Unknown),
+        TypeCheckCont::UnquoteSplice => TypeCheckAction::Done(Type::Unknown),
 
         // ===== AfterDictPassZero =====
         //
-        // Pushed by the Dict arm of infer_step after synchronous Pass 0 (key name resolution).
-        // Runs the full multi-pass dict inference via run_typecheck_dict (T-1644).
-        // The entries and span from the continuation are used directly; dict_node is retained
-        // for type_map recording but inference delegates to run_typecheck_dict.
-        TypeCheckCont::AfterDictPassZero {
-            dict_node: _dict_node,
-            entries,
-            key_entries: _key_entries,
-            env,
-            enclosing_level: _enclosing_level,
-            span,
-        } => {
-            let (ty, _schemes, mut dict_errors) =
-                Box::pin(run_typecheck_dict(&entries, &env, state, type_map, span)).await;
+        // Pushed by the Dict arm of infer_step. Runs the full multi-pass dict inference via
+        // run_typecheck_dict (T-1644). The entries from the continuation are passed directly;
+        // run_typecheck_dict performs its own Pass 0 key resolution internally.
+        //
+        // Schemes are not propagated to the parent env here: in the DictPassZero path the dict
+        // is the terminal expression being inferred, not an intermediate scope-chain body.
+        // The dict's bindings are scoped to the dict itself (via dict_env inside
+        // run_typecheck_dict) and do not escape to the parent. The returned record type
+        // carries the full structural type information. Contrast with the Sequential path
+        // (lines ~406 and ~1057) where intermediate dict schemes ARE extended into the env.
+        TypeCheckCont::DictPassZero { entries, env } => {
+            let (ty, _, mut dict_errors) =
+                Box::pin(run_typecheck_dict(&entries, &env, state, type_map)).await;
             errors.append(&mut dict_errors);
             TypeCheckAction::Done(ty)
         }
-
-        // ===== AfterTypeAliasReg =====
-        //
-        // Placeholder for the future iterative SCC pass wiring. Not currently pushed —
-        // run_typecheck_dict handles all passes synchronously in the AfterDictPassZero handler.
-        TypeCheckCont::AfterTypeAliasReg { .. } => TypeCheckAction::Done(child_ty),
-
-        // ===== AfterClassInstancePreReg =====
-        //
-        // Placeholder for the future iterative SCC pass wiring. Not currently pushed —
-        // run_typecheck_dict handles all passes synchronously in the AfterDictPassZero handler.
-        TypeCheckCont::AfterClassInstancePreReg { .. } => TypeCheckAction::Done(child_ty),
     }
 }
 
@@ -1584,13 +1354,15 @@ async fn infer_if_expr(
     cond_node: &Arc<SurfaceNode>,
     true_node: &Arc<SurfaceNode>,
     false_node: &Arc<SurfaceNode>,
-    _call_node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<TypeDiagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Type {
-    let _cond_ty = {
+    // Condition type is intentionally not used for narrowing here — narrowings are
+    // extracted structurally from cond_node below. run_typecheck is called for its
+    // side effects (populating type_map and propagating errors via &mut errors).
+    let _: Type = {
         let mut local_stack = Vec::new();
         Box::pin(run_typecheck(
             cond_node,
@@ -1692,30 +1464,14 @@ async fn infer_get_call(
     };
     let key_resolved = state.subst.apply(&key_ty);
 
-    let field_ty = if let (Type::StringLiteral(field_name), Type::Dict(row)) =
-        (&key_resolved, &container_resolved)
-    {
-        row.fields
-            .get(field_name.as_str())
-            .cloned()
-            .unwrap_or(Type::Unknown)
-    } else if let (Type::StringLiteral(field_name), Type::Union(members)) =
-        (&key_resolved, &container_resolved)
-    {
-        let field_types: Vec<Type> = members
-            .iter()
-            .filter_map(|m| {
-                if let Type::Dict(row) = m {
-                    row.fields.get(field_name.as_str()).cloned()
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if field_types.is_empty() {
-            Type::Unknown
-        } else {
-            Type::normalize_union(field_types)
+    let field_ty = if let Type::StringLiteral(field_name) = &key_resolved {
+        let label = Label::Concrete(field_name.clone());
+        match resolve_has_field(&label, &container_resolved, state, key_node.span.clone(), 0) {
+            Ok(ty) => ty,
+            Err(e) => {
+                errors.push(e);
+                Type::Unknown
+            }
         }
     } else {
         Type::Unknown
@@ -1887,11 +1643,8 @@ async fn apply_cont_call_func(
     args: Vec<Arc<SurfaceNode>>,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
     env: Arc<RwLock<Env>>,
-    span: Span,
     call_node: Arc<SurfaceNode>,
-    state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
+    ctx: &mut TypeCheckCtx<'_, '_>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
     // Error cascade suppression: calling a Type::Error function still infers args
@@ -1901,7 +1654,15 @@ async fn apply_cont_call_func(
     // Return Type::Error (not Unknown) — this is a definite failure; Unknown would
     // silently pass downstream consistency checks and mask the error.
     if let Type::Error(payload) = &func_ty {
-        eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+        eval_args_for_errors(
+            &args,
+            &named_args,
+            &env,
+            ctx.state,
+            ctx.errors,
+            ctx.type_map,
+        )
+        .await;
         return TypeCheckAction::Done(Type::Error(payload.clone()));
     }
 
@@ -1917,7 +1678,7 @@ async fn apply_cont_call_func(
             let (inst_params, inst_ret, inst_typed_variadics, inst_rest, inst_required): InstFuncSig =
                 if func_ty.has_inference_vars() {
                 // CALL-POLY: instantiate at current level
-                let inst_ty = instantiate_at_level(&func_ty, state, &span);
+                let inst_ty = instantiate_at_level(&func_ty, ctx.state, &call_node.span);
                 match inst_ty {
                     Type::Function {
                         params,
@@ -1944,24 +1705,25 @@ async fn apply_cont_call_func(
 
             if args.is_empty() {
                 // No positional args — arity is checked inside finalize_call_no_positional_args.
+                let sig = FnSig {
+                    params: inst_params,
+                    ret: inst_ret,
+                    typed_variadics: inst_typed_variadics,
+                    rest: inst_rest,
+                    required_count: inst_required,
+                };
                 let result = finalize_call_no_positional_args(
-                    inst_params,
-                    inst_ret,
-                    inst_typed_variadics,
-                    inst_rest,
-                    inst_required,
+                    sig,
                     named_args,
                     &env,
-                    span,
-                    state,
-                    errors,
-                    type_map,
+                    call_node.span.clone(),
+                    ctx,
                 )
                 .await;
                 return TypeCheckAction::Done(result);
             }
 
-            // Positional args present: check arity BEFORE pushing any AfterCallArg continuation.
+            // Positional args present: check arity BEFORE pushing any CallArg continuation.
             // This prevents type unification from running with the wrong number of arguments,
             // which would produce misleading type errors downstream.
             {
@@ -1972,16 +1734,24 @@ async fn apply_cont_call_func(
                 // no saturating_sub is needed — inst_required already excludes variadic params.
                 let min_req = inst_required;
                 if n_total < min_req || (!inst_variadic && n_positional > inst_params.len()) {
-                    eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+                    eval_args_for_errors(
+                        &args,
+                        &named_args,
+                        &env,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
+                    )
+                    .await;
                     let err = TypeDiagnostic::error(
                         "type-error",
                         format!(
                             "arity mismatch: expected {} argument(s), got {}",
                             min_req, n_total
                         ),
-                        span.clone(),
+                        call_node.span.clone(),
                     );
-                    errors.push(err.clone());
+                    ctx.errors.push(err.clone());
                     return TypeCheckAction::Done(Type::error_with(vec![err]));
                 }
             }
@@ -1990,7 +1760,8 @@ async fn apply_cont_call_func(
             let first_arg = Arc::clone(&args[0]);
             let arg_nodes: Vec<Arc<SurfaceNode>> = args.iter().map(Arc::clone).collect();
             let remaining: Vec<Arc<SurfaceNode>> = args[1..].iter().map(Arc::clone).collect();
-            stack.push(TypeCheckCont::AfterCallArg {
+            let call_span = call_node.span.clone();
+            stack.push(TypeCheckCont::CallArg {
                 idx: 0,
                 remaining_args: remaining,
                 accumulated_arg_types: Vec::new(),
@@ -2002,7 +1773,7 @@ async fn apply_cont_call_func(
                 fn_required: inst_required,
                 env: Arc::clone(&env),
                 named_args,
-                span,
+                span: call_span,
                 call_node,
             });
             TypeCheckAction::Eval(first_arg, env)
@@ -2015,9 +1786,9 @@ async fn apply_cont_call_func(
                 let _ = Box::pin(run_typecheck(
                     arg,
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await;
@@ -2027,15 +1798,16 @@ async fn apply_cont_call_func(
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await;
             }
-            let ret_var = state
-                .fresh_type_var_with(Some("ret"), None, Kind::Type, &span)
+            let ret_var = ctx
+                .state
+                .fresh_type_var_with(Some("ret"), None, Kind::Type, &call_node.span)
                 .1;
             TypeCheckAction::Done(ret_var)
         }
@@ -2046,9 +1818,9 @@ async fn apply_cont_call_func(
                 let _ = Box::pin(run_typecheck(
                     arg,
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await;
@@ -2058,14 +1830,14 @@ async fn apply_cont_call_func(
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await;
             }
-            state.diagnostics.push(crate::error::TypeDiagnostic {
+            ctx.state.diagnostics.push(crate::error::TypeDiagnostic {
                 level: crate::error::DiagnosticLevel::Warn,
                 kind: "unknown-call",
                 message: "calling expression of Unknown type — may not be a function".to_string(),
@@ -2082,9 +1854,9 @@ async fn apply_cont_call_func(
                 let _ = Box::pin(run_typecheck(
                     arg,
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await;
@@ -2094,9 +1866,9 @@ async fn apply_cont_call_func(
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await;
@@ -2111,26 +1883,42 @@ async fn apply_cont_call_func(
         } if fields.fields.is_empty() => {
             // Unit variant constructor: wraps a single arg
             if args.len() != 1 {
-                eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+                eval_args_for_errors(
+                    &args,
+                    &named_args,
+                    &env,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
+                )
+                .await;
                 let err = TypeDiagnostic::error(
                     "type-error",
                     format!(
                         "unit variant constructor takes exactly 1 argument, got {}",
                         args.len()
                     ),
-                    span,
+                    call_node.span.clone(),
                 );
-                errors.push(err.clone());
+                ctx.errors.push(err.clone());
                 return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
             if !named_args.is_empty() {
-                eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+                eval_args_for_errors(
+                    &args,
+                    &named_args,
+                    &env,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
+                )
+                .await;
                 let err = TypeDiagnostic::error(
                     "type-error",
                     "unit variant constructor does not accept named arguments",
-                    span,
+                    call_node.span.clone(),
                 );
-                errors.push(err.clone());
+                ctx.errors.push(err.clone());
                 return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
             let tycon = tycon.clone();
@@ -2140,9 +1928,9 @@ async fn apply_cont_call_func(
                 Box::pin(run_typecheck(
                     &args[0],
                     &env,
-                    state,
-                    errors,
-                    type_map,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
                     &mut local_stack,
                 ))
                 .await
@@ -2178,7 +1966,7 @@ async fn apply_cont_call_func(
                     ),
                     call_node.span.clone(),
                 );
-                errors.push(err.clone());
+                ctx.errors.push(err.clone());
                 return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
@@ -2214,7 +2002,7 @@ async fn apply_cont_call_func(
                     ),
                     call_node.span.clone(),
                 );
-                errors.push(err.clone());
+                ctx.errors.push(err.clone());
                 return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
@@ -2247,7 +2035,7 @@ async fn apply_cont_call_func(
             };
 
             Box::pin(apply_cont_call_func(
-                selected, args, named_args, env, span, call_node, state, errors, type_map, stack,
+                selected, args, named_args, env, call_node, ctx, stack,
             ))
             .await
         }
@@ -2270,7 +2058,7 @@ async fn apply_cont_call_func(
                     ),
                     call_node.span.clone(),
                 );
-                errors.push(err.clone());
+                ctx.errors.push(err.clone());
                 return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
@@ -2303,7 +2091,7 @@ async fn apply_cont_call_func(
                     format!("no overload of union type accepts {} argument(s)", n_total),
                     call_node.span.clone(),
                 );
-                errors.push(err.clone());
+                ctx.errors.push(err.clone());
                 return TypeCheckAction::Done(Type::error_with(vec![err]));
             }
 
@@ -2336,19 +2124,27 @@ async fn apply_cont_call_func(
             };
 
             Box::pin(apply_cont_call_func(
-                selected, args, named_args, env, span, call_node, state, errors, type_map, stack,
+                selected, args, named_args, env, call_node, ctx, stack,
             ))
             .await
         }
 
         _ => {
-            eval_args_for_errors(&args, &named_args, &env, state, errors, type_map).await;
+            eval_args_for_errors(
+                &args,
+                &named_args,
+                &env,
+                ctx.state,
+                ctx.errors,
+                ctx.type_map,
+            )
+            .await;
             let err = TypeDiagnostic::error(
                 "type-error",
                 format!("expected function type, got {}", func_ty),
                 call_node.span.clone(),
             );
-            errors.push(err.clone());
+            ctx.errors.push(err.clone());
             TypeCheckAction::Done(Type::error_with(vec![err]))
         }
     }
@@ -2357,18 +2153,19 @@ async fn apply_cont_call_func(
 // ===== Inline helper: finalize call with no positional args =====
 
 async fn finalize_call_no_positional_args(
-    params: Vec<(Option<String>, Type)>,
-    ret: Type,
-    typed_variadics: Vec<(String, Type)>,
-    rest: Option<Box<(String, Type)>>,
-    required_count: usize,
+    sig: FnSig,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
     env: &Arc<RwLock<Env>>,
     span: Span,
-    state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
+    ctx: &mut TypeCheckCtx<'_, '_>,
 ) -> Type {
+    let FnSig {
+        params,
+        ret,
+        typed_variadics,
+        rest,
+        required_count,
+    } = sig;
     let variadic = !typed_variadics.is_empty() || rest.is_some();
     // required_count is fixed-params-only (variadics not included) — no saturating_sub needed.
     let min_required = required_count;
@@ -2379,7 +2176,7 @@ async fn finalize_call_no_positional_args(
             format!("arity mismatch: expected {} arguments, got 0", min_required),
             span.clone(),
         );
-        errors.push(err.clone());
+        ctx.errors.push(err.clone());
         return Type::error_with(vec![err]);
     }
 
@@ -2387,7 +2184,7 @@ async fn finalize_call_no_positional_args(
     let mut seen_named_arg_names: std::collections::HashSet<String> = Default::default();
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
-            errors.push(TypeDiagnostic::error(
+            ctx.errors.push(TypeDiagnostic::error(
                 "type-error",
                 format!("duplicate named argument: '{}'", na.node.name),
                 na.span.clone(),
@@ -2409,32 +2206,32 @@ async fn finalize_call_no_positional_args(
                     Box::pin(run_typecheck(
                         &na.node.value,
                         env,
-                        state,
-                        errors,
-                        type_map,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
                         &mut local_stack,
                     ))
                     .await
                 };
-                let mut constraints = std::mem::take(&mut state.constraints);
-                let saved_bounds = state.bounds.clone();
+                let mut constraints = std::mem::take(&mut ctx.state.constraints);
+                let saved_bounds = ctx.state.bounds.clone();
                 if let Err(e) = constrain(
                     &arg_ty,
                     &param_ty,
-                    state,
+                    ctx.state,
                     &mut constraints,
                     na.span.clone(),
                 )
                 .await
                 {
-                    state.bounds = saved_bounds;
-                    errors.push(e);
+                    ctx.state.bounds = saved_bounds;
+                    ctx.errors.push(e);
                 }
-                state.constraints = constraints;
+                ctx.state.constraints = constraints;
             }
             None => {
                 if !variadic {
-                    errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(TypeDiagnostic::error(
                         "type-error",
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
@@ -2447,9 +2244,9 @@ async fn finalize_call_no_positional_args(
                     let _ = Box::pin(run_typecheck(
                         &na.node.value,
                         env,
-                        state,
-                        errors,
-                        type_map,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
                         &mut local_stack,
                     ))
                     .await;
@@ -2458,7 +2255,7 @@ async fn finalize_call_no_positional_args(
         }
     }
 
-    state.apply(&ret)
+    ctx.state.apply(&ret)
 }
 
 // ===== Inline helper: CALL-POLY arg unification =====
@@ -2466,18 +2263,19 @@ async fn finalize_call_no_positional_args(
 async fn apply_call_args_poly(
     arg_types: Vec<Type>,
     arg_nodes: Vec<Arc<SurfaceNode>>,
-    param_types: Vec<(Option<String>, Type)>,
-    fn_ret: Type,
-    typed_variadics: Vec<(String, Type)>,
-    rest: Option<Box<(String, Type)>>,
-    fn_required: usize,
+    sig: FnSig,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
     env: Arc<RwLock<Env>>,
     span: Span,
-    state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
+    ctx: &mut TypeCheckCtx<'_, '_>,
 ) -> TypeCheckAction {
+    let FnSig {
+        params: param_types,
+        ret: fn_ret,
+        typed_variadics,
+        rest,
+        required_count: fn_required,
+    } = sig;
     // param_types contains only fixed (non-variadic) params.
     let non_variadic_param_count = param_types.len();
     let fn_variadic = !typed_variadics.is_empty() || rest.is_some();
@@ -2498,7 +2296,7 @@ async fn apply_call_args_poly(
             ),
             span.clone(),
         );
-        errors.push(err.clone());
+        ctx.errors.push(err.clone());
         return TypeCheckAction::Done(Type::error_with(vec![err]));
     }
 
@@ -2523,28 +2321,30 @@ async fn apply_call_args_poly(
         // When an Unknown/Any arg flows into a concrete parameter, attach a runtime guard so
         // the evaluator can enforce the type contract at the Unknown→concrete boundary.
         if matches!(&widened_arg, Type::Unknown | Type::Any)
-            && typecheck_call::is_concrete_type(&state.subst.apply(param_ty))
+            && typecheck_call::is_concrete_type(&ctx.state.subst.apply(param_ty))
         {
             if let Some(arg_node) = arg_nodes.get(idx) {
-                arg_node.type_guard.set(Some(state.subst.apply(param_ty)));
+                arg_node
+                    .type_guard
+                    .set(Some(ctx.state.subst.apply(param_ty)));
             }
         }
 
-        let mut constraints = std::mem::take(&mut state.constraints);
-        let saved_bounds = state.bounds.clone();
+        let mut constraints = std::mem::take(&mut ctx.state.constraints);
+        let saved_bounds = ctx.state.bounds.clone();
         if let Err(e) = constrain(
             &widened_arg,
             param_ty,
-            state,
+            ctx.state,
             &mut constraints,
             span.clone(),
         )
         .await
         {
-            state.bounds = saved_bounds;
-            errors.push(e);
+            ctx.state.bounds = saved_bounds;
+            ctx.errors.push(e);
         }
-        state.constraints = constraints;
+        ctx.state.constraints = constraints;
     }
 
     // Handle variadic args with match-semantics routing.
@@ -2579,7 +2379,7 @@ async fn apply_call_args_poly(
             let mut routed = false;
             for (bucket_idx, (_, bucket_ty)) in typed_variadics.iter().enumerate() {
                 let elem_ty = extract_seq_elem_type(bucket_ty);
-                if Type::is_consistent_subtype(&widened, &elem_ty, Some(&state.tycon_env)) {
+                if Type::is_consistent_subtype(&widened, &elem_ty, Some(&ctx.state.tycon_env)) {
                     bucket_args[bucket_idx].push(widened.clone());
                     routed = true;
                     break;
@@ -2600,7 +2400,7 @@ async fn apply_call_args_poly(
                         ),
                         span.clone(),
                     );
-                    errors.push(err);
+                    ctx.errors.push(err);
                 }
             }
         }
@@ -2609,21 +2409,21 @@ async fn apply_call_args_poly(
         for (bucket_idx, (_, bucket_ty)) in typed_variadics.iter().enumerate() {
             let elem_ty = extract_seq_elem_type(bucket_ty);
             for matched_arg in &bucket_args[bucket_idx] {
-                let mut constraints = std::mem::take(&mut state.constraints);
-                let saved_bounds = state.bounds.clone();
+                let mut constraints = std::mem::take(&mut ctx.state.constraints);
+                let saved_bounds = ctx.state.bounds.clone();
                 if let Err(e) = constrain(
                     matched_arg,
                     &elem_ty,
-                    state,
+                    ctx.state,
                     &mut constraints,
                     span.clone(),
                 )
                 .await
                 {
-                    state.bounds = saved_bounds;
-                    errors.push(e);
+                    ctx.state.bounds = saved_bounds;
+                    ctx.errors.push(e);
                 }
-                state.constraints = constraints;
+                ctx.state.constraints = constraints;
             }
         }
 
@@ -2639,21 +2439,21 @@ async fn apply_call_args_poly(
                     fields,
                     tail: RowTail::Empty,
                 });
-                let mut constraints = std::mem::take(&mut state.constraints);
-                let saved_bounds = state.bounds.clone();
+                let mut constraints = std::mem::take(&mut ctx.state.constraints);
+                let saved_bounds = ctx.state.bounds.clone();
                 if let Err(e) = constrain(
                     &rest_dict,
                     rest_ty,
-                    state,
+                    ctx.state,
                     &mut constraints,
                     span.clone(),
                 )
                 .await
                 {
-                    state.bounds = saved_bounds;
-                    errors.push(e);
+                    ctx.state.bounds = saved_bounds;
+                    ctx.errors.push(e);
                 }
-                state.constraints = constraints;
+                ctx.state.constraints = constraints;
             }
             // If no rest positional args, the rest TypeVar stays free (empty variadic dict).
         }
@@ -2666,7 +2466,7 @@ async fn apply_call_args_poly(
     let mut unmatched_named_arg_types: Vec<(String, Type)> = Vec::new();
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
-            errors.push(TypeDiagnostic::error(
+            ctx.errors.push(TypeDiagnostic::error(
                 "type-error",
                 format!("duplicate named argument: '{}'", na.node.name),
                 na.span.clone(),
@@ -2686,7 +2486,7 @@ async fn apply_call_args_poly(
         match param_match {
             Some((param_idx, param_ty)) => {
                 if consumed_params.contains(&param_idx) {
-                    errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(TypeDiagnostic::error(
                         "type-error",
                         format!(
                             "named argument '{}' conflicts with positional argument at position {}",
@@ -2702,26 +2502,26 @@ async fn apply_call_args_poly(
                     Box::pin(run_typecheck(
                         &na.node.value,
                         &env,
-                        state,
-                        errors,
-                        type_map,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
                         &mut local_stack,
                     ))
                     .await
                 };
-                let mut constraints = std::mem::take(&mut state.constraints);
-                let saved_bounds = state.bounds.clone();
+                let mut constraints = std::mem::take(&mut ctx.state.constraints);
+                let saved_bounds = ctx.state.bounds.clone();
                 if let Err(e) = constrain(
                     &arg_ty,
                     &param_ty,
-                    state,
+                    ctx.state,
                     &mut constraints,
                     na.span.clone(),
                 )
                 .await
                 {
-                    state.bounds = saved_bounds;
-                    errors.push(TypeDiagnostic::error(
+                    ctx.state.bounds = saved_bounds;
+                    ctx.errors.push(TypeDiagnostic::error(
                         "type-error",
                         format!(
                             "named argument '{}' type mismatch: {}",
@@ -2730,7 +2530,7 @@ async fn apply_call_args_poly(
                         na.span.clone(),
                     ));
                 }
-                state.constraints = constraints;
+                ctx.state.constraints = constraints;
             }
             None => {
                 if fn_variadic {
@@ -2740,16 +2540,16 @@ async fn apply_call_args_poly(
                         Box::pin(run_typecheck(
                             &na.node.value,
                             &env,
-                            state,
-                            errors,
-                            type_map,
+                            ctx.state,
+                            ctx.errors,
+                            ctx.type_map,
                             &mut local_stack,
                         ))
                         .await
                     };
                     unmatched_named_arg_types.push((na.node.name.clone(), arg_ty));
                 } else {
-                    errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(TypeDiagnostic::error(
                         "type-error",
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
@@ -2779,28 +2579,28 @@ async fn apply_call_args_poly(
                 fields,
                 tail: RowTail::Empty,
             });
-            let mut constraints = std::mem::take(&mut state.constraints);
-            let saved_bounds = state.bounds.clone();
+            let mut constraints = std::mem::take(&mut ctx.state.constraints);
+            let saved_bounds = ctx.state.bounds.clone();
             if let Err(e) = constrain(
                 &named_dict,
                 rest_ty,
-                state,
+                ctx.state,
                 &mut constraints,
                 span.clone(),
             )
             .await
             {
-                state.bounds = saved_bounds;
-                errors.push(e);
+                ctx.state.bounds = saved_bounds;
+                ctx.errors.push(e);
             }
-            state.constraints = constraints;
+            ctx.state.constraints = constraints;
         }
         // Named args arrived for a function with typed buckets but no untyped rest.
         // Typed buckets only accept positional args (matched by type); named args have
         // no bucket to go into. Emit an error for each unmatched named arg.
         if rest.is_none() {
             for (name, _) in &unmatched_named_arg_types {
-                errors.push(TypeDiagnostic::error("type-error",
+                ctx.errors.push(TypeDiagnostic::error("type-error",
                     format!(
                         "named argument '{}' cannot be routed: function has no untyped rest parameter (...rest) to accept unmatched named args",
                         name
@@ -2811,19 +2611,18 @@ async fn apply_call_args_poly(
         }
     }
 
-    TypeCheckAction::Done(state.apply(&fn_ret))
+    TypeCheckAction::Done(ctx.state.apply(&fn_ret))
 }
 
 /// Extract the element type from a typed variadic bucket type.
 ///
-/// Bucket types are expected to be `App(TyCon("Seq"), elem_ty)` for annotated variadics.
-/// If the type does not match that form, return the type itself as the element constraint
-/// (a fresh TypeVar or other concrete type used directly as the constraint).
+/// Bucket types are always `App(_, elem_ty)` — the protocol is structural.
+/// The head constructor is whatever type the caller's prelude names its sequence type;
+/// Rust does not name-check it. If the type does not match the App form, return the
+/// type itself as the element constraint (a fresh TypeVar or other concrete type).
 fn extract_seq_elem_type(bucket_ty: &Type) -> Type {
-    if let Type::App(f, elem) = bucket_ty {
-        if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
-            return *elem.clone();
-        }
+    if let Type::App(_, elem) = bucket_ty {
+        return *elem.clone();
     }
     bucket_ty.clone()
 }
@@ -2834,16 +2633,21 @@ fn extract_seq_elem_type(bucket_ty: &Type) -> Type {
 /// and return `Eval(body, fn_env)` so the CEK loop evaluates the body iteratively without
 /// recursing on the Rust call stack.
 async fn infer_fn_push_cont(
-    return_ann: &Option<Spanned<Annotation>>,
-    params: &[Spanned<SurfaceParam>],
-    body: &Arc<SurfaceNode>,
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<TypeDiagnostic>,
-    _type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
+    let (return_ann, params, body) = match &node.expr {
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            ..
+        } => (return_ann, params.as_slice(), body),
+        _ => unreachable!("infer_fn_push_cont called on non-Fn node"),
+    };
     let mut ann_mapping_str: HashMap<String, String> = HashMap::new();
     let mut constraints: Vec<Constraint> = Vec::new();
     let mut ann_mapping_opt = Some(&mut ann_mapping_str);
@@ -3034,7 +2838,7 @@ async fn infer_fn_push_cont(
     let saved_expected_return = state.expected_return.clone();
 
     // Push the continuation so apply_cont can build the Function type from the body type.
-    stack.push(TypeCheckCont::AfterFnBody {
+    stack.push(TypeCheckCont::FnBody {
         saved_level,
         saved_expected_return,
         return_ann: return_ann_type,
@@ -3071,7 +2875,7 @@ async fn setup_match_arm_env(
 
     // Guard inference and narrowing (guard is inferred for its type-map side effects only)
     let arm_env = if let Some(guard) = &arm.guard {
-        let _guard_ty = {
+        let _ = {
             let mut local_stack = Vec::new();
             Box::pin(run_typecheck(
                 guard,
@@ -3794,7 +3598,6 @@ pub(crate) async fn run_typecheck_dict(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-    _span: Span,
 ) -> (
     Type,
     indexmap::IndexMap<String, TypeScheme>,
@@ -3961,6 +3764,8 @@ pub(crate) async fn run_typecheck_dict(
         false
     };
 
+    let mut errors: Vec<TypeDiagnostic> = Vec::new();
+
     // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
@@ -3988,7 +3793,7 @@ pub(crate) async fn run_typecheck_dict(
                     let mut ann_map_for_body = alias_ann_map.clone();
                     let resolved_body: Type = match &body.expr {
                         SurfaceExpression::Dict(entries) => {
-                            super::typecheck_annot::resolve_type_dict(
+                            match super::typecheck_annot::resolve_type_dict(
                                 entries,
                                 body.span.clone(),
                                 state,
@@ -3999,18 +3804,32 @@ pub(crate) async fn run_typecheck_dict(
                                 alias_name,
                             )
                             .await
-                            .unwrap_or(Type::Unknown)
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    errors.push(e);
+                                    Type::Unknown
+                                }
+                            }
                         }
-                        _ => super::typecheck_annot::resolve_type_expr(
-                            body,
-                            state,
-                            &mut alias_constraints,
-                            &mut Some(&mut ann_map_for_body),
-                            &mut None,
-                            None,
-                        )
-                        .await
-                        .unwrap_or(Type::Unknown),
+                        _ => {
+                            match super::typecheck_annot::resolve_type_expr(
+                                body,
+                                state,
+                                &mut alias_constraints,
+                                &mut Some(&mut ann_map_for_body),
+                                &mut None,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    errors.push(e);
+                                    Type::Unknown
+                                }
+                            }
+                        }
                     };
 
                     // Qualify constructor tags with the alias name.
@@ -4161,7 +3980,6 @@ pub(crate) async fn run_typecheck_dict(
         type_map: std::cell::RefCell::new(HashMap::new()),
     };
     let mut field_types: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-    let mut errors = Vec::new();
 
     // entry_inner_schemes and entry_constraints are only accessed by key lookup (not iterated
     // for output), so HashMap ordering does not affect diagnostic determinism here.
@@ -4475,7 +4293,7 @@ pub(crate) async fn run_typecheck_dict(
                 let saved_constraints = std::mem::take(&mut state.constraints);
 
                 // Infer the entry value using run_typecheck (CEK path, no Rust stack recursion).
-                // Note: TypeAssert annotation resolution is async; type_assert_ty = None for now.
+                // TypeAssert annotation resolution is not yet wired into this CEK path; type_assert_ty = None.
                 // For nested Dict values, call run_typecheck_dict directly to capture schemes.
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
@@ -4484,7 +4302,6 @@ pub(crate) async fn run_typecheck_dict(
                             &scc_env,
                             state,
                             type_map,
-                            entry.node.value.span.clone(),
                         ))
                         .await;
                         errors.append(&mut nested_errs);
@@ -4664,7 +4481,25 @@ pub(crate) async fn run_typecheck_dict(
             }
         }
 
-        let _ = &state.deferred_equalities;
+        // Process deferred equalities (Union-vs-Union with TypeVars, TypeStageApp-vs-concrete)
+        // accumulated during this SCC's inference. Must run after the subst merge so that
+        // normalized types reflect all bindings made during this SCC.
+        {
+            let scc_span = scc
+                .indices
+                .first()
+                .and_then(|&idx| entries.get(idx))
+                .map(|e| e.node.value.span.clone())
+                .unwrap_or_else(|| crate::rust_span!());
+            let mut scc_constraints = std::mem::take(&mut state.constraints);
+            match crate::types::process_deferred_equalities(state, &mut scc_constraints, scc_span)
+                .await
+            {
+                Ok(()) => {}
+                Err(e) => errors.push(e),
+            }
+            state.constraints = scc_constraints;
+        }
 
         // Apply substitution to this SCC's field types
         for &idx in &scc.indices {
@@ -4768,7 +4603,7 @@ pub(crate) async fn run_typecheck_dict(
                                             span: narrows_node.span.clone(),
                                         };
                                         let mut constraints: Vec<Constraint> = Vec::new();
-                                        let narrow_ty = typecheck_annot::resolve_annotation(
+                                        let narrow_ty = match typecheck_annot::resolve_annotation(
                                             &ann_span.node,
                                             ann_span.span.clone(),
                                             state,
@@ -4778,7 +4613,13 @@ pub(crate) async fn run_typecheck_dict(
                                             None,
                                         )
                                         .await
-                                        .unwrap_or_else(|_| state.fresh_type_var(&ann_span.span));
+                                        {
+                                            Ok(ty) => ty,
+                                            Err(e) => {
+                                                errors.push(e);
+                                                Type::error_note("type resolution failed for narrowing annotation")
+                                            }
+                                        };
                                         break 'narrowing vec![Some(narrow_ty)];
                                     }
                                 }
@@ -4798,19 +4639,24 @@ pub(crate) async fn run_typecheck_dict(
                                                 span: is_node.span.clone(),
                                             };
                                             let mut constraints: Vec<Constraint> = Vec::new();
-                                            let narrow_ty = typecheck_annot::resolve_annotation(
-                                                &ann_span.node,
-                                                ann_span.span.clone(),
-                                                state,
-                                                &mut constraints,
-                                                &mut None,
-                                                &mut None,
-                                                None,
-                                            )
-                                            .await
-                                            .unwrap_or_else(|_| {
-                                                state.fresh_type_var(&ann_span.span)
-                                            });
+                                            let narrow_ty =
+                                                match typecheck_annot::resolve_annotation(
+                                                    &ann_span.node,
+                                                    ann_span.span.clone(),
+                                                    state,
+                                                    &mut constraints,
+                                                    &mut None,
+                                                    &mut None,
+                                                    None,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(ty) => ty,
+                                                    Err(e) => {
+                                                        errors.push(e);
+                                                        Type::error_note("type resolution failed for narrowing annotation")
+                                                    }
+                                                };
                                             break 'narrowing vec![Some(narrow_ty)];
                                         }
                                     }
@@ -5249,7 +5095,7 @@ mod tests {
         });
 
         // Set up the continuation
-        let cont = TypeCheckCont::AfterFieldBase {
+        let cont = TypeCheckCont::FieldBase {
             field: DotKey::Ident("x".to_string()),
             span: crate::rust_span!(),
         };

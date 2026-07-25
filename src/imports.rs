@@ -125,48 +125,53 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // eval_ctx_with_frames has the scope frames from the resolve pass, so VarRefs at any
     // nesting level resolve correctly — including unit constructors (TypeNode.Int) which
     // require outer-group frame lookup, not just builtins.
-    let type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>> =
-        if ts_docs.is_empty() {
-            Vec::new()
-        } else {
-            let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
-            let ts_thunk = crate::eval::eval_surface_file(&ts_program, &eval_ctx_with_frames).await.ok()?;
-            let ts_val = crate::eval::materialize(&ts_thunk, None, &eval_ctx_with_frames).await.ok()?;
-            match ts_val {
-                crate::value::Value::Dict(entries) => {
-                    let mut map = std::collections::HashMap::new();
-                    for (key, thunk) in &entries {
-                        if let crate::value::HashableValue::Str(name) = key {
-                            let val = crate::eval::materialize(thunk, None, &eval_ctx_with_frames).await.ok()?;
-                            if let Some(ty) =
-                                crate::type_normalize::typenode_leaf_to_type(&val)
-                            {
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Resolved(ty),
-                                );
-                            } else if let Some(kind) =
-                                crate::type_normalize::typenode_typevar_kind(&val)
-                            {
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::TypeVar(kind),
-                                );
-                            } else if matches!(val, crate::value::Value::Function { .. }) {
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(
-                                        std::sync::Arc::clone(thunk),
-                                    ),
-                                );
-                            }
+    let type_stage_scope: Vec<
+        std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
+    > = if ts_docs.is_empty() {
+        Vec::new()
+    } else {
+        let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
+        let ts_thunk = crate::eval::eval_surface_file(&ts_program, &eval_ctx_with_frames)
+            .await
+            .ok()?;
+        let ts_val = crate::eval::materialize(&ts_thunk, None, &eval_ctx_with_frames)
+            .await
+            .ok()?;
+        match ts_val {
+            crate::value::Value::Dict(entries) => {
+                let mut map = std::collections::HashMap::new();
+                for (key, thunk) in &entries {
+                    if let crate::value::HashableValue::Str(name) = key {
+                        let val = crate::eval::materialize(thunk, None, &eval_ctx_with_frames)
+                            .await
+                            .ok()?;
+                        if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
+                            map.insert(
+                                name.to_string(),
+                                crate::type_infer::TypeStageEntry::Resolved(ty),
+                            );
+                        } else if let Some(kind) =
+                            crate::type_normalize::typenode_typevar_kind(&val)
+                        {
+                            map.insert(
+                                name.to_string(),
+                                crate::type_infer::TypeStageEntry::TypeVar(kind),
+                            );
+                        } else if matches!(val, crate::value::Value::Function { .. }) {
+                            map.insert(
+                                name.to_string(),
+                                crate::type_infer::TypeStageEntry::Function(std::sync::Arc::clone(
+                                    thunk,
+                                )),
+                            );
                         }
                     }
-                    vec![map]
                 }
-                _ => Vec::new(),
+                vec![map]
             }
-        };
+            _ => Vec::new(),
+        }
+    };
 
     // Typecheck with builtins env as parent.
     // enable_hover_map=false (no LSP hover needed for bootstrap).

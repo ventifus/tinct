@@ -45,15 +45,15 @@ const MAX_UNIFY_DEPTH: usize = 512;
 ///
 /// This keeps `satisfies_constraint_inner` free of class name strings.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
-    satisfies_constraint_inner(ty, class_name, 0)
+    satisfies_constraint_inner(ty, class_name, &mut 0)
 }
 
 /// Internal implementation of constraint satisfaction with depth tracking.
 /// Conservative: returns false if depth limit exceeded (treat as constraint not satisfied).
-#[allow(clippy::only_used_in_recursion)]
-fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool {
+/// `depth` is a mutable counter incremented on each recursive call and checked against MAX_CONSTRAINT_DEPTH.
+fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: &mut usize) -> bool {
     // Depth guard: prevent unbounded recursion on pathological recursive types
-    if depth >= MAX_CONSTRAINT_DEPTH {
+    if *depth >= MAX_CONSTRAINT_DEPTH {
         return false;
     }
 
@@ -75,16 +75,22 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
     // A union-typed value could be either alternative at runtime, so both branches must
     // satisfy the constraint. Use all(), NOT any().
     if let Type::Union(members) = ty {
-        return members
-            .iter()
-            .all(|member| satisfies_constraint_inner(member, class_name, depth + 1));
+        return members.iter().all(|member| {
+            *depth += 1;
+            let result = satisfies_constraint_inner(member, class_name, depth);
+            *depth -= 1;
+            result
+        });
     }
 
     // [CONSTRAIN-INTER]: C(τ₁ & τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
     if let Type::Intersection(members) = ty {
-        return members
-            .iter()
-            .all(|member| satisfies_constraint_inner(member, class_name, depth + 1));
+        return members.iter().all(|member| {
+            *depth += 1;
+            let result = satisfies_constraint_inner(member, class_name, depth);
+            *depth -= 1;
+            result
+        });
     }
 
     // All concrete types (primitives, records, nominals, maps) are handled by
@@ -253,7 +259,7 @@ async fn check_constraints_on_var(
         MultiParam {
             class: String,
             /// Constraint arguments — Var positions hold variable names; Ground positions
-            /// hold concrete types that were resolved before generalization (B-398).
+            /// hold concrete types that were resolved before generalization.
             args: Vec<ConstraintArg>,
             fundeps: Vec<(Vec<usize>, Vec<usize>)>,
             resolver_injective: bool,
@@ -453,19 +459,17 @@ async fn check_constraints_on_var(
                 // guard causes it to skip that re-binding. Without this guard, the cycle
                 // reverse → forward → reverse → … hits MAX_FD_DEPTH (16).
                 let was_inserted = state.fd_in_progress.insert(var_name.to_string());
-                let fd_result = improve_functional_dependency(
-                    &class,
-                    &args,
-                    &fundeps,
+                let fd_ctx = FdImprovementCtx {
+                    class: &class,
+                    args: &args,
+                    fundeps: &fundeps,
                     resolver_injective,
-                    var_name,
-                    concrete_ty,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth,
-                )
-                .await;
+                    bound_var: var_name,
+                    bound_type: concrete_ty,
+                };
+                let fd_result =
+                    improve_functional_dependency(&fd_ctx, state, constraints, span.clone(), depth)
+                        .await;
                 if was_inserted {
                     state.fd_in_progress.remove(var_name);
                 }
@@ -554,14 +558,20 @@ async fn check_constraints_on_var(
 /// check_constraints_on_var → improve_functional_dependency cycle.
 const MAX_FD_DEPTH: usize = 16;
 
-#[allow(clippy::too_many_arguments)] // FD improvement requires all constraint components
-async fn improve_functional_dependency(
-    class: &str,
-    args: &[ConstraintArg],
-    fundeps: &[(Vec<usize>, Vec<usize>)],
+/// Bundled context for functional dependency improvement calls.
+/// Groups the class-constraint data that is identical between the outer and inner function
+/// to reduce the argument count and eliminate the `too_many_arguments` lint cause.
+struct FdImprovementCtx<'a> {
+    class: &'a str,
+    args: &'a [ConstraintArg],
+    fundeps: &'a [(Vec<usize>, Vec<usize>)],
     resolver_injective: bool,
-    bound_var: &str,
-    bound_type: &Type,
+    bound_var: &'a str,
+    bound_type: &'a Type,
+}
+
+async fn improve_functional_dependency(
+    ctx: &FdImprovementCtx<'_>,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -573,42 +583,30 @@ async fn improve_functional_dependency(
         return Err(TypeDiagnostic::error("type-error",
             format!(
                 "functional dependency improvement depth limit exceeded (max {}) — possible recursive FD chain for class {}",
-                MAX_FD_DEPTH, class
+                MAX_FD_DEPTH, ctx.class
             ),
             span,
         ));
     }
     state.fd_depth += 1;
-    let result = improve_functional_dependency_inner(
-        class,
-        args,
-        fundeps,
-        resolver_injective,
-        bound_var,
-        bound_type,
-        state,
-        constraints,
-        span,
-        depth,
-    )
-    .await;
+    let result = improve_functional_dependency_inner(ctx, state, constraints, span, depth).await;
     state.fd_depth -= 1;
     result
 }
 
-#[allow(clippy::too_many_arguments)] // FD improvement requires all constraint components
 async fn improve_functional_dependency_inner(
-    class: &str,
-    args: &[ConstraintArg],
-    fundeps: &[(Vec<usize>, Vec<usize>)],
-    resolver_injective: bool,
-    bound_var: &str,
-    bound_type: &Type,
+    ctx: &FdImprovementCtx<'_>,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
     depth: usize,
 ) -> Result<(), TypeDiagnostic> {
+    let class = ctx.class;
+    let args = ctx.args;
+    let fundeps = ctx.fundeps;
+    let resolver_injective = ctx.resolver_injective;
+    let bound_var = ctx.bound_var;
+    let bound_type = ctx.bound_type;
     // For each functional dependency (determining → determined)
     for (det_positions, ded_positions) in fundeps {
         // Compute the positions of bound_var in the constraint arg list.
@@ -655,7 +653,7 @@ async fn improve_functional_dependency_inner(
                     ConstraintArg::Var(v) if v.as_str() == bound_var => state.apply(bound_type),
                     // Another Var position — look up in substitution.
                     ConstraintArg::Var(v) => state.apply(&Type::TypeVar(v.clone(), 0)),
-                    // Ground position — type already known from generalization (B-398).
+                    // Ground position — type already known from generalization.
                     ConstraintArg::Ground(t) => t.clone(),
                 };
                 ded_types.push((pos, ty));
@@ -752,7 +750,7 @@ async fn improve_functional_dependency_inner(
                 ConstraintArg::Var(v) if v.as_str() == bound_var => state.apply(bound_type),
                 // Another Var position — look up in substitution.
                 ConstraintArg::Var(v) => state.apply(&Type::TypeVar(v.clone(), 0)),
-                // Ground position — type already known from generalization (B-398).
+                // Ground position — type already known from generalization.
                 ConstraintArg::Ground(t) => t.clone(),
             };
             det_types.push((pos, ty));
@@ -777,7 +775,9 @@ async fn improve_functional_dependency_inner(
         // Records are structural (not nominal), so they don't register instances —
         // instead, resolve_has_field applies [HAS-FIELD-REC], [HAS-FIELD-UNION],
         // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules from type_unify.rs.
-        let indexable_record_result = if class == "Indexable" && det_types.len() == 2 {
+        let indexable_record_result: Result<Option<Type>, TypeDiagnostic> = if class == "Indexable"
+            && det_types.len() == 2
+        {
             let container_ty = &det_types[0].1;
             let key_ty = &det_types[1].1;
 
@@ -788,45 +788,46 @@ async fn improve_functional_dependency_inner(
                 ) => {
                     // Route through resolve_has_field to apply [HAS-FIELD-REC],
                     // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules.
-                    // Missing fields in Record case: gradual degradation to Unknown
-                    // (the access is valid at runtime — returns null).
                     let label = Label::Concrete(field_name.clone());
-                    match resolve_has_field(&label, container_ty, state, span.clone(), 0) {
-                        Ok(field_ty) => Some(field_ty),
-                        Err(_) => Some(Type::Unknown),
-                    }
+                    resolve_has_field(&label, container_ty, state, span.clone(), 0).map(Some)
                 }
                 (Type::Union(members), Type::StringLiteral(field_name)) => {
                     // [HAS-FIELD-UNION]: distribute field lookup across union members.
                     // [get key (A | B)] → get(key, A) | get(key, B)
-                    // Each member that has the field contributes its field type.
-                    // Members that don't support field access (or lack the field)
-                    // contribute Unknown — gradual degradation allows runtime null.
+                    // Each member must have the field; propagate errors.
                     let label = Label::Concrete(field_name.clone());
-                    let field_types: Vec<Type> = members
-                        .iter()
-                        .map(|member| {
-                            resolve_has_field(&label, member, state, span.clone(), 1)
-                                .unwrap_or(Type::Unknown)
-                        })
-                        .collect();
-                    Some(Type::normalize_union(field_types))
+                    let members_clone: Vec<Type> = members.clone();
+                    let mut field_types: Vec<Type> = Vec::new();
+                    let mut lookup_err: Option<TypeDiagnostic> = None;
+                    for member in &members_clone {
+                        match resolve_has_field(&label, member, state, span.clone(), 1) {
+                            Ok(ty) => field_types.push(ty),
+                            Err(e) => {
+                                lookup_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    match lookup_err {
+                        Some(e) => Err(e),
+                        None => Ok(Some(Type::normalize_union(field_types))),
+                    }
                 }
                 (Type::Dict(_) | Type::Union(_) | Type::Intersection(_) | Type::Any, Type::Str) => {
                     // Str key (from promoted StringLiteral) — can't resolve statically.
                     // Defer to general MPTC lookup instead of producing Unknown.
-                    None
+                    Ok(None)
                 }
-                _ => None, // Not a Record/Union/Intersection/Top case — fall through to general logic
+                _ => Ok(None), // Not a Record/Union/Intersection/Top case — fall through to general logic
             }
         } else {
-            None
+            Ok(None)
         };
 
         // Extract class_decl with a scoped read lock so the guard drops before
         // any subsequent &mut state borrows (e.g. in lookup_mptc).
         let class_decl_for_fd = { state.env.read().unwrap().get_class(class) };
-        let result_type = if let Some(ty) = indexable_record_result {
+        let result_type = if let Some(ty) = indexable_record_result? {
             ty
         } else if let Some(class_decl) = class_decl_for_fd {
             // Check for resolver or fall back to general MPTC instance lookup
@@ -930,7 +931,7 @@ async fn improve_functional_dependency_inner(
                         }
                     }
                     None => {
-                        // B-317: All determining positions are ground at this point
+                        // All determining positions are ground at this point
                         // (checked at line 525). If lookup_mptc returns None, there's
                         // genuinely no matching instance — unless a determining position
                         // is `Unknown` (gradual) or a structural type that could satisfy
@@ -1214,7 +1215,7 @@ pub fn resolve_has_field(
 
 const MAX_APPLY_DEPTH: usize = 256;
 
-// T-991: Thread-local visited set for `apply_substitution`.
+// Thread-local visited set for `apply_substitution`.
 // Declared at module level so the static-initialization semantics are
 // clear: the HashSet is allocated once per thread and reused across all calls.
 thread_local! {
@@ -1224,36 +1225,7 @@ thread_local! {
 /// Apply substitution to a type: resolve all bound TypeVars by looking up bindings
 /// in the unified `type_vars` IndexMap.
 pub fn apply_substitution(ty: &Type, type_vars: &IndexMap<String, TypeVarEntry>) -> Type {
-    // Fast-path for concrete types: no type variables, return clone immediately.
-    match ty {
-        Type::Int
-        | Type::IntLiteral(_)
-        | Type::Float
-        | Type::Str
-        | Type::StringLiteral(_)
-        | Type::Bytes
-        | Type::Unknown
-        | Type::Any
-        | Type::Never
-        | Type::Proxy
-        | Type::Error(_)
-        | Type::DirCap
-        | Type::NetCap
-        | Type::Uri
-        | Type::Timestamp
-        | Type::Duration
-        | Type::ClockCap
-        | Type::Timezone
-        | Type::QuicSession
-        | Type::Http2Session
-        | Type::Http3Session
-        | Type::DatagramHandle
-        | Type::QuicDatagramHandle => {
-            return ty.clone();
-        }
-        _ => {}
-    }
-    // Second fast-path: structured types with no inference variables are concrete.
+    // Short-circuit: if the type has no inference variables, there is nothing to substitute.
     if !ty.has_inference_vars() {
         return ty.clone();
     }
@@ -1476,247 +1448,95 @@ pub fn apply_row_with_visited(
     }
 }
 
-/// BAS record unification: unify only the fields shared between both rows, then unify tails.
-/// Fields unique to one row are ignored — BAS width subtyping handles openness
-/// via is_subtype (a record with MORE fields satisfies an annotation with FEWER fields).
+/// Directional record subtyping: constrain sub_row ≤ sup_row.
 ///
-/// Tail unification rules (T-939/T-1007/T-1024/B-327):
-///   (Empty, Empty)           — no-op (both closed, field unification above is sufficient)
-///   (Empty, Uniform{V, ..})  — UNIFY-UNIFORM step 2/3: TypeVar join or concrete subtype check
-///   (Uniform{V, ..}, Empty)  — UNIFY-UNIFORM step 2/3: symmetric case
-///   (Uniform{V1, k1}, Uniform{V2, k2}) — unify V1 ~ V2; key types if both present (B-327);
-///                               then validate named fields against unified V (T-1007 steps 2-3)
-async fn unify_rows(
-    row1: &Row,
-    row2: &Row,
+/// Step 1 — Width + depth (sup's fields must be coverable in sub, COVARIANT):
+/// For each field (k, sup_ty) in sup_row.fields, sub must provide a compatible type:
+///   - If sub_row.fields has k: constrain(sub_row.fields[k], sup_ty)
+///   - Else if sub_row.tail is Uniform { value: sub_v, .. }: constrain(sub_v, sup_ty)
+///   - Else: error (missing field)
+///
+/// Step 2 — Tail compatibility:
+///   - (_, RowTail::Empty): Ok (sub may have more fields — width subtyping)
+///   - (sub_tail, RowTail::Uniform { value: sup_v, .. }):
+///     All sub's fields and uniform tail must be subtypes of sup_v.
+///     Key types must also be compatible if sup has a key type.
+async fn constrain_rows(
+    sub_row: &Row,
+    sup_row: &Row,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-    depth: usize,
 ) -> Result<(), TypeDiagnostic> {
-    // Fast-path: identical field sets — unify all named fields, then fall through to tail.
-    // Previously had an early return here, which silently swallowed tail mismatches when both
-    // rows had identical named fields but different tails (e.g., Empty vs Uniform).
-    if row1.fields.len() == row2.fields.len()
-        && row1.fields.keys().all(|k| row2.fields.contains_key(k))
-    {
-        for (key, ty1) in &row1.fields {
-            let ty2 = &row2.fields[key];
-            Box::pin(unify(ty1, ty2, state, constraints, span.clone(), depth + 1)).await?;
-        }
-        // Fall through to tail unification — do NOT return here.
-    } else {
-        // General case: unify only fields that appear in BOTH rows (intersection).
-        // Fields unique to one side are not errors — BAS width subtyping handles them via is_subtype.
-        let mut shared_count = 0;
-        let mut row1_has_inference_vars = false;
-        let mut row2_has_inference_vars = false;
-        for (key, ty1) in &row1.fields {
-            if ty1.has_inference_vars() {
-                row1_has_inference_vars = true;
-            }
-            if let Some(ty2) = row2.fields.get(key) {
-                shared_count += 1;
-                Box::pin(unify(ty1, ty2, state, constraints, span.clone(), depth + 1)).await?;
-            }
-        }
-        for ty2 in row2.fields.values() {
-            if ty2.has_inference_vars() {
-                row2_has_inference_vars = true;
-            }
-        }
-
-        // Disjoint record detection: two non-empty records with ZERO shared fields and all-concrete
-        // field types are incompatible — no value can satisfy both `[a: Int]` and `[b: Str]` under
-        // unification (BAS width subtyping is handled by is_subtype, not unification).
-        //
-        // Conservative guard: if either row contains inference variables (TypeVars), we cannot
-        // determine incompatibility statically — the variable might be bound to a compatible type.
-        // In that case, fall back to level-zeroing to prevent unsound generalization.
-        if shared_count == 0 && !row1.fields.is_empty() && !row2.fields.is_empty() {
-            if row1_has_inference_vars || row2_has_inference_vars {
-                // Conservative path: cannot prove incompatibility statically.
-                // Lower TypeVars in FTV(row1) ∩ FTV(row2) to level 0 to prevent unsound
-                // generalization of variables constrained by both sides.
-                //
-                // Only variables appearing in BOTH rows are constrained by this cross-row
-                // relationship. Variables unique to one row are independent and can be
-                // generalized freely — zeroing them is unsoundly conservative.
-                // (Kiselyov 2013: level-zeroing should target only actually-constrained vars.)
-                let mut vars1 = HashSet::new();
-                for ty in row1.fields.values() {
-                    ty.collect_type_vars(&mut vars1);
-                }
-                let mut vars2 = HashSet::new();
-                for ty in row2.fields.values() {
-                    ty.collect_type_vars(&mut vars2);
-                }
-                for var_name in vars1.intersection(&vars2) {
-                    if let Some(entry) = state.type_vars.get_mut(var_name.as_str()) {
-                        entry.level = 0;
-                    }
-                }
-            } else {
-                // Both rows have concrete field types and no shared fields: structurally incompatible.
-                return Err(TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "cannot unify {} with {}",
-                        Type::Dict(row1.clone()),
-                        Type::Dict(row2.clone())
-                    ),
-                    span,
-                ));
-            }
+    // Step 1: Width + depth — sup's fields must be coverable in sub (COVARIANT).
+    for (k, sup_ty) in &sup_row.fields {
+        if let Some(sub_ty) = sub_row.fields.get(k) {
+            // Sub has the field: constrain sub_ty ≤ sup_ty.
+            Box::pin(constrain(sub_ty, sup_ty, state, constraints, span.clone())).await?;
+        } else if let RowTail::Uniform { value: sub_v, .. } = &sub_row.tail {
+            // Sub's uniform tail covers this field: constrain sub_v ≤ sup_ty.
+            Box::pin(constrain(sub_v, sup_ty, state, constraints, span.clone())).await?;
+        } else {
+            // Sub doesn't have the field and has no uniform tail: error.
+            return Err(TypeDiagnostic::error(
+                "type-error",
+                format!("missing field '{}': record subtype constraint", k),
+                span,
+            ));
         }
     }
 
-    // Tail unification always executes — whether we took the fast-path or general path above.
-    // Two rows with identical named fields but different tails (e.g., {a: Int, tail: Empty} vs
-    // {a: Int, tail: Uniform{Int}}) are incompatible and must be rejected here.
-    use crate::type_def::RowTail;
-    match (&row1.tail, &row2.tail) {
-        // Both closed — no tail constraint to unify
-        (RowTail::Empty, RowTail::Empty) => {}
+    // Step 2: Tail compatibility.
+    match (&sub_row.tail, &sup_row.tail) {
+        // Sub may have more fields than sup (width subtyping).
+        (_, RowTail::Empty) => Ok(()),
 
-        // Both Uniform — unify value types, key types, then validate named fields
-        // (T-1007/UNIFY-UNIFORM steps 1-3).
-        (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
-            Box::pin(unify(v1, v2, state, constraints, span.clone(), depth + 1)).await?;
-
-            // B-327: Unify key type constraints when both sides specify them.
-            // When only one side specifies a key type (asymmetric), the unconstrained
-            // side is implicitly compatible with any key type (Unknown semantics) and
-            // no error is emitted — the keyed side's constraint is preserved in its row.
-            if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
-                Box::pin(unify(
-                    k1_ty,
-                    k2_ty,
+        // Sup is uniform: all sub's fields and tail must be subtypes of sup_v.
+        (
+            sub_tail,
+            RowTail::Uniform {
+                key: sup_key,
+                value: sup_v,
+            },
+        ) => {
+            // All sub's named fields must be subtypes of sup_v.
+            for sub_field_ty in sub_row.fields.values() {
+                Box::pin(constrain(
+                    sub_field_ty,
+                    sup_v,
                     state,
                     constraints,
                     span.clone(),
-                    depth + 1,
                 ))
                 .await?;
             }
 
-            // UNIFY-UNIFORM steps 2-3: after unifying the value types, apply the
-            // substitution to fixpoint and validate all named fields from both rows.
-            //
-            // After unify(v1, v2), v1 and v2 are the same type (one may be bound to the
-            // other). Apply substitution to v1 to get the resolved value type.
-            let v_fixed = state.apply(v1);
+            // If sub has a uniform tail, its value must also be a subtype of sup_v.
+            if let RowTail::Uniform {
+                key: sub_key,
+                value: sub_v,
+            } = sub_tail
+            {
+                Box::pin(constrain(sub_v, sup_v, state, constraints, span.clone())).await?;
 
-            // Collect named field types from both rows.
-            let all_fields: Vec<Type> = row1
-                .fields
-                .values()
-                .chain(row2.fields.values())
-                .cloned()
-                .collect();
-
-            if !all_fields.is_empty() {
-                if let Type::TypeVar(alpha, _) = &v_fixed {
-                    // Step 2: V is still an unbound TypeVar α — compute join of all named
-                    // field types and unify α with that join.
-                    //
-                    // The occurs check for α ∈ join is handled by the TypeVar arm of
-                    // unify() via lower_levels_check_occurs (lines ~2295-2305). If α
-                    // appears in join, unify() returns Err("infinite type") before binding.
-                    let join = Type::normalize_union(all_fields);
-                    Box::pin(unify(
-                        &Type::TypeVar(alpha.clone(), 0),
-                        &join,
-                        state,
-                        constraints,
-                        span.clone(),
-                        depth + 1,
-                    ))
-                    .await?;
-                } else if !v_fixed.has_inference_vars() {
-                    // Step 3: V is concrete — each named field Ti must be a subtype of V.
-                    for field_ty in &all_fields {
-                        let field_fixed = state.apply(field_ty);
-                        if !Type::is_subtype(&field_fixed, &v_fixed, None) {
-                            return Err(TypeDiagnostic::error("type-error",
-                                format!(
-                                    "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
-                                ),
-                                span.clone(),
-                            ));
-                        }
-                    }
-                }
-                // If v_fixed has inference vars but is not a bare TypeVar (e.g., a partially
-                // resolved union), defer validation — unification of the contained vars will
-                // eventually make it concrete or a TypeVar, and the field check will occur
-                // at the next unification call that resolves this tail.
-            }
-        }
-
-        // Closed row unified with Uniform constraint (T-1024/UNIFY-UNIFORM step 2).
-        //
-        // When a closed (Empty-tailed) row is unified with a Uniform-tailed row:
-        // - Apply substitution to the Uniform value type V to get V'.
-        // - If V' is an unbound TypeVar α: compute the join of all named field types
-        //   from BOTH rows and unify α with that join.
-        // - If V' is concrete: each named field Ti from BOTH rows must satisfy
-        //   is_subtype(Ti, V') — else emit a type error.
-        //
-        // Both rows' named fields are checked: the Empty-tailed row contributes its
-        // named fields (all must conform), and so does the Uniform-tailed row (its own
-        // named fields must also conform to its own constraint V). This mirrors the
-        // Uniform+Uniform case which correctly chains both rows' fields.
-        (RowTail::Empty, RowTail::Uniform { value, .. })
-        | (RowTail::Uniform { value, .. }, RowTail::Empty) => {
-            let v_fixed = state.apply(value);
-
-            // Collect named field types from both rows (T-1024: both rows contribute).
-            let field_types: Vec<Type> = row1
-                .fields
-                .values()
-                .chain(row2.fields.values())
-                .cloned()
-                .collect();
-
-            if field_types.is_empty() {
-                // Neither row has any named fields — compatible with any Uniform.
-                return Ok(());
-            }
-
-            if let Type::TypeVar(alpha, _) = &v_fixed {
-                // V is an unbound TypeVar α: compute join of all named field types and unify.
-                // The occurs check for α ∈ join is handled by the TypeVar arm of unify()
-                // via lower_levels_check_occurs, which fires before any binding is made.
-                let join = Type::normalize_union(field_types);
-                Box::pin(unify(
-                    &Type::TypeVar(alpha.clone(), 0),
-                    &join,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
-            } else if !v_fixed.has_inference_vars() {
-                // V is concrete: each named field Ti must be a subtype of V.
-                for field_ty in &field_types {
-                    let field_fixed = state.apply(field_ty);
-                    if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
-                        return Err(TypeDiagnostic::error("type-error",
-                            format!(
-                                "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
-                            ),
-                            span.clone(),
+                // If sup has a key type, sub's key must also be a subtype.
+                if let Some(sup_k) = sup_key {
+                    if let Some(sub_k) = sub_key {
+                        Box::pin(constrain(sub_k, sup_k, state, constraints, span.clone())).await?;
+                    } else {
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
+                            "key type mismatch: sup has key type but sub doesn't",
+                            span,
                         ));
                     }
                 }
             }
-            // Partially resolved V (has inference vars but not a bare TypeVar): defer.
+            // If sub_tail is Empty, that's fine — closed sub satisfies open sup.
+
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 // S-861: equirecursive-checker
@@ -1725,8 +1545,19 @@ async fn unify_rows(
 // everything from the parent module). No local copy needed.
 
 /// Lower levels of all type/row variables in `ty` to min(their level, cap_level).
-/// Performs occurs check simultaneously: returns true if `occurs_name` appears in the tree.
-/// No allocation -- directly updates `state.levels` in a single recursive walk.
+/// Performs occurs check simultaneously: returns `true` if `occurs_name` appears in the
+/// tree, `false` otherwise. No allocation — directly updates `state.levels` in a single
+/// recursive walk.
+///
+/// Uses `get_level_for_occurs_check` (returns 0 for unregistered names) rather than
+/// failing with an error for unregistered names, because:
+/// - μ-binder names in `Type::Recursive { var, body }` are string identifiers, not fresh
+///   TypeVars from `fresh_type_var_with`, so they are never registered in `state.levels`.
+///   Level 0 (outermost scope) is the correct default — it caps any TypeVars in the body
+///   to the binder's scope.
+/// - TypeVars created directly in tests without `fresh_type_var_with` also have no entry
+///   in `state.levels`. Level 0 is safe: it treats them as outermost-scope, which is
+///   conservative (never unsoundly generalizes).
 fn lower_levels_check_occurs(
     ty: &Type,
     occurs_name: &str,
@@ -1736,7 +1567,7 @@ fn lower_levels_check_occurs(
     match ty {
         Type::TypeVar(name, _) => {
             let found = name == occurs_name;
-            let current_level = state.get_level(name).unwrap_or(0);
+            let current_level = state.get_level_for_occurs_check(name);
             state.set_level(name.clone(), current_level.min(cap_level));
             found
         }
@@ -1797,7 +1628,7 @@ fn lower_levels_check_occurs(
         }
         Type::Operator(name) => {
             let found = name == occurs_name;
-            let current_level = state.get_level(name).unwrap_or(0);
+            let current_level = state.get_level_for_occurs_check(name);
             state.set_level(name.clone(), current_level.min(cap_level));
             found
         }
@@ -1872,7 +1703,7 @@ fn lower_levels_check_occurs(
 /// to be deferred until β is eventually bound to a concrete type. `HasField` constraints
 /// are NOT transferred — they reference the specific dict variable and must not migrate.
 ///
-/// Returns immediately if α has no class constraints (fast path for the common case).
+/// Returns immediately when α has no class constraints — there is nothing to transfer.
 fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Constraint>) {
     // Collect all Class constraints on α (both single-param and MPTC).
     // A constraint applies to α if any Var position names α.
@@ -1930,7 +1761,7 @@ fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Con
     }
 }
 
-// bind_single_type_var_from_compound removed (T-1212): replaced by bas_cvar1_rewrite
+// bind_single_type_var_from_compound removed: replaced by bas_cvar1_rewrite
 // and bas_cvar2_rewrite which implement the full BAS C-Var1/2 constraint rewriting
 // rules (Parreaux & Chau 2022, §3.2.1) with negation types and bounds.
 
@@ -2039,7 +1870,7 @@ async fn bas_cvar1_rewrite(
             continue;
         };
 
-        let alpha_level = state.get_level(var_name).unwrap_or(0);
+        let alpha_level = state.get_level_for_occurs_check(var_name);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
             return Err(TypeDiagnostic::error(
                 "type-error",
@@ -2138,7 +1969,7 @@ async fn bas_cvar2_rewrite(
             continue;
         };
 
-        let alpha_level = state.get_level(var_name).unwrap_or(0);
+        let alpha_level = state.get_level_for_occurs_check(var_name);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
             return Err(TypeDiagnostic::error(
                 "type-error",
@@ -2194,7 +2025,10 @@ fn check_function_arity(
     if p1_len != p2_len {
         return Err(TypeDiagnostic::error(
             "type-error",
-            format!("arity mismatch: expected {} arguments, got {}", p1_len, p2_len),
+            format!(
+                "arity mismatch: expected {} arguments, got {}",
+                p1_len, p2_len
+            ),
             span,
         ));
     }
@@ -2203,8 +2037,16 @@ fn check_function_arity(
             "type-error",
             format!(
                 "variadic mismatch: {} vs {}",
-                if is_variadic_1 { "variadic" } else { "non-variadic" },
-                if is_variadic_2 { "variadic" } else { "non-variadic" }
+                if is_variadic_1 {
+                    "variadic"
+                } else {
+                    "non-variadic"
+                },
+                if is_variadic_2 {
+                    "variadic"
+                } else {
+                    "non-variadic"
+                }
             ),
             span,
         ));
@@ -2360,8 +2202,8 @@ pub async fn unify(
         // no-op. No occurs-check is needed because the two variables are distinct — the
         // same-name case (`a == b`) is caught by the early return above.
         (Type::TypeVar(name_a, _), Type::TypeVar(name_b, _)) => {
-            let level_a = state.get_level(name_a).unwrap_or(0);
-            let level_b = state.get_level(name_b).unwrap_or(0);
+            let level_a = state.get_level_for_occurs_check(name_a);
+            let level_b = state.get_level_for_occurs_check(name_b);
 
             // Bind the higher-level variable to the lower-level one.
             // If levels are equal, bind left-to-right for determinism.
@@ -2384,7 +2226,7 @@ pub async fn unify(
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
             // lower_levels_check_occurs returns true if `name` appears in the type tree
             // (infinite-type guard), and simultaneously lowers all var levels to cap_level.
-            let alpha_level = state.get_level(name).unwrap_or(0);
+            let alpha_level = state.get_level_for_occurs_check(name);
             if lower_levels_check_occurs(&b, name, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -2421,7 +2263,7 @@ pub async fn unify(
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (_, Type::TypeVar(name, _)) => {
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
-            let alpha_level = state.get_level(name).unwrap_or(0);
+            let alpha_level = state.get_level_for_occurs_check(name);
             if lower_levels_check_occurs(&a, name, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -2489,140 +2331,47 @@ pub async fn unify(
             let fresh = state.fresh_type_var(&span);
             let opened_a = substitute_recvar(ba, va, &fresh);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            Box::pin(unify(
+            Box::pin(constrain(
                 &opened_a,
                 &opened_b,
                 state,
                 constraints,
-                span,
-                depth + 1,
+                span.clone(),
             ))
-            .await
+            .await?;
+            Box::pin(constrain(&opened_b, &opened_a, state, constraints, span)).await
         }
 
         // Arm 4 (open-left): left is Recursive, right is a concrete type (not TypeVar — that
         // was caught by the U-VAR-LEVEL-SYM arm above; not Recursive — caught by Arm 3 above).
-        // Open the left side with a fresh TypeVar and unify the opened body with the right.
+        // Open the left side with a fresh TypeVar and bidirectionally constrain with the right.
         (Type::Recursive { var: va, body: ba }, _) => {
             let fresh = state.fresh_type_var(&span);
             let opened_a = substitute_recvar(ba, va, &fresh);
-            Box::pin(unify(&opened_a, &b, state, constraints, span, depth + 1)).await
+            Box::pin(constrain(&opened_a, &b, state, constraints, span.clone())).await?;
+            Box::pin(constrain(&b, &opened_a, state, constraints, span)).await
         }
 
         // Arm 5 (open-right): right is Recursive, left is a concrete type (not TypeVar — caught
         // above; not Recursive — caught by Arm 3 above).
-        // Open the right side with a fresh TypeVar and unify with the left.
+        // Open the right side with a fresh TypeVar and bidirectionally constrain with the left.
         (_, Type::Recursive { var: vb, body: bb }) => {
             let fresh = state.fresh_type_var(&span);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            Box::pin(unify(&a, &opened_b, state, constraints, span, depth + 1)).await
+            Box::pin(constrain(&a, &opened_b, state, constraints, span.clone())).await?;
+            Box::pin(constrain(&opened_b, &a, state, constraints, span)).await
         }
 
-        // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
-        //
-        // These arms are logically redundant with [U-SUBSUME] at the bottom of this match:
-        //   - IntLiteral(_) <: Int <: Number via S-NEVER/is_subtype, so U-SUBSUME passes both ways
-        //   - Float <: Number via is_subtype, so U-SUBSUME passes
-        //   - StringLiteral(_) <: Str via is_subtype, so U-SUBSUME passes
-        //
-        // They are retained as explicit fast-paths to avoid the has_inference_vars() guards
-        // on [U-SUBSUME], which would be a minor overhead for very common unification patterns
-        // (e.g., integer literals in arithmetic expressions).
-        //
-        // SEMANTIC NOTE: unify(Int, IntLiteral(42)) succeeds here (and via U-SUBSUME bidirectional
-        // check). This is correct: is_subtype(IntLiteral(42), Int) = true, so U-SUBSUME's
-        // `is_subtype(&b, &a)` arm fires. The "bidirectionality" is from the symmetric U-SUBSUME
-        // check, not from asserting Int = IntLiteral(42) — Int is the wider type, IntLiteral(42)
-        // is the narrower, and subtyping allows the narrower to satisfy the wider.
-        (Type::IntLiteral(_), Type::Int) | (Type::Int, Type::IntLiteral(_)) => Ok(()),
-        (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => Ok(()),
-        // Same-value literals: covered by the `a == b` early-return above.
-        // Different-value INTEGER literals: allow unification without rebinding.
-        //
-        // DESIGN NOTE (B-384): This arm is intentionally a no-op (no TypeVar rebinding)
-        // rather than a widening to Int. The reason: by the time two distinct IntLiterals
-        // reach this arm, the TypeVar that introduced the binding (e.g., `_t42` bound to
-        // IntLiteral(1) from the first argument) has already been committed in the
-        // substitution. Widening it here would require knowing which TypeVar introduced
-        // IntLiteral(n1) — that information is not available at this match site.
-        //
-        // What this arm DOES provide: it prevents false UnificationFailure warnings for
-        // call sites like `[= [x: 1] [x: 2]]` where the same polymorphic TypeVar is
-        // unified against two different integer literals. The arm succeeds (Ok(()))
-        // without changing the substitution, which is correct for the single-arg-call
-        // scenario (the TypeVar stays at IntLiteral(1), the narrower type). For the
-        // two-different-literal case, the arm prevents a spurious warning at the cost of
-        // not widening to Int — acceptable since the subsequent call-site check at
-        // check_constraints_on_var uses widen_literal_types to recover Int precision.
-        //
-        // StringLiteral values are NOT handled here because they serve as field labels in
-        // Indexable FD resolution and must remain distinct across unification sites.
-        (Type::IntLiteral(n1), Type::IntLiteral(n2)) if n1 != n2 => Ok(()),
-        (
-            Type::Function {
-                params: p1,
-                ret: r1,
-                typed_variadics: tv1,
-                rest: rest1,
-                required_count: _,
-            },
-            Type::Function {
-                params: p2,
-                ret: r2,
-                typed_variadics: tv2,
-                rest: rest2,
-                required_count: _,
-            },
-        ) => {
-            // Special case: zero-param variadic is the "any function" type.
-            // Function{params:[], ret:Unknown, variadic:true} unifies with any function that
-            // has at least one parameter (concrete arity). It does NOT unify with zero-param
-            // non-variadic (different semantics: zero-param variadic accepts any args, zero-param
-            // non-variadic accepts exactly zero args).
-            // This enables precise function type predicate narrowing (fn-narrowing-variadic sprint).
-            let is_variadic_1 = !tv1.is_empty() || rest1.is_some();
-            let is_variadic_2 = !tv2.is_empty() || rest2.is_some();
-            let is_any_function_1 = p1.is_empty() && is_variadic_1;
-            let is_any_function_2 = p2.is_empty() && is_variadic_2;
-
-            // Apply special case when one side is zero-param variadic and the other has params.
-            if is_any_function_1 && !p2.is_empty() {
-                // Zero-param variadic unifies with any concrete-arity function.
-                return Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await;
-            }
-            if is_any_function_2 && !p1.is_empty() {
-                // Zero-param variadic unifies with any concrete-arity function (symmetric).
-                return Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await;
-            }
-
-            // Structural variadic check: both must be variadic or both non-variadic,
-            // same number of typed variadic buckets, and matching rest presence.
-            // The types within rest/typed_variadics are UNIFIED below, not compared by value —
-            // equality comparison would reject valid letrec SCC unifications where the pre-bound
-            // TypeVar (TypeVar_a) differs from the inferred TypeVar (TypeVar_c).
-            check_function_arity(
-                p1.len(), p2.len(),
-                is_variadic_1, is_variadic_2,
-                tv1.len(), tv2.len(),
-                rest1.is_some(), rest2.is_some(),
-                span.clone(),
-            )?;
-
-            // Robinson invariant: sub-terms are passed without explicit apply() because
-            // every recursive unify() call re-applies the accumulated substitution at its
-            // own entry (via apply_with_visited at the top of this function). Bindings
-            // from earlier parameter unifications are therefore visible to later ones via
-            // the shared `subst` -- this is correct Robinson (1965) unification.
-            for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone(), depth + 1)).await?;
-            }
-            for ((_, ty_a), (_, ty_b)) in tv1.iter().zip(tv2.iter()) {
-                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone(), depth + 1)).await?;
-            }
-            if let (Some(r1b), Some(r2b)) = (rest1, rest2) {
-                Box::pin(unify(&r1b.1, &r2b.1, state, constraints, span.clone(), depth + 1)).await?;
-            }
-            Box::pin(unify(r1, r2, state, constraints, span, depth + 1)).await
+        (Type::Function { .. }, Type::Function { .. }) => {
+            // unify(Fn, Fn): delegate unconditionally to bidirectional constrain.
+            // C-FN in constrain() handles all cases:
+            //   - zero-param variadic (any-function semantics)
+            //   - arity and variadic structure validation via check_function_arity
+            //   - contravariant params, covariant return
+            // There is one correct path — no pre-checks or special cases here.
+            let (ac, bc) = (a.clone(), b.clone());
+            Box::pin(constrain(&ac, &bc, state, constraints, span.clone())).await?;
+            Box::pin(constrain(&bc, &ac, state, constraints, span)).await
         }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
@@ -2643,9 +2392,13 @@ pub async fn unify(
         // to detect dead-code branches at the type level, use is_subtype(scrutinee, Never) instead.
         (Type::Never, _) | (_, Type::Never) => Ok(()),
 
-        // Negation unification: structural (for now, basic support)
+        // Negation unification: bidirectional constrain (contravariant).
         (Type::Negation(t1), Type::Negation(t2)) => {
-            Box::pin(unify(t1, t2, state, constraints, span, depth + 1)).await
+            let (t1c, t2c) = ((**t1).clone(), (**t2).clone());
+            // Negation is contravariant, but for unification we need bidirectional constraint.
+            // constrain(~T1, ~T2) checks T2 ≤ T1; constrain(~T2, ~T1) checks T1 ≤ T2.
+            Box::pin(constrain(&t2c, &t1c, state, constraints, span.clone())).await?;
+            Box::pin(constrain(&t1c, &t2c, state, constraints, span)).await
         }
 
         // Negation disjointness: if T <: A, then T & ~A = Never (provably empty intersection).
@@ -2923,8 +2676,8 @@ pub async fn unify(
         // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.
         // Follows Kiselyov L3 invariant (same as TypeVar-to-TypeVar at lines 1837-1860).
         (Type::Operator(m), Type::Operator(n)) if m != n => {
-            let level_m = state.get_level(m).unwrap_or(0);
-            let level_n = state.get_level(n).unwrap_or(0);
+            let level_m = state.get_level_for_occurs_check(m);
+            let level_n = state.get_level_for_occurs_check(n);
 
             // Bind the higher-level operator to the lower-level one.
             // If levels are equal, bind left-to-right for determinism.
@@ -2946,7 +2699,7 @@ pub async fn unify(
         // Kind check premise is deferred to hkt-kind-inference.
         (Type::Operator(m), _) => {
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
-            let alpha_level = state.get_level(m).unwrap_or(0);
+            let alpha_level = state.get_level_for_occurs_check(m);
             if lower_levels_check_occurs(&b, m, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -2971,7 +2724,7 @@ pub async fn unify(
         // UNIFY-OPERATOR-SYM: symmetric case
         (_, Type::Operator(m)) => {
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
-            let alpha_level = state.get_level(m).unwrap_or(0);
+            let alpha_level = state.get_level_for_occurs_check(m);
             if lower_levels_check_occurs(&a, m, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -2994,95 +2747,163 @@ pub async fn unify(
             Ok(())
         }
 
-        // UNIFY-APP: decompose App(f₁, a₁) vs App(f₂, a₂).
+        // UNIFY-APP: delegate unconditionally to bidirectional constrain.
         //
-        // When both sides are TyCon spines of the same constructor, applies variance-directed
-        // unification per parameter position declared in TyConDef.variance:
-        //   - Covariant:     standard unify (U-SUBSUME allowed for ground types)
-        //   - Invariant:     strict — TypeVar binding allowed, but no subsumption for ground types
-        //   - Contravariant: standard unify with arguments swapped
-        //   - Phantom:       always succeeds (argument doesn't affect type safety)
+        // Variance-directed dispatch belongs entirely in constrain()'s C-App arm, which
+        // looks up TyConDef.variance[i] and routes each argument position to
+        // Covariant/Contravariant/Invariant/Phantom constraint accordingly.
         //
-        // This eliminates the need for constructor-specific arms (formerly UNIFY-MAP for Map)
-        // and makes the runtime agnostic to which constructors exist.
+        // Type constructor application. For matching TyCon spines, all arg positions
+        // use bidirectional constrain — variance is directional only in constrain()'s
+        // C-App arm; in unify() equality is symmetric so all positions are bidirectional.
+        // For non-TyCon App or mismatched constructors, recurse into unify() on the
+        // components (NOT constrain) to avoid constrain→unify→constrain infinite loops
+        // on App types whose head is a TypeVar or has no registered TyConDef.
         (Type::App(f1, a1), Type::App(f2, a2)) => {
-            // Attempt variance-directed unification for TyCon spine forms.
             if let (Some((name1, args1)), Some((name2, args2))) =
                 (extract_tycon_spine(&a), extract_tycon_spine(&b))
             {
                 if name1 == name2 && args1.len() == args2.len() {
-                    if let Some(def) = state.tycon_env.get(name1).cloned() {
-                        for (i, (arg_a, arg_b)) in args1.iter().zip(args2.iter()).enumerate() {
-                            let var = def.variance.get(i).copied().unwrap_or(Variance::Invariant);
-                            match var {
-                                Variance::Covariant => {
-                                    Box::pin(unify(
-                                        arg_a,
-                                        arg_b,
-                                        state,
-                                        constraints,
-                                        span.clone(),
-                                        depth + 1,
-                                    ))
-                                    .await?;
-                                }
-                                Variance::Contravariant => {
-                                    Box::pin(unify(
-                                        arg_b,
-                                        arg_a,
-                                        state,
-                                        constraints,
-                                        span.clone(),
-                                        depth + 1,
-                                    ))
-                                    .await?;
-                                }
-                                Variance::Invariant => {
-                                    // Invariant: bind TypeVars, but reject ground-type subsumption.
-                                    // U-SUBSUME must not fire here — Int and Number are distinct
-                                    // invariant positions and must not unify via subtyping.
-                                    let ra = state.apply(arg_a);
-                                    let rb = state.apply(arg_b);
-                                    if ra.has_inference_vars() || rb.has_inference_vars() {
-                                        Box::pin(unify(
-                                            &ra,
-                                            &rb,
-                                            state,
-                                            constraints,
-                                            span.clone(),
-                                            depth + 1,
-                                        ))
-                                        .await?;
-                                    } else if ra != rb {
-                                        let mut err = TypeDiagnostic::error(
-                                            "type-error",
-                                            format!("cannot unify {} with {}", ra, rb),
-                                            span.clone(),
-                                        );
-                                        err.add_note(format!(
-                                            "type argument {} of {} must match exactly \
-                                             (invariant position)",
-                                            i + 1,
-                                            name1
-                                        ));
-                                        return Err(err);
-                                    }
-                                }
-                                Variance::Phantom => {}
-                            }
-                        }
-                        return Ok(());
+                    for (arg_a, arg_b) in args1.iter().zip(args2.iter()) {
+                        let (ac, bc) = ((*arg_a).clone(), (*arg_b).clone());
+                        Box::pin(constrain(&ac, &bc, state, constraints, span.clone())).await?;
+                        Box::pin(constrain(&bc, &ac, state, constraints, span.clone())).await?;
                     }
+                    return Ok(());
                 }
             }
-            // Fallback for non-TyCon App forms or unknown constructors: structural recursion.
+            // Non-TyCon App or mismatched constructors: recurse via unify() on components.
+            // Using constrain() here would create constrain→unify→constrain loops.
             Box::pin(unify(f1, f2, state, constraints, span.clone(), depth + 1)).await?;
             Box::pin(unify(a1, a2, state, constraints, span, depth + 1)).await
         }
 
-        // Record unification: delegate to row unification
+        // Record unification: bidirectional constrain_rows for field subtyping,
+        // plus UNIFY-UNIFORM tail unification for TypeVar binding (Rémy 1994 §3).
+        // Field subtyping is a constrain() concern; tail TypeVar binding is a
+        // unify() concern — equality requires direct substitution, not bounds.
         (Type::Dict(row1), Type::Dict(row2)) => {
-            unify_rows(row1, row2, state, constraints, span, depth).await
+            let (r1c, r2c) = (row1.clone(), row2.clone());
+            constrain_rows(&r1c, &r2c, state, constraints, span.clone()).await?;
+            constrain_rows(&r2c, &r1c, state, constraints, span.clone()).await?;
+
+            // UNIFY-UNIFORM: unify tail types and bind Uniform-tail TypeVars.
+            use crate::type_def::RowTail;
+            match (&row1.tail, &row2.tail) {
+                (RowTail::Empty, RowTail::Empty) => Ok(()),
+
+                (
+                    RowTail::Uniform { key: k1, value: v1 },
+                    RowTail::Uniform { key: k2, value: v2 },
+                ) => {
+                    Box::pin(unify(v1, v2, state, constraints, span.clone(), depth + 1)).await?;
+                    if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
+                        Box::pin(unify(
+                            k1_ty,
+                            k2_ty,
+                            state,
+                            constraints,
+                            span.clone(),
+                            depth + 1,
+                        ))
+                        .await?;
+                    }
+                    // UNIFY-UNIFORM named-field validation: runs after constrain_rows to handle
+                    // the tail-specific TypeVar binding cases (Rémy 1994 §3). This step is NOT
+                    // redundant with constrain_rows:
+                    //   • constrain_rows enforces field-to-field directional subtyping (Int ≤ Str),
+                    //     adding bounds to TypeVars it encounters in field positions.
+                    //   • This block enforces the Uniform value constraint: every named field from
+                    //     BOTH rows must conform to the unified Uniform value type V. That invariant
+                    //     is separate from field-to-field subtyping and cannot be expressed as a
+                    //     constrain_rows pair (constrain_rows has no access to the Uniform join).
+                    //   • When V is a TypeVar (alpha), we bind alpha to the join of all field types —
+                    //     a direct substitution that constrain_rows (which only adds bounds) cannot do.
+                    //   • When V is a concrete type, the is_subtype check validates fields that
+                    //     constrain_rows accepted as bounded: a field that passed covariant constraint
+                    //     is re-confirmed against the concrete Uniform type via structural equality.
+                    //     For ground-type fields this fires only if constrain_rows would have already
+                    //     caught a mismatch, so in practice this path catches no new errors for
+                    //     well-formed programs — but is retained as a defense-in-depth invariant check.
+                    let v_fixed = state.apply(v1);
+                    let all_fields: Vec<Type> = row1
+                        .fields
+                        .values()
+                        .chain(row2.fields.values())
+                        .cloned()
+                        .collect();
+                    if !all_fields.is_empty() {
+                        if let Type::TypeVar(alpha, _) = &v_fixed {
+                            let join = Type::normalize_union(all_fields);
+                            Box::pin(unify(
+                                &Type::TypeVar(alpha.clone(), 0),
+                                &join,
+                                state,
+                                constraints,
+                                span.clone(),
+                                depth + 1,
+                            ))
+                            .await?;
+                        } else if !v_fixed.has_inference_vars() {
+                            for field_ty in &all_fields {
+                                let field_fixed = state.apply(field_ty);
+                                if !Type::is_subtype(&field_fixed, &v_fixed, None) {
+                                    return Err(TypeDiagnostic::error(
+                                        "type-error",
+                                        format!(
+                                            "field type {} does not conform to Uniform constraint {}",
+                                            field_fixed, v_fixed
+                                        ),
+                                        span.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+
+                (RowTail::Empty, RowTail::Uniform { value, .. })
+                | (RowTail::Uniform { value, .. }, RowTail::Empty) => {
+                    let v_fixed = state.apply(value);
+                    let field_types: Vec<Type> = row1
+                        .fields
+                        .values()
+                        .chain(row2.fields.values())
+                        .cloned()
+                        .collect();
+                    if field_types.is_empty() {
+                        return Ok(());
+                    }
+                    if let Type::TypeVar(alpha, _) = &v_fixed {
+                        let join = Type::normalize_union(field_types);
+                        Box::pin(unify(
+                            &Type::TypeVar(alpha.clone(), 0),
+                            &join,
+                            state,
+                            constraints,
+                            span.clone(),
+                            depth + 1,
+                        ))
+                        .await?;
+                    } else if !v_fixed.has_inference_vars() {
+                        for field_ty in &field_types {
+                            let field_fixed = state.apply(field_ty);
+                            if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
+                                    format!(
+                                        "field type {} does not conform to Uniform constraint {}",
+                                        field_fixed, v_fixed
+                                    ),
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            }
         }
 
         (
@@ -3107,7 +2928,9 @@ pub async fn unify(
                     span,
                 ));
             }
-            unify_rows(fields1, fields2, state, constraints, span, depth).await
+            let (f1c, f2c) = (fields1.clone(), fields2.clone());
+            constrain_rows(&f1c, &f2c, state, constraints, span.clone()).await?;
+            constrain_rows(&f2c, &f1c, state, constraints, span).await
         }
 
         (Type::NominalVariant { tycon, ctor, .. }, Type::Dict(_)) => Err(TypeDiagnostic::error(
@@ -3131,9 +2954,7 @@ pub async fn unify(
         //
         // When a concrete Record is unified against an Intersection whose members are all
         // Records (the shape produced by multi-field `@[x: Int  y: String]` annotations),
-        // unify the record against EACH member in turn.  Row unification will bind each
-        // member's open row variable to absorb the extra fields present in the concrete
-        // record, satisfying the width-subtyping requirement for open rows.
+        // bidirectionally constrain the record against EACH member.
         //
         // This arm is placed BEFORE the C-Var2 patterns because those patterns require
         // `!concrete.has_inference_vars()`, which would not fire for intersections whose
@@ -3143,34 +2964,22 @@ pub async fn unify(
         (Type::Dict(_), Type::Intersection(members))
             if members.iter().all(|m| matches!(m, Type::Dict(_))) =>
         {
-            let members = members.clone();
+            let (ac, members) = (a.clone(), members.clone());
             for member in &members {
-                Box::pin(unify(
-                    &a,
-                    member,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
+                let mc = member.clone();
+                Box::pin(constrain(&ac, &mc, state, constraints, span.clone())).await?;
+                Box::pin(constrain(&mc, &ac, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
         (Type::Intersection(members), Type::Dict(_))
             if members.iter().all(|m| matches!(m, Type::Dict(_))) =>
         {
-            let members = members.clone();
+            let (bc, members) = (b.clone(), members.clone());
             for member in &members {
-                Box::pin(unify(
-                    member,
-                    &b,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
+                let mc = member.clone();
+                Box::pin(constrain(&mc, &bc, state, constraints, span.clone())).await?;
+                Box::pin(constrain(&bc, &mc, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3248,7 +3057,7 @@ pub async fn unify(
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
-        // Case 1: same function name -> pairwise unify args
+        // Case 1: same function name -> pairwise bidirectional constrain args
         (
             Type::TypeStageApp {
                 fn_name: f1,
@@ -3272,15 +3081,9 @@ pub async fn unify(
                 ));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                Box::pin(unify(
-                    arg1,
-                    arg2,
-                    state,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
+                let (a1c, a2c) = (arg1.clone(), arg2.clone());
+                Box::pin(constrain(&a1c, &a2c, state, constraints, span.clone())).await?;
+                Box::pin(constrain(&a2c, &a1c, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3443,7 +3246,7 @@ pub async fn constrain(
         // Guard: sub must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
         // as bounds. If sub contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
         (_, Type::TypeVar(var_name, _)) if !sub.has_inference_vars() => {
-            let alpha_level = state.get_level(var_name).unwrap_or(0);
+            let alpha_level = state.get_level_for_occurs_check(var_name);
             if lower_levels_check_occurs(&sub, var_name, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -3468,7 +3271,7 @@ pub async fn constrain(
         // Guard: sup must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
         // as bounds. If sup contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
         (Type::TypeVar(var_name, _), _) if !sup.has_inference_vars() => {
-            let alpha_level = state.get_level(var_name).unwrap_or(0);
+            let alpha_level = state.get_level_for_occurs_check(var_name);
             if lower_levels_check_occurs(&sup, var_name, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -3528,10 +3331,14 @@ pub async fn constrain(
 
             // Validate arity and variadic structure; propagate error directly if mismatched.
             check_function_arity(
-                p1.len(), p2.len(),
-                is_variadic_1, is_variadic_2,
-                tv1.len(), tv2.len(),
-                rest1.is_some(), rest2.is_some(),
+                p1.len(),
+                p2.len(),
+                is_variadic_1,
+                is_variadic_2,
+                tv1.len(),
+                tv2.len(),
+                rest1.is_some(),
+                rest2.is_some(),
                 span.clone(),
             )?;
 
@@ -3561,6 +3368,156 @@ pub async fn constrain(
             return Box::pin(constrain(&r1c, &r2c, state, constraints, span)).await;
         }
 
+        // [C-Dict] Directional record subtyping via constrain_rows.
+        (Type::Dict(r1), Type::Dict(r2)) => {
+            let (r1c, r2c) = (r1.clone(), r2.clone());
+            return constrain_rows(&r1c, &r2c, state, constraints, span).await;
+        }
+
+        // [C-NominalVariant] Nominal variant with same tycon/ctor: constrain fields.
+        (
+            Type::NominalVariant {
+                tycon: tycon1,
+                ctor: ctor1,
+                fields: fields1,
+            },
+            Type::NominalVariant {
+                tycon: tycon2,
+                ctor: ctor2,
+                fields: fields2,
+            },
+        ) if tycon1 == tycon2 && ctor1 == ctor2 => {
+            let (f1c, f2c) = (fields1.clone(), fields2.clone());
+            return constrain_rows(&f1c, &f2c, state, constraints, span).await;
+        }
+
+        // [C-App] Type constructor application with variance-directed constraints.
+        // Mirrors UNIFY-APP but uses constrain() with correct variance rather than symmetric unify().
+        (Type::App(_, _), Type::App(_, _)) => {
+            // Attempt variance-directed constraint for TyCon spine forms.
+            if let (Some((name1, args1)), Some((name2, args2))) =
+                (extract_tycon_spine(&sub), extract_tycon_spine(&sup))
+            {
+                if name1 == name2 && args1.len() == args2.len() {
+                    if let Some(def) = state.tycon_env.get(name1).cloned() {
+                        for (i, (arg_sub, arg_sup)) in args1.iter().zip(args2.iter()).enumerate() {
+                            let var = if i < def.variance.len() {
+                                def.variance[i]
+                            } else {
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
+                                    format!(
+                                        "type constructor {} applied with more arguments than declared variance positions",
+                                        name1
+                                    ),
+                                    span.clone(),
+                                ));
+                            };
+                            let (sub_c, sup_c) = ((*arg_sub).clone(), (*arg_sup).clone());
+                            match var {
+                                Variance::Covariant => {
+                                    Box::pin(constrain(
+                                        &sub_c,
+                                        &sup_c,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                    ))
+                                    .await?;
+                                }
+                                Variance::Contravariant => {
+                                    // CONTRAVARIANT: swap directions!
+                                    Box::pin(constrain(
+                                        &sup_c,
+                                        &sub_c,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                    ))
+                                    .await?;
+                                }
+                                Variance::Invariant => {
+                                    // INVARIANT: bidirectional.
+                                    Box::pin(constrain(
+                                        &sub_c,
+                                        &sup_c,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                    ))
+                                    .await?;
+                                    Box::pin(constrain(
+                                        &sup_c,
+                                        &sub_c,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                    ))
+                                    .await?;
+                                }
+                                Variance::Phantom => {}
+                            }
+                        }
+                        return Ok(());
+                    }
+                    // TyCon name match but no TyConDef: fall through to unify() for structural
+                    // recursion on components (unify() applies conservative bidirectional constrain on args).
+                }
+                // Different TyCons: fall through to unify() for error.
+            }
+            // Not a TyCon spine: fall through to unify() for structural recursion.
+        }
+
+        // [C-Recursive] Recursive type constraints: open with fresh TypeVar and constrain.
+        (Type::Recursive { var: va, body: ba }, Type::Recursive { var: vb, body: bb }) => {
+            let (vac, bac, vbc, bbc) = (va.clone(), (**ba).clone(), vb.clone(), (**bb).clone());
+            let fresh = state.fresh_type_var(&span);
+            let opened_a = substitute_recvar(&bac, &vac, &fresh);
+            let opened_b = substitute_recvar(&bbc, &vbc, &fresh);
+            return Box::pin(constrain(&opened_a, &opened_b, state, constraints, span)).await;
+        }
+        (Type::Recursive { var: va, body: ba }, _) if !matches!(sup, Type::Recursive { .. }) => {
+            let (vac, bac) = (va.clone(), (**ba).clone());
+            let fresh = state.fresh_type_var(&span);
+            let opened_a = substitute_recvar(&bac, &vac, &fresh);
+            return Box::pin(constrain(&opened_a, &sup, state, constraints, span)).await;
+        }
+        (_, Type::Recursive { var: vb, body: bb }) if !matches!(sub, Type::Recursive { .. }) => {
+            let (vbc, bbc) = (vb.clone(), (**bb).clone());
+            let fresh = state.fresh_type_var(&span);
+            let opened_b = substitute_recvar(&bbc, &vbc, &fresh);
+            return Box::pin(constrain(&sub, &opened_b, state, constraints, span)).await;
+        }
+
+        // [C-Negation] Negation is CONTRAVARIANT: ~T₁ ≤ ~T₂ iff T₂ ≤ T₁ (swap directions).
+        (Type::Negation(t1), Type::Negation(t2)) => {
+            let (t1c, t2c) = ((**t1).clone(), (**t2).clone());
+            return Box::pin(constrain(&t2c, &t1c, state, constraints, span)).await;
+        }
+
+        // [C-TypeStageApp] TypeStageApp is INVARIANT: same function name, bidirectional on args.
+        (
+            Type::TypeStageApp {
+                fn_name: f1,
+                args: args1,
+            },
+            Type::TypeStageApp {
+                fn_name: f2,
+                args: args2,
+            },
+        ) if f1 == f2 && args1.len() == args2.len() => {
+            let pairs: Vec<_> = args1
+                .iter()
+                .zip(args2.iter())
+                .map(|(a, b)| (a.clone(), b.clone()))
+                .collect();
+            for (a, b) in &pairs {
+                Box::pin(constrain(a, b, state, constraints, span.clone())).await?;
+                Box::pin(constrain(b, a, state, constraints, span.clone())).await?;
+            }
+            return Ok(());
+        }
+
         // Ground-type subtype check: neither side contains inference variables.
         // A ≤ B iff is_empty(to_rdnf(A & ~B)) — BAS subtyping judgment.
         // At argument-passing sites, the argument type need only be a SUBTYPE of the
@@ -3574,9 +3531,22 @@ pub async fn constrain(
             // Subtype check failed: fall through to unify() for a structured error.
         }
 
-        // All other cases: fall through to unify().
-        // This handles: structural decomposition (records, functions, apps),
-        // TypeVar-to-TypeVar, and emitting errors for ground-type mismatches.
+        // Fallthrough to unify(): non-structural cases only.
+        // - TypeVar-TypeVar: unify() binds variables (C-Var1/C-Var2 above handle union/intersection)
+        // - Atomic mismatches (Int vs Str): unify() produces structured errors
+        //
+        // INVARIANT: every compound Type variant that carries structural sub-terms has an
+        // explicit constrain() arm above — EXCEPT Union/Intersection in the non-TypeVar-bearing
+        // position, which fall through to unify() for the following reasons:
+        //   • Union in SUP position (with TypeVar): handled by C-Var1 above.
+        //   • Intersection in SUB position (with TypeVar): handled by C-Var2 above.
+        //   • Union in SUB position WITHOUT TypeVar members: falls through to unify()'s U-SUBSUME
+        //     arm, which calls is_subtype(Union, sup) — a correct ground-type check.
+        //   • Intersection in SUP position WITHOUT TypeVar members: same U-SUBSUME fallthrough.
+        //   • Union/Intersection in either position WITH TypeVar members but no matching C-Var1/2
+        //     guard: falls through to unify()'s symmetric handling — a known limitation.
+        // If a new compound variant is added, add an explicit constrain() arm for it here.
+        // Do not rely on U-SUBSUME fallthrough for TypeVar-containing compound types.
         _ => {}
     }
 
@@ -3592,21 +3562,17 @@ pub async fn constrain(
 /// - Otherwise, keep them deferred for the next round
 /// - Repeat until a full iteration produces no progress
 ///
-/// Unification failures during an iteration are silently dropped (not propagated with `?`):
-/// if unification of a fully-reduced pair fails, that equality is discarded and the error
-/// will surface later when the affected type variable is used in a context that requires it.
-/// This preserves the fixed-point invariant — a single failure mid-iteration must not
-/// abort processing of remaining equalities that might still make progress.
+/// Unification failures are propagated immediately with `?`. A deferred equality that fails
+/// unification after both sides are fully reduced is a genuine type error and must be surfaced.
 ///
-/// Called after each SCC's substitution merge in `infer_dict` (typecheck_dict.rs).
+/// Called after each SCC's substitution merge in `run_typecheck_dict` (typecheck_cek.rs).
 /// Union-vs-Union deferred equalities (from the arm above) also land here.
-/// See doc/06-type-inference.md:884.
-#[allow(dead_code)]
+/// See doc/06-type-inference.md §Constraint Generation rules [U-TSA-DEFER].
 pub async fn process_deferred_equalities(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
-) {
+) -> Result<(), TypeDiagnostic> {
     let max_iterations = 100;
     let mut iteration = 0;
     let mut progress = true;
@@ -3629,34 +3595,17 @@ pub async fn process_deferred_equalities(
                 crate::type_normalize::normalize(&b, &state.type_vars, &mut norm_ctx).await;
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
-                // Both sides fully reduced — attempt unification.
-                // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match Box::pin(unify(&a_norm, &b_norm, state, constraints, span.clone(), 0)).await {
-                    Ok(()) => {
-                        progress = true;
-                    }
-                    Err(err) => {
-                        // Deferred equality failed — emit T013-style diagnostic
-                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                            level: crate::error::DiagnosticLevel::Warn,
-                            kind: "ambiguous-constraint",
-                            message: format!(
-                                "deferred type equality failed: cannot unify {} with {} — {}",
-                                a_norm, b_norm, err.message
-                            ),
-                            spans: vec![(span.clone(), String::new())],
-                            notes: vec![],
-                            help: vec![],
-                        });
-                    }
-                }
-                // Don't re-defer either way (fully reduced)
+                // Both sides fully reduced — attempt unification. Propagate failures.
+                Box::pin(unify(&a_norm, &b_norm, state, constraints, span.clone(), 0)).await?;
+                progress = true;
+                // Don't re-defer (fully reduced)
             } else {
                 // Still stuck — keep deferred for the next iteration
                 state.deferred_equalities.push((a_norm, b_norm));
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

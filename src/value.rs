@@ -2639,10 +2639,7 @@ mod groupspine_tests {
     use super::*;
 
     fn make_thunk(n: i64) -> Arc<Thunk> {
-        Arc::new(Thunk::value(
-            Value::Int(n),
-            crate::rust_span!(),
-        ))
+        Arc::new(Thunk::value(Value::Int(n), crate::rust_span!()))
     }
 
     #[test]

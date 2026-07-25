@@ -2217,7 +2217,6 @@ pub(crate) fn builtin_read_link(
     })
 }
 
-
 /// `builtin-file-open`: Open a file via a DirCap and return a raw `Value::File`.
 ///
 /// Signature: `[builtin-file-open cap path modes mode flags]`
