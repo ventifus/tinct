@@ -197,14 +197,14 @@
 
   # ── Pipeline primitives ────────────────────────────────────────────────────
   # parse: parse source bytes at path, return {program, diagnostics}.
-  builtin-parse:          [fn@[program: Any  diagnostics: Dict] [let src@Bytes path@String] ...]
+  builtin-parse:          [fn@[program: Program  diagnostics: Dict] [let src@Bytes path@String] ...]
   # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
   # resolve: resolve VarRef de Bruijn coords in a document against a name-set.
   # name-set: Dict<String, 1> — flat dict of all visible names, values ignored.
   # Returns {doc, diagnostics, unreferenced}.
   # diagnostics: error-level diagnostics only (undefined variables).
-  builtin-resolve:        [fn@[doc: Any  diagnostics: Dict  unreferenced: Dict] [let doc@Document name-set@Dict] ...]
+  builtin-resolve:        [fn@[doc: Document  diagnostics: Dict  unreferenced: Dict] [let doc@Document name-set@Dict] ...]
   # lower: lower a resolved+typechecked Document to a CoreDocument.
   # Must be called after builtin-typecheck-doc and before builtin-eval.
   builtin-lower:          [fn@CoreDocument [let typed@Document] ...]
@@ -214,7 +214,7 @@
   builtin-eval:           [fn@Dict     [let lowered@CoreDocument env@Dict] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Returns {doc, diagnostics}.
-  builtin-typecheck-doc:  [fn@[doc: Any  diagnostics: Dict] [let doc@Document tc@TypeContext] ...]
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Dict] [let doc@Document tc@TypeContext] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
