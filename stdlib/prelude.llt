@@ -3586,26 +3586,38 @@ Note: Constructs a Seq.Cons cell — purely tinct, no Rust dispatch.
 """]: [fn@[bind: [a]  return: [Seq a]] [let x@a rest@[Seq a]] [Seq.Cons head: x  tail: rest]]
 
 head@[return: a  doc: """
-First element of a Seq. Raises on empty.
+First element of a Seq or Dict. Raises on empty.
 
 Example: [head [cons 1 [cons 2 Seq.End]]] => 1
+Example: [head [10 20 30]] => 10
 
-Note: Errors on Seq.End. Forces evaluation of the head element only.
-"""]: [fn@[bind: [a]  return: a] [let s@[Seq a]]
-    [match s
-      [case [let p] [Seq.Cons p] p.head]
-      Seq.End:      [raise "head: empty sequence"]]]
+Note: For Seq, errors on Seq.End and forces evaluation of the head element only.
+For Dict, returns the value at key 0 and errors if empty.
+"""]: [fn@[bind: [a]  return: a] [let s]
+    [if [seq? s]
+      [match s
+        [case [let p] [Seq.Cons p] p.head]
+        Seq.End:      [raise "head: empty sequence"]]
+      [if [builtin-eq-int [builtin-dict-length s] 0]
+        [raise "head: empty dict"]
+        [builtin-dict-get 0 s]]]]
 
-tail@[return: [Seq a]  doc: """
+tail@[return: Any  doc: """
 All elements after the first. Raises on empty.
 
 Example: [head [tail [cons 1 [cons 2 [cons 3 Seq.End]]]]] => 2
+Example: [tail [10 20 30]] => [0: 20  1: 30]
 
-Note: Errors on Seq.End. Returns a Seq (lazy; does not force tail elements).
-"""]: [fn@[bind: [a]  return: [Seq a]] [let s@[Seq a]]
-    [match s
-      [case [let p] [Seq.Cons p] p.tail]
-      Seq.End:      [raise "tail: empty sequence"]]]
+Note: For Seq, errors on Seq.End and returns a Seq (lazy; does not force tail elements).
+For Dict, errors if empty and returns a new Dict with keys reindexed starting from 0.
+"""]: [fn@[return: Any] [let s]
+    [if [seq? s]
+      [match s
+        [case [let p] [Seq.Cons p] p.tail]
+        Seq.End:      [raise "tail: empty sequence"]]
+      [if [builtin-eq-int [builtin-dict-length s] 0]
+        [raise "tail: empty dict"]
+        [builtin-drop 1 s]]]]
 
 # collect-dict: internal helper — materializes a lazy Seq into an integer-keyed Dict.
 # Used by prelude functions that must return a Dict (sort, bytes-concat, entries, values, etc.)
@@ -5396,9 +5408,9 @@ begin: >>
 # Single-arg [task e] passes through to builtin-task directly.
 # Uses typed variadics (...first@Expr, ...rest@Expr) — all args must be Expr values.
 task: [fn [let first@Expr ...rest@Expr]
-  [ast: [match rest
-    Seq.End: [quote [builtin-task [unquote first]]]
-    ...:       [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]]]
+  [ast: [if [empty? rest]
+    [quote [builtin-task [unquote first]]]
+    [quote [builtin-task [>> [unquote first] [unquote-splice rest]]]]]]
   [eval-macro-ast ast]]
 
 ]
