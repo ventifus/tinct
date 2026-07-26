@@ -483,50 +483,18 @@ pub(crate) async fn bind_args_thunks(
 /// Produces `Value::Variant` cells matching the prelude's `Seq` type declaration:
 ///   `Seq: [type [let a] Cons: [head: a  tail: [Seq a]] End]`
 ///
-/// - End: `Value::Variant { tycon: "Seq", ctor: "End", payload: None }`
-/// - Cons: `Value::Variant { tycon: "Seq", ctor: "Cons", payload: Some(dict{head, tail}) }`
-///
-/// Elements are built right-to-left (fold from the tail). The resulting thunk is
-/// already materialized (wraps a concrete Value::Variant), so no additional
-/// forcing is needed when the caller fills the param slot.
-///
-/// The "Seq", "Cons", "End", "head", and "tail" string literals are protocol entries
-/// defined in `doc/16b-rust-tinct-protocol.md` §7. Any conforming prelude must declare
-/// a `Seq` type with constructors `Cons` (carrying `head` and `tail` fields) and `End`.
+/// Typed variadic arguments are auto-indexed dicts — a Rust primitive. Prelude
+/// decides what to do with them (iterate with `each`, convert to Seq, etc.).
+/// Rust has no knowledge of Seq, Cons, End, or any prelude-specific type.
 fn build_seq(args: &[Arc<Thunk>], span: &Span) -> Arc<Thunk> {
-    // The nil sentinel is Seq.End — matches prelude's Seq.End unit constructor.
-    let nil = Arc::new(Thunk::value(
-        Value::Variant {
-            tycon: Arc::from("Seq"),
-            ctor: Arc::from("End"),
-            payload: None,
-        },
-        span.clone(),
-    ));
-
-    // Fold right-to-left to build: Cons(args[0], Cons(args[1], ... Cons(args[n-1], End)))
-    args.iter().rev().fold(nil, |tail_thunk, head_thunk| {
-        // Build the payload dict: [head: head_thunk  tail: tail_thunk]
-        let mut payload_dict = IndexMap::new();
-        payload_dict.insert(
-            crate::value::HashableValue::Str(Arc::from("head")),
-            Arc::clone(head_thunk),
+    let mut dict: IndexMap<crate::value::HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (i, thunk) in args.iter().enumerate() {
+        dict.insert(
+            crate::value::HashableValue::Int(i as i64),
+            Arc::clone(thunk),
         );
-        payload_dict.insert(
-            crate::value::HashableValue::Str(Arc::from("tail")),
-            tail_thunk,
-        );
-        let payload_val = Value::Dict(payload_dict);
-        let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
-        Arc::new(Thunk::value(
-            Value::Variant {
-                tycon: Arc::from("Seq"),
-                ctor: Arc::from("Cons"),
-                payload: Some(payload_thunk),
-            },
-            span.clone(),
-        ))
-    })
+    }
+    Arc::new(Thunk::value(Value::Dict(dict), span.clone()))
 }
 
 /// Extract the default value node from a param's annotation, if present.
