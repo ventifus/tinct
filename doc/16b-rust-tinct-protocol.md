@@ -373,7 +373,11 @@ builtin-dict-nth:  [fn@Any [let d@Dict n@Integer] ...]
 builtin-raise:     [fn@Never [let msg@String] ...]
 ```
 
-The return type and parameter types use only the primitive types defined in this protocol document. No prelude-specific type names appear in builtin signatures — a custom prelude can use different names for Boolean, Seq, etc. and builtins remain agnostic.
+The parameter and return types use only the primitive types defined in this protocol document — no prelude-specific type names appear in builtin signatures. A custom prelude can use different names for Boolean, Seq, etc. and builtins remain agnostic.
+
+**Builtins may return any composition of primitive types.** Returning a structured dict such as `[fn@[program: Program  diagnostics: Dict] ...]` is correct and encouraged — that dict is built from primitives (`Program` is an opaque primitive, `Dict` is a primitive). The field names (`program:`, `diagnostics:`) are part of the builtin's protocol definition, documented in `builtin_core.llt` and available to all code that calls the builtin.
+
+**`Any` in type annotations is strongly discouraged.** A return type of `Any` means the type checker cannot verify anything about what the builtin produces, which weakens all downstream type checking. Use `Any` only when Rust genuinely cannot know the type — for example, `builtin-get` returns `Any` because the type of a dict value at a given key is unknown at compile time. When the type IS known (a specific opaque type, a specific structural dict, a specific integer range), it must be stated precisely. Prefer `Unknown` over `Any` for gradual-typing escape hatches — `Unknown` signals "we don't know" rather than "anything goes".
 
 ### Integer return types and range annotations
 
