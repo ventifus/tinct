@@ -446,16 +446,16 @@ pub(crate) async fn bind_args_thunks(
             }
         }
 
-        // BIND-RESULT: Bind each typed variadic bucket as a lazy Seq cons-list.
-        //
-        // Produces Value::Variant Seq.Cons/Seq.End cells matching the prelude's Seq type.
-        // An empty bucket binds to Seq.End (unit variant).
-        //
+        // BIND-RESULT: Bind each typed variadic bucket as an auto-indexed Dict.
         // Use p.slot (resolver-assigned) for each typed variadic param.
         for (bucket_args, p) in typed_buckets.into_iter().zip(typed_variadic_params.iter()) {
             let slot = p.slot as usize;
-            let seq_thunk = build_seq(bucket_args.as_slice(), call_span);
-            param_slots[slot] = Some(seq_thunk);
+            let mut dict = IndexMap::new();
+            for (i, thunk) in bucket_args.into_iter().enumerate() {
+                dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
+            }
+            param_slots[slot] =
+                Some(Arc::new(Thunk::value(Value::Dict(dict), call_span.clone())));
         }
 
         // BIND-RESULT: Bind the untyped rest bucket as a Dict (if present).
@@ -476,25 +476,6 @@ pub(crate) async fn bind_args_thunks(
         .collect();
 
     Ok(EvalFrame::for_function_call(closure_env, params_vec))
-}
-
-/// Build a lazy Seq cons-list from a slice of `Arc<Thunk>`.
-///
-/// Produces `Value::Variant` cells matching the prelude's `Seq` type declaration:
-///   `Seq: [type [let a] Cons: [head: a  tail: [Seq a]] End]`
-///
-/// Typed variadic arguments are auto-indexed dicts — a Rust primitive. Prelude
-/// decides what to do with them (iterate with `each`, convert to Seq, etc.).
-/// Rust has no knowledge of Seq, Cons, End, or any prelude-specific type.
-fn build_seq(args: &[Arc<Thunk>], span: &Span) -> Arc<Thunk> {
-    let mut dict: IndexMap<crate::value::HashableValue, Arc<Thunk>> = IndexMap::new();
-    for (i, thunk) in args.iter().enumerate() {
-        dict.insert(
-            crate::value::HashableValue::Int(i as i64),
-            Arc::clone(thunk),
-        );
-    }
-    Arc::new(Thunk::value(Value::Dict(dict), span.clone()))
 }
 
 /// Extract the default value node from a param's annotation, if present.

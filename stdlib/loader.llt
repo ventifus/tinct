@@ -91,27 +91,6 @@
 #            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
 #   Variant: builtin-tag-of (reads Variant tag string — Variant internals, not Dict)
 #   Path:    path-dirname (String → String; extracts parent dir from a file path, tinct-defined)
-#
-# Eliminated (reducible — derivable in tinct from the irreducibles above):
-#   builtin-bytes-empty?  → [match [= [builtin-dict-length x] 0] ...]
-#   builtin-map           → fused into builtin-reduce in uses-scope
-#   builtin-dict-get      → builtin-get
-#   builtin-dict-length   → eliminated by passing formatter separately
-#   builtin-variant       → eliminated; use qualified ADT constructors (Seq.Cons,
-#                           TypeNode.Int, etc.) — bypassed the type system
-#   builtin-seq           → removed; typed variadic params produce Value::Dict
-#   builtin-head/tail     → removed; use Seq.Cons pattern matching in tinct
-#   builtin-reverse       → reverse in prelude.llt (tinct, TCO-safe)
-#   builtin-reduce (Seq)  → reduce in prelude.llt (tinct, TCO-safe)
-#   builtin-each-kv           → [map [fn [k] [key: k  value: [get k d]]] [keys d]]
-#   builtin-each              → [map [fn [k] [get k d]] [keys d]]  (values only)
-#   builtin-each-key          → [keys d]  (identity)
-#   builtin-append            → use builder API once implemented; avoid in tinct code
-#   +, -, *, /, =, <          → typeclass METHODS defined in prelude (not Rust builtins);
-#                               Rust provides builtin-int-add, builtin-float-add, etc.
-#   builtin-float             → builtin-int-to-float or builtin-parse-float in math
-#   builtin-to-int/to-float   → replaced by builtin-float-to-int / builtin-parse-int
-#   duration-seconds/minutes/hours/days → tinct arithmetic (* n constant)
 
 # ============================================================================
 # Dict 1 — Private helpers
