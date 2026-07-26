@@ -111,18 +111,16 @@ pub async fn typecheck_surface_program_annotation_table(
     TypeAnnotationTable,
     crate::type_def::TyConEnv,
 ) {
-    // Seed Unknown so @Unknown always resolves (gradual-typing escape hatch).
-    let mut seed = std::collections::HashMap::new();
-    seed.insert(
-        "Unknown".to_string(),
-        crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
-    );
+    // Obtain the type-stage scope by evaluating builtin_core.llt's type-stage section.
+    // This is the single authoritative source for the type-stage scope — no Rust code
+    // hardcodes tinct-side type names (Axiom 1: Prelude speaks the Rust protocol).
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
     typecheck_surface_program_annotation_table_with_env(
         program,
         Arc::new(RwLock::new(Env::new())),
         None,
         std::collections::HashMap::new(),
-        vec![seed],
+        type_stage_scope,
     )
     .await
 }
@@ -197,13 +195,14 @@ pub async fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Arc<RwLock<Env>>,
 ) -> (Vec<TypeDiagnostic>, TypeMap, DocMap, SchemeMap) {
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
     let result = typecheck_surface_program_with_env(
         program,
         parent_env,
         true,
         std::collections::HashMap::new(),
         None,
-        None, // type_stage_scope_override
+        Some(type_stage_scope),
     )
     .await;
     // type_map is now populated during inference (enable_hover_map=true path).
@@ -260,18 +259,13 @@ pub async fn typecheck_surface_program_with_env(
     let mut env: Arc<RwLock<Env>> = Arc::clone(&child_env);
     let mut state = InferState::with_env(Arc::clone(&child_env));
     state.eval_ctx = eval_ctx;
-    // If caller provided a type_stage_scope, use it. Otherwise default to just Unknown.
-    // This function is called by typecheck_source (corpus tests, LSP diagnostics) which do
-    // not evaluate type-stage documents, and by imports.rs which does evaluate them.
+    // Install the caller-supplied type-stage scope. The scope must be provided by the
+    // caller (obtained from get_builtin_core_type_stage_scope() or the bootstrap eval).
+    // This function must NOT call get_builtin_core_type_stage_scope() internally —
+    // build_builtin_core_envs_inner() calls this function, so calling it here would
+    // create circular recursion.
     if let Some(ts_scope) = type_stage_scope_override {
         state.type_stage_scope = ts_scope;
-    } else {
-        let mut seed = std::collections::HashMap::new();
-        seed.insert(
-            "Unknown".to_string(),
-            crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::Unknown),
-        );
-        state.type_stage_scope = vec![seed];
     }
     // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
     // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt

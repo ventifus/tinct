@@ -22,7 +22,6 @@ use crate::value::{HashableValue, Thunk, Value};
 /// 5. `doc:` — extracts string literal, returned as Option<String>
 ///
 /// Returns (return_type, doc_string).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_fn_metadata(
     entries: &[Spanned<SurfaceEntry>],
     span: Span,
@@ -706,7 +705,6 @@ pub(crate) async fn resolve_fn_metadata(
 /// - `resolve_fn_metadata()` if ANY entry has a named key matching `return:`, `constraint:`, or `doc:`
 /// - existing union return type path if ALL entries are positional
 /// - error if mixed named + positional
-#[allow(clippy::too_many_arguments)]
 async fn resolve_fn_type(
     ann: &Annotation,
     span: Span,
@@ -775,8 +773,10 @@ async fn resolve_fn_type(
                     constraints,
                     ann_mapping,
                     row_ann_mapping,
-                    type_params_scope,
-                    "",
+                    TypeDictCtx {
+                        type_params_scope,
+                        tycon_name: "",
+                    },
                 )
                 .await
             }
@@ -809,7 +809,6 @@ async fn resolve_fn_type(
 /// Resolve an annotation in a context where a type expression is expected.
 /// Unlike `resolve_annotation`, a PropertyDict is interpreted as a type expression
 /// (record type or function type) rather than a property bag.
-#[allow(clippy::too_many_arguments)]
 async fn resolve_annotation_as_type(
     ann: &Annotation,
     span: Span,
@@ -896,8 +895,10 @@ async fn resolve_annotation_as_type(
                 constraints,
                 ann_mapping,
                 row_ann_mapping,
-                type_params_scope,
-                "",
+                TypeDictCtx {
+                    type_params_scope,
+                    tycon_name: "",
+                },
             )
             .await
         }
@@ -918,7 +919,6 @@ async fn resolve_annotation_as_type(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_annotation(
     ann: &Annotation,
     span: Span,
@@ -1170,7 +1170,6 @@ pub(crate) async fn resolve_annotation(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn resolve_property_dict_as_record(
     entries: &[Spanned<SurfaceEntry>],
     span: Span,
@@ -1187,8 +1186,10 @@ async fn resolve_property_dict_as_record(
         constraints,
         ann_mapping,
         row_ann_mapping,
-        type_params_scope,
-        "",
+        TypeDictCtx {
+            type_params_scope,
+            tycon_name: "",
+        },
     )
     .await;
 
@@ -1582,16 +1583,28 @@ async fn resolve_type_head(
                         return Ok(Type::TyCon(name.to_string()));
                     }
                     if let Some(eval_ctx) = &state.eval_ctx {
-                        if let Some(ty) = crate::type_normalize::evaluate_resolver_with_thunk(
+                        match crate::type_normalize::evaluate_resolver_with_thunk(
                             Arc::clone(thunk),
                             args,
                             eval_ctx,
                         )
                         .await
                         {
-                            return Ok(ty);
+                            Ok(Some(ty)) => return Ok(ty),
+                            Ok(None) => {
+                                // Resolver value not applicable — continue to next scope.
+                            }
+                            Err(eval_err) => {
+                                return Err(TypeDiagnostic::error(
+                                    "type-error",
+                                    format!(
+                                        "type constructor `{}` failed during evaluation: {}",
+                                        name, eval_err
+                                    ),
+                                    span,
+                                ));
+                            }
                         }
-                        // evaluate_resolver_with_thunk returned None — continue to next scope.
                     } else {
                         // eval_ctx unavailable — cannot invoke a type-stage function without
                         // an evaluation context. This is a misconfiguration error, not a
@@ -1699,7 +1712,6 @@ async fn resolve_type_head(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_type_name(
     name: &str,
     span: Span,
@@ -1713,9 +1725,8 @@ pub(crate) async fn resolve_type_name(
         // All fundamental types (Integer, String, Float, Bytes, Never, Any,
         // Proxy, Dict, Expr, Unknown, Operator, Label) are declared in builtin_core.llt
         // and resolved through the scope chain in resolve_type_head.
-        // `@Unknown` resolves via type_stage_scope (seeded with Unknown → Type::Unknown in
-        // typecheck_surface_program_annotation_table for test paths, and populated from
-        // type-stage documents in production).
+        // `@Unknown` resolves via type_stage_scope populated from the evaluated
+        // builtin_core.llt type-stage section (both production and test/LSP paths).
         // `@Operator` and `@Label` resolve via type_stage_scope → TypeStageEntry::TypeVar.
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
@@ -1944,8 +1955,10 @@ pub(crate) async fn resolve_type_expr(
                 constraints,
                 ann_mapping,
                 row_ann_mapping,
-                type_params_scope,
-                "",
+                TypeDictCtx {
+                    type_params_scope,
+                    tycon_name: "",
+                },
             ))
             .await
         }
@@ -2386,7 +2399,18 @@ fn lookup_tycon_for_ctor(state: &InferState, ctor_name: &str) -> String {
     String::new()
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Context for `resolve_type_dict` that groups the two parameters which are conceptually
+/// related to the type-alias being resolved: the type-parameter scope and the name of the
+/// enclosing type constructor (used when constructing `Type::NominalVariant` values).
+///
+/// Grouping them eliminates the 8th argument and keeps the function within Clippy's limit.
+pub(crate) struct TypeDictCtx<'a> {
+    /// Type parameter scope for the enclosing alias or class body, if any.
+    pub type_params_scope: Option<(&'a HashMap<String, Type>, bool)>,
+    /// Name of the enclosing type constructor. `""` when resolving standalone annotations.
+    pub tycon_name: &'a str,
+}
+
 pub(crate) async fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
     span: Span,
@@ -2394,9 +2418,10 @@ pub(crate) async fn resolve_type_dict(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<(&HashMap<String, Type>, bool)>,
-    tycon_name: &str,
+    tdc: TypeDictCtx<'_>,
 ) -> Result<Type, TypeDiagnostic> {
+    let type_params_scope = tdc.type_params_scope;
+    let tycon_name = tdc.tycon_name;
     if let Some(fn_type) = Box::pin(try_resolve_fn_type_expr(
         entries,
         span.clone(),
@@ -3646,6 +3671,44 @@ pub(crate) async fn typenode_value_to_type(
                         Ok(Some(Type::TypeVar(name, 0)))
                     }
 
+                    // ── IntLiteral ────────────────────────────────────────────────────────
+                    // TypeNode.IntLiteral { n: Int } → Type::IntLiteral(n)
+                    // Produced by union/or when a raw integer value is normalized via
+                    // _wrap-typenode-value in the type-stage prelude (e.g. `[or 0 1]`).
+                    "IntLiteral" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let n_val = match fields.get("n") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        match n_val {
+                            Value::Int(n) => Ok(Some(Type::IntLiteral(n))),
+                            _ => Ok(None),
+                        }
+                    }
+
+                    // ── StringLiteral ─────────────────────────────────────────────────────
+                    // TypeNode.StringLiteral { s: String } → Type::StringLiteral(s)
+                    // Produced by union/or when a raw string value is normalized via
+                    // _wrap-typenode-value in the type-stage prelude (e.g. `[or "ok" "err"]`).
+                    "StringLiteral" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let s_val = match fields.get("s") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        match s_val.as_str() {
+                            Some(s) => Ok(Some(Type::StringLiteral(s.to_string()))),
+                            None => Ok(None),
+                        }
+                    }
+
                     // Unknown tag — not a recognized TypeNode constructor.
                     _ => Ok(None),
                 }
@@ -3687,18 +3750,6 @@ pub(crate) async fn typenode_value_to_type(
                 } else {
                     Ok(None)
                 }
-            }
-
-            // Integer literal in TypeNode position → Type::IntLiteral.
-            // Arises when the type-stage evaluator produces a raw Value::Int (e.g., inside
-            // a TypeNode.Union types sequence: `[or 0 1]` evaluates each member to Value::Int).
-            Value::Int(n) => Ok(Some(Type::IntLiteral(*n))),
-
-            // String literal in TypeNode position → Type::StringLiteral.
-            // Arises when the type-stage evaluator produces a raw Value::String (e.g., inside
-            // a TypeNode.Union types sequence: `[or "ok" "err"]` evaluates each member to Value::String).
-            Value::String { source, start, end } => {
-                Ok(Some(Type::StringLiteral(source[*start..*end].to_string())))
             }
 
             // Not a recognizable TypeNode or ADT value.
@@ -3947,7 +3998,6 @@ pub(crate) async fn eval_type_stage_expr(
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries
 /// where the first is `Annotated { name: "Fn", ... }` and the second is a Dict
 /// containing the parameter type list.
-#[allow(clippy::too_many_arguments)]
 async fn try_resolve_fn_type_expr(
     entries: &[Spanned<SurfaceEntry>],
     span: Span,

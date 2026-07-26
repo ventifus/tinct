@@ -7,7 +7,7 @@
 //! in doc/08-evaluation.md §Iterative Evaluator.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
@@ -224,11 +224,6 @@ pub(crate) struct GuardedValidateData {
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
-///
-/// TODO(future): Annotation::PropertyDict entries store SurfaceNode values. Default-fallback
-/// paths extract "default:" as &Arc<SurfaceNode>, lower via `crate::lower::lower`, and dispatch
-/// as Action::EvalCore. When Annotation stores CoreExpr values natively, this becomes a
-/// zero-cost Arc<Spanned<CoreExpr>> clone.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
     pub(crate) resolved: Box<Type>,
@@ -395,11 +390,6 @@ pub(crate) enum Cont {
     /// Pushed by force_step's Expr::TypeAssert inline handler after evaluating the inner
     /// expression thunk; replaces the synchronous materialize() call that was the laziness
     /// violation in the TypeAssert branch.
-    ///
-    /// TODO(future): Annotation::PropertyDict entries are SurfaceEntry whose values are
-    /// Arc<SurfaceNode>. Default-fallback paths call annotation.node.get_property("default:")
-    /// → &Arc<SurfaceNode> → lower::lower → Action::EvalCore. When annotations store CoreExpr
-    /// values natively, this becomes a no-op clone.
     TypeAssertCheck(Box<TypeAssertCheckData>),
     /// Process the next step in a LetrecChain expression chain.
     /// After an intermediate expression is materialized (and its dict bindings extracted),
@@ -577,26 +567,25 @@ pub(crate) fn apply_predicate_to_subject(
     subject: Value,
     pred_span: Span,
     subj_span: Span,
-    env: &Arc<RwLock<crate::env::Env>>,
     caller_env_id: u32,
     ctx: &Arc<EvalContext>,
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::value(subject, subj_span));
     let pred_thunk = Arc::new(Thunk::value(predicate, pred_span.clone()));
-    // The env parameter is a legacy stub retained for signature compatibility (T-1846/T-1847).
-    let _ = env;
     Arc::new(Thunk::fn_call(
         pred_thunk,
         vec![subject_thunk],
         IndexMap::new(),
         pred_span.clone(),
-        caller_env_id,
-        pred_span.clone(),
-        Arc::clone(ctx),
-        Arc::new(Spanned {
-            node: CoreExpr::Int(0),
-            span: pred_span,
-        }),
+        crate::value::FnCallSpec {
+            call_span: pred_span.clone(),
+            caller_env_id,
+            ctx: Arc::clone(ctx),
+            original_call: Arc::new(Spanned {
+                node: CoreExpr::Int(0),
+                span: pred_span,
+            }),
+        },
     ))
 }
 
@@ -2598,13 +2587,15 @@ pub(crate) async fn apply_cont(
                                 vec![scrutinee_thunk],
                                 IndexMap::new(),
                                 match_span.clone(),
-                                0, // B-515: arm FlatEnv allocation pending
-                                match_span.clone(),
-                                Arc::clone(&ctx),
-                                Arc::new(Spanned {
-                                    node: CoreExpr::Int(0),
-                                    span: match_span.clone(),
-                                }),
+                                crate::value::FnCallSpec {
+                                    call_span: match_span.clone(),
+                                    caller_env_id: 0,
+                                    ctx: Arc::clone(&ctx),
+                                    original_call: Arc::new(Spanned {
+                                        node: CoreExpr::Int(0),
+                                        span: match_span.clone(),
+                                    }),
+                                },
                             ));
                             // Push MatchGuardCheck again with callable_invoked=true.
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
@@ -2625,23 +2616,18 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // call_to_match/call_to_match_resolved ignore legacy env (T-1846/T-1847 track implementation).
-                    let dummy_env =
-                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let guard_passed = if let Some(ref binding_name) = guard_matchable_binding {
                         // Compile-time resolved: use the pre-resolved Matchable instance binding.
                         crate::eval::call_to_match_resolved(
                             &guard_value,
                             binding_name,
-                            &dummy_env,
                             &ctx,
                             &match_span,
                         )
                         .await
                     } else {
                         // Type checking was skipped — fall back to dynamic dispatch.
-                        crate::eval::call_to_match(&guard_value, &dummy_env, &ctx, &match_span)
-                            .await
+                        crate::eval::call_to_match(&guard_value, &ctx, &match_span).await
                     };
 
                     if guard_passed {
@@ -2685,15 +2671,12 @@ pub(crate) async fn apply_cont(
                     if !callable_invoked {
                         if let Value::Function { .. } | Value::Builtin(_) = &predicate_value {
                             // Build a PendingCall thunk for predicate(value) via the helper.
-                            let dummy_env_pred =
-                                Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                             let call_thunk = apply_predicate_to_subject(
                                 predicate_value,
                                 value.clone(),
                                 expr_span.clone(),
                                 thunk_span.clone(),
-                                &dummy_env_pred,
-                                0, // B-515: caller env_id placeholder
+                                0,
                                 &ctx,
                             );
                             // Push PredicateCheck again with callable_invoked=true.
@@ -2713,12 +2696,8 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // call_to_match ignores legacy env (returns false conservatively; T-1846/T-1847 track implementation).
-                    let dummy_env =
-                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
                     let pred_passed =
-                        crate::eval::call_to_match(&predicate_value, &dummy_env, &ctx, &expr_span)
-                            .await;
+                        crate::eval::call_to_match(&predicate_value, &ctx, &expr_span).await;
 
                     if pred_passed {
                         // Predicate passed — return the original value
@@ -2856,22 +2835,29 @@ async fn eval_case_arm_structural_pattern(
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Option<Vec<(u32, Arc<Thunk>)>>> {
     let mut bindings: Vec<(u32, Arc<Thunk>)> = Vec::with_capacity(binding_map.len());
-
-    if eval_structural_pattern_inner(
-        &pattern.node,
+    let pctx = StructuralPatternCtx {
         binding_map,
-        scrutinee_value,
         frame,
-        &mut bindings,
-        match_span.clone(),
+        match_span,
         ctx,
-    )
-    .await?
-    {
+    };
+
+    if eval_structural_pattern_inner(&pattern.node, scrutinee_value, &pctx, &mut bindings).await? {
         Ok(Some(bindings))
     } else {
         Ok(None)
     }
+}
+
+/// Invariant context for `eval_structural_pattern_inner` recursive calls.
+///
+/// Groups the parameters that do not change between recursive calls into a single
+/// struct so that the function signature stays below Clippy's argument-count limit.
+struct StructuralPatternCtx<'a> {
+    binding_map: &'a IndexMap<String, u32>,
+    frame: &'a Arc<EvalFrame>,
+    match_span: Span,
+    ctx: &'a Arc<EvalContext>,
 }
 
 /// Recursive inner of `eval_case_arm_structural_pattern`.
@@ -2881,21 +2867,23 @@ async fn eval_case_arm_structural_pattern(
 /// constructor tag cannot be determined, etc.).
 ///
 /// `bindings` accumulates `(slot, thunk)` pairs for each bound variable encountered.
-/// `frame` is the parent EvalFrame, used for pin variable lookup.
+/// `pctx.frame` is the parent EvalFrame, used for pin variable lookup.
 ///
 /// Uses `Box::pin` for recursive async calls (the codebase does not depend on
 /// `async_recursion`).
-#[allow(clippy::too_many_arguments)]
 fn eval_structural_pattern_inner<'a>(
     pattern: &'a CoreExpr,
-    binding_map: &'a IndexMap<String, u32>,
     scrutinee_value: &'a Value,
-    frame: &'a Arc<EvalFrame>,
+    pctx: &'a StructuralPatternCtx<'a>,
     bindings: &'a mut Vec<(u32, Arc<Thunk>)>,
-    match_span: Span,
-    ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + Send + 'a>> {
     Box::pin(async move {
+        let StructuralPatternCtx {
+            binding_map,
+            frame,
+            match_span,
+            ctx,
+        } = pctx;
         match pattern {
             // Wildcard: always succeeds, no binding.
             // In the new pattern design, `_` in pattern position is an undefined variable
@@ -2913,7 +2901,7 @@ fn eval_structural_pattern_inner<'a>(
                     name,
                     binding_map,
                     scrutinee_value,
-                    &match_span,
+                    match_span,
                     ctx,
                     frame,
                     addr,
@@ -2934,7 +2922,7 @@ fn eval_structural_pattern_inner<'a>(
                     name,
                     binding_map,
                     scrutinee_value,
-                    &match_span,
+                    match_span,
                     ctx,
                     frame,
                     addr,
@@ -2959,35 +2947,27 @@ fn eval_structural_pattern_inner<'a>(
 
                     let pred_thunk = Arc::new(Thunk::core_expr(
                         pred_expr_core,
-                        EvalFrame::empty(), // B-515: arm FlatEnv → EvalFrame migration pending
+                        EvalFrame::empty(),
                         Arc::clone(ctx),
                         match_span.clone(),
                     ));
 
-                    let pred_value = materialize(&pred_thunk, Some(&match_span), ctx).await?;
+                    let pred_value = materialize(&pred_thunk, Some(match_span), ctx).await?;
 
                     // The bound variable holds scrutinee_value. Pass it directly —
                     // it is already a Value, no need to wrap in a Thunk and materialize.
-                    // Legacy env stubs: apply_predicate_to_subject ignores both (T-1846/T-1847).
-                    let dummy_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                     let pred_call_thunk = apply_predicate_to_subject(
                         pred_value,
                         scrutinee_value.clone(),
                         match_span.clone(),
                         match_span.clone(),
-                        &dummy_env,
                         0,
                         ctx,
                     );
 
-                    let pred_result = materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
+                    let pred_result = materialize(&pred_call_thunk, Some(match_span), ctx).await?;
 
-                    // call_to_match ignores legacy env (T-1846/T-1847 track implementation).
-                    let dummy_env2 =
-                        Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-                    if !crate::eval::call_to_match(&pred_result, &dummy_env2, ctx, &match_span)
-                        .await
-                    {
+                    if !crate::eval::call_to_match(&pred_result, ctx, match_span).await {
                         return Ok(false);
                     }
                 }
@@ -3022,11 +3002,11 @@ fn eval_structural_pattern_inner<'a>(
                 // constructors are resolved in the enclosing (non-arm) scope.
                 let func_thunk = Arc::new(Thunk::core_expr(
                     Arc::clone(func),
-                    EvalFrame::empty(), // B-515: parent scope via EvalFrame pending
+                    EvalFrame::empty(),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
-                let func_val = materialize(&func_thunk, Some(&match_span), ctx).await?;
+                let func_val = materialize(&func_thunk, Some(match_span), ctx).await?;
 
                 // Extract the constructor tag if func_val is either:
                 //   (a) a unit Variant (payload: None) — the old unit-constructor form
@@ -3069,7 +3049,7 @@ fn eval_structural_pattern_inner<'a>(
                         };
                         let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
-                            materialize(&payload_thunk, Some(&match_span), ctx).await?;
+                            materialize(&payload_thunk, Some(match_span), ctx).await?;
                         let Value::Dict(payload_map) = &payload_val else {
                             return Ok(false);
                         };
@@ -3079,17 +3059,13 @@ fn eval_structural_pattern_inner<'a>(
                             let Some(field_thunk) = payload_map.get(&field_key) else {
                                 return Ok(false);
                             };
-                            let field_val =
-                                materialize(field_thunk, Some(&match_span), ctx).await?;
+                            let field_val = materialize(field_thunk, Some(match_span), ctx).await?;
 
                             if !eval_structural_pattern_inner(
                                 &na.node.value.node,
-                                binding_map,
                                 &field_val,
-                                frame,
+                                pctx,
                                 bindings,
-                                match_span.clone(),
-                                ctx,
                             )
                             .await?
                             {
@@ -3109,17 +3085,14 @@ fn eval_structural_pattern_inner<'a>(
                     };
 
                     let payload_thunk = Arc::clone(payload_id);
-                    let payload_val = materialize(&payload_thunk, Some(&match_span), ctx).await?;
+                    let payload_val = materialize(&payload_thunk, Some(match_span), ctx).await?;
 
                     if args.len() == 1 {
                         return eval_structural_pattern_inner(
                             &args[0].node,
-                            binding_map,
                             &payload_val,
-                            frame,
+                            pctx,
                             bindings,
-                            match_span,
-                            ctx,
                         )
                         .await;
                     }
@@ -3134,18 +3107,10 @@ fn eval_structural_pattern_inner<'a>(
                         let Some(field_thunk) = payload_map.get(&field_key) else {
                             return Ok(false);
                         };
-                        let field_val = materialize(field_thunk, Some(&match_span), ctx).await?;
+                        let field_val = materialize(field_thunk, Some(match_span), ctx).await?;
 
-                        if !eval_structural_pattern_inner(
-                            &arg.node,
-                            binding_map,
-                            &field_val,
-                            frame,
-                            bindings,
-                            match_span.clone(),
-                            ctx,
-                        )
-                        .await?
+                        if !eval_structural_pattern_inner(&arg.node, &field_val, pctx, bindings)
+                            .await?
                         {
                             return Ok(false);
                         }
@@ -3156,7 +3121,6 @@ fn eval_structural_pattern_inner<'a>(
                         Value::Function { .. } | Value::Builtin(_) => {
                             // Guard/predicate: bind all declared names to scrutinee, evaluate
                             // the full call expression (func + args), check if result is truthy.
-                            // T-1557: insert_value removed — guard bindings go into FlatEnv (T-1558).
 
                             let guard_expr_spanned = Arc::new(crate::ast::Spanned::new(
                                 CoreExpr::Call {
@@ -3169,29 +3133,20 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_thunk = Arc::new(Thunk::core_expr(
                                 guard_expr_spanned,
-                                EvalFrame::empty(), // B-515: arm FlatEnv → EvalFrame migration pending
+                                EvalFrame::empty(),
                                 Arc::clone(ctx),
                                 match_span.clone(),
                             ));
                             let guard_result =
-                                materialize(&guard_thunk, Some(&match_span), ctx).await?;
-                            // call_to_match ignores legacy env (T-1846/T-1847 track implementation).
-                            let dummy_env =
-                                Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
-                            Ok(crate::eval::call_to_match(
-                                &guard_result,
-                                &dummy_env,
-                                ctx,
-                                &match_span,
-                            )
-                            .await)
+                                materialize(&guard_thunk, Some(match_span), ctx).await?;
+                            Ok(crate::eval::call_to_match(&guard_result, ctx, match_span).await)
                         }
 
                         other => Err(EvalError::type_mismatch_ctx(
                             "pattern call".to_string(),
                             "Variant (constructor) or Function (predicate)",
                             other.type_name(),
-                            match_span,
+                            match_span.clone(),
                         )
                         .into()),
                     }
@@ -3210,7 +3165,7 @@ fn eval_structural_pattern_inner<'a>(
                         _ => {
                             return Err(EvalError::internal(
                                 "pattern: dynamic key in dict pattern is not supported".to_string(),
-                                match_span,
+                                match_span.clone(),
                             )
                             .into())
                         }
@@ -3218,15 +3173,12 @@ fn eval_structural_pattern_inner<'a>(
                     let Some(field_thunk) = scrutinee_map.get(&key) else {
                         return Ok(false); // Required field missing — genuine no-match
                     };
-                    let field_val = materialize(field_thunk, Some(&match_span), ctx).await?;
+                    let field_val = materialize(field_thunk, Some(match_span), ctx).await?;
                     if !eval_structural_pattern_inner(
                         &entry.node.value.node,
-                        binding_map,
                         &field_val,
-                        frame,
+                        pctx,
                         bindings,
-                        match_span.clone(),
-                        ctx,
                     )
                     .await?
                     {
@@ -3244,11 +3196,11 @@ fn eval_structural_pattern_inner<'a>(
                 ));
                 let pat_expr_thunk = Arc::new(Thunk::core_expr(
                     spanned,
-                    EvalFrame::empty(), // B-515: arm FlatEnv → EvalFrame migration pending
+                    EvalFrame::empty(),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
-                let pat_val = materialize(&pat_expr_thunk, Some(&match_span), ctx).await?;
+                let pat_val = materialize(&pat_expr_thunk, Some(match_span), ctx).await?;
                 Ok(primitive_eq(pat_val, scrutinee_value.clone()))
             }
         }
@@ -3418,15 +3370,6 @@ mod tests {
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
     use crate::value::Thunk;
-    fn empty_env() -> Arc<RwLock<crate::env::Env>> {
-        Arc::new(RwLock::new(crate::env::Env::new()))
-    }
-
-    #[allow(dead_code)]
-    fn test_env() -> Arc<RwLock<crate::env::Env>> {
-        empty_env()
-    }
-
     fn test_ctx() -> Arc<EvalContext> {
         EvalContext::new()
     }
@@ -3798,8 +3741,6 @@ mod tests {
 
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
-        // T-1557: insert_value removed — values no longer stored in Env. Rewired in T-1558.
-        // fallback_val binding was used for testing default expression evaluation; deferred.
 
         // Inner thunk: a String value — fails the Int guard.
         let inner = Arc::new(Thunk::value(
@@ -3807,7 +3748,7 @@ mod tests {
             span.clone(),
         ));
 
-        // Default expression: a literal Int(99) since FlatEnv variable binding is pending (B-515).
+        // Default expression: a literal Int(99).
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int(99)));
 

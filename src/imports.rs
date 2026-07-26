@@ -20,7 +20,20 @@ use crate::typecheck::typecheck_surface_program_with_env;
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
 pub async fn build_builtin_core_envs() -> (Arc<RwLock<Env>>, crate::type_def::TyConEnv) {
-    build_builtin_core_envs_inner().await
+    let (env, tycon_env, _) = build_builtin_core_envs_inner().await;
+    (env, tycon_env)
+}
+
+/// Evaluate the type-stage section of `stdlib/builtin_core.llt` and return the resulting
+/// `type_stage_scope` for use by type-checker entry points that do not have an evaluated
+/// type-stage scope available (e.g., corpus tests, LSP, formatter).
+///
+/// This is the authoritative source of the type-stage scope; no Rust code should manually
+/// construct this mapping by hardcoding tinct-side type names.
+pub async fn get_builtin_core_type_stage_scope(
+) -> Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>> {
+    let (_, _, scope) = build_builtin_core_envs_inner().await;
+    scope
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TypeEnv` so that
@@ -30,13 +43,15 @@ pub async fn build_builtin_core_envs() -> (Arc<RwLock<Env>>, crate::type_def::Ty
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
 pub async fn get_builtin_core_type_env() -> Arc<RwLock<Env>> {
-    build_builtin_core_envs().await.0
+    let (env, _, _) = build_builtin_core_envs_inner().await;
+    env
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TyConEnv` containing
 /// opaque type definitions (e.g. `BuilderHandle`, `DirCap`).
 pub async fn get_builtin_core_tycon_env() -> crate::type_def::TyConEnv {
-    build_builtin_core_envs().await.1
+    let (_, tycon_env, _) = build_builtin_core_envs_inner().await;
+    tycon_env
 }
 
 /// Inner implementation of `build_builtin_core_envs`.
@@ -44,8 +59,13 @@ pub async fn get_builtin_core_tycon_env() -> crate::type_def::TyConEnv {
 /// Parses `stdlib/builtin_core.llt` (embedded at compile time via `include_str!`),
 /// runs the full pipeline (desugar → resolve → typecheck), and returns the
 /// resulting `Arc<RwLock<Env>>` with the new type declarations merged on top of
-/// `build_builtins_type_env_arc()` as the parent, along with the `TyConEnv`.
-async fn build_builtin_core_envs_inner() -> (Arc<RwLock<Env>>, crate::type_def::TyConEnv) {
+/// `build_builtins_type_env_arc()` as the parent, along with the `TyConEnv` and the
+/// evaluated type-stage scope (used to seed `InferState::type_stage_scope`).
+async fn build_builtin_core_envs_inner() -> (
+    Arc<RwLock<Env>>,
+    crate::type_def::TyConEnv,
+    Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+) {
     // Embedded source — no libdir access needed at runtime.
     let source = include_str!("../stdlib/builtin_core.llt");
     let sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
@@ -172,6 +192,10 @@ async fn build_builtin_core_envs_inner() -> (Arc<RwLock<Env>>, crate::type_def::
 
     // Typecheck with builtins env as parent.
     // enable_hover_map=false (no LSP hover needed for bootstrap).
+    // Clone type_stage_scope so it can be returned to callers that need it
+    // (e.g. get_builtin_core_type_stage_scope, which seeds type-checker entry points
+    // that do not have their own type-stage scope available).
+    let type_stage_scope_for_return = type_stage_scope.clone();
     let tc_result = typecheck_surface_program_with_env(
         &program,
         parent_env,
@@ -211,5 +235,5 @@ async fn build_builtin_core_envs_inner() -> (Arc<RwLock<Env>>, crate::type_def::
     }
 
     // `final_env` is the child Env containing parent bindings plus new type declarations.
-    (final_env, state.tycon_env)
+    (final_env, state.tycon_env, type_stage_scope_for_return)
 }

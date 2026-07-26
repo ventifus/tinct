@@ -22,10 +22,8 @@ use crate::rust_span;
 
 /// Severity of a diagnostic emitted during lowering.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Warning variant is infrastructure for future use
 pub enum LowerDiagnosticKind {
     Error,
-    Warning,
 }
 
 /// A diagnostic produced during the lowering phase.
@@ -1042,6 +1040,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: annotation.clone(),
+            do_infer_placeholder: false,
         },
         CoreExpr::Sequential(exprs) => SurfaceExpression::Sequential(
             exprs.iter().map(|e| core_expr_to_surface_node(e)).collect(),
@@ -1159,6 +1158,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         },
         CoreExpr::UnitVariant { tycon, ctor } => SurfaceExpression::VarRef {
             name: if tycon.is_empty() {
@@ -1170,6 +1170,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         },
     }
 }
@@ -2053,6 +2054,7 @@ mod tests {
                 resolution,
                 call_dispatch: CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             span,
         );
@@ -2081,6 +2083,7 @@ mod tests {
                 resolution: Resolution::new(), // Not set — resolver never ran
                 call_dispatch: CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             span.clone(),
         );
@@ -2129,6 +2132,7 @@ mod tests {
                 resolution: Resolution::new(),
                 call_dispatch: CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             span.clone(),
         );
@@ -2176,6 +2180,7 @@ mod tests {
                             resolution: Resolution::new(),
                             call_dispatch: CallDispatch::new(),
                             annotation: None,
+                            do_infer_placeholder: false,
                         },
                         span.clone(),
                     ),

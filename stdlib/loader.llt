@@ -17,7 +17,9 @@
     Callable
     Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
     TypeConstructor: [name: Any]
-    TypeApplication: [ctor: Any  args: Any]]
+    TypeApplication: [ctor: Any  args: Any]
+    IntLiteral:    [n: Any]
+    StringLiteral: [s: Any]]
 
   Integer: TypeNode.Int
   String:  TypeNode.String

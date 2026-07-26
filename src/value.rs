@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (legacy name chain), `Scope` (closure-converted EvalFrame-based variable lookup).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Scope` (closure-converted EvalFrame-based variable lookup).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -6,7 +6,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
@@ -16,7 +16,7 @@ use crate::types::Type;
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-/// `env_id` is a bridge placeholder; EvalFrame migration in progress (T-1777).
+/// `env_id` is the caller's FlatEnv identity, used for scope resolution during default evaluation.
 type GuardDefault = (Arc<Spanned<CoreExpr>>, u32);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
@@ -1443,8 +1443,7 @@ pub enum UnevaluatedState {
         args: Vec<std::sync::Arc<Thunk>>,
         named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         call_span: Span,
-        /// Bridge placeholder for caller environment identity; was ScopeArena index.
-        /// Will be removed when T-1777 (EvalFrame migration) is complete.
+        /// Caller environment identity; used by `builtin-current-env` for scope introspection.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1454,8 +1453,7 @@ pub enum UnevaluatedState {
         args: Vec<std::sync::Arc<Thunk>>,
         named: Option<Box<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>>,
         call_span: Span,
-        /// Bridge placeholder for caller environment identity; was ScopeArena index.
-        /// Will be removed when T-1777 (EvalFrame migration) is complete.
+        /// Caller environment identity; used by `builtin-current-env` for scope introspection.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for PendingBuiltin lazy-arg re-dispatch.
@@ -1493,6 +1491,20 @@ impl UnevaluatedState {
             UnevaluatedState::AnnotatedWrap { .. } => 0,
         }
     }
+}
+
+/// Groups the call-site information for a user-function invocation into a single value.
+///
+/// Passed to `Thunk::fn_call` to reduce the argument count below Clippy's limit.
+pub struct FnCallSpec {
+    /// The span of the call expression (for error messages).
+    pub call_span: Span,
+    /// The caller's FlatEnv id (for `builtin-current-env` and future scope wiring).
+    pub caller_env_id: u32,
+    /// The evaluation context.
+    pub ctx: Arc<crate::eval::EvalContext>,
+    /// The original call expression (for error messages).
+    pub original_call: Arc<Spanned<CoreExpr>>,
 }
 
 /// New thunk structure for async evaluation (Sprint 2B).
@@ -1658,16 +1670,12 @@ impl Thunk {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn fn_call(
         func: std::sync::Arc<Thunk>,
         args: Vec<std::sync::Arc<Thunk>>,
         named: indexmap::IndexMap<String, std::sync::Arc<Thunk>>,
-        call_span: Span,
-        caller_env_id: u32,
         span: Span,
-        ctx: Arc<crate::eval::EvalContext>,
-        original_call: Arc<Spanned<CoreExpr>>,
+        spec: FnCallSpec,
     ) -> Self {
         let named_opt = if named.is_empty() {
             None
@@ -1681,10 +1689,10 @@ impl Thunk {
                         func,
                         args,
                         named: named_opt,
-                        call_span,
-                        caller_env_id,
-                        ctx,
-                        original_call,
+                        call_span: spec.call_span,
+                        caller_env_id: spec.caller_env_id,
+                        ctx: spec.ctx,
+                        original_call: spec.original_call,
                     }),
                     None,
                 )),
@@ -1883,8 +1891,21 @@ impl Thunk {
         }))
     }
 
-    /// Borrow the materialized value without cloning. Returns `None` if the thunk
-    /// is not yet settled or settled with an error.
+    /// Borrow the materialized value without cloning.
+    ///
+    /// Returns `None` in two cases: the thunk is not yet settled, or it is settled with
+    /// an error. The two cases are not distinguished. All callers of this function must
+    /// operate under one of the following invariants:
+    ///
+    /// 1. The thunk was created via `Thunk::value(...)` and can never be in an error state.
+    /// 2. The thunk was already successfully materialized (via `materialize()` returning
+    ///    `Ok(...)`) before `try_get_value()` is called, so any error state was already
+    ///    handled at the `materialize()` call site.
+    ///
+    /// Callers that cannot guarantee one of these invariants must use `try_get_error()` in
+    /// conjunction with this function, or call `materialize()` directly. Introducing a
+    /// case where a settled-with-error thunk is passed here without prior error handling
+    /// is an axiom violation (Never suppress errors).
     pub fn try_get_value(&self) -> Option<&Value> {
         self.inner.result.get()?.as_ref().ok()
     }
@@ -1973,124 +1994,6 @@ impl fmt::Debug for Thunk {
             s.field("name", name);
         }
         s.finish()
-    }
-}
-
-/// Lexical scope chain: bindings in the current scope plus an optional parent link.
-/// Currently used only as a placeholder in match dispatch (B-515 tracks FlatEnv migration).
-/// Fields and methods are retained for B-515 wiring.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Environment {
-    pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
-    pub(crate) parent: Option<Arc<RwLock<Environment>>>,
-}
-
-/// Profiling counters for slot-based lookup hit rate measurement.
-#[cfg(test)]
-pub(crate) static SLOT_HIT_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(test)]
-pub(crate) static SLOT_MISS_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// Reset profiling counters between tests.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn reset_slot_counters() {
-    use std::sync::atomic::Ordering;
-    SLOT_HIT_COUNT.store(0, Ordering::Relaxed);
-    SLOT_MISS_COUNT.store(0, Ordering::Relaxed);
-}
-
-#[allow(dead_code)]
-impl Environment {
-    pub fn new() -> Self {
-        Self {
-            bindings: IndexMap::new(),
-            parent: None,
-        }
-    }
-
-    pub fn with_parent(parent: Arc<RwLock<Environment>>) -> Self {
-        Self {
-            bindings: IndexMap::new(),
-            parent: Some(parent),
-        }
-    }
-
-    /// Look up a binding by name, searching this environment then ancestors.
-    pub fn get(&self, name: &str) -> Option<Arc<Thunk>> {
-        if let Some(thunk) = self.bindings.get(name) {
-            return Some(Arc::clone(thunk));
-        }
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_rc) = current {
-            let env = env_rc.read().unwrap();
-            if let Some(thunk) = env.bindings.get(name) {
-                return Some(Arc::clone(thunk));
-            }
-            current = env.parent.as_ref().map(Arc::clone);
-        }
-        None
-    }
-
-    pub fn insert(&mut self, name: String, thunk: Arc<Thunk>) {
-        self.bindings.insert(name, thunk);
-    }
-
-    /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
-    pub fn get_by_slot(&self, level: u32, slot: u32, expected_name: &str) -> Option<Arc<Thunk>> {
-        if level == 0 {
-            if let Some((key, thunk)) = self.bindings.get_index(slot as usize) {
-                if key == expected_name {
-                    #[cfg(test)]
-                    SLOT_HIT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Some(Arc::clone(thunk));
-                } else {
-                    #[cfg(test)]
-                    SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return self.bindings.get(expected_name).map(Arc::clone);
-                }
-            }
-            #[cfg(test)]
-            SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return None;
-        }
-        let mut steps_remaining = level;
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_rc) = current {
-            steps_remaining -= 1;
-            if steps_remaining == 0 {
-                let env = env_rc.read().unwrap();
-                if let Some((key, thunk)) = env.bindings.get_index(slot as usize) {
-                    if key == expected_name {
-                        #[cfg(test)]
-                        SLOT_HIT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return Some(Arc::clone(thunk));
-                    } else {
-                        #[cfg(test)]
-                        SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return env.bindings.get(expected_name).map(Arc::clone);
-                    }
-                }
-                #[cfg(test)]
-                SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return None;
-            }
-            let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
-            current = next;
-        }
-        #[cfg(test)]
-        SLOT_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        None
-    }
-}
-
-impl Default for Environment {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

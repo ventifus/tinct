@@ -827,6 +827,7 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         },
     )]);
     let mut c = Vec::new();
@@ -877,6 +878,7 @@ async fn test_property_dict_fn_type_error_propagates() {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: Some(Spanned::new(Annotation::Simple("Int".into()), span.clone())),
+            do_infer_placeholder: false,
         },
     )]);
     let mut c = Vec::new();
@@ -1902,6 +1904,7 @@ async fn test_annotation_or_int_literals_resolves_to_union() {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
         ),
         surf_ann_entry_tc(None, SurfaceExpression::Int(0)),
@@ -3438,7 +3441,8 @@ async fn test_annotation_error_reported_at_source() {
 ///
 /// `@Unknown` must resolve cleanly through the unified `type_stage_scope` path (Step 3
 /// in `resolve_type_head`), not through a special-case shortcut. This test verifies the
-/// seed added to `typecheck_surface_program_annotation_table` is effective.
+/// type-stage scope populated from `builtin_core.llt` (via `get_builtin_core_type_stage_scope`)
+/// correctly maps `Unknown → Type::Unknown`.
 #[tokio::test]
 async fn test_unknown_annotation_no_error() {
     // @Unknown on the return type of a function should produce no type errors.
@@ -4054,6 +4058,7 @@ fn test_cek_compute_sccs_mutual_recursion_forms_one_scc() {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             }),
         })
     }
@@ -4115,6 +4120,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         })
     }
 

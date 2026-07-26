@@ -248,6 +248,7 @@ fn eval_quote_preprocess<'a>(
                                                         call_dispatch:
                                                             crate::ast::CallDispatch::new(),
                                                         annotation: None,
+                                                        do_infer_placeholder: false,
                                                     },
                                                     inner_span.clone(),
                                                 ))

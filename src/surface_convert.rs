@@ -168,13 +168,49 @@ fn dict_to_surface_node_inner(
 
     // Extract the span from the Expr.* payload (injected by surface_node_to_expr_variant).
     // If present, use it — it encodes the original user source position for round-trips.
+    // Also detect the do-infer-placeholder field (protocol §7): when `do-infer-placeholder: 1`
+    // is present in an Expr.VarRef payload, set the `do_infer_placeholder` flag on the
+    // resulting VarRef so the type checker can dispatch on the flag instead of inspecting
+    // the gensym name prefix.
     if let Value::Variant {
+        tycon,
+        ctor,
         payload: Some(ref payload_thunk),
-        ..
     } = val
     {
         if let Some(Value::Dict(dict)) = payload_thunk.try_get_value().cloned() {
-            if let Some(span) = extract_span(&dict, ctx) {
+            let span_opt = extract_span(&dict, ctx);
+            let is_do_infer_placeholder = tycon.as_ref() == "Expr"
+                && ctor.as_ref() == "VarRef"
+                && dict
+                    .get(&crate::value::HashableValue::Str(
+                        "do-infer-placeholder".into(),
+                    ))
+                    .and_then(|t| t.try_get_value())
+                    .is_some_and(|v| matches!(v, Value::Int(n) if *n != 0));
+
+            if is_do_infer_placeholder {
+                // Rebuild the VarRef with do_infer_placeholder: true.
+                let new_expr = if let SurfaceExpression::VarRef {
+                    ref name, escaped, ..
+                } = node.expr
+                {
+                    SurfaceExpression::VarRef {
+                        name: name.clone(),
+                        escaped,
+                        resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
+                        do_infer_placeholder: true,
+                    }
+                } else {
+                    node.expr.clone()
+                };
+                let span = span_opt.unwrap_or_else(|| node.span.clone());
+                return Ok(Arc::new(SurfaceNode::new(new_expr, span)));
+            }
+
+            if let Some(span) = span_opt {
                 return Ok(Arc::new(SurfaceNode::new(node.expr.clone(), span)));
             }
         }
@@ -1970,21 +2006,27 @@ fn surface_decl_to_thunk_id(
             // Keys are SurfaceExpression::StringLiteral bare words; values are the full entry value nodes.
             let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
                 .iter()
-                .filter_map(|method| {
-                    method.node.key.as_ref().and_then(|key| {
-                        if let SurfaceExpression::StringLiteral {
-                            content: key_str, ..
-                        } = &key.expr
-                        {
-                            Some((
-                                HashableValue::Str(Arc::from(key_str.as_str())),
-                                surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
-                            ))
-                        } else {
-                            None
+                .map(
+                    |method| -> EvalResult<Option<(HashableValue, Arc<Thunk>)>> {
+                        if let Some(key) = method.node.key.as_ref() {
+                            if let SurfaceExpression::StringLiteral {
+                                content: key_str, ..
+                            } = &key.expr
+                            {
+                                let thunk =
+                                    surface_node_to_thunk_id(&method.node.value, opts, ctx)?;
+                                return Ok(Some((
+                                    HashableValue::Str(Arc::from(key_str.as_str())),
+                                    thunk,
+                                )));
+                            }
                         }
-                    })
-                })
+                        Ok(None)
+                    },
+                )
+                .collect::<EvalResult<Vec<_>>>()?
+                .into_iter()
+                .flatten()
                 .collect();
             dict.insert(
                 HashableValue::Str("methods".into()),
@@ -1995,12 +2037,14 @@ fn surface_decl_to_thunk_id(
                 let determines_dict: IndexMap<HashableValue, Arc<Thunk>> = determines
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, fd_node)| {
-                        Some((
+                    .map(|(i, fd_node)| -> EvalResult<(HashableValue, Arc<Thunk>)> {
+                        Ok((
                             HashableValue::Int(i as i64),
-                            surface_node_to_thunk_id(fd_node, opts, ctx).ok()?,
+                            surface_node_to_thunk_id(fd_node, opts, ctx)?,
                         ))
                     })
+                    .collect::<EvalResult<Vec<_>>>()?
+                    .into_iter()
                     .collect();
                 dict.insert(
                     HashableValue::Str("determines".into()),
@@ -2036,41 +2080,54 @@ fn surface_decl_to_thunk_id(
             let arms_dict: IndexMap<HashableValue, Arc<Thunk>> = arms
                 .iter()
                 .enumerate()
-                .filter_map(|(i, (pattern_node, methods))| {
-                    let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                    arm_dict.insert(
-                        HashableValue::Str("pattern".into()),
-                        surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?,
-                    );
-                    // methods: string-keyed dict matching ClassDecl.methods format
-                    let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
-                        .iter()
-                        .filter_map(|method| {
-                            method.node.key.as_ref().and_then(|key| {
-                                if let SurfaceExpression::StringLiteral {
-                                    content: key_str, ..
-                                } = &key.expr
-                                {
-                                    Some((
-                                        HashableValue::Str(Arc::from(key_str.as_str())),
-                                        surface_node_to_thunk_id(&method.node.value, opts, ctx)
-                                            .ok()?,
-                                    ))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .collect();
-                    arm_dict.insert(
-                        HashableValue::Str("methods".into()),
-                        Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
-                    );
-                    Some((
-                        HashableValue::Int(i as i64),
-                        Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
-                    ))
-                })
+                .map(
+                    |(i, (pattern_node, methods))| -> EvalResult<(HashableValue, Arc<Thunk>)> {
+                        let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                        arm_dict.insert(
+                            HashableValue::Str("pattern".into()),
+                            surface_node_to_thunk_id(pattern_node, opts, ctx)?,
+                        );
+                        // methods: string-keyed dict matching ClassDecl.methods format
+                        let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
+                            .iter()
+                            .map(
+                                |method| -> EvalResult<Option<(HashableValue, Arc<Thunk>)>> {
+                                    if let Some(key) = method.node.key.as_ref() {
+                                        if let SurfaceExpression::StringLiteral {
+                                            content: key_str,
+                                            ..
+                                        } = &key.expr
+                                        {
+                                            let thunk = surface_node_to_thunk_id(
+                                                &method.node.value,
+                                                opts,
+                                                ctx,
+                                            )?;
+                                            return Ok(Some((
+                                                HashableValue::Str(Arc::from(key_str.as_str())),
+                                                thunk,
+                                            )));
+                                        }
+                                    }
+                                    Ok(None)
+                                },
+                            )
+                            .collect::<EvalResult<Vec<_>>>()?
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                        arm_dict.insert(
+                            HashableValue::Str("methods".into()),
+                            Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
+                        );
+                        Ok((
+                            HashableValue::Int(i as i64),
+                            Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
+                        ))
+                    },
+                )
+                .collect::<EvalResult<Vec<_>>>()?
+                .into_iter()
                 .collect();
             dict.insert(
                 HashableValue::Str("arms".into()),

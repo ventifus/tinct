@@ -843,7 +843,10 @@ async fn improve_functional_dependency_inner(
                 norm_ctx.type_stage_scope = state.type_stage_scope.clone();
                 let resolved =
                     crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx)
-                        .await;
+                        .await
+                        .map_err(|e| {
+                            TypeDiagnostic::error("type-error", e.to_string(), span.clone())
+                        })?;
 
                 // If normalization returned a stuck TypeStageApp, we can't improve yet.
                 // Defer: the deferred_equalities mechanism will retry when more types are ground.
@@ -2091,14 +2094,17 @@ pub async fn unify(
     let b_substituted = state.apply(b);
 
     // Normalize both types (for TypeStageApp reduction).
-    // allow_eval is set to false inside unify to prevent runtime errors from propagating
-    // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
-    // a type error).
+    // allow_eval is false: resolver evaluation is disabled to prevent runtime errors from
+    // propagating into type inference. With allow_eval=false, normalize() cannot produce Err.
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
     norm_ctx.type_stage_scope = state.type_stage_scope.clone();
     norm_ctx.allow_eval = false;
-    let a = crate::type_normalize::normalize(&a_substituted, &state.type_vars, &mut norm_ctx).await;
-    let b = crate::type_normalize::normalize(&b_substituted, &state.type_vars, &mut norm_ctx).await;
+    let a = crate::type_normalize::normalize(&a_substituted, &state.type_vars, &mut norm_ctx)
+        .await
+        .map_err(|e| TypeDiagnostic::error("type-error", e.to_string(), span.clone()))?;
+    let b = crate::type_normalize::normalize(&b_substituted, &state.type_vars, &mut norm_ctx)
+        .await
+        .map_err(|e| TypeDiagnostic::error("type-error", e.to_string(), span.clone()))?;
     drop(norm_ctx);
 
     if a == b {
@@ -3165,13 +3171,16 @@ pub async fn constrain(
     let sup_substituted = state.apply(sup);
 
     // Normalize both types.
+    // allow_eval is false: resolver evaluation is disabled inside constrain().
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.eval_ctx.clone());
     norm_ctx.type_stage_scope = state.type_stage_scope.clone();
     norm_ctx.allow_eval = false;
-    let sub =
-        crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
-    let sup =
-        crate::type_normalize::normalize(&sup_substituted, &state.type_vars, &mut norm_ctx).await;
+    let sub = crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx)
+        .await
+        .map_err(|e| TypeDiagnostic::error("type-error", e.to_string(), span.clone()))?;
+    let sup = crate::type_normalize::normalize(&sup_substituted, &state.type_vars, &mut norm_ctx)
+        .await
+        .map_err(|e| TypeDiagnostic::error("type-error", e.to_string(), span.clone()))?;
     drop(norm_ctx);
 
     if sub == sup {
@@ -3576,10 +3585,12 @@ pub async fn process_deferred_equalities(
         norm_ctx.type_stage_scope = state.type_stage_scope.clone();
         for (a, b) in deferred {
             // Normalize both sides
-            let a_norm =
-                crate::type_normalize::normalize(&a, &state.type_vars, &mut norm_ctx).await;
-            let b_norm =
-                crate::type_normalize::normalize(&b, &state.type_vars, &mut norm_ctx).await;
+            let a_norm = crate::type_normalize::normalize(&a, &state.type_vars, &mut norm_ctx)
+                .await
+                .map_err(|e| TypeDiagnostic::error("type-error", e.to_string(), span.clone()))?;
+            let b_norm = crate::type_normalize::normalize(&b, &state.type_vars, &mut norm_ctx)
+                .await
+                .map_err(|e| TypeDiagnostic::error("type-error", e.to_string(), span.clone()))?;
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification. Propagate failures.

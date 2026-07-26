@@ -1570,16 +1570,10 @@ async fn call_to_match_by_name(
 ///
 /// Returns `false` in bootstrap/pre-prelude contexts (before `"to-match"` is in scope)
 /// or for types with no instance.
-pub async fn call_to_match(
-    val: &Value,
-    _env: &Arc<RwLock<crate::value::Environment>>,
-    ctx: &Arc<EvalContext>,
-    span: &Span,
-) -> bool {
+pub async fn call_to_match(val: &Value, ctx: &Arc<EvalContext>, span: &Span) -> bool {
     // Look up the "to-match" dispatch function by name in scope_frames and call it with val.
     // Falls back to false in bootstrap/pre-prelude contexts where init_accumulated_group is
     // not set or "to-match" is not in scope_frames.
-    // The `_env` parameter is a legacy stub retained for signature compatibility.
     call_to_match_by_name("to-match", val, ctx, span).await
 }
 
@@ -1598,12 +1592,10 @@ pub async fn call_to_match(
 pub async fn call_to_match_resolved(
     val: &Value,
     binding_name: &str,
-    _env: &Arc<RwLock<crate::value::Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
     // Direct-dispatch variant: call the pre-resolved Matchable instance binding by name.
-    // The `_env` parameter is a legacy stub retained for signature compatibility.
     call_to_match_by_name(binding_name, val, ctx, span).await
 }
 
@@ -1671,14 +1663,13 @@ pub fn resolve_matchable_binding_from_fn(pred: &Value, ctx: &Arc<EvalContext>) -
 pub async fn call_to_match_opt_resolved(
     val: &Value,
     binding_name: Option<&str>,
-    env: &Arc<RwLock<crate::value::Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
     if let Some(name) = binding_name {
-        call_to_match_resolved(val, name, env, ctx, span).await
+        call_to_match_resolved(val, name, ctx, span).await
     } else {
-        call_to_match(val, env, ctx, span).await
+        call_to_match(val, ctx, span).await
     }
 }
 
@@ -2363,13 +2354,15 @@ mod tests {
             arg_arcs,
             IndexMap::new(),
             call_span.clone(),
-            0, // root scope (bridge placeholder)
-            call_span,
-            Arc::clone(ctx),
-            Arc::new(crate::ast::Spanned {
-                node: crate::ast::CoreExpr::Int(0),
-                span: rust_span!(),
-            }),
+            crate::value::FnCallSpec {
+                call_span: call_span.clone(),
+                caller_env_id: 0, // root scope (bridge placeholder)
+                ctx: Arc::clone(ctx),
+                original_call: Arc::new(crate::ast::Spanned {
+                    node: crate::ast::CoreExpr::Int(0),
+                    span: rust_span!(),
+                }),
+            },
         ))
     }
 
@@ -2911,6 +2904,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
         )];
         let expr = Spanned::new(
@@ -2968,6 +2962,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Int(0)),
@@ -3001,6 +2996,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
         )];
         let expr = Spanned::new(
@@ -3039,6 +3035,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Int(0)),
@@ -3072,6 +3069,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
         )];
         let expr = Spanned::new(
@@ -3111,6 +3109,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
             surf_ann_entry(
@@ -4167,6 +4166,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
         )];
         assert!(!annotation_has_structural_fields(
@@ -4186,6 +4186,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
             surf_ann_entry(
@@ -4196,6 +4197,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
         ];
@@ -4216,6 +4218,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
@@ -4272,6 +4275,7 @@ mod tests {
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Dict(vec![])),

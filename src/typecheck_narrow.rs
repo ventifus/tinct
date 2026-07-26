@@ -118,7 +118,7 @@ pub(crate) fn extract_narrowings(
                     // or `@[is: T]` on its first parameter.
                     _ if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            let scheme = env.read().ok().and_then(|e| e.get_scheme(name));
+                            let scheme = env.read().expect("env RwLock poisoned").get_scheme(name);
                             if let Some(scheme) = scheme {
                                 if let Some(Some(narrow_ty)) = scheme.param_narrowings.first() {
                                     return vec![Narrowing::TypeOf {
@@ -195,7 +195,7 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 // (no narrowing) so the variable retains its original type.
                                 // Emitting Unknown would actively degrade type checking.
                                 // Predicate narrowing (@[is: T]) handles these via prelude
-                                // annotations instead (B-546).
+                                // annotations instead.
                                 "Bool" | "Seq" => None,
                                 _ => None,
                             };
@@ -374,7 +374,7 @@ pub(crate) fn extract_binding_types<'a>(
                     let mut constraints: Vec<Constraint> = Vec::new();
                     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
                     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
-                    let ann_result = typecheck_annot::resolve_annotation(
+                    let ty = typecheck_annot::resolve_annotation(
                         &ann,
                         func.span.clone(),
                         &mut *state,
@@ -383,23 +383,20 @@ pub(crate) fn extract_binding_types<'a>(
                         &mut row_m,
                         None,
                     )
-                    .await;
-                    match ann_result {
-                        Ok(ty) => Some(ty),
-                        Err(_) => None,
-                    }
+                    .await
+                    .map_err(|e| vec![e])?;
+                    Some(ty)
                 } else {
                     None
                 };
                 types.push(resolved.unwrap_or_else(|| state.fresh_type_var(&binding.span)));
             }
             SurfaceExpression::Call { .. } => {
-                // Multi-arg parametric call — fresh TypeVar for now.
+                // Multi-arg parametric call: use a fresh TypeVar so unification can still
+                // find the correct type and T017 does not fire.
                 types.push(state.fresh_type_var(&binding.span));
             }
             // a@Type form: VarRef with annotation — resolve via typecheck_annot::resolve_annotation.
-            // A fresh TypeVar (not Unknown) is used on failure so T017 is suppressed for annotated
-            // patterns with complex/unresolvable type names.
             SurfaceExpression::VarRef {
                 annotation: Some(ann),
                 ..
@@ -407,7 +404,7 @@ pub(crate) fn extract_binding_types<'a>(
                 let mut constraints: Vec<Constraint> = Vec::new();
                 let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
                 let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
-                let ty = match typecheck_annot::resolve_annotation(
+                let ty = typecheck_annot::resolve_annotation(
                     &ann.node,
                     ann.span.clone(),
                     &mut *state,
@@ -417,10 +414,7 @@ pub(crate) fn extract_binding_types<'a>(
                     None,
                 )
                 .await
-                {
-                    Ok(t) => t,
-                    Err(_) => state.fresh_type_var(&ann.span),
-                };
+                .map_err(|e| vec![e])?;
                 types.push(ty);
             }
             // Bare identifier in pattern position: represents a type variable (any type).

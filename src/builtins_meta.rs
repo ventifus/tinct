@@ -352,22 +352,20 @@ pub(crate) fn builtin_until(
                 pred_id,
                 vec![val_id],
                 IndexMap::new(),
-                call_span.clone(),
-                caller_env_id,
                 val_thunk.span.clone().with_name(Arc::from("until")),
-                Arc::clone(&ctx),
-                synthetic_call_expr(call_span.clone()),
+                crate::value::FnCallSpec {
+                    call_span: call_span.clone(),
+                    caller_env_id,
+                    ctx: Arc::clone(&ctx),
+                    original_call: synthetic_call_expr(call_span.clone()),
+                },
             ));
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
 
-            // call_to_match_opt_resolved ignores legacy env (T-1846/T-1847 track implementation).
-            let dummy_env_for_match =
-                std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
             if crate::eval::call_to_match_opt_resolved(
                 &pred_val,
                 pred_matchable_binding.as_deref(),
-                &dummy_env_for_match,
                 &ctx,
                 &call_span,
             )
@@ -384,11 +382,13 @@ pub(crate) fn builtin_until(
                     f_id,
                     vec![val_id],
                     IndexMap::new(),
-                    call_span.clone(),
-                    caller_env_id,
                     call_span.clone().with_name(Arc::from("until")),
-                    Arc::clone(&ctx),
-                    synthetic_call_expr(call_span.clone()),
+                    crate::value::FnCallSpec {
+                        call_span: call_span.clone(),
+                        caller_env_id,
+                        ctx: Arc::clone(&ctx),
+                        original_call: synthetic_call_expr(call_span.clone()),
+                    },
                 ));
 
                 // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
@@ -3517,11 +3517,9 @@ pub(crate) fn builtin_eval_types(
             args,
             named,
             call_span,
-            caller_env_id,
             ctx,
+            ..
         } = ctx_arg;
-        // caller_env_id is Some when needs_caller_env: true, but now unused (replaced by EvalFrame::empty()).
-        let _caller_env_id = caller_env_id;
 
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -4017,7 +4015,7 @@ pub(crate) fn builtin_is_contractive(
             call_span.clone(),
         )?;
 
-        let result = is_contractive_value(&body_val, &ctx).await;
+        let result = is_contractive_value(&body_val, &ctx).await?;
         ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
     })
 }
@@ -4035,7 +4033,7 @@ pub(crate) fn builtin_is_contractive(
 fn is_contractive_value<'a>(
     val: &'a Value,
     ctx: &'a Arc<crate::eval::EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + Send + 'a>> {
     Box::pin(async move {
         // Unwrap Value::Annotated transparently — annotations do not affect contractiveness.
         let val = match val {
@@ -4045,7 +4043,7 @@ fn is_contractive_value<'a>(
 
         match val {
             // Case 1: bare RecursiveRef — non-contractive.
-            Value::Variant { ctor, .. } if ctor.as_ref() == "RecursiveRef" => false,
+            Value::Variant { ctor, .. } if ctor.as_ref() == "RecursiveRef" => Ok(false),
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
             Value::Variant { ctor, payload, .. }
@@ -4053,26 +4051,23 @@ fn is_contractive_value<'a>(
             {
                 let payload_thunk = match payload {
                     Some(id) => id.clone(),
-                    None => return true,
+                    None => return Ok(true),
                 };
-                let payload_val = match materialize(&payload_thunk, None, ctx).await {
-                    Ok(v) => v,
-                    Err(_) => return true,
-                };
+                let payload_val = materialize(&payload_thunk, None, ctx).await?;
                 let types_thunk = match &payload_val {
                     Value::Dict(d) => {
                         match d.get(&crate::value::HashableValue::Str("types".into())) {
                             Some(t) => Arc::clone(t),
-                            None => return true,
+                            None => return Ok(true),
                         }
                     }
-                    _ => return true,
+                    _ => return Ok(true),
                 };
                 is_contractive_seq(types_thunk, ctx).await
             }
 
             // Case 2: all other constructors are guarding.
-            _ => true,
+            _ => Ok(true),
         }
     })
 }
@@ -4080,30 +4075,25 @@ fn is_contractive_value<'a>(
 /// Check that every element in the `types` Dict is contractive.
 ///
 /// Union/Intersect.types is an integer-keyed Dict of type node variants.
-/// Returns `true` iff all values are contractive. Empty or malformed input returns `true`
+/// Returns `Ok(true)` iff all values are contractive. Empty or malformed input returns `Ok(true)`
 /// (conservative: no self-references = trivially contractive).
+/// Returns `Err(e)` if materialization of the types dict or any element fails.
 async fn is_contractive_seq(
     types_thunk: Arc<crate::value::Thunk>,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> bool {
-    let val = match materialize(&types_thunk, None, ctx).await {
-        Ok(v) => v,
-        Err(_) => return true,
-    };
+) -> EvalResult<bool> {
+    let val = materialize(&types_thunk, None, ctx).await?;
     match &val {
         Value::Dict(d) => {
             for (_k, v_thunk) in d {
-                let v_val = match materialize(v_thunk, None, ctx).await {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                if !is_contractive_value(&v_val, ctx).await {
-                    return false;
+                let v_val = materialize(v_thunk, None, ctx).await?;
+                if !is_contractive_value(&v_val, ctx).await? {
+                    return Ok(false);
                 }
             }
-            true
+            Ok(true)
         }
-        _ => true, // Not a Dict — no children to check.
+        _ => Ok(true), // Not a Dict — no children to check.
     }
 }
 
@@ -4359,17 +4349,13 @@ pub(crate) fn builtin_check_type(
         let value = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
 
         let passes = match type_name.as_str() {
-            "String" | "Str" => matches!(value, Value::String { .. }),
+            "String" => matches!(value, Value::String { .. }),
             "Int" => matches!(value, Value::Int(_)),
             "Float" => matches!(value, Value::Float(_)),
             "Dict" => matches!(value, Value::Dict(_)),
-            "Null" => matches!(value, Value::Dict(ref d) if d.is_empty()),
-            // Seq is not a distinct Value variant — sequences are Dict-like at runtime.
-            // Checking "Seq" passes conservatively since a lazy sequence can't be
-            // distinguished from a Dict without full materialization.
-            "Seq" => true,
             "Bytes" => matches!(value, Value::Bytes { .. }),
-            // Unknown annotations (type variables, parameterized types) pass conservatively.
+            // Unknown annotations (type variables, parameterized types, user-defined names)
+            // pass conservatively — runtime cannot distinguish them without full evaluation.
             _ => true,
         };
 
@@ -4772,15 +4758,16 @@ mod tests {
         f.await
     }
 
-    async fn materialize_sync(t: &Arc<Thunk>, ctx: &Arc<crate::eval::EvalContext>) -> Value {
-        crate::eval::materialize(t, None, ctx)
-            .await
-            .unwrap_or_else(|e| panic!("materialize failed: {e}"))
+    async fn materialize_sync(
+        t: &Arc<Thunk>,
+        ctx: &Arc<crate::eval::EvalContext>,
+    ) -> EvalResult<Value> {
+        crate::eval::materialize(t, None, ctx).await
     }
 
     /// `builtin_tag_of` returns the tag of a bare `Value::Variant`.
     #[tokio::test]
-    async fn tag_of_bare_variant() {
+    async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
             tycon: Arc::from("Color"),
             ctor: Arc::from("Red"),
@@ -4794,16 +4781,16 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
         }))
-        .await
-        .unwrap();
-        let val = materialize_sync(&result, &ctx).await;
+        .await?;
+        let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(val, string_val("Color.Red"));
+        Ok(())
     }
 
     /// `builtin_tag_of` peels a single `Value::Annotated` wrapper and returns the
     /// inner variant's tag. This is the primary regression case for B-441.
     #[tokio::test]
-    async fn tag_of_annotated_variant_single_wrap() {
+    async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
             tycon: Arc::from("SimpleType"),
             ctor: Arc::from("Leaf"),
@@ -4822,16 +4809,16 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
         }))
-        .await
-        .unwrap();
-        let val = materialize_sync(&result, &ctx).await;
+        .await?;
+        let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(val, string_val("SimpleType.Leaf"));
+        Ok(())
     }
 
     /// `builtin_tag_of` peels multiple nested `Value::Annotated` wrappers (the `while let`
     /// loop handles more than one layer of annotation).
     #[tokio::test]
-    async fn tag_of_annotated_variant_double_wrap() {
+    async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
             tycon: Arc::from("Shape"),
             ctor: Arc::from("Circle"),
@@ -4853,15 +4840,15 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
         }))
-        .await
-        .unwrap();
-        let val = materialize_sync(&result, &ctx).await;
+        .await?;
+        let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(val, string_val("Shape.Circle"));
+        Ok(())
     }
 
     /// `builtin_current_env` returns the caller's FlatEnv id as `Value::Int(caller_env_id)`.
     #[tokio::test]
-    async fn current_env_captures_caller_env() {
+    async fn current_env_captures_caller_env() -> EvalResult<()> {
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
             args: vec![],
@@ -4870,12 +4857,12 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: Some(42),
         }))
-        .await
-        .unwrap();
+        .await?;
 
         // builtin_current_env now returns Value::Int(caller_env_id).
-        let val = materialize_sync(&result, &ctx).await;
+        let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(val, Value::Int(42), "expected caller_env_id as Int(42)");
+        Ok(())
     }
 
     /// `builtin_current_env` rejects positional arguments — it takes zero args.

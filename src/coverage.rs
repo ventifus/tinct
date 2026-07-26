@@ -1568,6 +1568,7 @@ mod tests {
             resolution: r,
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         }
     }
 
@@ -1581,6 +1582,7 @@ mod tests {
             resolution: r,
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         }
     }
 
@@ -1592,6 +1594,7 @@ mod tests {
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         }
     }
 
@@ -1604,6 +1607,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             crate::rust_span!(),
         ));
@@ -1692,6 +1696,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             crate::rust_span!(),
         ));

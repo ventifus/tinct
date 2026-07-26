@@ -340,6 +340,7 @@ fn parse_bracket_annotation_dict(
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: None,
+                        do_infer_placeholder: false,
                     },
                     tok_span.clone(),
                 ));
@@ -530,6 +531,7 @@ fn parse_annotation_direct(
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: Some(inner_ann),
+                        do_infer_placeholder: false,
                     },
                     full_span.clone(),
                 ));
@@ -548,6 +550,7 @@ fn parse_annotation_direct(
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: None,
+                    do_infer_placeholder: false,
                 },
                 name_span.clone(),
             ));
@@ -1773,6 +1776,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 resolution: crate::ast::Resolution::new(),
                                 call_dispatch: crate::ast::CallDispatch::new(),
                                 annotation: None,
+                                do_infer_placeholder: false,
                             },
                             func_span,
                         ));
@@ -3449,6 +3453,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
                                     annotation: None,
+                                    do_infer_placeholder: false,
                                 },
                                 span.clone(),
                             ));
@@ -3466,6 +3471,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
                                     annotation: None,
+                                    do_infer_placeholder: false,
                                 },
                                 span.clone(),
                             ));
@@ -3520,6 +3526,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             resolution: crate::ast::Resolution::new(),
                             call_dispatch: crate::ast::CallDispatch::new(),
                             annotation: None,
+                            do_infer_placeholder: false,
                         },
                         span.clone(),
                     ));
@@ -3573,6 +3580,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: None,
+                        do_infer_placeholder: false,
                     },
                     span.clone(),
                 ));
@@ -3978,6 +3986,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                                 resolution: crate::ast::Resolution::new(),
                                                 call_dispatch: crate::ast::CallDispatch::new(),
                                                 annotation: None,
+                                                do_infer_placeholder: false,
                                             },
                                             id_span.clone(),
                                         ));
@@ -4694,6 +4703,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
                                     annotation: None,
+                                    do_infer_placeholder: false,
                                 },
                                 span.clone(),
                             ));
@@ -4711,6 +4721,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
                                     annotation: None,
+                                    do_infer_placeholder: false,
                                 },
                                 span.clone(),
                             ));
@@ -4765,6 +4776,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             resolution: crate::ast::Resolution::new(),
                             call_dispatch: crate::ast::CallDispatch::new(),
                             annotation: None,
+                            do_infer_placeholder: false,
                         },
                         span.clone(),
                     ));
@@ -6132,6 +6144,7 @@ fn commit_let_pending(
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
                     annotation: Some(ann),
+                    do_infer_placeholder: false,
                 },
                 combined_span,
             );
@@ -6293,6 +6306,7 @@ fn create_annotated_node(
             resolution,
             call_dispatch,
             annotation: None,
+            ..
         } => {
             let full_span = Span {
                 file: Arc::clone(&target.span.file),
@@ -6309,6 +6323,7 @@ fn create_annotated_node(
                     resolution: resolution.clone(),
                     call_dispatch: call_dispatch.clone(),
                     annotation: Some(annotation),
+                    do_infer_placeholder: false,
                 },
                 full_span,
             ))
@@ -9809,6 +9824,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             crate::ast::Span::rust_source(file!(), line!()),
         );
@@ -9828,6 +9844,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             },
             crate::ast::Span::rust_source(file!(), line!()),
         );

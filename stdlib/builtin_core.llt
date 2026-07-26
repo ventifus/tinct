@@ -26,6 +26,9 @@
     # Kind-annotated type variable sentinel: resolves to a fresh TypeVar of the given kind.
     # kind: "Operator" | "Label" — string keys matching crate::type_def::Kind variants.
     TypeVar: [kind: Any]
+    # Literal type constructors — produced by [or 0 1], [or "ok" "err"] in type position.
+    IntLiteral:    [n: Any]
+    StringLiteral: [s: Any]
     # Opaque Rust value types — no payload, identity-matched by tag name.
     Program
     Document

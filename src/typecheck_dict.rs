@@ -31,6 +31,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             }),
         })
     }
@@ -92,6 +93,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -124,6 +126,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             }),
         });
         let b_entry = sp(SurfaceEntry {
@@ -134,6 +137,7 @@ mod tests {
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
+                do_infer_placeholder: false,
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -162,6 +166,7 @@ mod tests {
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: None,
+                        do_infer_placeholder: false,
                     }),
                 }),
                 sp(SurfaceEntry {
@@ -172,6 +177,7 @@ mod tests {
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: None,
+                        do_infer_placeholder: false,
                     }),
                 }),
             ])),

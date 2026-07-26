@@ -631,6 +631,13 @@ pub enum SurfaceExpression {
     // Resolution is stored inline in the `resolution` field, written once by the resolver.
     // call_dispatch is written by the type checker when this VarRef is the function in a
     // typeclass method call — the lowerer reads it to rewrite the call to the instance binding.
+    //
+    // do_infer_placeholder: true marks a VarRef that was synthesised by the [do] desugarer
+    // as a sentinel monad reference (protocol: `do-infer-placeholder: 1` in the Expr.VarRef
+    // payload produced by prelude's `do-var-node`).  The type checker returns Type::Unknown
+    // for call expressions whose function head is a Field node whose target is such a VarRef,
+    // deferring monad-type resolution to the evaluator.  Set by surface_convert.rs during
+    // Expr.VarRef → SurfaceNode conversion; never written by the parser or resolver.
     #[expr(tag = "VarRef")]
     VarRef {
         #[expr(key = "name")]
@@ -645,6 +652,10 @@ pub enum SurfaceExpression {
         /// `x@Int` → `Simple("Int")`, `x@[type: Int  default: 0]` → `PropertyDict(...)`.
         #[expr(skip, default_fn = "Option::default")]
         annotation: Option<Spanned<Annotation>>,
+        /// True when this VarRef is the `do-infer` sentinel synthesised by prelude's
+        /// `do-var-node`.  The type checker uses this flag instead of inspecting the name.
+        #[expr(skip, default = false)]
+        do_infer_placeholder: bool,
     },
 
     // Access

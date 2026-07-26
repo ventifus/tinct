@@ -463,16 +463,25 @@ async fn infer_step(
             implied: _,
             ..
         } => {
-            // Special-case: do-infer sentinel
+            // Special-case: do-infer sentinel (protocol §7).
+            // Prelude's do-var-node sets do_infer_placeholder: true on the VarRef it creates
+            // for the do-desugar inferred monad.  The type checker returns Type::Unknown for
+            // any call whose function head is a Field whose base is such a VarRef, deferring
+            // monad-type resolution to the evaluator via EvalContext::do_infer_resolutions.
             if let SurfaceExpression::Field {
                 expr: Some(da_target),
                 ..
             } = &func.expr
             {
-                if let SurfaceExpression::VarRef { name, .. } = &da_target.expr {
-                    if name.starts_with("ℊꜱʏᴍ⧼do-infer⧽") && named_args.is_empty() {
-                        return TypeCheckAction::Done(Type::Unknown);
+                if matches!(
+                    &da_target.expr,
+                    SurfaceExpression::VarRef {
+                        do_infer_placeholder: true,
+                        ..
                     }
+                ) && named_args.is_empty()
+                {
+                    return TypeCheckAction::Done(Type::Unknown);
                 }
             }
 
@@ -3747,8 +3756,10 @@ pub(crate) async fn run_typecheck_dict(
                                 &mut alias_constraints,
                                 &mut ann_map_opt,
                                 &mut row_m,
-                                None,
-                                alias_name,
+                                super::typecheck_annot::TypeDictCtx {
+                                    type_params_scope: None,
+                                    tycon_name: alias_name,
+                                },
                             )
                             .await;
                             match dict_result {
@@ -4811,6 +4822,7 @@ mod tests {
             resolution: Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
+            do_infer_placeholder: false,
         })
     }
 

@@ -62,8 +62,20 @@
   # produces RowTail::Uniform { key: Some(K), value: V } — distinct from bare Record.
   Map:     [fn [let key val]
     [TypeNode.Dict fields: []  open: 1  key-type: key  value-type: val]]
-  union:   [fn [let ...types] [TypeNode.Union types: types]]
-  or:      [fn [let ...types] [TypeNode.Union types: types]]
+  # _wrap-typenode-value: normalize a raw integer or string value to its TypeNode
+  # literal constructor so typenode_value_to_type receives a proper TypeNode variant.
+  # Raw values arise when `[or 0 1]` or `[or "ok" "err"]` are written in type position —
+  # the type-stage evaluator produces Value::Int / Value::String for the positional args.
+  # Using builtin-type-of (returns "Integer" / "String") to dispatch avoids importing
+  # runtime builtins that are not available in the type-stage evaluator.
+  _wrap-typenode-value: [fn [let t]
+    [match [builtin-eq-string [builtin-type-of t] "Integer"]
+      0: [match [builtin-eq-string [builtin-type-of t] "String"]
+           0: t
+           ...: [TypeNode.StringLiteral s: t]]
+      ...: [TypeNode.IntLiteral n: t]]]
+  union:   [fn [let ...types] [TypeNode.Union types: [object-map types _wrap-typenode-value]]]
+  or:      [fn [let ...types] [TypeNode.Union types: [object-map types _wrap-typenode-value]]]
   all:     [fn [let ...types] [TypeNode.Intersect types: types]]
   without: [fn [let inner]    [TypeNode.Negation inner: [as-typenode inner]]]
 
@@ -190,7 +202,17 @@
     # Two SizedBytes nodes are incompatible when n values differ (M ≠ N) — falls
     # out of generic TypeNode structural equality on the n field.
     SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: 0]:
-      [n: Int]]                              # n: the concrete byte-count N from [Bytes N] annotation
+      [n: Int]                               # n: the concrete byte-count N from [Bytes N] annotation
+    # Integer literal types — produced by [or 0 1], [or -1 0 1] in type position.
+    # Wraps a raw integer value n so typenode_value_to_type can produce Type::IntLiteral.
+    # guarding: 0 — leaf node; n is Int, not a TypeNode child.
+    IntLiteral@[as-type: [fn [let t] t]  guarding: 0]:
+      [n: Int]
+    # String literal types — produced by [or "ok" "err"] in type position.
+    # Wraps a raw string value s so typenode_value_to_type can produce Type::StringLiteral.
+    # guarding: 0 — leaf node; s is String, not a TypeNode child.
+    StringLiteral@[as-type: [fn [let t] t]  guarding: 0]:
+      [s: String]]
 
   # ============================================================================
   # Bytes[N]: parameterized type function (T-1355)
@@ -322,7 +344,8 @@
     #
     # Explicit per-constructor match — no builtin-variant needed. Leaf constructors
     # (Int, Float, String, Bool, Absent, Unknown, Never, TypeConstructor, RecursiveRef,
-    # TypeVar, SizedBytes) have no @Child fields and return t unchanged via the wildcard arm.
+    # TypeVar, SizedBytes, IntLiteral, StringLiteral) have no @Child fields and return t
+    # unchanged via the wildcard arm.
     # Child field roles:
     #   "One"       — single TypeNode child: apply f directly
     #   "MapValues" — Map of TypeNode values: map f over values, preserve keys
@@ -5146,8 +5169,11 @@ tmpl-emit-call: [fn [let result]
 # Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would
 # create a circular dependency where the dict's own 'name' key tries to reference itself.
 # This is the same pattern used in do-params-1 with 'p-name'.
+# do-infer-placeholder: 1 — signals to the type checker (via surface_convert.rs) that this
+# VarRef is the do-desugar inferred monad sentinel.  The type checker dispatches on the flag
+# instead of the gensym name prefix (protocol §7 in doc/16b-rust-tinct-protocol.md).
 do-var-node: [fn [let p-name]
-  [Expr.VarRef name: p-name]]
+  [Expr.VarRef name: p-name  do-infer-placeholder: 1]]
 
 # Build a single-param list (integer-keyed dict with one entry).
 # p-name is a VarRef AST node; pass it as the "name" value.

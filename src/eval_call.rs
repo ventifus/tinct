@@ -100,11 +100,13 @@ pub(crate) async fn eval_call_core(
         func_thunk,
         pos_args,
         named_args_map,
-        call_span.clone(),
-        caller_env_id,
         thunk_span,
-        Arc::clone(ctx),
-        original_call,
+        crate::value::FnCallSpec {
+            call_span: call_span.clone(),
+            caller_env_id,
+            ctx: Arc::clone(ctx),
+            original_call,
+        },
     )))
 }
 
@@ -465,18 +467,12 @@ pub(crate) async fn bind_args_thunks(
         }
     }
 
-    // Collect param_slots into a Vec<Arc<Thunk>>, replacing any unfilled slots with
-    // an empty thunk (slots not filled by the above should not exist due to arity checks).
+    // Collect param_slots into a Vec<Arc<Thunk>>.
+    // Invariant: all slots must be filled after arity checks above. An unfilled slot
+    // indicates a bug in the arity checking or slot-filling logic above.
     let params_vec: Vec<Arc<Thunk>> = param_slots
         .into_iter()
-        .map(|opt| {
-            opt.unwrap_or_else(|| {
-                Arc::new(Thunk::value(
-                    Value::Dict(IndexMap::new()),
-                    call_span.clone(),
-                ))
-            })
-        })
+        .map(|opt| opt.expect("param slot invariant violated: unfilled slot after arity check"))
         .collect();
 
     Ok(EvalFrame::for_function_call(closure_env, params_vec))
@@ -494,9 +490,9 @@ pub(crate) async fn bind_args_thunks(
 /// already materialized (wraps a concrete Value::Variant), so no additional
 /// forcing is needed when the caller fills the param slot.
 ///
-/// NOTE: The "Seq", "Cons", "End" string literals here are a known protocol coupling to
-/// the prelude's Seq type declaration. This will be resolved when Seq construction moves
-/// fully to tinct (tracked separately).
+/// The "Seq", "Cons", "End", "head", and "tail" string literals are protocol entries
+/// defined in `doc/16b-rust-tinct-protocol.md` §7. Any conforming prelude must declare
+/// a `Seq` type with constructors `Cons` (carrying `head` and `tail` fields) and `End`.
 fn build_seq(args: &[Arc<Thunk>], span: &Span) -> Arc<Thunk> {
     // The nil sentinel is Seq.End — matches prelude's Seq.End unit constructor.
     let nil = Arc::new(Thunk::value(
