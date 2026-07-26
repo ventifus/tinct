@@ -484,7 +484,7 @@
 #     builtin-get  map  reduce
 #     builtin-filter  builtin-take  builtin-drop
 #     builtin-concat  builtin-join
-#     (builtin-seq, builtin-head, builtin-tail, builtin-collect removed in S-893/S-896 — use Seq.Cons/head/tail/collect)
+#     (builtin-seq, builtin-head, builtin-tail, builtin-collect removed in S-893/S-896)
 #     (builtin-range, builtin-repeat, builtin-cycle, builtin-iterate, builtin-unfold removed in T-1380 — generators are pure tinct)
 #     sort-asc  (and other builtin-NAME forms from the collection module)
 #

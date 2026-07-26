@@ -99,9 +99,8 @@
 #   builtin-dict-length   → eliminated by passing formatter separately
 #   builtin-variant       → eliminated; use qualified ADT constructors (Seq.Cons,
 #                           TypeNode.Int, etc.) — bypassed the type system
-#   builtin-seq           → [Seq.Cons head: x  tail: rest] (tinct constructor)
-#   builtin-head          → pattern match on [Seq.Cons p]: p.head (tinct)
-#   builtin-tail          → pattern match on [Seq.Cons p]: p.tail (tinct)
+#   builtin-seq           → removed; typed variadic params produce Value::Dict
+#   builtin-head/tail     → removed; use Seq.Cons pattern matching in tinct
 #   builtin-reverse       → reverse in prelude.llt (tinct, TCO-safe)
 #   builtin-reduce (Seq)  → reduce in prelude.llt (tinct, TCO-safe)
 #   builtin-each-kv           → [map [fn [k] [key: k  value: [get k d]]] [keys d]]
