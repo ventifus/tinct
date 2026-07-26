@@ -1,6 +1,6 @@
-# builtin-get: missing key produces E001 key-not-found error
+# builtin-dict-get: missing key produces E001 key-not-found error
 --- uses: ["core"]
-[builtin-get "z" [a: 10  b: 20]]
+[builtin-dict-get "z" [a: 10  b: 20]]
 === error
 key not found: z (available keys: a, b) (defined at 2:1-2:33)
-  in builtin-get at 2:1-2:33
+  in builtin-dict-get at 2:1-2:33

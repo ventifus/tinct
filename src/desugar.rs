@@ -348,11 +348,11 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
 
             // Recurse into parameter annotations (if they contain expressions)
             for param_spanned in params {
-                desugar_surface_annotation_option(&mut param_spanned.node.annotation, depth);
+                desugar_surface_annotation_option(&mut param_spanned.node.annotation);
             }
 
             // Recurse into return annotation (if it contains expressions)
-            desugar_surface_annotation_option(return_ann, depth);
+            desugar_surface_annotation_option(return_ann);
 
             // Recurse into body at new depth
             desugar_surface(body, new_depth);
@@ -364,13 +364,13 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
             expr: inner,
             ..
         } => {
-            desugar_surface_annotation(&mut annotation.node, depth);
+            desugar_surface_annotation(&mut annotation.node);
             desugar_surface(inner, depth);
         }
 
         // Annotated VarRef: recurse into annotation (annotation is now on VarRef directly).
         SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
-            desugar_surface_annotation(&mut annotation.node, depth);
+            desugar_surface_annotation(&mut annotation.node);
         }
 
         // Quote: DO NOT recurse into the quoted expression.
@@ -419,8 +419,7 @@ fn desugar_surface_entry(entry: &mut SurfaceEntry, depth: usize) {
 }
 
 /// Desugar an annotation (if it's a PropertyDict with expression values).
-#[allow(clippy::only_used_in_recursion)] // depth is passed through recursive calls for future use
-fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
+fn desugar_surface_annotation(ann: &mut Annotation) {
     match ann {
         Annotation::Simple(_) => {}
         Annotation::Quote => {}
@@ -430,8 +429,8 @@ fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
             // do not recurse here.
         }
         Annotation::Annotated(outer, inner) => {
-            desugar_surface_annotation(outer, depth);
-            desugar_surface_annotation(inner, depth);
+            desugar_surface_annotation(outer);
+            desugar_surface_annotation(inner);
         }
     }
 }
@@ -585,9 +584,9 @@ fn apply_pipe_step(
 }
 
 /// Desugar an optional annotation.
-fn desugar_surface_annotation_option(ann: &mut Option<Spanned<Annotation>>, depth: usize) {
+fn desugar_surface_annotation_option(ann: &mut Option<Spanned<Annotation>>) {
     if let Some(ann_spanned) = ann {
-        desugar_surface_annotation(&mut ann_spanned.node, depth);
+        desugar_surface_annotation(&mut ann_spanned.node);
     }
 }
 

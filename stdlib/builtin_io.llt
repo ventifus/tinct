@@ -70,8 +70,6 @@
   builtin-read-stdin:    [fn@Bytes   [let n@Integer] ...]
 
   # ── Network ────────────────────────────────────────────────────────────────
-  # connect: open a network connection, return an opaque stream handle.
-  builtin-connect:       [fn@Handle  [let cap@NetCap addr@String ...opts] ...]
   # tls-layer: wrap a stream with TLS, return a TLS stream handle.
   builtin-tls-layer:     [fn@Handle  [let stream@Handle host@String opts@Dict] ...]
   # tls-peer-cert: extract the peer certificate from a TLS stream (as a Dict).

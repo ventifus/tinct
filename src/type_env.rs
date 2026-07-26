@@ -99,7 +99,7 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState, span: &crate::ast
                 renaming
                     .type_map
                     .borrow_mut()
-                    .insert(var, Type::TypeVar(fresh_name, lvl));
+                    .insert(var, Type::Var(fresh_name, lvl));
             }
         }
     }
@@ -107,20 +107,32 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState, span: &crate::ast
     renaming.apply(ty)
 }
 
-/// Rename a single type variable `old_name -> Type::TypeVar(fresh_name, level)` inline.
+/// Rename a single type variable `old_name -> Type::Var(fresh_name, level)` inline.
 ///
-/// This is equivalent to `Substitution { type_map: {old_name -> TypeVar(fresh,level)},
-/// row_map: {} }.apply(ty)` but avoids allocating 2 HashMaps and 2 HashSets.
-/// Safe to use without cycle detection because scheme bodies from `generalize` are
-/// acyclic with respect to quantified type variables (no self-referential TypeVar bindings
-/// can appear in a scheme body -- TypeVars in a scheme are free variables, not bound ones).
+/// Used only in tests — verifies that the general path's substitution produces correct
+/// results for single-variable schemes. Not called from production code.
+#[cfg(test)]
 fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u32) -> Type {
+    use crate::type_def::Row;
+    fn rename_row(row: &Row, old_name: &str, fresh_name: &str, level: u32) -> Row {
+        Row {
+            fields: row
+                .fields
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        rename_single_type_var(v, old_name, fresh_name, level),
+                    )
+                })
+                .collect(),
+            tail: row.tail.clone(),
+        }
+    }
     match ty {
-        Type::TypeVar(name, _) if name == old_name => Type::TypeVar(fresh_name.to_owned(), level),
-        Type::TypeVar(_, _) => ty.clone(),
-        Type::Dict(row) => Type::Dict(rename_single_type_var_in_row(
-            row, old_name, fresh_name, level,
-        )),
+        Type::Var(name, _) if name == old_name => Type::Var(fresh_name.to_owned(), level),
+        Type::Var(_, _) => ty.clone(),
+        Type::Dict(row) => Type::Dict(rename_row(row, old_name, fresh_name, level)),
         Type::Function {
             params,
             ret,
@@ -155,9 +167,6 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             }),
             required_count: *required_count,
         },
-        // Type::Seq and Type::Map don't exist as variants; they are represented as
-        // Type::App(TyCon("Seq"), elem) and Type::App(App(TyCon("Map"), key), val).
-        // The App arm below handles these recursively.
         Type::Union(members) => Type::Union(
             members
                 .iter()
@@ -179,7 +188,7 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         Type::Negation(inner) => Type::Negation(Box::new(rename_single_type_var(
             inner, old_name, fresh_name, level,
         ))),
-        Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+        Type::StageApp { fn_name, args } => Type::StageApp {
             fn_name: fn_name.clone(),
             args: args
                 .iter()
@@ -193,38 +202,20 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
         } => Type::NominalVariant {
             tycon: tycon.clone(),
             ctor: ctor.clone(),
-            fields: rename_single_type_var_in_row(fields, old_name, fresh_name, level),
+            fields: rename_row(fields, old_name, fresh_name, level),
         },
-        // Recursive(μvar.body): rename inside body; do NOT rename the μ-binder itself.
         Type::Recursive { var, body } => Type::Recursive {
             var: var.clone(),
             body: Box::new(rename_single_type_var(body, old_name, fresh_name, level)),
         },
-        // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
-    }
-}
-
-fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, level: u32) -> Row {
-    Row {
-        fields: row
-            .fields
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    rename_single_type_var(v, old_name, fresh_name, level),
-                )
-            })
-            .collect(),
-        tail: row.tail.clone(),
     }
 }
 
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
 ///
-/// Variables in `scheme.type_vars` are instantiated as `Type::TypeVar(fresh, level)`.
+/// Variables in `scheme.type_vars` are instantiated as `Type::Var(fresh, level)`.
 /// Variables in `scheme.kind_vars` with `Kind::Operator` are instantiated as
 /// `Type::Operator(fresh)` and registered in `state.kind_env` with `Kind::Operator`,
 /// enabling them to unify with type constructor applications via UNIFY-OPERATOR.
@@ -246,98 +237,7 @@ pub fn instantiate_scheme(
     // Build variable renaming map (old names -> fresh names)
     let mut var_renaming: HashMap<String, String> = HashMap::new();
 
-    // Fast path: single regular type variable with no kind_vars --
-    // avoid building Substitution (HashMap + apply HashSet).
-    // Inline rename is allocation-free aside from the string format for the fresh name.
-    if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
-        // Single var → always unique, use abstract source name.
-        let src = crate::type_infer::InferState::typevar_source_only(&scheme.type_vars[0]);
-        let fresh_name = crate::type_infer::InferState::typevar_name(src, &Kind::Type, span);
-        state.levels.insert(fresh_name.clone(), level);
-        state.type_vars.insert(
-            fresh_name.clone(),
-            crate::type_infer::TypeVarEntry::blank(level, Kind::Type),
-        );
-        var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
-
-        // Copy constraints with renamed variables
-        for constraint in &scheme.constraints {
-            match constraint {
-                Constraint::Class {
-                    class,
-                    vars,
-                    origin_name: constraint_origin_name,
-                    origin_span: constraint_origin_span,
-                } => {
-                    // Rename Var positions in the constraint; pass Ground positions through.
-                    let fresh_vars: Vec<crate::type_class::ConstraintArg> = vars
-                        .iter()
-                        .map(|v| match v {
-                            crate::type_class::ConstraintArg::Var(name) => {
-                                if let Some(fresh) = var_renaming.get(name.as_str()) {
-                                    crate::type_class::ConstraintArg::Var(fresh.clone())
-                                } else {
-                                    v.clone()
-                                }
-                            }
-                            crate::type_class::ConstraintArg::Ground(_) => v.clone(),
-                        })
-                        .collect();
-                    // Use constraint's origin info if present, otherwise use call-site origin
-                    let final_origin_name = constraint_origin_name
-                        .clone()
-                        .or_else(|| origin_name.map(Arc::from));
-                    let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
-
-                    state.constraints.push(Constraint::Class {
-                        class: Arc::clone(class),
-                        vars: fresh_vars,
-                        origin_name: final_origin_name,
-                        origin_span: final_origin_span,
-                    });
-                }
-                Constraint::HasField {
-                    label,
-                    dict_var,
-                    field_var,
-                } => {
-                    // Rename both dict_var and field_var
-                    if let (Some(fresh_dict_var), Some(fresh_field_var)) =
-                        (var_renaming.get(dict_var), var_renaming.get(field_var))
-                    {
-                        // Rename label variable if it's a Label::Var
-                        let fresh_label = match label {
-                            Label::Concrete(s) => Label::Concrete(s.clone()),
-                            Label::Var(var_name) => {
-                                if let Some(fresh_name) = var_renaming.get(var_name) {
-                                    Label::Var(fresh_name.clone())
-                                } else {
-                                    // Label::Var not in var_renaming must be a free variable
-                                    // from an outer scope or registered in kind_env with Kind::Label
-                                    Label::Var(var_name.clone())
-                                }
-                            }
-                        };
-
-                        state.constraints.push(Constraint::HasField {
-                            label: fresh_label,
-                            dict_var: fresh_dict_var.clone(),
-                            field_var: fresh_field_var.clone(),
-                        });
-                    }
-                }
-            }
-        }
-
-        // Re-register label vars in kind_env with Kind::Label
-        if scheme.label_vars.contains(&scheme.type_vars[0]) {
-            state.kind_env.insert(fresh_name.clone(), Kind::Label);
-        }
-
-        return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
-    }
-
-    // General path: multiple type variables and/or kind_vars -- build a full Substitution.
+    // General path: handles all cases including single-variable schemes.
     // Total capacity is type_vars + kind_vars (each kind_var also gets a renaming entry).
     let total_vars = scheme.type_vars.len() + scheme.kind_vars.len();
     let renaming = Substitution {
@@ -359,7 +259,7 @@ pub fn instantiate_scheme(
         m
     };
 
-    // Instantiate regular type variables as Type::TypeVar.
+    // Instantiate regular type variables as Type::Var.
     for var in &scheme.type_vars {
         let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
         let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
@@ -379,7 +279,7 @@ pub fn instantiate_scheme(
         renaming
             .type_map
             .borrow_mut()
-            .insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
+            .insert(var.clone(), Type::Var(fresh_name.clone(), level));
         if label {
             state.kind_env.insert(fresh_name, Kind::Label);
         }
@@ -387,8 +287,8 @@ pub fn instantiate_scheme(
 
     // Instantiate kinded variables according to their kind.
     // Kind::Operator → Type::Operator(fresh_name), registered in kind_env.
-    // Kind::Label    → Type::TypeVar(fresh_name, level), registered in kind_env as Label.
-    // Kind::Type     → Type::TypeVar(fresh_name, level) (same as a regular type_var).
+    // Kind::Label    → Type::Var(fresh_name, level), registered in kind_env as Label.
+    // Kind::Type     → Type::Var(fresh_name, level) (same as a regular type_var).
     for (var, kind) in &scheme.kind_vars {
         let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
         let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
@@ -413,9 +313,9 @@ pub fn instantiate_scheme(
             }
             Kind::Label => {
                 state.kind_env.insert(fresh_name.clone(), Kind::Label);
-                Type::TypeVar(fresh_name.clone(), level)
+                Type::Var(fresh_name.clone(), level)
             }
-            Kind::Type => Type::TypeVar(fresh_name.clone(), level),
+            Kind::Type => Type::Var(fresh_name.clone(), level),
             Kind::Arrow(_, _) => {
                 // Higher-kinded type constructors: treated as Operator for instantiation purposes.
                 state.kind_env.insert(fresh_name.clone(), kind.clone());
@@ -581,7 +481,7 @@ fn emit_ambiguous_constraint_diagnostics(
     let is_discharged = |var_name: &str| -> bool {
         subst_snapshot
             .get(var_name)
-            .map(|t| !matches!(t, Type::TypeVar(_, _) | Type::Operator(_)))
+            .map(|t| !matches!(t, Type::Var(_, _) | Type::Operator(_)))
             .unwrap_or(false)
     };
 
@@ -630,14 +530,11 @@ fn emit_ambiguous_constraint_diagnostics(
                                     format_var_name(var), class
                                 )
                             };
-                            diagnostics.push(crate::error::TypeDiagnostic {
-                                level: crate::error::DiagnosticLevel::Warn,
-                                kind: "ambiguous-constraint",
+                            diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                "ambiguous-constraint",
                                 message,
-                                spans: vec![(diag_span, String::new())],
-                                notes: vec![],
-                                help: vec![],
-                            });
+                                diag_span,
+                            ));
                         }
                     }
                 }
@@ -650,17 +547,14 @@ fn emit_ambiguous_constraint_diagnostics(
                 if !is_discharged(dict_var) {
                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                     if emitted.insert((dict_var.clone(), span.clone())) {
-                        diagnostics.push(crate::error::TypeDiagnostic {
-                            level: crate::error::DiagnosticLevel::Warn,
-                            kind: "ambiguous-constraint",
-                            message: format!(
+                        diagnostics.push(crate::error::TypeDiagnostic::warn(
+                            "ambiguous-constraint",
+                            format!(
                                 "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                 format_var_name(dict_var)
                             ),
-                            spans: vec![(span.clone(), String::new())],
-                            notes: vec![],
-                help: vec![],
-                        });
+                            span.clone(),
+                        ));
                     }
                 }
                 // Only Label::Var positions can be ambiguous. Label::Concrete strings
@@ -671,34 +565,28 @@ fn emit_ambiguous_constraint_diagnostics(
                     if !is_discharged(label_var) {
                         // Deduplicate: only emit if this (var, span) pair hasn't been seen
                         if emitted.insert((label_var.clone(), span.clone())) {
-                            diagnostics.push(crate::error::TypeDiagnostic {
-                                level: crate::error::DiagnosticLevel::Warn,
-                                kind: "ambiguous-constraint",
-                                message: format!(
+                            diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                "ambiguous-constraint",
+                                format!(
                                     "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                     format_var_name(label_var)
                                 ),
-                                spans: vec![(span.clone(), String::new())],
-                                notes: vec![],
-                help: vec![],
-                            });
+                                span.clone(),
+                            ));
                         }
                     }
                 }
                 if !is_discharged(field_var) {
                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                     if emitted.insert((field_var.clone(), span.clone())) {
-                        diagnostics.push(crate::error::TypeDiagnostic {
-                            level: crate::error::DiagnosticLevel::Warn,
-                            kind: "ambiguous-constraint",
-                            message: format!(
+                        diagnostics.push(crate::error::TypeDiagnostic::warn(
+                            "ambiguous-constraint",
+                            format!(
                                 "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                 format_var_name(field_var)
                             ),
-                            spans: vec![(span.clone(), String::new())],
-                            notes: vec![],
-                help: vec![],
-                        });
+                            span.clone(),
+                        ));
                     }
                 }
             }
@@ -832,7 +720,7 @@ pub fn generalize_with_doc(
                     return current;
                 }
                 match subst_snapshot.get(&current) {
-                    Some(Type::TypeVar(resolved_name, _)) => {
+                    Some(Type::Var(resolved_name, _)) => {
                         current = resolved_name.clone();
                     }
                     Some(Type::Operator(resolved_name)) => {
@@ -848,7 +736,7 @@ pub fn generalize_with_doc(
         let is_discharged = |var_name: &str| -> bool {
             subst_snapshot
                 .get(var_name)
-                .map(|t| !matches!(t, Type::TypeVar(_, _) | Type::Operator(_)))
+                .map(|t| !matches!(t, Type::Var(_, _) | Type::Operator(_)))
                 .unwrap_or(false)
         };
 
@@ -930,18 +818,15 @@ pub fn generalize_with_doc(
                                 if !is_fd_covered {
                                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                                     if state.t013_emitted.insert((var.clone(), span.clone())) {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                                            level: crate::error::DiagnosticLevel::Warn,
-                                            kind: "ambiguous-constraint",
-                                            message: format!(
+                                        state.diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                            "ambiguous-constraint",
+                                            format!(
                                                 "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(var),
                                                 class.name
                                             ),
-                                            spans: vec![(span.clone(), String::new())],
-                                            notes: vec![],
-                help: vec![],
-                                        });
+                                            span.clone(),
+                                        ));
                                     }
                                 }
                             }
@@ -966,17 +851,14 @@ pub fn generalize_with_doc(
                                 if !is_discharged(&resolved) {
                                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
                                     if state.t013_emitted.insert((resolved.clone(), span.clone())) {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                                            level: crate::error::DiagnosticLevel::Warn,
-                                            kind: "ambiguous-constraint",
-                                            message: format!(
+                                        state.diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                            "ambiguous-constraint",
+                                            format!(
                                                 "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(&resolved)
                                             ),
-                                            spans: vec![(span.clone(), String::new())],
-                                            notes: vec![],
-                help: vec![],
-                                        });
+                                            span.clone(),
+                                        ));
                                     }
                                 }
                                 None // label not generalizable
@@ -1008,18 +890,15 @@ pub fn generalize_with_doc(
                                         .t013_emitted
                                         .insert((effective_dict.clone(), span.clone()))
                                     {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                                            level: crate::error::DiagnosticLevel::Warn,
-                                            kind: "ambiguous-constraint",
-                                            message: format!(
+                                        state.diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                            "ambiguous-constraint",
+                                            format!(
                                                 "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(&effective_dict),
                                                 format_var_name(&effective_field)
                                             ),
-                                            spans: vec![(span.clone(), String::new())],
-                                            notes: vec![],
-                help: vec![],
-                                        });
+                                            span.clone(),
+                                        ));
                                     }
                                 }
                             } else if dict_ambiguous && !is_discharged(&effective_dict) {
@@ -1028,17 +907,14 @@ pub fn generalize_with_doc(
                                     .t013_emitted
                                     .insert((effective_dict.clone(), span.clone()))
                                 {
-                                    state.diagnostics.push(crate::error::TypeDiagnostic {
-                                        level: crate::error::DiagnosticLevel::Warn,
-                                        kind: "ambiguous-constraint",
-                                        message: format!(
+                                    state.diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                        "ambiguous-constraint",
+                                        format!(
                                             "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_dict)
                                         ),
-                                        spans: vec![(span.clone(), String::new())],
-                                        notes: vec![],
-                help: vec![],
-                                    });
+                                        span.clone(),
+                                    ));
                                 }
                             } else if field_ambiguous && !is_discharged(&effective_field) {
                                 // Deduplicate: only emit if this (var, span) pair hasn't been seen
@@ -1046,17 +922,14 @@ pub fn generalize_with_doc(
                                     .t013_emitted
                                     .insert((effective_field.clone(), span.clone()))
                                 {
-                                    state.diagnostics.push(crate::error::TypeDiagnostic {
-                                        level: crate::error::DiagnosticLevel::Warn,
-                                        kind: "ambiguous-constraint",
-                                        message: format!(
+                                    state.diagnostics.push(crate::error::TypeDiagnostic::warn(
+                                        "ambiguous-constraint",
+                                        format!(
                                             "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_field)
                                         ),
-                                        spans: vec![(span.clone(), String::new())],
-                                        notes: vec![],
-                help: vec![],
-                                    });
+                                        span.clone(),
+                                    ));
                                 }
                             }
                         }
@@ -1101,9 +974,8 @@ pub fn generalize_with_doc(
 
 // (TypeEnv struct and impl deleted in S-921 — all methods were dead code in production)
 
-// Tests for type_error_note helper function deleted in T-1724.
+// Tests for type_error_note helper function deleted with the TypeError struct.
 // The function was removed as part of TypeError → TypeDiagnostic migration.
-// TypeDiagnostic formatting will be implemented in T-1725.
 
 #[cfg(test)]
 mod help_suggestion_tests {
@@ -1123,7 +995,7 @@ mod help_suggestion_tests {
         // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
         let seq_b = Type::App(
             Box::new(Type::TyCon("Seq".to_string())),
-            Box::new(Type::TypeVar("b".to_string(), 0)),
+            Box::new(Type::Var("b".to_string(), 0)),
         );
         let instance = InstanceDecl {
             class_name: "Appendable".to_string(),
@@ -1185,7 +1057,7 @@ mod help_suggestion_tests {
                 Type::App(head, elem) if matches!(head.as_ref(), Type::TyCon(n) if n == "Seq") => {
                     // Should be Int or a fresh type var that got unified with Int
                     assert!(
-                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                        matches!(elem.as_ref(), Type::Int | Type::Var(..)),
                         "first param should be Seq[Int] or Seq[fresh], got {:?}",
                         elem
                     );
@@ -1196,7 +1068,7 @@ mod help_suggestion_tests {
             match ret.as_ref() {
                 Type::App(head, elem) if matches!(head.as_ref(), Type::TyCon(n) if n == "Seq") => {
                     assert!(
-                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                        matches!(elem.as_ref(), Type::Int | Type::Var(..)),
                         "return should be Seq[Int] or Seq[fresh], got {:?}",
                         elem
                     );
@@ -1278,8 +1150,8 @@ mod help_suggestion_tests {
 
         // Test that App recurses into both children
         let original_ty = Type::App(
-            Box::new(Type::TypeVar("a".to_string(), 0)),
-            Box::new(Type::TypeVar("a".to_string(), 0)),
+            Box::new(Type::Var("a".to_string(), 0)),
+            Box::new(Type::Var("a".to_string(), 0)),
         );
 
         let renamed = rename_single_type_var(&original_ty, "a", "b", 1);
@@ -1287,14 +1159,14 @@ mod help_suggestion_tests {
         match renamed {
             Type::App(f, arg) => {
                 match f.as_ref() {
-                    Type::TypeVar(name, level) => {
+                    Type::Var(name, level) => {
                         assert_eq!(name, "b");
                         assert_eq!(*level, 1);
                     }
                     other => panic!("Expected TypeVar(b, 1), got {:?}", other),
                 }
                 match arg.as_ref() {
-                    Type::TypeVar(name, level) => {
+                    Type::Var(name, level) => {
                         assert_eq!(name, "b");
                         assert_eq!(*level, 1);
                     }
@@ -1310,13 +1182,13 @@ mod help_suggestion_tests {
         use crate::types::Type;
 
         // Test that Negation recurses into inner type
-        let original_ty = Type::Negation(Box::new(Type::TypeVar("a".to_string(), 0)));
+        let original_ty = Type::Negation(Box::new(Type::Var("a".to_string(), 0)));
 
         let renamed = rename_single_type_var(&original_ty, "a", "b", 1);
 
         match renamed {
             Type::Negation(inner) => match inner.as_ref() {
-                Type::TypeVar(name, level) => {
+                Type::Var(name, level) => {
                     assert_eq!(name, "b");
                     assert_eq!(*level, 1);
                 }
@@ -1490,7 +1362,7 @@ mod help_suggestion_tests {
     }
 
     /// A TypeScheme with a `kind_vars` entry of `Kind::Operator` must instantiate
-    /// to `Type::Operator(fresh_name)`, not `Type::TypeVar(fresh_name, level)`.
+    /// to `Type::Operator(fresh_name)`, not `Type::Var(fresh_name, level)`.
     ///
     /// Concretely: the scheme `∀(f: Operator) a. f a` should produce
     /// `App(Operator("_t0"), TypeVar("_t1", 1))` when instantiated at level 1,
@@ -1513,7 +1385,7 @@ mod help_suggestion_tests {
         // representing the type `f a` where f is Operator-kinded.
         let scheme_body = Type::App(
             Box::new(Type::Operator("f".to_string())),
-            Box::new(Type::TypeVar("a".to_string(), 0)),
+            Box::new(Type::Var("a".to_string(), 0)),
         );
 
         // Construct a scheme: ∀(f: Operator) a. f a
@@ -1540,7 +1412,7 @@ mod help_suggestion_tests {
         // The instantiated type must be App(Operator(fresh_f), TypeVar(fresh_a, 1)).
         match instantiated {
             Type::App(ref f_ty, ref a_ty) => {
-                // f must instantiate to Type::Operator, not Type::TypeVar.
+                // f must instantiate to Type::Operator, not Type::Var.
                 match f_ty.as_ref() {
                     Type::Operator(fresh_f) => {
                         // The fresh Operator name must be registered in kind_env with Kind::Operator.
@@ -1560,9 +1432,9 @@ mod help_suggestion_tests {
                     }
                     other => panic!("expected Type::Operator for kind_var 'f', got {:?}", other),
                 }
-                // a must instantiate to Type::TypeVar.
+                // a must instantiate to Type::Var.
                 match a_ty.as_ref() {
-                    Type::TypeVar(fresh_a, lv) => {
+                    Type::Var(fresh_a, lv) => {
                         assert_eq!(*lv, 1, "TypeVar level must match instantiation level");
                         // a must NOT be in kind_env as Operator (it's a regular type var).
                         assert_ne!(
@@ -1572,7 +1444,7 @@ mod help_suggestion_tests {
                         );
                     }
                     other => panic!(
-                        "expected Type::TypeVar for regular type_var 'a', got {:?}",
+                        "expected Type::Var for regular type_var 'a', got {:?}",
                         other
                     ),
                 }

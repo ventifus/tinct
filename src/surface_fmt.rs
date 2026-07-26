@@ -68,9 +68,9 @@ pub fn fmt_dict(
                 // Display float key using the canonical float formatter.
                 // f64::from_bits reconstructs the value; fmt_float produces
                 // the surface representation (e.g. "1.5", "3.14").
-                // NaN and Inf have no tinct literal syntax — fall back to Display.
+                // NaN and Inf have no tinct literal syntax — propagate the error.
                 let f = f64::from_bits(*bits);
-                let s = fmt_float(f).unwrap_or_else(|_| f.to_string());
+                let s = fmt_float(f)?;
                 out.push_str(&s);
                 out.push(':');
             }
@@ -137,7 +137,6 @@ pub fn fmt_variant(
 pub fn fmt_fn(
     params: &[Param],
     body: &Arc<Spanned<CoreExpr>>,
-    env: &Env,
     ctx: &Arc<EvalContext>,
 ) -> Result<String, String> {
     // Build initial param scope from the top-level parameters.
@@ -165,12 +164,11 @@ pub fn fmt_fn(
     collect_free_vars(&body.node, &param_scope, &stdlib_env, &mut free_vars);
 
     // Step 2: Build substitution map: name → SCN string.
-    // For each captured name, look it up in env and serialize its value.
-    // Env is type-metadata only — no runtime values available for substitution.
-    // Substitution requires FlatEnv closure value access (B-515 tracks arm binding allocation).
-    // Leave all free vars as-is (ambient names resolved through the enclosing scope chain).
+    // Value::Function no longer stores a closure environment (removed in T-1558), so no
+    // runtime values are available for substitution. Free variables that are not stdlib
+    // names and not params are left as-is — they resolve through the enclosing scope chain
+    // at runtime. An empty substitution map is therefore correct here.
     let substitutions: HashMap<String, String> = HashMap::new();
-    let _ = env; // env parameter retained for future FlatEnv wiring (B-515)
 
     // Step 3: Capture-avoiding alpha-rename.
     // For each top-level param p, check if p appears as a free-standing identifier
@@ -1391,12 +1389,7 @@ impl Value {
                 closure_env: _,
                 annotation: _,
             } => match ctx {
-                Some(ctx) => {
-                    // Value::Function no longer stores Arc<RwLock<Env>> (removed in T-1558).
-                    // Uses a stub Env for fmt_fn formatting; B-515 tracks proper FlatEnv wiring.
-                    let stub_env = Env::new();
-                    fmt_fn(params, body, &stub_env, ctx)
-                }
+                Some(ctx) => fmt_fn(params, body, ctx),
                 None => Err("Function serialization requires EvalContext".to_string()),
             },
             Value::Decimal(d) => Ok(crate::lexer::fmt_decimal(d)),
@@ -1404,7 +1397,7 @@ impl Value {
             Value::Bytes { source, start, end } => {
                 Ok(crate::lexer::fmt_bytes(&source[*start..*end]))
             }
-            Value::Timestamp(nanos) => Ok(format!("[timestamp-nanos {}]", nanos)),
+            Value::Timestamp(ts) => Ok(format!("[timestamp-nanos {}]", ts.as_nanosecond() as i64)),
             Value::Duration(nanos) => Ok(format!("[duration-nanos {}]", nanos)),
             // Non-serializable values — no tinct representation exists
             Value::DirCap { .. } => {

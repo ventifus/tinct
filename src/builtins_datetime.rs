@@ -1,6 +1,6 @@
 //! Date-time builtins: timestamps, durations, clock capabilities, and timezones.
 //!
-//! Design: Timestamp and Duration are i64 nanoseconds (UTC epoch and signed span).
+//! Design: Timestamp stores a pre-validated jiff::Timestamp (UTC). Duration is i64 nanoseconds (signed span).
 //! ClockCap provides injectable time access (real or fixed for testing).
 //! Timezone reads system zoneinfo via DirCap for timezone conversions.
 //!
@@ -56,10 +56,7 @@ pub fn builtin_parse_timestamp(
             )
         })?;
 
-        // Convert to nanoseconds since epoch
-        let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
-
-        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
     })
 }
 
@@ -81,8 +78,8 @@ pub fn builtin_format_timestamp(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "format-timestamp requires a Timestamp",
@@ -90,10 +87,6 @@ pub fn builtin_format_timestamp(
                 ))
             }
         };
-
-        // Convert nanoseconds to jiff::Timestamp
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         // Format as RFC 3339 string
         let s = ts.to_string();
@@ -120,8 +113,8 @@ pub fn builtin_timestamp_to_unix(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp->unix requires a Timestamp",
@@ -130,7 +123,7 @@ pub fn builtin_timestamp_to_unix(
             }
         };
 
-        let seconds = nanos / 1_000_000_000;
+        let seconds = ts.as_nanosecond() as i64 / 1_000_000_000;
 
         Ok(Arc::new(Thunk::value(Value::Int(seconds), call_span)))
     })
@@ -163,7 +156,14 @@ pub fn builtin_unix_to_timestamp(
             .checked_mul(1_000_000_000)
             .ok_or_else(|| dt_err("unix->timestamp overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
+        let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
+            dt_err(
+                format!("unix->timestamp: nanoseconds out of range: {e}"),
+                call_span.clone(),
+            )
+        })?;
+
+        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
     })
 }
 
@@ -187,16 +187,19 @@ pub fn builtin_now(
             _ => return Err(dt_err("now requires a ClockCap", call_span.clone())),
         };
 
-        let nanos = match clock_cap.as_ref() {
+        let ts = match clock_cap.as_ref() {
             ClockCapInner::Real => {
                 // Read the real system clock
-                let ts = jiff::Timestamp::now();
-                i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX)
+                jiff::Timestamp::now()
             }
-            ClockCapInner::Fixed(nanos) => *nanos,
+            ClockCapInner::Fixed(nanos) => {
+                // All i64 nanosecond values are within jiff::Timestamp's representable range.
+                jiff::Timestamp::from_nanosecond(*nanos as i128)
+                    .expect("ClockCapInner::Fixed nanos are always a valid i64 in jiff range")
+            }
         };
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
     })
 }
 
@@ -215,8 +218,8 @@ pub fn builtin_fixed_clock(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "fixed-clock requires a Timestamp",
@@ -224,6 +227,8 @@ pub fn builtin_fixed_clock(
                 ))
             }
         };
+
+        let nanos = ts.as_nanosecond() as i64;
 
         Ok(Arc::new(Thunk::value(
             Value::ClockCap(Arc::new(ClockCapInner::Fixed(nanos))),
@@ -257,7 +262,7 @@ pub fn builtin_timestamp_add(
             .clone();
 
         let t_nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
             _ => {
                 return Err(dt_err(
                     "timestamp-add requires Timestamp as first argument",
@@ -276,11 +281,21 @@ pub fn builtin_timestamp_add(
             }
         };
 
-        let result = t_nanos
+        let result_nanos = t_nanos
             .checked_add(d_nanos)
             .ok_or_else(|| dt_err("timestamp-add overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(result), call_span)))
+        let result_ts = jiff::Timestamp::from_nanosecond(result_nanos as i128).map_err(|e| {
+            dt_err(
+                format!("timestamp-add: result out of range: {e}"),
+                call_span.clone(),
+            )
+        })?;
+
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp(result_ts),
+            call_span,
+        )))
     })
 }
 
@@ -309,7 +324,7 @@ pub fn builtin_timestamp_diff(
             .clone();
 
         let t1_nanos = match &t1_val {
-            Value::Timestamp(n) => *n,
+            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
             _ => {
                 return Err(dt_err(
                     "timestamp-diff requires Timestamp as first argument",
@@ -319,7 +334,7 @@ pub fn builtin_timestamp_diff(
         };
 
         let t2_nanos = match &t2_val {
-            Value::Timestamp(n) => *n,
+            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
             _ => {
                 return Err(dt_err(
                     "timestamp-diff requires Timestamp as second argument",
@@ -360,8 +375,8 @@ pub fn builtin_timestamp_lt(
             .expect("pre-materialized by force_count=2")
             .clone();
 
-        let t1_nanos = match &t1_val {
-            Value::Timestamp(n) => *n,
+        let t1 = match &t1_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp<? requires Timestamp as first argument",
@@ -370,8 +385,8 @@ pub fn builtin_timestamp_lt(
             }
         };
 
-        let t2_nanos = match &t2_val {
-            Value::Timestamp(n) => *n,
+        let t2 = match &t2_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp<? requires Timestamp as second argument",
@@ -381,7 +396,7 @@ pub fn builtin_timestamp_lt(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::Int(if t1_nanos < t2_nanos { 1 } else { 0 }),
+            Value::Int(if t1 < t2 { 1 } else { 0 }),
             call_span,
         )))
     })
@@ -411,8 +426,8 @@ pub fn builtin_timestamp_gt(
             .expect("pre-materialized by force_count=2")
             .clone();
 
-        let t1_nanos = match &t1_val {
-            Value::Timestamp(n) => *n,
+        let t1 = match &t1_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp>? requires Timestamp as first argument",
@@ -421,8 +436,8 @@ pub fn builtin_timestamp_gt(
             }
         };
 
-        let t2_nanos = match &t2_val {
-            Value::Timestamp(n) => *n,
+        let t2 = match &t2_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp>? requires Timestamp as second argument",
@@ -432,7 +447,7 @@ pub fn builtin_timestamp_gt(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::Int(if t1_nanos > t2_nanos { 1 } else { 0 }),
+            Value::Int(if t1 > t2 { 1 } else { 0 }),
             call_span,
         )))
     })
@@ -462,8 +477,8 @@ pub fn builtin_timestamp_eq(
             .expect("pre-materialized by force_count=2")
             .clone();
 
-        let t1_nanos = match &t1_val {
-            Value::Timestamp(n) => *n,
+        let t1 = match &t1_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp=? requires Timestamp as first argument",
@@ -472,8 +487,8 @@ pub fn builtin_timestamp_eq(
             }
         };
 
-        let t2_nanos = match &t2_val {
-            Value::Timestamp(n) => *n,
+        let t2 = match &t2_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp=? requires Timestamp as second argument",
@@ -483,7 +498,7 @@ pub fn builtin_timestamp_eq(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::Int(if t1_nanos == t2_nanos { 1 } else { 0 }),
+            Value::Int(if t1 == t2 { 1 } else { 0 }),
             call_span,
         )))
     })
@@ -507,8 +522,8 @@ pub fn builtin_timestamp_year(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-year requires a Timestamp",
@@ -516,9 +531,6 @@ pub fn builtin_timestamp_year(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let year = dt.year() as i64;
@@ -545,8 +557,8 @@ pub fn builtin_timestamp_month(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-month requires a Timestamp",
@@ -554,9 +566,6 @@ pub fn builtin_timestamp_month(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let month = dt.month() as i64;
@@ -583,8 +592,8 @@ pub fn builtin_timestamp_day(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-day requires a Timestamp",
@@ -592,9 +601,6 @@ pub fn builtin_timestamp_day(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let day = dt.day() as i64;
@@ -621,8 +627,8 @@ pub fn builtin_timestamp_hour(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-hour requires a Timestamp",
@@ -630,9 +636,6 @@ pub fn builtin_timestamp_hour(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let hour = dt.hour() as i64;
@@ -659,8 +662,8 @@ pub fn builtin_timestamp_minute(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-minute requires a Timestamp",
@@ -668,9 +671,6 @@ pub fn builtin_timestamp_minute(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let minute = dt.minute() as i64;
@@ -697,8 +697,8 @@ pub fn builtin_timestamp_second(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-second requires a Timestamp",
@@ -706,9 +706,6 @@ pub fn builtin_timestamp_second(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let second = dt.second() as i64;
@@ -735,8 +732,8 @@ pub fn builtin_timestamp_parts(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-parts requires a Timestamp",
@@ -744,9 +741,6 @@ pub fn builtin_timestamp_parts(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
 
@@ -849,7 +843,14 @@ pub fn builtin_timestamp_nanos(
             _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
         };
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
+        let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
+            dt_err(
+                format!("timestamp-nanos: nanoseconds out of range: {e}"),
+                call_span.clone(),
+            )
+        })?;
+
+        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
     })
 }
 
@@ -1152,8 +1153,8 @@ pub fn builtin_timestamp_in_tz(
             .expect("pre-materialized by force_count=2")
             .clone();
 
-        let nanos = match &t_val {
-            Value::Timestamp(n) => *n,
+        let ts = match &t_val {
+            Value::Timestamp(ts) => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-in-tz requires Timestamp as first argument",
@@ -1171,9 +1172,6 @@ pub fn builtin_timestamp_in_tz(
                 ))
             }
         };
-
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128)
-            .map_err(|e| dt_err(format!("invalid timestamp value: {e}"), call_span.clone()))?;
 
         let dt = ts.to_zoned((**tz).clone());
 
@@ -1359,42 +1357,109 @@ pub fn builtin_local_to_timestamp(
         })?;
 
         let ts = zoned.timestamp();
-        let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
     })
 }
 
+/// Read /etc/localtime as a symlink and extract the IANA timezone name.
+///
+/// The symlink target on most Unix systems points to a path like
+/// `/usr/share/zoneinfo/America/New_York`. The IANA name is the last two
+/// path components joined with `/`. If the symlink target cannot be parsed
+/// as a two-component IANA name, returns `"UTC"`. IO errors are propagated
+/// to the caller, which distinguishes NotFound (no symlink → POSIX default)
+/// from real IO failures (permission denied, etc.).
+fn local_tz_from_symlink() -> Result<String, std::io::Error> {
+    let target = std::fs::read_link("/etc/localtime")?;
+    // Extract the last two components: e.g. "America/New_York"
+    let components: Vec<&std::ffi::OsStr> = target.iter().filter(|c| !c.is_empty()).collect();
+    if components.len() >= 2 {
+        let last = components[components.len() - 1].to_str().unwrap_or("");
+        let second_last = components[components.len() - 2].to_str().unwrap_or("");
+        if !last.is_empty()
+            && !second_last.is_empty()
+            && !last.contains('.')
+            && !second_last.contains('.')
+            && last
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+')
+            && second_last
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+')
+        {
+            return Ok(format!("{}/{}", second_last, last));
+        }
+    }
+    // Single component (e.g. "UTC" or "GMT" directly in zoneinfo root)
+    if components.len() == 1 {
+        if let Some(name) = components[0].to_str() {
+            if !name.is_empty() && !name.contains('.') {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    Ok("UTC".to_string())
+}
+
+/// Resolve the timezone name from `/etc/localtime`, mapping `NotFound` to `"UTC"` and
+/// propagating any other IO error as a tinct user error.
+fn resolve_tz_from_symlink(call_span: &Span) -> EvalResult<String> {
+    match local_tz_from_symlink() {
+        Ok(name) => Ok(name),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("UTC".to_string()),
+        Err(e) => Err(EvalError::user_error(
+            format!("local-tz-name: failed to read system timezone: {e}"),
+            call_span.clone(),
+        )
+        .into()),
+    }
+}
+
 /// Get the local timezone name from the system.
+///
+/// This is a zero-argument builtin — system timezone is an ambient property
+/// (analogous to `std::env::var("TZ")`), not a file the caller controls via capability.
 pub fn builtin_local_tz_name(
     args: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let call_span = args.call_span.clone();
-        let [dir_thunk] = args.args.as_slice() else {
+        if !args.args.is_empty() {
             return Err(dt_err(
-                "local-tz-name requires 1 argument (DirCap)",
+                "local-tz-name takes no arguments",
                 call_span.clone(),
             ));
+        }
+
+        // Determine the local timezone name.
+        //
+        // Priority:
+        //   1. TZ environment variable — if set, non-empty, and allowed by env_allowed policy.
+        //   2. /etc/localtime symlink — read the symlink target and extract
+        //      the last two path components (e.g. "America/New_York").
+        //      NotFound means no symlink is present; fall back to "UTC" (POSIX default).
+        //      Any other IO error (permission denied, etc.) is surfaced as a tinct error.
+        //   3. "UTC" when neither TZ nor the symlink is available.
+        let tz_allowed = match &args.ctx.env_allowed {
+            None => true, // unrestricted
+            Some(set) => set.contains("TZ"),
+        };
+        let tz_name = if tz_allowed {
+            if let Ok(tz) = std::env::var("TZ") {
+                if !tz.is_empty() {
+                    tz
+                } else {
+                    resolve_tz_from_symlink(&call_span)?
+                }
+            } else {
+                resolve_tz_from_symlink(&call_span)?
+            }
+        } else {
+            resolve_tz_from_symlink(&call_span)?
         };
 
-        let dir_val = dir_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
-        let _dir = match &dir_val {
-            Value::DirCap { dir, .. } => dir,
-            _ => return Err(dt_err("local-tz-name requires DirCap", call_span.clone())),
-        };
-
-        // Try to get the system timezone name
-        // This is a simplified implementation - in production we'd need to:
-        // 1. Read /etc/localtime symlink on Unix
-        // 2. Parse TZ environment variable
-        // 3. Have platform-specific fallbacks
-        // For now, return UTC as a safe default
-        Ok(Arc::new(Thunk::value(string_val("UTC"), call_span)))
+        Ok(Arc::new(Thunk::value(string_val(&tz_name), call_span)))
     })
 }
 
@@ -1552,6 +1617,6 @@ pub fn datetime_builtins() -> Vec<BuiltinDef> {
             2
         ),
         builtin!("local->timestamp", builtin_local_to_timestamp, [], 7),
-        builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq], 1),
+        builtin!("local-tz-name", builtin_local_tz_name, [], 0),
     ]
 }

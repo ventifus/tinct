@@ -1,0 +1,17 @@
+# Class declaration with injective: true (a VarRef, not Int) silently treated as non-injective.
+# Per parser.rs: the injective field is only read when SurfaceExpression::Int is present.
+# A VarRef like `true` does not match that arm, so resolver_injective defaults to false.
+# No parse or type error is emitted — the class simply behaves as non-injective.
+[
+  TestClass: [class [let TestClass a b c]
+    [determines: [[[a b] c]]
+     resolver: TestResolver
+     injective: true]
+    test: [Fn@c [a b]]]
+
+  result: "ok"
+]
+---
+%.result
+=== out
+String("ok")

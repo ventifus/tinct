@@ -275,9 +275,9 @@ integer-key dot access (`DotKey::Int(n)`).
 ### Standard Library (`stdlib/prelude.llt`)
 
 `each`, `each-key`, `each-kv` are Rust builtins — required because
-`Value::Seq` construction is not expressible in tinct. `builtin-get : Key → Dict → Any`
+`Value::Seq` construction is not expressible in tinct. `builtin-dict-get : Key → Dict → Any`
 is a thin Rust primitive. `get` in prelude.llt wraps it:
-`get: [fn [k xs] [builtin-get k xs]]` — `get` stays tinct-native following the
+`get: [fn [k c] [builtin-dict-get k c]]` — `get` stays tinct-native following the
 same pattern as `fold: [fn [f init xs] [builtin-reduce f init xs]]`.
 `collect-kv` is a tinct stdlib function using `reduce` + `merge`. `->`
 documentation notes `|` as the preferred idiom for inline pipelines.

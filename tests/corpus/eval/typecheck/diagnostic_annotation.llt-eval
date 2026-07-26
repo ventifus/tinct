@@ -1,0 +1,19 @@
+# @Diagnostic is a structural type alias defined in builtin_core.llt.
+# This test verifies that @Diagnostic resolves as a valid annotation in the full pipeline
+# without producing an "undefined type" type-checker error.
+# Diagnostic is an open dict — any dict with at least its declared fields passes.
+[
+  d: [@Diagnostic [level: "error"
+                   kind:  "type-error"
+                   message: "test"
+                   span:  [file: "f.llt"  start-line: 1  start-col: 1  end-line: 1  end-col: 1]
+                   help:  []
+                   notes: []
+                   secondary-spans: []
+                   call-stack:      []
+                   macro-expand:    []
+                   blame:           []]]
+  result: d.message
+]
+=== out
+Dict({"d": Dict({"level": String("error"), "kind": String("type-error"), "message": String("test"), "span": Dict({"file": String("f.llt"), "start-line": Int(1), "start-col": Int(1), "end-line": Int(1), "end-col": Int(1)}), "help": Dict({}), "notes": Dict({}), "secondary-spans": Dict({}), "call-stack": Dict({}), "macro-expand": Dict({}), "blame": Dict({})}), "result": String("test")})

@@ -23,7 +23,7 @@
   [parsed:  [builtin-parse src "test.llt"]]
   [desug:   [builtin-desugar parsed.program]]
   [docs:    [builtin-program-docs desug]]
-  [doc0:    [builtin-get 0 docs]]
+  [doc0:    [builtin-dict-get 0 docs]]
   # Count only Expr items (Decl items must not be counted).
   [doc-exprs: [builtin-doc-expressions doc0]]
   [expr-count-ok: [builtin-eq-int [builtin-dict-length doc-exprs] 1]]
@@ -35,7 +35,7 @@
   # Evaluate the document using new env-dict protocol: builtin-eval lowered env.
   # env is empty {} since the document only references its own bindings.
   [exports: [builtin-eval lowered []]]
-  [x-val:   [builtin-get "x" exports]]
+  [x-val:   [builtin-dict-get "x" exports]]
   [eval-ok: [builtin-eq-int x-val 42]]
   [builtin-int-add [builtin-int-add expr-count-ok lower-type-ok] eval-ok]]]
 === out

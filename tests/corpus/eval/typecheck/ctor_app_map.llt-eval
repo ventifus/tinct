@@ -1,8 +1,8 @@
 # Type constructor application: Dict/Record type assertion
 # [@[a: Int] ...] performs a structural record type check at compile time.
 # Map[K V] type constructor is resolved by the annotation system (see ctor_app_seq
-# for the Seq[T] case). A Map-typed TypeAssert requires a value already typed as
-# Map[K V]; for now we test with a record type that matches the literal value.
+# for the Seq[T] case). This test uses a record-type TypeAssert; a dedicated
+# Map[K V] TypeAssert test is tracked as T-1916.
 [@[a: Int] [a: 1]]
 === out
 Dict({"a": Int(1)})

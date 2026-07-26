@@ -539,7 +539,7 @@ TypeNode.Recursive {
 
 **`TypeNode.RecursiveRef { name: String }`** — a back-reference inside a Recursive body. `name` matches the `.var` of the enclosing `Recursive`. `RecursiveRef` is a leaf: it has no `@Child` fields, so `typenode_map_children` passes it through unchanged and `Substitution::apply` leaves it untouched. It never appears outside a Recursive body in a well-formed type.
 
-**`TypeNode.TypeVar { name: String  level: Int }`** — the leaf TypeNode constructor for inference variables. In the current implementation, `TypeVar` is the Rust variant `Type::TypeVar(String, u32)` in `src/type_def.rs`. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. See [Type Inference](06-type-inference.md) §Type Representation for the full specification.
+**`TypeNode.TypeVar { name: String  level: Int }`** — the leaf TypeNode constructor for inference variables. In the current implementation, `TypeVar` is the Rust variant `Type::Var(String, u32)` in `src/type_def.rs`. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. See [Type Inference](06-type-inference.md) §Type Representation for the full specification.
 
 ### The `mu` Combinator
 

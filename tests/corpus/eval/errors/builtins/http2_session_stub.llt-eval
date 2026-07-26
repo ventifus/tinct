@@ -1,4 +1,4 @@
-# Test that http2-session enforces arity (3 args: cap base_url opts)
+# Test that http2-session enforces arity (2 args: cap base_url)
 [http2-session "placeholder"]
 
 === error

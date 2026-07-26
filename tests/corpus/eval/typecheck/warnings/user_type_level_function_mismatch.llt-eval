@@ -1,0 +1,21 @@
+--- stage: type
+[
+  # Unwrap extracts the first member of a Union TypeNode.
+  Unwrap: [fn [let typenode]
+    [match typenode
+      [case [let p] [TypeNode.Union p] [builtin-dict-nth p.types 0]]
+      ...: typenode]]
+]
+---
+# Assigning String literal to @Integer annotation should produce type warning.
+# @[Unwrap [or String Integer]] resolves to TypeNode.String → type String.
+# The value "hello" satisfies String but not Integer.
+[
+  x@[Unwrap [or String Integer]]: "hello"
+  y@Integer: x
+]
+=== out
+Dict({"x": String("hello"), "y": String("hello")})
+
+=== warn
+cannot unify Integer with String

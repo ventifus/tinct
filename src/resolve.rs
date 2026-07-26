@@ -32,7 +32,7 @@ use crate::ast::{
     class_decl_name, node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument,
     SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
 };
-use crate::error::{DiagnosticLevel, TypeDiagnostic};
+use crate::error::TypeDiagnostic;
 use std::sync::Arc;
 
 // ============================================================================
@@ -769,14 +769,11 @@ impl SurfaceResolver {
                     .expect("intermediate_bodies is empty");
                 for (bname, span, consumed, _, _) in info.bindings {
                     if !consumed {
-                        self.diagnostics.push(TypeDiagnostic {
-                            level: DiagnosticLevel::Warn,
-                            kind: "lost-binding",
-                            message: format!("function parameter '{}' is never referenced", bname),
-                            spans: vec![(span, String::new())],
-                            notes: vec![],
-                            help: vec![],
-                        });
+                        self.diagnostics.push(TypeDiagnostic::warn(
+                            "lost-binding",
+                            format!("function parameter '{}' is never referenced", bname),
+                            span,
+                        ));
                     }
                 }
                 self.current_body_index = prev_body_index;
@@ -1088,14 +1085,11 @@ impl SurfaceResolver {
                 // Emit warnings for bindings not in the reachable set.
                 for (key, span, _) in &all_bindings {
                     if !reachable.contains(key) {
-                        self.diagnostics.push(TypeDiagnostic {
-                            level: DiagnosticLevel::Warn,
-                            kind: "lost-binding",
-                            message: format!("variable '{}' is never referenced", key.1),
-                            spans: vec![(span.clone(), String::new())],
-                            notes: vec![],
-                            help: vec![],
-                        });
+                        self.diagnostics.push(TypeDiagnostic::warn(
+                            "lost-binding",
+                            format!("variable '{}' is never referenced", key.1),
+                            span.clone(),
+                        ));
                     }
                 }
 
@@ -1129,11 +1123,11 @@ impl SurfaceResolver {
             } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
-                    // Resolve builtin-get to get its VarAddr at the current scope depth.
-                    // The lowerer reads this VarAddr to locate the builtin-get function.
-                    // If builtin-get is not in scope (resolver not seeded with env), leave
+                    // Resolve builtin-dict-get to get its VarAddr at the current scope depth.
+                    // The lowerer reads this VarAddr to locate the builtin-dict-get function.
+                    // If builtin-dict-get is not in scope (resolver not seeded with env), leave
                     // the OnceLock unset — the lowerer will emit a diagnostic.
-                    if let Some(addr) = self.resolve_name("builtin-get") {
+                    if let Some(addr) = self.resolve_name("builtin-dict-get") {
                         resolution.set(Some(addr));
                     }
                 } else if let crate::ast::DotKey::Ident(name) = field {
@@ -1141,7 +1135,7 @@ impl SurfaceResolver {
                     // nearest enclosing letrec dict scope. This prevents `[k: .k ...]`
                     // from creating a circular self-reference.
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
-                    // case uses parent lookup; outer `.b` / `.c` desugar to `builtin-get`.
+                    // case uses parent lookup; outer `.b` / `.c` desugar to `builtin-dict-get`.
                     if let Some(coords) = self.resolve_name_parent(name) {
                         resolution.set(Some(coords));
                     } else {
@@ -1592,7 +1586,9 @@ fn set_empty_captures_in_quote(expr: &crate::ast::SurfaceExpression) {
             ..
         } => {
             // Set empty captures — quoted fns are AST values with no runtime closure.
-            let _ = resolved_captures.set(std::sync::Arc::new(vec![]));
+            // CapturesCell::set uses get_or_init internally: first writer wins, so re-visits
+            // of shared AST nodes during resolution do not overwrite a previously set value.
+            resolved_captures.set(std::sync::Arc::new(vec![]));
             // Recurse into body in case it contains nested fns.
             set_empty_captures_in_quote(&body.expr);
         }
@@ -1741,7 +1737,9 @@ pub fn resolve_surface_document_with_env_dict(
     // Document dict entries start at LGM(root_group_len + env_names.len()) so they don't
     // collide with root_group slots or env-dict slots in the accumulated_group.
     let initial_offset = root_group_len + env_names.len() as u32;
-    let _new_frames = resolver.walk_surface_document_with_offset(doc, initial_offset);
+    // walk_surface_document_with_offset is called for its side effects on
+    // resolver.referenced_env_names; the returned scope frames are not needed here.
+    resolver.walk_surface_document_with_offset(doc, initial_offset);
 
     // Compute unreferenced env names: names from env_names that were never resolved
     // by any VarRef during the walk. Callers use this for domain-specific warnings.
@@ -1863,17 +1861,14 @@ pub fn lint_pipeline_stages(
             consumed_keys.iter().map(|s| s.as_str()).collect();
         for key in produced_keys {
             if !consumed_set.contains(key.as_str()) {
-                diagnostics.push(TypeDiagnostic {
-                    level: DiagnosticLevel::Warn,
-                    kind: "abandoned-output",
-                    message: format!(
+                diagnostics.push(TypeDiagnostic::warn(
+                    "abandoned-output",
+                    format!(
                         "key '{}' is produced but never consumed by the next pipeline stage",
                         key
                     ),
-                    spans: vec![(span.clone(), String::new())],
-                    notes: vec![],
-                    help: vec![],
-                });
+                    span.clone(),
+                ));
             }
         }
     }
@@ -2882,12 +2877,12 @@ mod tests {
     /// B-586: Nested dict with a non-zero initial frame offset.
     ///
     /// Simulates the case where R root entries exist (e.g., builtins) before the document
-    /// dict. With initial frame [{builtin-get: 0}] (R=1): outer dict has offset 1.
+    /// dict. With initial frame [{builtin-dict-get: 0}] (R=1): outer dict has offset 1.
     ///   Outer dict: x→LGM(1), inner→LGM(2). accumulated_dict_offset advances to 3.
     ///   Inner dict: ref→LGM(3). $x → LGM(1).
     ///
     /// Before the fix, the Dict arm used enter_scope(&keys, Dict) with offset=0, giving
-    ///   x→LGM(0), inner→LGM(1), ref→LGM(0). LGM(0) → group[0] = builtin-get (wrong!).
+    ///   x→LGM(0), inner→LGM(1), ref→LGM(0). LGM(0) → group[0] = builtin-dict-get (wrong!).
     #[test]
     fn nested_dict_lgm_offset_nonzero_base() {
         // Seed with one initial frame entry to simulate R=1 root entries.
@@ -2896,9 +2891,9 @@ mod tests {
         let program = crate::desugar::desugar_surface_program(&output.program);
         let doc = &program.documents[0].node;
 
-        // Simulate R=1: one root-scope entry named "builtin-get" at slot 0.
+        // Simulate R=1: one root-scope entry named "builtin-dict-get" at slot 0.
         let mut root_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        root_frame.insert("builtin-get".to_string(), 0u32);
+        root_frame.insert("builtin-dict-get".to_string(), 0u32);
         let (table, _diags, _frames) = resolve_surface_document_inplace(doc, &[root_frame]);
 
         // Outer dict: x at LGM(1), inner at LGM(2) (offset=1 from root frame).

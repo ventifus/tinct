@@ -88,7 +88,7 @@
 #       builtin-tc-update-type-stage-env wires the type-stage env into the TypeContext.
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
-#            merge, builtin-get, builtin-keys, builtin-dict-length, builtin-build-dict
+#            merge, builtin-dict-get, builtin-keys, builtin-dict-length, builtin-build-dict
 #   Variant: builtin-tag-of (reads Variant tag string — Variant internals, not Dict)
 #   Path:    path-dirname (String → String; extracts parent dir from a file path, tinct-defined)
 
@@ -137,7 +137,7 @@
   # reduce and join defined with core builtins only (prelude not yet loaded).
   _reduce-loop: [fn [let f acc xs i len]
     [match [builtin-int-gte i len]
-      0: [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-int-add i 1] len]
+      0: [_reduce-loop f [f acc [builtin-dict-get i xs]] xs [builtin-int-add i 1] len]
       ...: acc]]
   reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
@@ -145,8 +145,8 @@
     [match [builtin-int-gte i len]
       0: [_join-loop sep
            [match [builtin-eq-int i 0]
-             0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
-             ...: [builtin-get 0 xs]]
+             0: [builtin-string-concat acc [builtin-string-concat sep [builtin-dict-get i xs]]]
+             ...: [builtin-dict-get 0 xs]]
            xs [builtin-int-add i 1] len]
       ...: acc]]
   join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
@@ -165,7 +165,7 @@
   get-or: [fn [let default key dict]
     [match [builtin-has-key? key dict]
       0: default
-      ...: [builtin-get key dict]]]
+      ...: [builtin-dict-get key dict]]]
 
   # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
   # builtin-resolve now takes a flat Dict<String,1> of all visible names (values ignored).
@@ -173,7 +173,7 @@
   _env-to-name-set-loop: [fn [let keys n i builder]
     [match [builtin-eq-int i n]
       0: [_env-to-name-set-loop keys n [builtin-int-add i 1]
-            [builtin-builder-set [builtin-get i keys] 1 builder]]
+            [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
       ...: [builtin-builder-finish builder]]]
   env-to-name-set: [fn [let env]
     [keys: [builtin-keys env]]
@@ -256,14 +256,14 @@
             [_:              [reduce
                                [fn [let _ doc]
                                  [res:    [builtin-resolve doc name-set]]
-                                 [typed:  [builtin-typecheck-doc res.doc seed-tc]]
+                                 [typed:  [builtin-typecheck-doc res.doc seed-tc seed-env]]
                                  []]
                                []
                                docs]]
             []]]]]
         [_warnings:  [match [builtin-has-key? "ok" tc-result]
             0: []
-            ...: [builtin-get "ok" tc-result]]]
+            ...: [builtin-dict-get "ok" tc-result]]]
         [merge acc [builtin-module name]]]
       []
       module-names]]
@@ -336,7 +336,7 @@
     [desugared:     [builtin-desugar parse-result.program]]
     [docs:          [builtin-program-docs desugared]]
     # Seed env from extras dict (e.g., %prelude for prelude.llt).
-    # Dot-access desugars to builtin-get (a core builtin always in scope).
+    # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
     [seed-env: extras]
     # Per-document reduce fn: unified for type-stage and runtime passes.
     # acc is {env: Dict  tc: TypeContext}.
@@ -351,7 +351,7 @@
       [match [builtin-eq-int [builtin-int-add n-re _re] 0]
         0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
         ...: []]
-      [typed:   [builtin-typecheck-doc res.doc acc.tc]]
+      [typed:   [builtin-typecheck-doc res.doc acc.tc doc-env]]
       [lowered: [builtin-lower typed.doc]]
       [exports: [builtin-eval lowered doc-env]]
       [doc-name: [get-or "" "name" meta]]
@@ -434,7 +434,7 @@
     [doc-resolved: [builtin-resolve doc name-set]]
     [n-re: [builtin-dict-length doc-resolved.diagnostics]]
     [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
-    # T-1857: If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
+    # If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
     [input-warn-diags: [match [builtin-int-gt [get-or 0 "doc-index" state] 0]
       0: []
       ...: [match [builtin-has-key? "%" doc-resolved.unreferenced]
@@ -453,7 +453,7 @@
       0: [builtin-raise "resolve error(s)"]
       ...: []]
     # Type-check the document.
-    [typed: [builtin-typecheck-doc doc-resolved.doc tc]]
+    [typed: [builtin-typecheck-doc doc-resolved.doc tc full-env]]
     # Lower to CoreDocument, then evaluate with env-dict protocol.
     [lowered: [builtin-lower typed.doc]]
     # builtin-eval returns exports Dict directly; raises on error — no try/match needed.
@@ -497,10 +497,13 @@
     # Desugar + extract docs
     [desugared: [builtin-desugar parse-result.program]]
     [docs:      [builtin-program-docs desugared]]
-    # mod-scope: module builtins for --- uses: headers declared in the file.
-    # The file-level uses list is now extracted via builtin-doc-meta from the first doc.
-    # For now, assume no file-level uses (individual docs declare their own via --- uses:).
-    [mod-scope: []]
+    # mod-scope: module builtins for --- uses: headers declared in the file's first doc.
+    # Extract the file-level uses list from the first doc's metadata and build the module
+    # scope from it. When docs is empty, mod-scope is empty (no uses to inject).
+    [first-meta: [if [builtin-int-gt [builtin-dict-length docs] 0]
+                   [builtin-doc-meta [get 0 docs] prelude-env]
+                   []]]
+    [mod-scope: [uses-scope [get-or [] "uses" first-meta] tc prelude-env]]
     # Per-document reduce: each doc gets its own eval-document-runtime call.
     [reduce
       [fn [let state doc]
@@ -565,7 +568,7 @@
 
   emit-ch: [builtin-channel]
 
-  out-fmt:    [builtin-get "output" %args]
+  out-fmt:    [builtin-dict-get "output" %args]
   out-path:   [builtin-string-concat "cli/out/" [builtin-string-concat out-fmt ".llt"]]
   out-handle: [builtin-file-open %libdir out-path ["read"] -1 -1]
   formatter:  [ProgramItem.File path: out-path  handle: out-handle]

@@ -212,7 +212,7 @@ process: [fn@Absent [tree@BinTree] ...]
 
 `TypeNode` is the representation used by the **type-stage evaluator** — tinct code that computes and manipulates types at annotation resolution time. The type checker's internal representation is the `Type` Rust enum, which gains `Recursive` and `RecursiveRef` as new variants for equirecursive support.
 
-`CheckerType` is the permanent boundary between these two worlds: `from_type` converts `Type` → TypeNode Value for type-stage eval; `typenode_value_to_type` converts back. The type checker never stores `CheckerType` internally — it works on `Type` throughout. `TypeVar` remains `Type::TypeVar` in the type checker; `TypeNode.TypeVar` is available in the type-stage evaluator for reflection only.
+`CheckerType` is the permanent boundary between these two worlds: `from_type` converts `Type` → TypeNode Value for type-stage eval; `typenode_value_to_type` converts back. The type checker never stores `CheckerType` internally — it works on `Type` throughout. `TypeVar` remains `Type::Var` in the type checker; `TypeNode.TypeVar` is available in the type-stage evaluator for reflection only.
 
 `Recursive` carries a `var` field — a globally unique gensym name generated at construction time by the `mu` combinator (via `gensym`) or by the expansion-stack resolver. This var is the sigma key used by S-Assum during subtype checking.
 
@@ -903,11 +903,11 @@ Migration: `insert_tycon_def` takes `Arc<TyConDef>`. Every `TyConDef { ... }` co
 ```rust
 pub struct TyConDef {
     /// Declared type parameter names (e.g., ["a", "k", "v"]).
-    /// In `body`, parameters appear as `Type::TypeVar` sentinels — distinct names from inference vars.
+    /// In `body`, parameters appear as `Type::Var` sentinels — distinct names from inference vars.
     /// Eliminated by substitution in expand_named at use sites.
     pub params: Vec<String>,
 
-    /// Parametric Type body. Parameter names appear as `Type::TypeVar` with a distinct naming
+    /// Parametric Type body. Parameter names appear as `Type::Var` with a distinct naming
     /// convention (e.g. param prefix) to distinguish them from inference variables.
     ///
     /// INVARIANT: body contains no inference TypeVars (those live in InferState.subst only).

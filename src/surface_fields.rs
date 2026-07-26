@@ -16,18 +16,6 @@ use std::sync::Arc;
 use crate::ast::{SurfaceDeclaration, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
 
-/// Extract the variant tag from a `SurfaceDeclaration` as a static string.
-#[allow(dead_code)] // Used in Part E when Value::Declaration is added
-pub fn surface_decl_tag(decl: &SurfaceDeclaration) -> &'static str {
-    match decl {
-        SurfaceDeclaration::TypeAlias { .. } => "TypeAlias",
-        SurfaceDeclaration::ClassDecl { .. } => "ClassDecl",
-        SurfaceDeclaration::InstanceDecl { .. } => "InstanceDecl",
-        SurfaceDeclaration::SyntaxClass { .. } => "SyntaxClass",
-        SurfaceDeclaration::Splice(_) => "Splice",
-    }
-}
-
 // ============================================================================
 
 // ============================================================================

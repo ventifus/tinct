@@ -1,0 +1,72 @@
+# builtin_datetime.llt — Date, time, and timezone primitive operations.
+# Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
+# All functions are accessed at runtime via [builtin-module "datetime"].
+# Types: Timestamp (opaque jiff::Timestamp), Duration (i64 nanoseconds), Timezone (opaque jiff TZ).
+
+[
+  # ── Timestamp construction and conversion ────────────────────────────────────
+  # parse-timestamp: parse an ISO 8601 / RFC 3339 string into a Timestamp.
+  parse-timestamp:    [fn@Timestamp    [let s@String] ...]
+  # format-timestamp: format a Timestamp as an ISO 8601 string.
+  format-timestamp:   [fn@String       [let ts@Timestamp] ...]
+  # timestamp->unix: convert a Timestamp to Unix epoch seconds (Integer).
+  timestamp->unix:    [fn@Integer      [let ts@Timestamp] ...]
+  # unix->timestamp: convert Unix epoch seconds (Integer) to a Timestamp.
+  unix->timestamp:    [fn@Timestamp    [let secs@Integer] ...]
+  # timestamp-nanos: construct a Timestamp from nanoseconds since the Unix epoch.
+  timestamp-nanos:    [fn@Timestamp    [let n@Integer] ...]
+
+  # ── Duration arithmetic ───────────────────────────────────────────────────────
+  # timestamp-add: add a Duration to a Timestamp.
+  timestamp-add:      [fn@Timestamp    [let ts@Timestamp dur@Duration] ...]
+  # timestamp-diff: compute the Duration between two Timestamps (a - b).
+  timestamp-diff:     [fn@Duration     [let a@Timestamp b@Timestamp] ...]
+
+  # ── Timestamp comparison ──────────────────────────────────────────────────────
+  timestamp<?:        [fn@Integer      [let a@Timestamp b@Timestamp] ...]
+  timestamp>?:        [fn@Integer      [let a@Timestamp b@Timestamp] ...]
+  timestamp=?:        [fn@Integer      [let a@Timestamp b@Timestamp] ...]
+
+  # ── Timestamp field accessors (UTC) ──────────────────────────────────────────
+  timestamp-year:     [fn@Integer      [let ts@Timestamp] ...]
+  timestamp-month:    [fn@Integer      [let ts@Timestamp] ...]
+  timestamp-day:      [fn@Integer      [let ts@Timestamp] ...]
+  timestamp-hour:     [fn@Integer      [let ts@Timestamp] ...]
+  timestamp-minute:   [fn@Integer      [let ts@Timestamp] ...]
+  timestamp-second:   [fn@Integer      [let ts@Timestamp] ...]
+  # timestamp-parts: return all UTC components as a dict {year month day hour minute second}.
+  timestamp-parts:    [fn@Dict         [let ts@Timestamp] ...]
+
+  # ── Duration constructors ─────────────────────────────────────────────────────
+  duration-nanos:     [fn@Duration     [let n@Integer] ...]
+  duration-seconds:   [fn@Duration     [let n@Integer] ...]
+  duration-minutes:   [fn@Duration     [let n@Integer] ...]
+  duration-hours:     [fn@Duration     [let n@Integer] ...]
+  duration-days:      [fn@Duration     [let n@Integer] ...]
+
+  # ── Duration conversion ───────────────────────────────────────────────────────
+  duration->nanos:    [fn@Integer      [let dur@Duration] ...]
+  duration->seconds:  [fn@Integer      [let dur@Duration] ...]
+
+  # ── Clock / timezone ─────────────────────────────────────────────────────────
+  # now: return the current Timestamp using the provided clock capability.
+  now:                [fn@Timestamp    [let clock@ClockCap] ...]
+  # fixed-clock: construct a ClockCap that always returns the given Timestamp.
+  fixed-clock:        [fn@ClockCap     [let ts@Timestamp] ...]
+  # load-tz: load a timezone by IANA name (e.g. "America/New_York") using the given DirCap.
+  load-tz:            [fn@Timezone     [let cap@DirCap name@String] ...]
+  # timestamp-in-tz: convert a Timestamp to a zoned datetime dict in the given timezone.
+  # Returns a dict with fields: year month day hour minute second offset-seconds tz-name.
+  timestamp-in-tz:    [fn@Dict         [let ts@Timestamp tz@Timezone] ...]
+  # local->timestamp: construct a Timestamp from local datetime components.
+  local->timestamp:   [fn@Timestamp    [let year@Integer month@Integer day@Integer
+                                            hour@Integer minute@Integer second@Integer
+                                            tz@Timezone] ...]
+
+  # ── System timezone ───────────────────────────────────────────────────────────
+  # local-tz-name: return the IANA timezone name of the local system timezone.
+  # Zero-argument: reads TZ environment variable, then /etc/localtime symlink,
+  # then falls back to "UTC". This is an ambient system property, not a capability-gated
+  # file access.
+  local-tz-name:      [fn@String       [] ...]
+]

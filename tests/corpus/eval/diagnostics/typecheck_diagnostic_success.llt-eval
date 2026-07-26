@@ -5,7 +5,7 @@
   [parsed: [builtin-parse src "test.llt"]]
   [desugared: [builtin-desugar parsed.program]]
   [docs: [builtin-program-docs desugared]]
-  [doc: [builtin-get 0 docs]]
+  [doc: [builtin-dict-get 0 docs]]
   [resolved: [builtin-resolve doc []]]
   [tc: [builtin-make-type-ctx]]
   [typed: [builtin-typecheck-doc resolved.doc tc]]

@@ -266,6 +266,21 @@ pub struct ThunkCreationData {
     pub create_time_us: u64,
 }
 
+/// Parameters for opening a new profiling span.
+///
+/// Groups the 8 arguments to `open_span` into a named struct to keep function
+/// signatures within Clippy's argument-count limit.
+pub struct SpanInfo {
+    pub source_file: Option<String>,
+    pub source_start: Option<(u32, u32)>,
+    pub source_end: Option<(u32, u32)>,
+    pub source_text: Option<String>,
+    pub builtin_name: Option<String>,
+    pub origin_builtin: Option<String>,
+    pub create_parent: Option<u64>,
+    pub create_time_us: u64,
+}
+
 /// Profiling collector: records span data during evaluation.
 ///
 /// Maintains a stack of open span IDs to track nested materialization and provides
@@ -325,18 +340,7 @@ impl ProfilingCollector {
     /// Records the current time as start_us, allocates a unique span ID, and pushes
     /// the ID onto the open stack. The materialize_parent is the top of the stack
     /// before pushing (if any).
-    #[allow(clippy::too_many_arguments)]
-    pub fn open_span(
-        &mut self,
-        source_file: Option<String>,
-        source_start: Option<(u32, u32)>,
-        source_end: Option<(u32, u32)>,
-        source_text: Option<String>,
-        builtin_name: Option<String>,
-        origin_builtin: Option<String>,
-        create_parent: Option<u64>,
-        create_time_us: u64,
-    ) -> u64 {
+    pub fn open_span(&mut self, info: SpanInfo) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -346,14 +350,14 @@ impl ProfilingCollector {
         self.spans.push(SpanRecord {
             id,
             materialize_parent,
-            create_parent,
-            create_time_us,
-            source_file,
-            source_start,
-            source_end,
-            source_text,
-            builtin_name,
-            origin_builtin,
+            create_parent: info.create_parent,
+            create_time_us: info.create_time_us,
+            source_file: info.source_file,
+            source_start: info.source_start,
+            source_end: info.source_end,
+            source_text: info.source_text,
+            builtin_name: info.builtin_name,
+            origin_builtin: info.origin_builtin,
             start_us,
             end_us: 0, // set on close
             stall_us: 0,
@@ -487,16 +491,16 @@ mod tests {
     async fn test_span_record_roundtrip() {
         let mut collector = ProfilingCollector::new();
 
-        let id = collector.open_span(
-            Some("test.llt".to_string()),
-            Some((10, 5)),
-            Some((10, 20)),
-            Some("[+ 1 2]".to_string()),
-            None,
-            None,
-            None,
-            0,
-        );
+        let id = collector.open_span(SpanInfo {
+            source_file: Some("test.llt".to_string()),
+            source_start: Some((10, 5)),
+            source_end: Some((10, 20)),
+            source_text: Some("[+ 1 2]".to_string()),
+            builtin_name: None,
+            origin_builtin: None,
+            create_parent: None,
+            create_time_us: 0,
+        });
 
         collector.close_span(id);
 
@@ -537,28 +541,28 @@ mod tests {
         let mut collector = ProfilingCollector::new();
 
         // Open parent span
-        let parent_id = collector.open_span(
-            Some("parent.llt".to_string()),
-            Some((1, 1)),
-            Some((1, 10)),
-            None,
-            None,
-            None,
-            None,
-            0,
-        );
+        let parent_id = collector.open_span(SpanInfo {
+            source_file: Some("parent.llt".to_string()),
+            source_start: Some((1, 1)),
+            source_end: Some((1, 10)),
+            source_text: None,
+            builtin_name: None,
+            origin_builtin: None,
+            create_parent: None,
+            create_time_us: 0,
+        });
 
         // Open child span — should have materialize_parent = parent_id
-        let child_id = collector.open_span(
-            Some("child.llt".to_string()),
-            Some((2, 1)),
-            Some((2, 10)),
-            None,
-            None,
-            None,
-            Some(parent_id),
-            100,
-        );
+        let child_id = collector.open_span(SpanInfo {
+            source_file: Some("child.llt".to_string()),
+            source_start: Some((2, 1)),
+            source_end: Some((2, 10)),
+            source_text: None,
+            builtin_name: None,
+            origin_builtin: None,
+            create_parent: Some(parent_id),
+            create_time_us: 100,
+        });
 
         // Close child first
         collector.close_span(child_id);
@@ -580,16 +584,16 @@ mod tests {
     fn test_stall_recording() {
         let mut collector = ProfilingCollector::new();
 
-        let id = collector.open_span(
-            Some("io.llt".to_string()),
-            Some((5, 1)),
-            Some((5, 20)),
-            None,
-            None,
-            None,
-            None,
-            0,
-        );
+        let id = collector.open_span(SpanInfo {
+            source_file: Some("io.llt".to_string()),
+            source_start: Some((5, 1)),
+            source_end: Some((5, 20)),
+            source_text: None,
+            builtin_name: None,
+            origin_builtin: None,
+            create_parent: None,
+            create_time_us: 0,
+        });
 
         // Record two stalls
         collector.record_stall(1000, "io");

@@ -3,12 +3,12 @@
 # Expected: unclosed bracket produces a diagnostic with level="error" and kind="parse-error".
 [call [fn [let]
   [r: [builtin-parse [builtin-str-bytes "[unclosed"] "test.llt"]]
-  [d: [builtin-get 0 r.diagnostics]]
+  [d: [builtin-dict-get 0 r.diagnostics]]
   [has-level: [builtin-has-key? "level" d]]
   [has-kind:  [builtin-has-key? "kind" d]]
   [has-msg:   [builtin-has-key? "message" d]]
-  [level-ok:  [builtin-eq-string [builtin-get "level" d] "error"]]
-  [kind-ok:   [builtin-eq-string [builtin-get "kind" d] "parse-error"]]
+  [level-ok:  [builtin-eq-string [builtin-dict-get "level" d] "error"]]
+  [kind-ok:   [builtin-eq-string [builtin-dict-get "kind" d] "parse-error"]]
   [all-ok:    [builtin-int-add [builtin-int-add [builtin-int-add has-level has-kind] has-msg] [builtin-int-add level-ok kind-ok]]]
   all-ok]]
 === out

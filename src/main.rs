@@ -1,6 +1,11 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
+#![allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "main.rs is the CLI bootstrap entry point; capability system initialization occurs here before ambient filesystem access can be eliminated"
+)]
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, Read};
@@ -51,132 +56,139 @@ struct Cli {
     command: Commands,
 }
 
-#[allow(clippy::large_enum_variant)] // Run variant contains all CLI flags
+/// All CLI flags for the `run` / `eval` subcommand.
+///
+/// Extracted into a separate struct so the `Commands::Run` enum variant can hold
+/// `Box<RunArgs>` instead of inline fields, keeping the enum variant within Clippy's
+/// large-enum-variant threshold.
+#[derive(clap::Args, Debug)]
+struct RunArgs {
+    /// Disable all filesystem access: suppresses %cwd, %libdir, and any caps injected
+    /// via --cap-fs or --cap-file. Scripts that attempt filesystem operations fail.
+    /// Use --no-cwd or --no-libdir for fine-grained suppression.
+    #[arg(long)]
+    no_fs: bool,
+
+    /// Require all $include calls to provide an integrity hash. Hashless includes error.
+    #[arg(long)]
+    require_integrity: bool,
+
+    /// Type errors are fatal (exit with code 1). Without --strict, type checking is advisory.
+    #[arg(long)]
+    strict: bool,
+
+    /// Wall-clock timeout (e.g. "5s", "500ms", "2m"). Exit code 2 on expiry.
+    #[arg(long)]
+    timeout: Option<String>,
+
+    /// Disable Landlock filesystem ACL enforcement.
+    /// By default, when --cap-fs is specified on Linux, Landlock is applied as
+    /// defense-in-depth. This flag skips that step (e.g., for older kernels or
+    /// environments where Landlock is not available).
+    #[arg(long)]
+    no_landlock: bool,
+
+    /// Disable environment variable access. $env returns Null for all names.
+    #[arg(long)]
+    no_env: bool,
+
+    /// Allow $env to read specific environment variable(s) by name (may be repeated).
+    /// When any --allow-env flag is present, $env returns Null for unlisted names.
+    #[arg(long, value_name = "NAME")]
+    allow_env: Vec<String>,
+
+    /// Do not inject `%cwd` DirCap into the root environment.
+    /// When set, [open %cwd ...] and [include %cwd ...] fail with undefined variable.
+    #[arg(long)]
+    no_cwd: bool,
+
+    /// Do not inject `%libdir` DirCap into the root environment.
+    /// When set, [include %libdir ...] fails with undefined variable.
+    #[arg(long)]
+    no_libdir: bool,
+
+    /// Override the standard library directory path.
+    /// By default, the stdlib directory is auto-detected relative to the binary location.
+    /// Use this flag to specify a custom stdlib directory (e.g., for testing or non-standard layouts).
+    #[arg(long, value_name = "PATH")]
+    libdir_path: Option<String>,
+
+    /// Inject a named DirCap into the root environment (may be repeated).
+    /// Format: NAME=PATH:MODE — binds %NAME to a DirCap. MODE is required.
+    /// MODE is one or more of: r (read), w (write), l (list), s (stat).
+    /// Example: docs=/tmp/mydocs:rl injects %docs with read+list access.
+    #[arg(long, value_name = "NAME=PATH:MODE")]
+    cap_fs: Vec<String>,
+
+    /// Inject a named NetCap into the root environment (may be repeated).
+    /// Format: NAME=ENTRY — binds %NAME to a NetCap.
+    /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
+    /// Example: --cap-net api=api.internal --cap-net api=10.42.0.0/16
+    #[arg(long, value_name = "NAME=ENTRY")]
+    cap_net: Vec<String>,
+
+    /// Disable the default %clock capability (blocks all time access).
+    /// By default, %clock is injected automatically as a real system clock.
+    /// Use this flag for sandboxed/reproducible execution contexts.
+    #[arg(long)]
+    no_cap_clock: bool,
+
+    /// Override the default %clock with a fixed timestamp (for testing).
+    /// Format: "RFC3339" — binds %clock to a ClockCap returning the fixed timestamp.
+    /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" injects a fixed %clock.
+    #[arg(long, value_name = "RFC3339")]
+    cap_clock_fixed: Option<String>,
+
+    /// Inject a named file Handle into the root environment (may be repeated).
+    /// Format: NAME=PATH[:MODE] — pre-opens PATH and binds %NAME to a Handle.
+    /// MODE: r (readable text), rb (readable binary), w (writable text), wb (writable binary),
+    ///       a (appendable text), ab (appendable binary).
+    ///       Extended: [Readable Writable ...] (valid: Readable, Writable, Appendable, Binary).
+    ///       No :MODE suffix → r (readable text).
+    /// Example: --cap-file config=Cargo.toml:r injects %config as a readable Handle.
+    /// --no-fs also suppresses --cap-file Handles (filesystem access is blocked entirely).
+    #[arg(long, value_name = "NAME=PATH[:MODE]")]
+    cap_file: Vec<String>,
+
+    /// Evaluate an inline tinct expression (may be repeated).
+    /// Each -e occurrence inserts a pipeline stage at that position in the command line,
+    /// interleaved with file arguments. Each expression receives % from the previous stage.
+    /// --- is valid inside a single -e string for multiple stages; semicolons are whitespace-equivalent.
+    #[arg(short = 'e', long = "expr", value_name = "EXPR")]
+    expr: Vec<String>,
+
+    /// Prepend an input formatter from stdlib/cli/in/<format>.llt as the first pipeline stage.
+    /// Required to read from stdin. Error if the formatter file does not exist.
+    #[arg(short = 'i', long = "input", value_name = "FORMAT")]
+    input: Option<String>,
+
+    /// Append an output formatter from stdlib/cli/out/<format>.llt as the final pipeline stage.
+    /// Error if the formatter file does not exist.
+    #[arg(short = 'o', long = "output", value_name = "FORMAT")]
+    output: Option<String>,
+
+    /// Alternative init program to use instead of the embedded stdlib/loader.llt.
+    /// The init program receives the same %programs, %args, %cwd, %libdir
+    /// as the standard loader.llt. %stdout and %stderr are defined by the init program itself.
+    #[clap(long, value_name = "FILE")]
+    init: Option<String>,
+
+    /// Write profiling data to a JSON file. Collects span-level timing data during evaluation.
+    /// Each thunk materialization produces a span record with source location, timing, parent
+    /// attribution, and stall breakdown. Use tinct scripts in scripts/profile/ to analyze.
+    #[arg(long, value_name = "FILE")]
+    profile: Option<String>,
+
+    /// Input LLT files. Use `-` to read LLT source from stdin.
+    /// Multiple files form a pipeline: each file's output becomes % for the next.
+    files: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Evaluate an LLT file and output the result.
     #[clap(alias = "eval")]
-    Run {
-        /// Disable all filesystem access: suppresses %cwd, %libdir, and any caps injected
-        /// via --cap-fs or --cap-file. Scripts that attempt filesystem operations fail.
-        /// Use --no-cwd or --no-libdir for fine-grained suppression.
-        #[arg(long)]
-        no_fs: bool,
-
-        /// Require all $include calls to provide an integrity hash. Hashless includes error.
-        #[arg(long)]
-        require_integrity: bool,
-
-        /// Type errors are fatal (exit with code 1). Without --strict, type checking is advisory.
-        #[arg(long)]
-        strict: bool,
-
-        /// Wall-clock timeout (e.g. "5s", "500ms", "2m"). Exit code 2 on expiry.
-        #[arg(long)]
-        timeout: Option<String>,
-
-        /// Disable Landlock filesystem ACL enforcement.
-        /// By default, when --cap-fs is specified on Linux, Landlock is applied as
-        /// defense-in-depth. This flag skips that step (e.g., for older kernels or
-        /// environments where Landlock is not available).
-        #[arg(long)]
-        no_landlock: bool,
-
-        /// Disable environment variable access. $env returns Null for all names.
-        #[arg(long)]
-        no_env: bool,
-
-        /// Allow $env to read specific environment variable(s) by name (may be repeated).
-        /// When any --allow-env flag is present, $env returns Null for unlisted names.
-        #[arg(long, value_name = "NAME")]
-        allow_env: Vec<String>,
-
-        /// Do not inject `%cwd` DirCap into the root environment.
-        /// When set, [open %cwd ...] and [include %cwd ...] fail with undefined variable.
-        #[arg(long)]
-        no_cwd: bool,
-
-        /// Do not inject `%libdir` DirCap into the root environment.
-        /// When set, [include %libdir ...] fails with undefined variable.
-        #[arg(long)]
-        no_libdir: bool,
-
-        /// Override the standard library directory path.
-        /// By default, the stdlib directory is auto-detected relative to the binary location.
-        /// Use this flag to specify a custom stdlib directory (e.g., for testing or non-standard layouts).
-        #[arg(long, value_name = "PATH")]
-        libdir_path: Option<String>,
-
-        /// Inject a named DirCap into the root environment (may be repeated).
-        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap. MODE is required.
-        /// MODE is one or more of: r (read), w (write), l (list), s (stat).
-        /// Example: docs=/tmp/mydocs:rl injects %docs with read+list access.
-        #[arg(long, value_name = "NAME=PATH:MODE")]
-        cap_fs: Vec<String>,
-
-        /// Inject a named NetCap into the root environment (may be repeated).
-        /// Format: NAME=ENTRY — binds %NAME to a NetCap.
-        /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
-        /// Example: --cap-net api=api.internal --cap-net api=10.42.0.0/16
-        #[arg(long, value_name = "NAME=ENTRY")]
-        cap_net: Vec<String>,
-
-        /// Disable the default %clock capability (blocks all time access).
-        /// By default, %clock is injected automatically as a real system clock.
-        /// Use this flag for sandboxed/reproducible execution contexts.
-        #[arg(long)]
-        no_cap_clock: bool,
-
-        /// Override the default %clock with a fixed timestamp (for testing).
-        /// Format: "RFC3339" — binds %clock to a ClockCap returning the fixed timestamp.
-        /// Example: --cap-clock-fixed "2024-01-01T00:00:00Z" injects a fixed %clock.
-        #[arg(long, value_name = "RFC3339")]
-        cap_clock_fixed: Option<String>,
-
-        /// Inject a named file Handle into the root environment (may be repeated).
-        /// Format: NAME=PATH[:MODE] — pre-opens PATH and binds %NAME to a Handle.
-        /// MODE: r (readable text), rb (readable binary), w (writable text), wb (writable binary),
-        ///       a (appendable text), ab (appendable binary).
-        ///       Extended: [Readable Writable ...] (valid: Readable, Writable, Appendable, Binary).
-        ///       No :MODE suffix → r (readable text).
-        /// Example: --cap-file config=Cargo.toml:r injects %config as a readable Handle.
-        /// --no-fs also suppresses --cap-file Handles (filesystem access is blocked entirely).
-        #[arg(long, value_name = "NAME=PATH[:MODE]")]
-        cap_file: Vec<String>,
-
-        /// Evaluate an inline tinct expression (may be repeated).
-        /// Each -e occurrence inserts a pipeline stage at that position in the command line,
-        /// interleaved with file arguments. Each expression receives % from the previous stage.
-        /// --- is valid inside a single -e string for multiple stages; semicolons are whitespace-equivalent.
-        #[arg(short = 'e', long = "expr", value_name = "EXPR")]
-        expr: Vec<String>,
-
-        /// Prepend an input formatter from stdlib/cli/in/<format>.llt as the first pipeline stage.
-        /// Required to read from stdin. Error if the formatter file does not exist.
-        #[arg(short = 'i', long = "input", value_name = "FORMAT")]
-        input: Option<String>,
-
-        /// Append an output formatter from stdlib/cli/out/<format>.llt as the final pipeline stage.
-        /// Error if the formatter file does not exist.
-        #[arg(short = 'o', long = "output", value_name = "FORMAT")]
-        output: Option<String>,
-
-        /// Alternative init program to use instead of the embedded stdlib/loader.llt.
-        /// The init program receives the same %programs, %args, %cwd, %libdir
-        /// as the standard loader.llt. %stdout and %stderr are defined by the init program itself.
-        #[clap(long, value_name = "FILE")]
-        init: Option<String>,
-
-        /// Write profiling data to a JSON file. Collects span-level timing data during evaluation.
-        /// Each thunk materialization produces a span record with source location, timing, parent
-        /// attribution, and stall breakdown. Use tinct scripts in scripts/profile/ to analyze.
-        #[arg(long, value_name = "FILE")]
-        profile: Option<String>,
-
-        /// Input LLT files. Use `-` to read LLT source from stdin.
-        /// Multiple files form a pipeline: each file's output becomes % for the next.
-        files: Vec<String>,
-    },
+    Run(Box<RunArgs>),
     /// Format LLT source code to canonical style.
     Fmt {
         /// Check formatting without writing changes (exit 1 if unformatted).
@@ -330,7 +342,9 @@ async fn async_main() -> i32 {
     // Both ring and aws-lc-rs are compiled in (via quinn+reqwest feature flags);
     // rustls panics at runtime if the process default is ambiguous.
     // quinn already requires ring, so ring is the consistent choice.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install ring as rustls default crypto provider");
 
     let cli = Cli::parse();
 
@@ -371,60 +385,16 @@ async fn async_main() -> i32 {
                 rlim_cur: new_cur,
                 rlim_max: rl.rlim_max,
             };
-            let _ = libc::setrlimit(libc::RLIMIT_STACK, &new_rl);
+            if libc::setrlimit(libc::RLIMIT_STACK, &new_rl) != 0 {
+                let err = std::io::Error::last_os_error();
+                eprintln!("tinct: warning: failed to raise RLIMIT_STACK: {err}");
+            }
         }
     }
 
     // Materialize is iterative (materialize_rc loop); no large worker stack needed.
     let result = match cli.command {
-        Commands::Run {
-            no_fs,
-            require_integrity,
-            strict,
-            timeout,
-            no_landlock,
-            no_env,
-            allow_env,
-            no_cwd,
-            no_libdir,
-            libdir_path,
-            cap_fs,
-            cap_net,
-            no_cap_clock,
-            cap_clock_fixed,
-            cap_file,
-            init,
-            expr,
-            input,
-            output,
-            profile,
-            files,
-        } => {
-            run_eval(
-                &files,
-                no_fs,
-                require_integrity,
-                strict,
-                timeout.as_deref(),
-                no_landlock,
-                no_env,
-                allow_env,
-                no_cwd,
-                no_libdir,
-                libdir_path,
-                cap_fs,
-                cap_net,
-                no_cap_clock,
-                cap_clock_fixed,
-                cap_file,
-                init,
-                expr,
-                input,
-                output,
-                profile.as_deref(),
-            )
-            .await
-        }
+        Commands::Run(args) => run_eval(*args).await,
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
             check,
@@ -480,7 +450,6 @@ async fn async_main() -> i32 {
 /// Skips injection when no_fs is true.
 /// Returns Vec<(name, Arc<cap_std::fs::Dir>, perms)>.
 // AMBIENT-OK: CLI bootstrap — operator-specified --cap-fs paths
-#[allow(clippy::disallowed_methods)]
 fn open_cap_fs_entries(
     cap_fs: &[String],
     no_fs: bool,
@@ -894,7 +863,7 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
     // restrict_self() applies the ruleset to the current thread group.
     // On kernels < 5.13, this returns Ok(status) where status.ruleset is
     // NotEnforced — the call does not fail, it just has no effect.
-    let _status = ruleset_created
+    ruleset_created
         .restrict_self()
         .map_err(|e| format!("landlock: failed to restrict self: {e}"))?;
 
@@ -1200,7 +1169,6 @@ fn parse_cap_fs_entries(
 // Writing to an operator-specified output path is a legitimate ambient write — it is
 // not reading untrusted file content. The background thread cannot hold a cap_std Dir
 // because Dir is !Send and the thread is a plain OS thread.
-#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
 fn spawn_profile_flush_thread(
     collector: Arc<std::sync::Mutex<tinct::profiling::ProfilingCollector>>,
     file: Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>,
@@ -1264,7 +1232,13 @@ fn spawn_profile_flush_thread(
                             }
                         }
                         Err(_) => {
-                            eprintln!("profiling: background flush file lock poisoned");
+                            // File mutex is poisoned — the write path is broken.
+                            // Stop the background flush thread rather than continuing to poll.
+                            eprintln!("profiling: background flush file lock poisoned — stopping flush thread");
+                            if sigint_exit {
+                                unsafe { libc::_exit(130) };
+                            }
+                            return;
                         }
                     }
                 }
@@ -1284,33 +1258,34 @@ fn spawn_profile_flush_thread(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 // CLI entrypoint with all flags
 // AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
-#[allow(clippy::disallowed_methods)]
-async fn run_eval(
-    file_paths: &[String],
-    no_fs: bool,
-    require_integrity: bool,
-    strict: bool,
-    timeout: Option<&str>,
-    no_landlock: bool,
-    no_env: bool,
-    allow_env: Vec<String>,
-    no_cwd: bool,
-    no_libdir: bool,
-    libdir_path: Option<String>,
-    cap_fs: Vec<String>,
-    cap_net: Vec<String>,
-    no_cap_clock: bool,
-    cap_clock_fixed: Option<String>,
-    cap_file: Vec<String>,
-    init: Option<String>,
-    expr: Vec<String>,
-    input: Option<String>,
-    output: Option<String>,
-    profile: Option<&str>,
-) -> Result<(), String> {
+async fn run_eval(args: RunArgs) -> Result<(), String> {
+    let RunArgs {
+        files: file_paths_owned,
+        no_fs,
+        require_integrity,
+        strict,
+        timeout,
+        no_landlock,
+        no_env,
+        allow_env,
+        no_cwd,
+        no_libdir,
+        libdir_path,
+        cap_fs,
+        cap_net,
+        no_cap_clock,
+        cap_clock_fixed,
+        cap_file,
+        init,
+        expr,
+        input,
+        output,
+        profile: profile_owned,
+    } = args;
+    let file_paths = &file_paths_owned;
+    let profile = profile_owned.as_deref();
     // Build the interleaved list of user pipeline stages: files and -e expressions in CLI order.
     // Clap doesn't preserve mixed positional/flag order, so we reconstruct it by parsing raw args.
     //
@@ -1353,12 +1328,12 @@ async fn run_eval(
     // The file index in %programs matches CLI argument order.
 
     /// A pre-opened file handle and its resolved absolute path.
+    // AMBIENT-OK: CLI bootstrap — operator-specified file paths. cap_std is not available
+    // pre-Landlock because Landlock has not yet been applied; the operator-controlled paths
+    // have not yet been converted to capability-safe Dir handles.
     struct PreOpenedFile {
         abs_path: String,
-        /// Readable bytes handle opened pre-Landlock.
-        // AMBIENT-OK: CLI bootstrap — operator-specified file paths.
-        #[allow(clippy::disallowed_types)]
-        handle: std::fs::File, // cap_std not available pre-Landlock bootstrap path
+        handle: std::fs::File,
     }
 
     // For -i input formatter: validate it exists and record its path.
@@ -1374,6 +1349,7 @@ async fn run_eval(
                 continue;
             }
             // Resolve to absolute path for error reporting and %include-dir computation.
+            // AMBIENT-OK: CLI bootstrap — reading cwd before Landlock is applied.
             let abs_path = {
                 let p = std::path::Path::new(file_path.as_str());
                 if p.is_absolute() {
@@ -1388,8 +1364,7 @@ async fn run_eval(
                 }
             };
             // Open file for reading. Must happen before Landlock.
-            // AMBIENT-OK: CLI bootstrap — operator-specified file path.
-            #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
+            // AMBIENT-OK: CLI bootstrap — operator-specified file path opened pre-Landlock.
             let file_handle = std::fs::File::open(file_path.as_str())
                 .map_err(|e| format!("cannot open {:?}: {e}", file_path))?;
             pre_opened_files.push((
@@ -1404,8 +1379,8 @@ async fn run_eval(
     // Pre-read --init file before Landlock fires (same reason user files are pre-opened).
     // Landlock restricts future open() calls; reading the init source here avoids
     // being blocked by the filesystem ACL if --cap-fs is also specified.
+    // AMBIENT-OK: CLI bootstrap — operator-specified --init file path, pre-Landlock.
     let init_source_owned: Option<String> = if let Some(ref path) = init {
-        #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
         let source = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read --init file '{}': {e}", path))?;
         Some(source)
@@ -1414,7 +1389,7 @@ async fn run_eval(
     };
 
     // Install timeout handler if requested (must happen before evaluation)
-    if let Some(duration) = timeout {
+    if let Some(ref duration) = timeout {
         #[cfg(unix)]
         {
             install_timeout(duration)?;
@@ -1465,17 +1440,27 @@ async fn run_eval(
 
         // Collect the canonical parent directories of each pre-opened input file.
         // Expressions (-e) don't need Landlock readable paths (no file access).
-        let mut extra_readable: Vec<PathBuf> = pre_opened_files
-            .iter()
-            .filter_map(|(_, pf)| {
-                let path = std::path::Path::new(&pf.abs_path);
-                let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
-                    Some(d) => d.to_path_buf(),
-                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                };
-                dir.canonicalize().ok()
-            })
-            .collect();
+        let mut extra_readable: Vec<PathBuf> = Vec::new();
+        for (_, pf) in &pre_opened_files {
+            let path = std::path::Path::new(&pf.abs_path);
+            let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                Some(d) => d.to_path_buf(),
+                None => std::env::current_dir()
+                    .map_err(|e| format!("cannot determine working directory: {e}"))?,
+            };
+            match dir.canonicalize() {
+                Ok(canon) => extra_readable.push(canon),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Directory was removed between open and canonicalize — skip it.
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "cannot canonicalize input file directory '{}': {e}",
+                        dir.display()
+                    ));
+                }
+            }
+        }
 
         // Include the stdlib directory in Landlock-readable paths so that
         // `[include %libdir ...]` works when Landlock is active.
@@ -1734,7 +1719,6 @@ async fn run_eval(
     // directory access for the single file path specified, using the DirCap mechanism.
     // --no-fs suppresses all cap-file entries (filesystem access is blocked globally).
     // AMBIENT-OK: CLI bootstrap — operator-specified file paths via --cap-file.
-    #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     if !no_fs {
         use tinct::DirPerms;
         for cap_file_entry in &cap_file {
@@ -1918,7 +1902,6 @@ async fn run_eval(
     // Shared file writer: opened once at startup, used by both the background thread and
     // the final flush path. None when --profile is not set.
     // AMBIENT-OK: Profile output file is user-specified via --profile (CLI operator choice).
-    #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     let profile_file: Option<Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> =
         if let Some(profile_path) = profile {
             match std::fs::File::create(profile_path) {
@@ -2203,8 +2186,7 @@ async fn run_eval(
             inj.insert_injected("%cwd".to_string(), dircap());
             inj.insert_injected("%libdir".to_string(), dircap());
             // User --cap-fs entries: each becomes a %NAME: DirCap.
-            for (name, _cap_dir, _perms) in open_cap_fs_entries(&cap_fs, no_fs).unwrap_or_default()
-            {
+            for (name, _cap_dir, _perms) in open_cap_fs_entries(&cap_fs, no_fs)? {
                 let scoped = if name.starts_with('%') {
                     name.clone()
                 } else {
@@ -2255,17 +2237,19 @@ async fn run_eval(
         PROFILE_FLUSH_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Join the flush thread so its periodic writes complete before the final drain.
-        // If the thread panicked (shouldn't happen), ignore the join error — we still
-        // want to write the remaining spans below.
-        let _ = handle.join();
+        // If the thread panicked, log a warning — we still want to write the remaining
+        // spans below, so we do not propagate the error.
+        if let Err(e) = handle.join() {
+            eprintln!("tinct: warning: profiling background thread panicked: {e:?}");
+        }
 
         // Final drain: write any spans the background thread has not yet seen.
         // The background thread may have written spans up to its last drain_new() call;
         // drain_new() here picks up only the remainder.
-        let remaining = match collector.lock() {
-            Ok(mut guard) => guard.drain_new(),
-            Err(_) => vec![],
-        };
+        let remaining = collector
+            .lock()
+            .expect("profiling: collector mutex poisoned — cannot flush remaining spans")
+            .drain_new();
 
         if !remaining.is_empty() {
             use std::io::Write;
@@ -2288,9 +2272,18 @@ async fn run_eval(
             }
         } else {
             // No remaining spans; still flush to ensure background writes are committed.
-            if let Ok(mut file_guard) = pfile.lock() {
-                use std::io::Write;
-                let _ = file_guard.flush();
+            match pfile.lock() {
+                Ok(mut file_guard) => {
+                    use std::io::Write;
+                    if let Err(e) = file_guard.flush() {
+                        eprintln!("tinct: warning: failed to flush profile file: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "tinct: profiling: collector mutex poisoned — skipping final flush: {e}"
+                    );
+                }
             }
         }
     }
@@ -2307,7 +2300,6 @@ async fn run_eval(
 }
 
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
-#[allow(clippy::disallowed_methods)]
 async fn run_fmt(
     file_path: &str,
     check: bool,
@@ -2352,16 +2344,8 @@ async fn run_fmt(
             let mut has_fatal_diag = false;
             for d in &diagnostics {
                 let effective = if strict {
-                    let bumped_level = d.level.bump();
-                    let bumped = tinct::TypeDiagnostic {
-                        level: bumped_level,
-                        kind: d.kind,
-                        message: d.message.clone(),
-                        spans: d.spans.clone(),
-                        notes: d.notes.clone(),
-                        help: d.help.clone(),
-                    };
-                    if bumped_level == DiagnosticLevel::Err {
+                    let bumped = d.bump_level();
+                    if bumped.level == DiagnosticLevel::Err {
                         has_fatal_diag = true;
                     }
                     bumped
@@ -2388,8 +2372,10 @@ async fn run_fmt(
         ));
     }
 
-    // Resolve the formatter script from %libdir/cli/fmt/<name>.llt.
-    let script_path = {
+    // Resolve and read the formatter script from %libdir/cli/fmt/<name>.llt.
+    // AMBIENT-OK: CLI bootstrap — formatter script is loaded from the stdlib directory,
+    // which is a trusted operator-controlled path resolved via find_libdir_path().
+    let (script_source, script_name) = {
         let libdir = find_libdir_path().ok_or_else(|| {
             format!("stdlib directory not found — cannot locate formatter script '{output_name}'")
         })?;
@@ -2403,10 +2389,19 @@ async fn run_fmt(
                 path.display()
             ));
         }
-        path
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("formatter.llt")
+            .to_string();
+        // AMBIENT-OK: CLI bootstrap — formatter script from operator-controlled stdlib path.
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read formatter script {}: {e}", path.display()))?;
+        (content, name)
     };
 
-    let formatted = tinct::format_source_tinct_with_dir(&source, &script_path).await?;
+    let formatted =
+        tinct::format_source_tinct_with_dir(&source, &script_source, &script_name).await?;
 
     if check {
         if source != formatted {
@@ -2423,7 +2418,6 @@ async fn run_fmt(
             return Err("--in-place cannot be used with stdin".to_string());
         }
         // AMBIENT-OK: CLI fmt --in-place writing to operator-specified file.
-        #[allow(clippy::disallowed_methods)]
         std::fs::write(file_path, &formatted)
             .map_err(|e| format!("error writing {file_path}: {e}"))?;
         return Ok(());
@@ -2436,7 +2430,6 @@ async fn run_fmt(
 /// Type-check a file without evaluating.
 /// Exit 0 on clean, exit 1 on any warnings or errors.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
-#[allow(clippy::disallowed_methods)]
 async fn run_lint(
     file_path: &str,
     _no_fs: bool,
@@ -2468,18 +2461,11 @@ async fn run_lint(
     for d in &diagnostics {
         let effective = if strict {
             use tinct::DiagnosticLevel;
-            let bumped_level = d.level.bump();
-            if bumped_level == DiagnosticLevel::Err {
+            let bumped = d.bump_level();
+            if bumped.level == DiagnosticLevel::Err {
                 has_fatal_diag = true;
             }
-            tinct::TypeDiagnostic {
-                level: bumped_level,
-                kind: d.kind,
-                message: d.message.clone(),
-                spans: d.spans.clone(),
-                notes: d.notes.clone(),
-                help: d.help.clone(),
-            }
+            bumped
         } else {
             d.clone()
         };
@@ -2514,7 +2500,6 @@ async fn run_lint(
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.
 // AMBIENT-OK: CLI hash command on operator-specified file.
-#[allow(clippy::disallowed_types)]
 fn run_hash(file_path: &str) -> Result<(), String> {
     let mut buf = Vec::new();
     std::fs::File::open(file_path)
@@ -2531,7 +2516,6 @@ fn run_hash(file_path: &str) -> Result<(), String> {
 /// Returns a `(Arc<str>, String)` pair of (file_path, source_content) ready to be
 /// threaded into `parse()` so that all spans in the parsed AST carry the file path.
 // AMBIENT-OK: CLI entry point reading operator-specified file.
-#[allow(clippy::disallowed_types)]
 fn read_source(file_path: &str) -> Result<(Arc<str>, String), String> {
     if file_path == "-" {
         let mut buf = String::new();
@@ -2568,7 +2552,6 @@ struct LiterateConfig<'a> {
 ///
 /// - **`tangle`** — print the extracted blocks joined with `\n---\n`.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for evaluation
-#[allow(clippy::disallowed_methods)]
 async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
     let file_path = config.file_path;
     let (_, markdown) = read_source(file_path)?;
@@ -2624,7 +2607,6 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
 ///
 /// The base directory is derived from the Markdown file's parent directory.
 /// AMBIENT-OK: CLI literate-lint opening markdown file directory for include resolution.
-#[allow(clippy::disallowed_methods)]
 async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result<(), String> {
     let markdown_path = config.file_path;
     let strict = config.strict;
@@ -2653,18 +2635,11 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     let mut has_fatal_diag = false;
     for d in &diagnostics {
         let effective = if strict {
-            let bumped_level = d.level.bump();
-            if bumped_level == tinct::DiagnosticLevel::Err {
+            let bumped = d.bump_level();
+            if bumped.level == tinct::DiagnosticLevel::Err {
                 has_fatal_diag = true;
             }
-            tinct::TypeDiagnostic {
-                level: bumped_level,
-                kind: d.kind,
-                message: d.message.clone(),
-                spans: d.spans.clone(),
-                notes: d.notes.clone(),
-                help: d.help.clone(),
-            }
+            bumped
         } else {
             d.clone()
         };
@@ -2701,42 +2676,35 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
 /// The output is the JSON representation of the final pipeline value.
 ///
 /// AMBIENT-OK: CLI literate-eval opening markdown file directory for evaluation.
-#[allow(clippy::disallowed_methods)]
 async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> Result<(), String> {
     let markdown_path = config.file_path;
-
-    // Resolve the markdown file's parent directory for %cwd-like scope.
-    let md_dir = std::path::Path::new(markdown_path)
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    let md_dir_str = md_dir.to_str().unwrap_or(".");
 
     // Evaluate via run_eval with the tangled source as a single -e expression.
     // This reuses the full CLI pipeline (loader, prelude, formatters) identically to
     // `tinct run -e "$tangled"` invoked from the markdown file's directory.
-    run_eval(
-        &[],           // no file paths
-        false,         // no_fs
-        false,         // require_integrity
-        config.strict, // strict
-        None,          // timeout
-        true,          // no_landlock (literate mode does not sandbox)
-        false,         // no_env
-        vec![],        // allow_env
-        false,         // no_cwd
-        false,         // no_libdir
-        None,          // libdir_path
-        config.cap_fs.to_vec(),
-        config.cap_net.to_vec(),
-        false,                     // no_cap_clock
-        None,                      // cap_clock_fixed
-        vec![],                    // cap_file
-        None,                      // init
-        vec![tangled.to_string()], // expr: tangled source as a single expression
-        None,                      // input formatter
-        None,                      // output formatter
-        None,                      // profile
-    )
+    run_eval(RunArgs {
+        files: vec![],
+        no_fs: false,
+        require_integrity: false,
+        strict: config.strict,
+        timeout: None,
+        no_landlock: true, // literate mode does not sandbox
+        no_env: false,
+        allow_env: vec![],
+        no_cwd: false,
+        no_libdir: false,
+        libdir_path: None,
+        cap_fs: config.cap_fs.to_vec(),
+        cap_net: config.cap_net.to_vec(),
+        no_cap_clock: false,
+        cap_clock_fixed: None,
+        cap_file: vec![],
+        init: None,
+        expr: vec![tangled.to_string()],
+        input: None,
+        output: None,
+        profile: None,
+    })
     .await
     .map_err(|e| {
         // Prefix errors with the markdown file path for context.
@@ -2744,8 +2712,6 @@ async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> Result
     })?;
 
     // run_eval handles output formatting and writing to stdout.
-    // Drop md_dir_str to avoid unused variable warning.
-    let _ = md_dir_str;
     Ok(())
 }
 
@@ -2761,7 +2727,6 @@ async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> Result
 /// documents.
 ///
 /// AMBIENT-OK: CLI literate-weave opening markdown file directory for evaluation.
-#[allow(clippy::disallowed_methods)]
 async fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
@@ -2907,7 +2872,6 @@ struct ContractSection {
 /// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
 /// and detects schema dicts by heuristic. Outputs a human-readable summary.
 // AMBIENT-OK: CLI describe — opens file parent dir for type-checking
-#[allow(clippy::disallowed_methods)]
 async fn run_describe(file_path: &str) -> Result<(), String> {
     let (sf_path, source) = read_source(file_path)?;
     let output = parse(&source, Arc::clone(&sf_path)).map_err(|e| format!("{e}"))?;

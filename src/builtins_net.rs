@@ -1,17 +1,12 @@
-// Network builtins are stubbed pending the Handle → protocol redesign sprint.
-// Internal helpers are dead code until that sprint lands.
-#![allow(dead_code)]
-
 //! Net builtin module — network I/O and URI parsing.
 //!
 //! This module provides:
-//! - Network builtin implementations: TCP/UDP/UNIX connections, TLS, QUIC, HTTP, ICMP
+//! - Network builtin implementations: TLS, QUIC, HTTP, ICMP
 //! - URI builtin implementations: `uri`, `url`, `urn`
 //! - `net_builtins()` — the registration list for the "net" module
 //! - `net_type_env()` — type environment for all net/URI builtins
 //!
 //! **Net builtins covered:**
-//! - `builtin-connect`: TCP/UDP/UNIX connection (NetCap-gated)
 //! - `builtin-tls-layer`: Layer TLS on a connection
 //! - `builtin-tls-peer-cert`: Extract TLS certificate metadata
 //! - `builtin-send-datagram`: Send UDP/Unix datagram
@@ -43,27 +38,6 @@ use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_str
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk, Value};
 
-/// `connect`: Open a TCP or UDP connection within a NetCap.
-/// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).
-/// - `Tcp` (default) → Handle[Binary Readable Writable Stream]
-/// - `Udp` → error "UDP not yet supported, use Tcp" (reserved for Phase 2)
-pub(crate) fn builtin_connect(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    // Network redesign in progress: Handle/WriteHandle removed. TCP/Unix connections
-    // will be reimplemented on a new stream type. See File redesign sprint.
-    let BuiltinArgs { call_span, .. } = ctx_arg;
-    Box::pin(async move {
-        Err(EvalError::user_error(
-            "connect: network not yet available — tcp redesign in progress".to_string(),
-            call_span,
-        )
-        .into())
-    })
-}
-
-// builtin_connect old body removed. Network redesign sprint will rewrite with a new stream type.
-
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
 /// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
 /// For host-only transports (ICMP), pass port=None — HostPort entries won't match, but Hostname/Glob/CIDR will.
@@ -81,8 +55,11 @@ pub(crate) fn check_net_cap_allowlist(
         return Ok(None);
     }
 
-    // Try to parse host as IP address
-    let host_ip = host.parse::<IpAddr>().ok();
+    // Try to parse host as IP address — a parse failure means host is a hostname, not an IP literal.
+    let host_ip: Option<IpAddr> = match host.parse::<IpAddr>() {
+        Ok(ip) => Some(ip),
+        Err(_) => None, // host is a hostname, not an IP literal — expected non-error condition
+    };
 
     // If host is an IP literal, check CIDR entries
     if let Some(ip) = host_ip {
@@ -225,56 +202,6 @@ fn resolve_hostname_for_cidr(
 // ============================================================================
 // TLS Support
 // ============================================================================
-
-/// TLS stream wrapper for reading (implements BufRead by delegating to shared TLS stream)
-struct TlsReader {
-    stream: Arc<Mutex<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>,
-    buf: Vec<u8>,
-    buf_pos: usize,
-}
-
-impl std::io::Read for TlsReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        std::io::Read::read(&mut *self.stream.lock().unwrap(), buf)
-    }
-}
-
-impl std::io::BufRead for TlsReader {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        // If buffer is exhausted, refill it
-        if self.buf_pos >= self.buf.len() {
-            self.buf.resize(8192, 0);
-            let n = std::io::Read::read(&mut *self.stream.lock().unwrap(), &mut self.buf[..])?;
-            self.buf.truncate(n);
-            self.buf_pos = 0;
-        }
-        Ok(&self.buf[self.buf_pos..])
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.buf_pos = std::cmp::min(self.buf_pos + amt, self.buf.len());
-        // If buffer fully consumed, clear it
-        if self.buf_pos >= self.buf.len() {
-            self.buf.clear();
-            self.buf_pos = 0;
-        }
-    }
-}
-
-/// TLS stream wrapper for writing (implements Write by delegating to shared TLS stream)
-struct TlsWriter {
-    stream: Arc<Mutex<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>,
-}
-
-impl std::io::Write for TlsWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        std::io::Write::write(&mut *self.stream.lock().unwrap(), buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        std::io::Write::flush(&mut *self.stream.lock().unwrap())
-    }
-}
 
 /// Build a rustls ClientConfig from the opts dict
 pub(crate) async fn build_tls_config(
@@ -512,295 +439,6 @@ fn slurp_handle_bytes(_val: &Value, span: Span) -> EvalResult<Vec<u8>> {
     .into())
 }
 
-/// Validate SPKI pins against the peer certificate
-pub(crate) async fn validate_spki_pins(
-    conn: &rustls::ClientConnection,
-    pins_val: &Value,
-    span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<()> {
-    // Extract list of pins from an integer-keyed Dict
-    let pins_map = match pins_val {
-        Value::Dict(d) => d,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "tls-connect opts.pins".to_string(),
-                "Dict of SpkiPin",
-                other.type_name(),
-                span.clone(),
-            )
-            .into())
-        }
-    };
-    let mut pins = Vec::new();
-    for (_idx, thunk) in pins_map {
-        let pin_val = crate::eval::materialize(thunk, Some(&span), ctx).await?;
-        pins.push(pin_val);
-    }
-
-    if pins.is_empty() {
-        return Ok(()); // No pins to validate
-    }
-
-    // Get leaf certificate
-    let peer_certs = conn.peer_certificates().ok_or_else(|| {
-        EvalError::user_error(
-            "tls-connect: no peer certificates available for SPKI pin validation".to_string(),
-            span.clone(),
-        )
-    })?;
-
-    if peer_certs.is_empty() {
-        return Err(EvalError::user_error(
-            "tls-connect: peer certificate list is empty".to_string(),
-            span.clone(),
-        )
-        .into());
-    }
-
-    let leaf_cert = &peer_certs[0];
-
-    // Extract SPKI from certificate and compute hashes (RFC 7469 compliant)
-
-    // Validate at least one pin matches
-    let mut matched = false;
-    for pin_val in &pins {
-        let pin_dict = match pin_val {
-            Value::Dict(d) => d,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.pins element".to_string(),
-                    "SpkiPin dict",
-                    other.type_name(),
-                    span.clone(),
-                )
-                .into())
-            }
-        };
-
-        let algorithm_thunk = pin_dict
-            .get(&crate::value::HashableValue::Str("algorithm".into()))
-            .ok_or_else(|| {
-                EvalError::user_error(
-                    "tls-connect: SpkiPin missing 'algorithm' field".to_string(),
-                    span.clone(),
-                )
-            })?;
-        let algorithm_val = crate::eval::materialize(algorithm_thunk, Some(&span), ctx).await?;
-
-        let fingerprint_thunk = pin_dict
-            .get(&crate::value::HashableValue::Str("fingerprint".into()))
-            .ok_or_else(|| {
-                EvalError::user_error(
-                    "tls-connect: SpkiPin missing 'fingerprint' field".to_string(),
-                    span.clone(),
-                )
-            })?;
-        let fingerprint_val = crate::eval::materialize(fingerprint_thunk, Some(&span), ctx).await?;
-
-        let algorithm_tag = match algorithm_val {
-            Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.pins.algorithm".to_string(),
-                    "HashAlgorithm variant",
-                    other.type_name(),
-                    span.clone(),
-                )
-                .into())
-            }
-        };
-
-        let expected_fingerprint = match fingerprint_val {
-            Value::Bytes { source, start, end } => source[start..end].to_vec(),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.pins.fingerprint".to_string(),
-                    "Bytes",
-                    other.type_name(),
-                    span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // Compute hash of certificate using the specified algorithm
-        let computed_hash = compute_spki_hash(leaf_cert.as_ref(), &algorithm_tag, span.clone())?;
-
-        if computed_hash == expected_fingerprint {
-            matched = true;
-            break;
-        }
-    }
-
-    if !matched {
-        return Err(EvalError::user_error(
-            "tls-connect: peer certificate SPKI does not match any provided pin".to_string(),
-            span,
-        )
-        .into());
-    }
-
-    Ok(())
-}
-
-/// Compute SPKI hash (RFC 7469 compliant: hash the SubjectPublicKeyInfo field)
-fn compute_spki_hash(cert_der: &[u8], algorithm: &str, span: Span) -> EvalResult<Vec<u8>> {
-    use sha3::{Digest, Sha3_256, Sha3_384, Sha3_512};
-
-    // Parse the X.509 certificate and extract the SPKI field
-    let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
-        EvalError::user_error(
-            format!("tls-connect: failed to parse certificate: {}", e),
-            span.clone(),
-        )
-    })?;
-
-    // Extract the raw SPKI bytes
-    let spki_der = cert.tbs_certificate.subject_pki.raw;
-
-    match algorithm {
-        "Sha256" => {
-            use sha2::Sha256;
-            Ok(Sha256::digest(spki_der).to_vec())
-        }
-        "Sha384" => {
-            use sha2::Sha384;
-            Ok(Sha384::digest(spki_der).to_vec())
-        }
-        "Sha512" => {
-            use sha2::Sha512;
-            Ok(Sha512::digest(spki_der).to_vec())
-        }
-        "Sha3-256" => Ok(Sha3_256::digest(spki_der).to_vec()),
-        "Sha3-384" => Ok(Sha3_384::digest(spki_der).to_vec()),
-        "Sha3-512" => Ok(Sha3_512::digest(spki_der).to_vec()),
-        "Blake3" => Ok(blake3::hash(spki_der).as_bytes().to_vec()),
-        other => Err(EvalError::user_error(
-            format!("tls-connect: unsupported hash algorithm '{}'", other),
-            span,
-        )
-        .into()),
-    }
-}
-
-/// Extract certificate info for tls-peer-cert
-fn extract_cert_info(
-    cert_der: &rustls::pki_types::CertificateDer,
-    span: Span,
-    _ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Value> {
-    // For now, return a minimal dict with just the cert bytes
-    // Full X.509 parsing would require a crate like x509-parser or rustls-webpki
-    let mut info = IndexMap::new();
-
-    // Store the raw cert DER bytes so tls-peer-cert can parse it later
-    use crate::value::HashableValue;
-    info.insert(
-        HashableValue::Str("_raw_der".into()),
-        ok_val(
-            Value::Bytes {
-                source: Arc::from(cert_der.as_ref()),
-                start: 0,
-                end: cert_der.len(),
-            },
-            span,
-        )?,
-    );
-
-    Ok(Value::Dict(info))
-}
-
-/// Extract Common Name (CN) from an X.509 distinguished name
-fn extract_cn(name: &x509_parser::x509::X509Name) -> Option<String> {
-    use x509_parser::der_parser::oid;
-    // OID for commonName is 2.5.4.3
-    let cn_oid = oid!(2.5.4 .3);
-
-    for rdn in name.iter() {
-        for attr in rdn.iter() {
-            if attr.attr_type() == &cn_oid {
-                if let Ok(cn_str) = attr.attr_value().as_str() {
-                    return Some(cn_str.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract Subject Alternative Names (SANs) from an X.509 certificate
-/// Returns a Seq of strings (DNS names, IPs, emails, URIs)
-async fn extract_sans(
-    cert: &x509_parser::certificate::X509Certificate<'_>,
-    span: Span,
-    _ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Value> {
-    use x509_parser::extensions::GeneralName;
-
-    let mut sans_list = Vec::new();
-
-    // Find the SubjectAlternativeName extension
-    if let Some(san_ext) = cert
-        .tbs_certificate
-        .extensions()
-        .iter()
-        .find(|e| e.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
-    {
-        // parsed_extension() returns &ParsedExtension, not Result
-        if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
-            san_ext.parsed_extension()
-        {
-            for name in &san.general_names {
-                match name {
-                    GeneralName::DNSName(dns) => {
-                        sans_list.push(string_val(dns));
-                    }
-                    GeneralName::IPAddress(ip_bytes) => {
-                        // Convert IP bytes to string representation
-                        let ip_str = if ip_bytes.len() == 4 {
-                            format!(
-                                "{}.{}.{}.{}",
-                                ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]
-                            )
-                        } else if ip_bytes.len() == 16 {
-                            // IPv6
-                            format!(
-                                "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
-                                ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3],
-                                ip_bytes[4], ip_bytes[5], ip_bytes[6], ip_bytes[7],
-                                ip_bytes[8], ip_bytes[9], ip_bytes[10], ip_bytes[11],
-                                ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]
-                            )
-                        } else {
-                            continue; // Skip malformed IP addresses
-                        };
-                        sans_list.push(string_val(&ip_str));
-                    }
-                    GeneralName::RFC822Name(email) => {
-                        sans_list.push(string_val(email));
-                    }
-                    GeneralName::URI(uri) => {
-                        sans_list.push(string_val(uri));
-                    }
-                    _ => {
-                        // Ignore other types (DirectoryName, EDIPartyName, etc.)
-                    }
-                }
-            }
-        }
-    }
-
-    // Build an integer-keyed Dict from the collected SAN values
-    let mut dict: indexmap::IndexMap<crate::value::HashableValue, Arc<crate::value::Thunk>> =
-        indexmap::IndexMap::new();
-    for (i, val) in sans_list.into_iter().enumerate() {
-        let thunk = ok_val(val, span.clone())?;
-        dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
-    }
-    Ok(Value::Dict(dict))
-}
-
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
 /// Stubbed: Handle/WriteHandle removed. Will be reimplemented with new stream type.
 pub(crate) fn builtin_tls_layer(
@@ -845,107 +483,6 @@ pub(crate) fn builtin_tls_peer_cert(
 // Old tls-peer-cert body fully removed (it used Value::Handle and async/? in non-async context).
 
 // ── HTTP-sessions: QUIC and HTTP/3 ──────────────────────────────────────────────
-
-/// Sync wrapper around a `quinn::RecvStream` that bridges async reads to the
-/// synchronous `BufRead` trait (for internal async bridging).
-///
-/// Each `read` call issues `block_on(recv.read_buf(...))` on the thread-local
-/// tokio runtime. This keeps all async I/O on one thread and avoids spawning.
-///
-/// IP resolution note: the connection uses the IP resolved during `builtin_quic_session`
-/// (via `check_net_cap_allowlist` → `server_addr`). The `RecvStream` here is part of an
-/// already-established QUIC connection — no re-resolution occurs at read time. DNS-rebinding
-/// is therefore not a concern for stream reads.
-struct QuicRecvReader {
-    recv: quinn::RecvStream,
-    buf: Vec<u8>,
-    buf_pos: usize,
-    /// Running total of bytes received across all reads. Used to enforce the per-stream
-    /// byte limit (QUIC_STREAM_BYTE_LIMIT) and prevent unbounded memory accumulation.
-    bytes_read: usize,
-}
-
-/// Maximum bytes that may be read from a single QUIC stream (64 MiB).
-const QUIC_STREAM_BYTE_LIMIT: usize = 64 * 1024 * 1024;
-
-impl std::io::Read for QuicRecvReader {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.buf_pos < self.buf.len() {
-            // Serve from internal buffer first
-            let available = self.buf.len() - self.buf_pos;
-            let n = available.min(out.len());
-            out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
-            self.buf_pos += n;
-            return Ok(n);
-        }
-        // Buffer exhausted — fetch more from the stream
-        self.buf.clear();
-        self.buf_pos = 0;
-        self.buf.resize(8192, 0u8);
-        let n = crate::async_rt::block_on(self.recv.read(&mut self.buf))
-            .map_err(|e| std::io::Error::other(format!("quic recv: {e}")))?
-            .unwrap_or(0);
-        self.buf.truncate(n);
-        self.bytes_read += n;
-        if self.bytes_read > QUIC_STREAM_BYTE_LIMIT {
-            return Err(std::io::Error::other(format!(
-                "quic recv: stream exceeded byte limit ({} bytes > {} MiB limit)",
-                self.bytes_read,
-                QUIC_STREAM_BYTE_LIMIT / (1024 * 1024),
-            )));
-        }
-        if n == 0 {
-            return Ok(0); // EOF
-        }
-        let take = n.min(out.len());
-        out[..take].copy_from_slice(&self.buf[..take]);
-        self.buf_pos = take;
-        Ok(take)
-    }
-}
-
-impl std::io::BufRead for QuicRecvReader {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if self.buf_pos >= self.buf.len() {
-            self.buf.clear();
-            self.buf_pos = 0;
-            self.buf.resize(8192, 0u8);
-            let n = crate::async_rt::block_on(self.recv.read(&mut self.buf))
-                .map_err(|e| std::io::Error::other(format!("quic recv: {e}")))?
-                .unwrap_or(0);
-            self.buf.truncate(n);
-            self.bytes_read += n;
-            if self.bytes_read > QUIC_STREAM_BYTE_LIMIT {
-                return Err(std::io::Error::other(format!(
-                    "quic recv: stream exceeded byte limit ({} bytes > {} MiB limit)",
-                    self.bytes_read,
-                    QUIC_STREAM_BYTE_LIMIT / (1024 * 1024),
-                )));
-            }
-        }
-        Ok(&self.buf[self.buf_pos..])
-    }
-    fn consume(&mut self, amt: usize) {
-        self.buf_pos = (self.buf_pos + amt).min(self.buf.len());
-    }
-}
-
-/// Sync wrapper around a `quinn::SendStream` that bridges async writes to the
-/// synchronous `Write` trait (for internal async bridging).
-struct QuicSendWriter {
-    send: quinn::SendStream,
-}
-
-impl std::io::Write for QuicSendWriter {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        crate::async_rt::block_on(self.send.write_all(data))
-            .map_err(|e| std::io::Error::other(format!("quic send: {e}")))?;
-        Ok(data.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(()) // quinn buffers internally; no explicit flush needed
-    }
-}
 
 /// `quic-session`: Open a QUIC connection to a remote host.
 ///
@@ -1137,15 +674,12 @@ pub(crate) fn builtin_quic_open_stream(
 
 /// `quic-open-datagram`: Datagram channel on a QUIC session.
 ///
-/// Takes `(quic_session)`. Returns a `DatagramHandle`-like value for send/recv
-/// of unreliable QUIC datagrams (RFC 9221).
+/// Takes `(quic_session)`. Wraps the connection in a `QuicDatagramHandle`
+/// for unreliable QUIC datagram send/recv (RFC 9221).
 ///
-/// TODO(http-sessions-datagram): QUIC datagrams require async send/recv via
-/// `conn.send_datagram()` / `conn.read_datagram()`. The current DatagramHandle
-/// uses std::net::UdpSocket (sync). Implementing QUIC datagram send/recv needs
-/// either (a) a new QuicDatagramHandle variant, or (b) async wrapper types.
-/// For now this returns a clear error directing users to `quic-open-stream`
-/// for reliable streaming, which is the common HTTP/3 use case.
+/// The `send-datagram` and `recv-datagram` builtins handle `QuicDatagramHandle`
+/// via `conn.send_datagram()` and `conn.read_datagram()` on the underlying
+/// Quinn connection. For reliable streaming, use `quic-open-stream` instead.
 pub(crate) fn builtin_quic_open_datagram(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -1188,20 +722,15 @@ pub(crate) fn builtin_quic_open_datagram(
             }
         };
 
-        // Wrap the connection in a QuicDatagramHandle
-        // Note: send-datagram and recv-datagram builtins must handle QuicDatagramHandle
-        // separately from DatagramHandle, using async block_on(conn.send_datagram(...))
-        // and block_on(conn.read_datagram(...)) respectively.
         ok_val(Value::QuicDatagramHandle(conn), call_span)
     })
 }
 
 /// `http2-session`: Establish an HTTP/2 session using reqwest.
 ///
-/// Takes `(cap, base_url, opts)` where:
+/// Takes `(cap, base_url)` where:
 /// - `cap`: NetCap capability controlling which hosts may be contacted
 /// - `base_url`: String — `scheme://host[:port]` origin (e.g. `"https://api.example.com"`)
-/// - `opts`: Dict — future options (currently unused; pass `[]`)
 ///
 /// Returns an `Http2Session` wrapping a `reqwest::Client` (async) configured
 /// to prefer HTTP/2 via ALPN for HTTPS connections. The client reuses the
@@ -1220,10 +749,10 @@ pub(crate) fn builtin_http2_session(
 
         reject_named("http2-session", named.as_ref(), call_span.clone())?;
 
-        if args.len() != 3 {
+        if args.len() != 2 {
             return Err(EvalError::user_error(
                 format!(
-                    "http2-session: expected 3 arguments (cap base_url opts), got {}",
+                    "http2-session: expected 2 arguments (cap base_url), got {}",
                     args.len()
                 ),
                 call_span,
@@ -1237,11 +766,6 @@ pub(crate) fn builtin_http2_session(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let url_val = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        // opts reserved for future use (ca, client cert, timeouts, etc.)
-        let _opts_val = Arc::clone(&args[2])
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
@@ -1283,7 +807,6 @@ pub(crate) fn builtin_http2_session(
         // (rustls-platform-verifier on Linux loads from the system cert store).
         // The ring crypto provider is installed as the process default in main() to
         // resolve the ring/aws-lc-rs ambiguity.
-        // Note: opts dict is accepted but currently unused (reserved for future: mozilla-roots, ca-bundle).
         let client = reqwest::Client::builder()
             .use_rustls_tls()
             .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
@@ -1562,7 +1085,6 @@ pub(crate) fn builtin_http_request(
                     req_headers: &req_headers,
                     body_str: &body_str,
                     span: call_span,
-                    ctx: &ctx,
                 })
                 .await
             }
@@ -1586,7 +1108,6 @@ struct Http2RequestConfig<'a> {
     req_headers: &'a [(String, String)],
     body_str: &'a str,
     span: crate::ast::Span,
-    ctx: &'a crate::eval::EvalContext,
 }
 
 /// Issue an HTTP/2 (or HTTP/1.1) request using a `reqwest::Client` (async).
@@ -1606,7 +1127,6 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let req_headers = config.req_headers;
     let body_str = config.body_str;
     let span = config.span.clone();
-    let _ctx = config.ctx;
     // Build the full URL: base_url + path_str.
     // If path_str starts with http:// or https://, use it as-is (absolute URL).
     // Otherwise, join with base_url.
@@ -2753,16 +2273,6 @@ pub fn net_builtins() -> Vec<BuiltinDef> {
     vec![
         // ── TCP/UDP/UNIX connections ─────────────────────────────────────────
         builtin!(
-            "builtin-connect",
-            builtin_connect,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ]
-        ),
-        builtin!(
             "builtin-tls-layer",
             builtin_tls_layer,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
@@ -2813,8 +2323,8 @@ pub fn net_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "http2-session",
             builtin_http2_session,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!("http3-session", builtin_http3_session, [Strictness::Seq], 1),
         builtin!(

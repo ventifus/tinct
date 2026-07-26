@@ -1,0 +1,22 @@
+# Proves FieldType fires statically for [get k c]: assigning the result of
+# [get "name" person] to @Integer produces a type warning because FieldType
+# resolves the Indexable constraint to the field's static type, and that type
+# cannot unify with Integer.
+#
+# T-1917: [get k c] carries constraint: [$Indexable c k v] with resolver: FieldType.
+# The person dict's "name" field has type StringLiteral("Alice") (from the literal value).
+# FieldType(TypeNode.Dict{fields:{name:TypeNode.StringLiteral{s:"Alice"},...}},
+#           TypeNode.StringLiteral{s:"name"})
+# returns the TypeNode for the "name" field. Since FieldType returns a string-related type
+# and Integer is not consistent with any string type, the @Integer annotation on bad
+# triggers a unification failure: cannot unify Integer with ...
+[
+  person: [name: "Alice"  age: 30]
+  name@String: [get "name" person]
+  bad@Integer: [get "name" person]
+]
+=== out
+Dict({"person": Dict({"name": String("Alice"), "age": Int(30)}), "name": String("Alice"), "bad": String("Alice")})
+
+=== warn
+cannot unify Integer with "Alice"

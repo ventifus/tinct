@@ -5,7 +5,7 @@
   [parsed: [builtin-parse src "test.llt"]]
   [desug:  [builtin-desugar parsed.program]]
   [docs:   [builtin-program-docs desug]]
-  [doc0:   [builtin-get 0 docs]]
+  [doc0:   [builtin-dict-get 0 docs]]
   [meta:   [builtin-doc-meta doc0 0]]
   [is-empty: [if [null? meta] 1 0]]
   is-empty]]

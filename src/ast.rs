@@ -1001,7 +1001,8 @@ impl TypeAnnotation {
         self.0.get().and_then(|o| o.as_ref())
     }
     pub fn set(&self, val: Option<crate::type_def::Type>) {
-        let _ = self.0.set(val);
+        // First write wins: shared AST nodes may be visited multiple times.
+        self.0.get_or_init(|| val);
     }
 }
 impl Clone for TypeAnnotation {
@@ -1051,11 +1052,11 @@ impl CallDispatch {
     pub fn get(&self) -> Option<&VarAddr> {
         self.0.get()
     }
-    /// Set the resolved `VarAddr`.  Silently ignores a second call (OnceLock
-    /// semantics): the first write wins.  Call sites must ensure the write happens at most
+    /// Set the resolved `VarAddr`.  Call sites must ensure the write happens at most
     /// once per VarRef (guaranteed because type-checking is a single forward pass).
     pub fn set(&self, addr: VarAddr) {
-        let _ = self.0.set(addr);
+        // First write wins: shared AST nodes may be visited multiple times.
+        self.0.get_or_init(|| addr);
     }
 }
 impl Clone for CallDispatch {
@@ -1088,7 +1089,8 @@ impl Provenance {
         self.0.get().and_then(|o| o.as_ref())
     }
     pub fn set(&self, p: MacroProvenance) {
-        let _ = self.0.set(Some(p));
+        // First write wins: shared AST nodes may be visited multiple times.
+        self.0.get_or_init(|| Some(p));
     }
 }
 impl Clone for Provenance {
@@ -1131,7 +1133,8 @@ impl Resolution {
     }
     /// Called by the resolver exactly once per node instance.
     pub fn set(&self, val: Option<VarAddr>) {
-        let _ = self.0.set(val);
+        // First write wins: shared AST nodes may be visited multiple times.
+        self.0.get_or_init(|| val);
     }
 }
 impl Clone for Resolution {
@@ -1180,7 +1183,8 @@ impl CapturesCell {
     }
     /// Called by the resolver exactly once per Fn node instance.
     pub fn set(&self, captures: Arc<Vec<(String, VarAddr)>>) {
-        let _ = self.0.set(captures);
+        // First write wins: shared AST nodes may be visited multiple times.
+        self.0.get_or_init(|| captures);
     }
 }
 impl Clone for CapturesCell {
@@ -1212,8 +1216,8 @@ pub type TypeAnnotationTable = std::collections::HashMap<NodeId, crate::types::T
 /// binding name. Written once by the type checker during match arm elaboration; read by
 /// the lowerer to carry the binding name into the match arm.
 ///
-/// Clone resets to empty (same semantics as other OnceLock annotations — cloned patterns
-/// in new scopes need fresh resolution).
+/// Clone preserves the resolved binding name — unlike other OnceLock annotations,
+/// MatchableBinding is scope-independent (the instance binding name is global, not per-scope).
 pub struct MatchableBinding(std::sync::OnceLock<Option<String>>);
 impl MatchableBinding {
     pub fn new() -> Self {
@@ -1223,7 +1227,8 @@ impl MatchableBinding {
         self.0.get().and_then(|o| o.as_ref())
     }
     pub fn set(&self, val: Option<String>) {
-        let _ = self.0.set(val);
+        // First write wins: shared AST nodes may be visited multiple times.
+        self.0.get_or_init(|| val);
     }
 }
 impl Clone for MatchableBinding {
@@ -1233,7 +1238,7 @@ impl Clone for MatchableBinding {
         match self.0.get() {
             Some(val) => {
                 let new = Self::new();
-                let _ = new.0.set(val.clone());
+                new.0.get_or_init(|| val.clone());
                 new
             }
             None => Self::new(),
@@ -1326,7 +1331,7 @@ pub enum CoreExpr {
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
-    // No Field variant — dot-access is desugared to Call(builtin-get, [key, target]) by the lowerer.
+    // No Field variant — dot-access is desugared to Call(builtin-dict-get, [key, target]) by the lowerer.
     Sequential(Vec<Arc<Spanned<CoreExpr>>>),
     Dict(Vec<Spanned<CoreEntry>>),
     Call {

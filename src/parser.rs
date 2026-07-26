@@ -976,7 +976,10 @@ fn recover_from_bracket_error(
                 // If there are valid entries, build a partial dict with them plus an error entry.
                 // If there are no valid entries, just emit SurfaceExpression::Error.
                 if entries.is_empty() {
-                    mk(SurfaceExpression::Error(error_span.clone()), error_span)
+                    mk(
+                        SurfaceExpression::Error(error_span.clone()),
+                        error_span.clone(),
+                    )
                 } else {
                     let mut partial_entries = entries
                         .into_iter()
@@ -1072,7 +1075,10 @@ fn recover_from_bracket_error(
                     // Only build a partial call if there were actual args.
                     // If it's just [f] or [call f] with an error, emit plain Error.
                     if !has_args_now {
-                        mk(SurfaceExpression::Error(error_span.clone()), error_span)
+                        mk(
+                            SurfaceExpression::Error(error_span.clone()),
+                            error_span.clone(),
+                        )
                     } else {
                         // Add the error as a positional argument
                         positional_args.push(mk(
@@ -1100,26 +1106,42 @@ fn recover_from_bracket_error(
                     }
                 } else {
                     // No function — can't build a call, use plain error
-                    mk(SurfaceExpression::Error(error_span.clone()), error_span)
+                    mk(
+                        SurfaceExpression::Error(error_span.clone()),
+                        error_span.clone(),
+                    )
                 }
             }
             _ => {
                 // For other frame types (Fn, TypeAlias, Pipe, AnnotationCollect, etc.),
                 // we can't meaningfully preserve partial state, so just emit Error.
-                mk(SurfaceExpression::Error(error_span.clone()), error_span)
+                mk(
+                    SurfaceExpression::Error(error_span.clone()),
+                    error_span.clone(),
+                )
             }
         }
     } else {
-        mk(SurfaceExpression::Error(error_span.clone()), error_span)
+        mk(
+            SurfaceExpression::Error(error_span.clone()),
+            error_span.clone(),
+        )
     };
 
     // Push the partial expression to the parent context.
     if stack.is_empty() {
         current_document_items.push(SurfaceItem::Expr(partial_expr));
     } else {
-        // push_value can itself error (e.g. duplicate key). If it does, we just ignore it —
-        // we're already in recovery mode and the partial_expr is best-effort.
-        let _ = push_value(stack, current_document_items, partial_expr);
+        // push_value can itself error (e.g. duplicate key during recovery).
+        // Record secondary errors in diagnostics rather than discarding them.
+        if let Err(secondary) = push_value(stack, current_document_items, partial_expr) {
+            let secondary_span = secondary.span.unwrap_or_else(|| error_span.clone());
+            diagnostics.push(TypeDiagnostic::error(
+                "parse-error",
+                secondary.message,
+                secondary_span,
+            ));
+        }
     }
 
     // Skip past the matching `]`. `skip_to_closing_bracket` expects to be called with
@@ -1163,12 +1185,24 @@ fn recover_from_failed_open(
     diagnostics.push(diag);
 
     // Push SurfaceExpression::Error into the current top frame (without popping — no frame was pushed).
-    let error_expr = mk(SurfaceExpression::Error(error_span.clone()), error_span);
+    let error_expr = mk(
+        SurfaceExpression::Error(error_span.clone()),
+        error_span.clone(),
+    );
 
     if stack.is_empty() {
         current_document_items.push(SurfaceItem::Expr(error_expr));
     } else {
-        let _ = push_value(stack, current_document_items, error_expr);
+        // push_value can itself error (e.g. duplicate key during recovery).
+        // Record secondary errors in diagnostics rather than discarding them.
+        if let Err(secondary) = push_value(stack, current_document_items, error_expr) {
+            let secondary_span = secondary.span.unwrap_or_else(|| error_span.clone());
+            diagnostics.push(TypeDiagnostic::error(
+                "parse-error",
+                secondary.message,
+                secondary_span,
+            ));
+        }
     }
 
     // Skip past the matching `]`.
@@ -1844,14 +1878,27 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             diag.add_help(help);
                         }
                         diagnostics.push(diag);
-                        let error_expr =
-                            mk(SurfaceExpression::Error(error_span.clone()), error_span);
+                        let error_expr = mk(
+                            SurfaceExpression::Error(error_span.clone()),
+                            error_span.clone(),
+                        );
                         // Push to parent context (stack has already had the frame popped).
                         if stack.is_empty() {
                             current_document_items.push(SurfaceItem::Expr(error_expr.clone()));
                         } else {
-                            // Ignore secondary errors during recovery.
-                            let _ = push_value(&mut stack, &mut current_document_items, error_expr);
+                            // push_value can itself error (e.g. duplicate key during recovery).
+                            // Record secondary errors in diagnostics rather than discarding them.
+                            if let Err(secondary) =
+                                push_value(&mut stack, &mut current_document_items, error_expr)
+                            {
+                                let secondary_span =
+                                    secondary.span.unwrap_or_else(|| error_span.clone());
+                                diagnostics.push(TypeDiagnostic::error(
+                                    "parse-error",
+                                    secondary.message,
+                                    secondary_span,
+                                ));
+                            }
                         }
                         // Fall through to advance i and continue.
                     }};
@@ -2349,11 +2396,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 span: Some(span.clone()),
                                 help: None,
                             });
-                        } else {
-                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
+                        } else if let (Some(name), Some(pattern)) = (name, pattern) {
                             let decl = SurfaceDeclaration::SyntaxClass {
-                                name: name.unwrap(),
-                                pattern: pattern.unwrap(),
+                                name,
+                                pattern,
                                 message,
                             };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
@@ -2419,13 +2465,9 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 span: Some(span.clone()),
                                 help: None,
                             });
-                        } else {
-                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
+                        } else if let Some(scrutinee) = scrutinee {
                             let spanned_match = mk(
-                                SurfaceExpression::Match {
-                                    scrutinee: scrutinee.unwrap(),
-                                    arms,
-                                },
+                                SurfaceExpression::Match { scrutinee, arms },
                                 dict_span(span_start),
                             );
                             if let Err(push_err) =
@@ -2499,17 +2541,13 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                                         resolver = Some(entry.node.value.clone());
                                                     }
                                                     "injective" => {
-                                                        // Extract boolean value: True/False are now plain identifiers
-                                                        if let SurfaceExpression::VarRef {
-                                                            name,
-                                                            ..
-                                                        } = &entry.node.value.expr
+                                                        // Extract boolean value: integer encoding — 1 = injective, 0 = not injective.
+                                                        // Rust protocol uses integer literals (Value::Int) for boolean results;
+                                                        // prelude Boolean constructors are not part of the protocol.
+                                                        if let SurfaceExpression::Int(n) =
+                                                            &entry.node.value.expr
                                                         {
-                                                            if name == "True" {
-                                                                resolver_injective = true;
-                                                            } else if name == "False" {
-                                                                resolver_injective = false;
-                                                            }
+                                                            resolver_injective = *n != 0;
                                                         }
                                                     }
                                                     "superclasses" => {
@@ -4218,8 +4256,9 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         }
                     }
                 } else {
-                    // Inside a frame — try to pop the last value; on failure use leading-dot
-                    pop_last_value_from_frame(&mut stack, span.clone()).ok()
+                    // Inside a frame — try to pop the last value; Ok(None) means the frame
+                    // has no base expression (leading-dot). Err propagates genuine errors.
+                    pop_last_value_from_frame(&mut stack, span.clone())?
                 };
 
                 i += 1; // Consume the Dot
@@ -4441,9 +4480,28 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         }
                     }
                 } else {
-                    // Inside a frame — pop the last value from the current frame
+                    // Inside a frame — pop the last value from the current frame.
+                    // Ok(None) means the frame has no preceding expression — treat as an error.
+                    let no_lhs_err = ParseError {
+                        message: "pipe operator requires a left-hand expression before '|'"
+                            .to_string(),
+                        span: Some(span.clone()),
+                        help: None,
+                    };
                     match pop_last_value_from_frame(&mut stack, span.clone()) {
-                        Ok(lhs_expr) => lhs_expr,
+                        Ok(Some(lhs_expr)) => lhs_expr,
+                        Ok(None) => {
+                            i = recover_from_bracket_error(
+                                no_lhs_err,
+                                span,
+                                &token_vec,
+                                i + 1,
+                                &mut stack,
+                                &mut current_document_items,
+                                &mut diagnostics,
+                            );
+                            continue;
+                        }
                         Err(pop_err) => {
                             i = recover_from_bracket_error(
                                 pop_err,
@@ -4475,9 +4533,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                 if is_immediate {
                     // ImmediateAt: no whitespace before @, so this attaches to the preceding expression.
                     // Pop the last completed expression from the current frame (for x@Type).
-                    let popped = pop_last_value_from_frame(&mut stack, span.clone())
-                        .ok()
-                        .or_else(|| {
+                    // Ok(None) means no value in frame — fall back to current_document_items.
+                    // Err propagates genuine structural errors (e.g., dot in invalid position).
+                    let popped =
+                        pop_last_value_from_frame(&mut stack, span.clone())?.or_else(|| {
                             // Stack empty: preceding expression may be in current_document_items
                             if let Some(SurfaceItem::Expr(node)) = current_document_items.last() {
                                 if stack.is_empty() {
@@ -4555,15 +4614,13 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                     if after_name < token_vec.len()
                         && matches!(&token_vec[after_name].node, Token::ImmediateAt)
                     {
-                        match parse_annotation_direct(
+                        let (ann, next_i) = parse_annotation_direct(
                             &token_vec,
                             after_name,
                             &mut leading_comments,
                             &mut blank_before,
-                        ) {
-                            Ok((ann, next_i)) => (Some(ann), next_i - after_name),
-                            Err(_) => (None, 0),
-                        }
+                        )?;
+                        (Some(ann), next_i - after_name)
                     } else {
                         (None, 0)
                     }
@@ -4969,10 +5026,13 @@ fn dot_path_name(node: &SurfaceNode) -> Option<String> {
 /// Note: For Dict frames, this pops the entire entry and returns just the value. The caller
 /// must re-push the transformed value, which will create a new entry (either keyed or auto-indexed
 /// depending on whether there was a pending_key).
+/// Returns `Ok(Some(node))` if a value was popped, `Ok(None)` if the frame has nothing to pop
+/// (legitimate "no base expression" condition), or `Err` for a genuine structural error (e.g.,
+/// dot access inside a position where it is never valid).
 fn pop_last_value_from_frame(
     stack: &mut [StackFrame],
     span: Span,
-) -> Result<Arc<SurfaceNode>, ParseError> {
+) -> Result<Option<Arc<SurfaceNode>>, ParseError> {
     match stack.last_mut() {
         Some(StackFrame::Dict {
             ref mut entries,
@@ -4983,18 +5043,10 @@ fn pop_last_value_from_frame(
             // Check if there's a pending key first - if so, we haven't pushed the value yet
             // and there's nothing to pop
             if pending_key.is_some() {
-                return Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                });
+                return Ok(None);
             }
             if entries.is_empty() {
-                return Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                });
+                return Ok(None);
             }
             let last_entry = entries.pop().unwrap();
             // Restore the key as pending_key so the transformed value will be re-associated
@@ -5006,7 +5058,7 @@ fn pop_last_value_from_frame(
                 }
             }
             *pending_key = last_entry.node.key;
-            Ok(Arc::clone(&last_entry.node.value))
+            Ok(Some(Arc::clone(&last_entry.node.value)))
         }
         Some(StackFrame::Call {
             ref mut func,
@@ -5018,35 +5070,27 @@ fn pop_last_value_from_frame(
                 // No args pushed yet — try popping the function itself as the dot-access target.
                 // This allows `[net.http-get ...]` where `net` is in head (func) position.
                 if let Some(f) = func.take() {
-                    return Ok(f);
+                    return Ok(Some(f));
                 }
-                return Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                });
+                return Ok(None);
             }
             match args.pop().unwrap() {
-                CallArg::Positional(expr) => Ok(expr),
+                CallArg::Positional(expr) => Ok(Some(expr)),
                 CallArg::Named(name, expr, ann) => {
                     // Restore the name and annotation as pending_key so the transformed value
                     // will be re-associated with the same name (and annotation, if present).
                     // This allows `[foo bar: baz.field]` and `[Ctor field@Ann: baz.field]`
                     // to work correctly with dot-access on the value side.
                     *pending_key = Some((name, span, ann));
-                    Ok(expr)
+                    Ok(Some(expr))
                 }
             }
         }
         Some(StackFrame::Fn { ref mut body, .. }) => {
             if let Some(b) = body.pop() {
-                Ok(b)
+                Ok(Some(b))
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::TypeAlias {
@@ -5060,51 +5104,34 @@ fn pop_last_value_from_frame(
             if pending_key.is_some() {
                 // The pending key is the last thing pushed; pop it so annotation can attach.
                 let key = pending_key.take().unwrap();
-                Ok(key)
+                Ok(Some(key))
             } else if let Some(last_entry) = type_exprs.pop() {
                 // Return the value of the last entry. Keyed entries should not be in
                 // type_exprs yet when this is called (pending_key handles them before commit).
-                Ok(Arc::clone(&last_entry.node.value))
+                Ok(Some(Arc::clone(&last_entry.node.value)))
             } else {
-                Err(ParseError {
-                    message: "@ annotation requires a preceding expression in type alias"
-                        .to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::Quote { ref mut expr, .. }) => {
             if let Some(e) = expr.take() {
-                Ok(e)
+                Ok(Some(e))
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::Unquote { ref mut expr, .. }) => {
             if let Some(e) = expr.take() {
-                Ok(e)
+                Ok(Some(e))
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::UnquoteSplice { ref mut expr, .. }) => {
             if let Some(e) = expr.take() {
-                Ok(e)
+                Ok(Some(e))
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::Match {
@@ -5116,14 +5143,11 @@ fn pop_last_value_from_frame(
         }) => {
             if pending_pattern_expr.is_some() {
                 // Pop the pending pattern expression (before colon)
-                Ok(pending_pattern_expr.take().unwrap())
+                Ok(Some(pending_pattern_expr.take().unwrap()))
             } else if pending_pattern.is_some() {
-                // Last push was a pattern (already converted) — can't retroactively transform
-                Err(ParseError {
-                    message: "dot access on a pattern is not supported".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                // Last push was a pattern (already converted) — dot access on a pattern is not
+                // supported; signal "nothing to pop" so the caller handles it as no base expression.
+                Ok(None)
             } else if !arms.is_empty() {
                 // Pop the last body expression of the last arm for dot-chaining.
                 // If there is only one body expression, pop the entire arm and restore
@@ -5133,18 +5157,14 @@ fn pop_last_value_from_frame(
                 if last_arm.body.len() == 1 {
                     let arm = arms.pop().unwrap();
                     *pending_pattern = Some((arm.pattern, arm.guard));
-                    Ok(arm.body.into_iter().next().unwrap())
+                    Ok(Some(arm.body.into_iter().next().unwrap()))
                 } else {
-                    Ok(last_arm.body.pop().unwrap())
+                    Ok(Some(last_arm.body.pop().unwrap()))
                 }
             } else if let Some(s) = scrutinee.take() {
-                Ok(s)
+                Ok(Some(s))
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::SyntaxClass { .. }) => Err(ParseError {
@@ -5166,14 +5186,9 @@ fn pop_last_value_from_frame(
             // Allow dot-access to extend the class name expression.
             // pop class_name so the dot continuation attaches to it (e.g. File.Readable).
             if class_name.is_some() && pending_arm_pattern.is_none() && arms.is_empty() {
-                Ok(class_name.take().unwrap())
+                Ok(Some(class_name.take().unwrap()))
             } else {
-                Err(ParseError {
-                    message: "dot access is not valid in this position in instance form"
-                        .to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::PatternDecl { .. }) => Err(ParseError {
@@ -5192,26 +5207,16 @@ fn pop_last_value_from_frame(
             // handler can extend it into a qualified name (e.g. `Result` → `Result.Ok`).
             if pending_key.is_some() {
                 if let Some(rhs) = pending_rhs.take() {
-                    Ok(rhs)
+                    Ok(Some(rhs))
                 } else {
-                    Err(ParseError {
-                        message: "dot access requires a target before '.' in let structural test"
-                            .to_string(),
-                        span: Some(span),
-                        help: None,
-                    })
+                    Ok(None)
                 }
             } else if let Some(last_binding) = bindings.pop() {
                 // ImmediateAt annotation on a binding (e.g. `x@Type` in `[let x@Type ...]`):
                 // pop the last binding so AnnotationCollect can attach the annotation to it.
-                Ok(last_binding)
+                Ok(Some(last_binding))
             } else {
-                Err(ParseError {
-                    message: "@ annotation requires a preceding binding in let declaration"
-                        .to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::CaseDecl {
@@ -5226,19 +5231,14 @@ fn pop_last_value_from_frame(
             if pattern.is_some() {
                 // body phase: pop last body expr as dot-access target, or pattern if no body yet
                 if let Some(b) = body.pop() {
-                    Ok(b)
+                    Ok(Some(b))
                 } else {
                     // pattern is set, body is not yet set — this means the pattern itself
                     // is being extended with dot access (e.g. `Result.Ok` as the pattern).
                     if let Some(p) = pattern.take() {
-                        Ok(p)
+                        Ok(Some(p))
                     } else {
-                        Err(ParseError {
-                            message: "dot access requires a target before '.' in case arm"
-                                .to_string(),
-                            span: Some(span),
-                            help: None,
-                        })
+                        Ok(None)
                     }
                 }
             } else if let_bindings.is_some() {
@@ -5249,11 +5249,7 @@ fn pop_last_value_from_frame(
                     help: None,
                 })
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.' in case arm".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
@@ -5265,20 +5261,12 @@ fn pop_last_value_from_frame(
             // Dot access on the annotation value (e.g. `x@A.B` — dot-extending the annotation type).
             // Pop the current value so the dot handler can extend it.
             if let Some(v) = value.take() {
-                Ok(v)
+                Ok(Some(v))
             } else {
-                Err(ParseError {
-                    message: "dot access requires a target before '.'".to_string(),
-                    span: Some(span),
-                    help: None,
-                })
+                Ok(None)
             }
         }
-        None => Err(ParseError {
-            message: "dot access requires a target before '.'".to_string(),
-            span: Some(span),
-            help: None,
-        }),
+        None => Ok(None),
     }
 }
 
@@ -6760,8 +6748,8 @@ pub fn format_parse_error(err: &TypeDiagnostic, source: &str, file_name: &str) -
         out.push_str(&format!("  = note: {note}\n"));
     }
 
-    // Help lines
-    for help in &err.help {
+    // Help line
+    if let Some(help) = &err.help {
         out.push_str(&format!("  = help: {help}\n"));
     }
 
@@ -9382,14 +9370,8 @@ mod tests {
     #[test]
     fn test_format_parse_error_no_span() {
         // Create a parse diagnostic without spans (empty spans vec → no-span fallback)
-        let err = TypeDiagnostic {
-            level: DiagnosticLevel::Err,
-            kind: "parse-error",
-            message: "test error".to_string(),
-            spans: vec![],
-            notes: vec![],
-            help: vec![],
-        };
+        let err =
+            TypeDiagnostic::with_spans(DiagnosticLevel::Err, "parse-error", "test error", vec![]);
 
         // Format it
         let formatted = format_parse_error(&err, "dummy source", "test.llt");

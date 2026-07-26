@@ -1574,8 +1574,11 @@ impl DiagnosticLevel {
 
 /// A type checking diagnostic (info/warn/err) with span and error code.
 ///
-/// `TypeDiagnostic` can have
-/// Info/Warn level for non-fatal notifications (e.g., inferred `Unknown` types).
+/// `TypeDiagnostic` can have Info/Warn level for non-fatal notifications
+/// (e.g., inferred `Unknown` types).
+///
+/// Propagated as `Box<TypeDiagnostic>` at function return sites to keep the error
+/// variant of `Result<T, Box<TypeDiagnostic>>` pointer-sized.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDiagnostic {
     pub level: DiagnosticLevel,
@@ -1583,21 +1586,70 @@ pub struct TypeDiagnostic {
     pub message: String,
     pub spans: Vec<(crate::ast::Span, String)>,
     pub notes: Vec<String>,
-    /// Optional help lines rendered as `= help: ...` after the diagnostic.
-    /// Each entry is a separate suggestion line.
-    pub help: Vec<String>,
+    pub help: Option<String>,
 }
 
 impl TypeDiagnostic {
+    /// Construct an error-level diagnostic with a single span and no notes or help.
     pub fn error(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
         Self {
             level: DiagnosticLevel::Err,
             kind,
             message: message.into(),
             spans: vec![(span, String::new())],
-            notes: vec![],
-            help: vec![],
+            notes: Vec::new(),
+            help: None,
         }
+    }
+
+    /// Construct a warn-level diagnostic with a single span and no notes or help.
+    pub fn warn(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
+        Self {
+            level: DiagnosticLevel::Warn,
+            kind,
+            message: message.into(),
+            spans: vec![(span, String::new())],
+            notes: Vec::new(),
+            help: None,
+        }
+    }
+
+    /// Construct an info-level diagnostic with a single span and no notes or help.
+    pub fn info(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
+        Self {
+            level: DiagnosticLevel::Info,
+            kind,
+            message: message.into(),
+            spans: vec![(span, String::new())],
+            notes: Vec::new(),
+            help: None,
+        }
+    }
+
+    /// Construct a diagnostic with an explicit level and pre-built spans vec.
+    pub fn with_spans(
+        level: DiagnosticLevel,
+        kind: &'static str,
+        message: impl Into<String>,
+        spans: Vec<(crate::ast::Span, String)>,
+    ) -> Self {
+        Self {
+            level,
+            kind,
+            message: message.into(),
+            spans,
+            notes: Vec::new(),
+            help: None,
+        }
+    }
+
+    /// Return a clone of this diagnostic with the level bumped one step (Info→Warn, Warn→Err, Err→Err).
+    ///
+    /// Used by `--strict` mode to promote warnings to errors.
+    pub fn bump_level(&self) -> Self {
+        let mut bumped = self.clone();
+        bumped.level = bumped.level.bump();
+        bumped
     }
 
     pub fn with_span(mut self, span: crate::ast::Span, label: impl Into<String>) -> Self {
@@ -1615,16 +1667,27 @@ impl TypeDiagnostic {
     }
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.help.push(help.into());
+        self.help = Some(help.into());
         self
     }
 
     pub fn add_help(&mut self, help: impl Into<String>) {
-        self.help.push(help.into());
+        self.help = Some(help.into());
+    }
+
+    /// Help line attached to this diagnostic (rendered as `= help: ...`), if any.
+    pub fn help_str(&self) -> Option<&str> {
+        self.help.as_deref()
     }
 
     pub fn primary_span(&self) -> &crate::ast::Span {
         &self.spans[0].0
+    }
+
+    /// Wrap this diagnostic in a `Box` for use as `Err(diag.boxed())` in functions
+    /// that return `Result<T, Box<TypeDiagnostic>>`.
+    pub fn boxed(self) -> Box<Self> {
+        Box::new(self)
     }
 }
 
@@ -3486,14 +3549,11 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         use crate::test_util::test_span;
 
         let span = test_span(5, 10, 5, 20);
-        let diag = TypeDiagnostic {
-            level: DiagnosticLevel::Warn,
-            kind: "T999", // test-only sentinel — not a real production diagnostic code
-            message: "inferred Unknown type".to_string(),
-            spans: vec![(span.clone(), String::new())],
-            notes: vec![],
-            help: vec![],
-        };
+        let diag = TypeDiagnostic::warn(
+            "T999", // test-only sentinel — not a real production diagnostic code
+            "inferred Unknown type",
+            span.clone(),
+        );
 
         assert_eq!(diag.message, "inferred Unknown type");
         assert_eq!(diag.primary_span(), &span);
@@ -3595,7 +3655,6 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         //
         // Scenario: error defined in "prelude.llt", materialized in "user.llt".
         let def_span = span_with_file("prelude.llt");
-        let _mat_span = span_with_file("user.llt");
         // Give mat_span a different position so it differs from def_span.
         let mat_span = {
             Span {

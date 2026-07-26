@@ -81,7 +81,7 @@
     [n: [builtin-dict-length xs]]
     [loop: [fn [let acc i]
       [match [builtin-int-gte i n]
-        0: [loop [f acc [builtin-get i xs]] [builtin-int-add i 1]]
+        0: [loop [f acc [builtin-dict-get i xs]] [builtin-int-add i 1]]
         1: acc]]]
     [loop init 0]]
 
@@ -91,8 +91,8 @@
       [match [builtin-int-gte i n]
         0: [loop
               [match [builtin-eq-int i 0]
-                0: [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]
-                1: [builtin-get 0 xs]]
+                0: [builtin-string-concat acc [builtin-string-concat sep [builtin-dict-get i xs]]]
+                1: [builtin-dict-get 0 xs]]
               [builtin-int-add i 1]]
         1: acc]]]
     [loop "" 0]]
@@ -123,13 +123,13 @@
   get-or: [fn [let default key dict]
     [match [builtin-has-key? key dict]
       0: default
-      1: [builtin-get key dict]]]
+      1: [builtin-dict-get key dict]]]
 
   # log-step: write msg to state.stderr and return state with updated handle.
   # The returned state.stderr is the genuine consumer — it is forced when the next
   # stage (or the reduce's passed computation) accesses state.stderr.
   log-step: [fn [let msg@String state@[stderr: Any]]
-    [merge state [stderr: [call [builtin-get "write" %stderr] [builtin-string-concat msg "\n"] state.stderr]]]]
+    [merge state [stderr: [call [builtin-dict-get "write" %stderr] [builtin-string-concat msg "\n"] state.stderr]]]]
 
   # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
   # builtin-resolve now takes a flat Dict<String,1> of all visible names (values ignored).
@@ -140,7 +140,7 @@
     [loop: [fn [let i builder]
       [match [builtin-eq-int i n]
         0: [loop [builtin-int-add i 1]
-              [builtin-builder-set [builtin-get i keys] 1 builder]]
+              [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
         1: [builtin-builder-finish builder]]]]
     [loop 0 [builtin-make-builder]]]
 
@@ -176,7 +176,7 @@
        read:   [fn []
                  [snap: [builtin-builder-snapshot buf]]
                  [reduce
-                   [fn [let acc k] [builtin-string-concat acc [builtin-get k snap]]]
+                   [fn [let acc k] [builtin-string-concat acc [builtin-dict-get k snap]]]
                    ""
                    [builtin-keys snap]]]]]
     self]
@@ -189,7 +189,7 @@
       1: [builtin-str-slice s 0 [builtin-int-sub n 1]]]]
 
   # Format a single diagnostic dict as a human-readable error line.
-  format-diagnostic: [fn@String [let d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  secondary-spans: Any  blame: Any  macro-expand: Any]]
+  format-diagnostic: [fn@String [let d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any]]
     [s: [@[file: String  start-line: Integer  start-col: Integer  end-line: Integer  end-col: Integer] d.span]]
     [file-part: [match [builtin-eq-int [builtin-str-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
@@ -243,7 +243,7 @@
     [loop: [fn [let i h]
       [match [builtin-int-gte i n]
         0: [loop [builtin-int-add i 1]
-              [call [builtin-get "write" %stderr] [format-diagnostic [builtin-get i diagnostics]] h]]
+              [call [builtin-dict-get "write" %stderr] [format-diagnostic [builtin-dict-get i diagnostics]] h]]
         1: h]]]
     [loop 0 h]]
 
@@ -293,7 +293,7 @@
              [parse-result:  [builtin-parse decl-bytes decl-path]]
              [desugared:     [builtin-desugar parse-result.program]]
              [decl-docs:     [builtin-program-docs desugared]]
-             # Decl env: dot-access desugars to builtin-get (a core builtin always in scope).
+             # Decl env: dot-access desugars to builtin-dict-get (a core builtin always in scope).
              [decl-env:      seed-env]
              # Split docs by stage so type-stage docs are processed first.
              [split: [@[ts: Dict  rt: Dict] [reduce
@@ -311,7 +311,7 @@
                [fn [let env doc]
                  [name-set: [env-to-name-set env]]
                  [r:        [builtin-resolve doc name-set]]
-                 [typed:    [builtin-typecheck-doc r.doc seed-tc].doc]
+                 [typed:    [builtin-typecheck-doc r.doc seed-tc env].doc]
                  [lowered:  [builtin-lower typed]]
                  [exports:  [builtin-eval lowered env]]
                  [merge env exports]]
@@ -334,7 +334,7 @@
                [fn [let acc doc]
                  [name-set: [env-to-name-set decl-env]]
                  [r: [builtin-resolve doc name-set]]
-                 [tc-result: [builtin-typecheck-doc r.doc ts-tc]]
+                 [tc-result: [builtin-typecheck-doc r.doc ts-tc decl-env]]
                  [merge acc [[builtin-dict-length acc]: tc-result]]]
                []
                decl-docs]]
@@ -373,7 +373,7 @@
       1: [docs: [@Dict state.parsed.documents]]
          [match [builtin-eq-int [builtin-dict-length docs] 0]
            0: 0  # no documents
-           1: [meta:    [builtin-doc-meta [builtin-get 0 docs] []]]
+           1: [meta:    [builtin-doc-meta [builtin-dict-get 0 docs] []]]
               [pragmas: [get-or [] "pragma" meta]]
               [n:       [builtin-dict-length pragmas]]
               [find: [fn [let i]
@@ -433,7 +433,7 @@
   # Adds: env, last-result, _tc.
   eval-program: [fn [let extras@Dict tc state@[parsed: [documents: Any]  stderr: Any  diagnostics: Dict]]
     # Seed env: extras (e.g. %prelude env ref, Boolean, etc.).
-    # Dot-access desugars to builtin-get (a core builtin always in scope).
+    # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
     [seed-env: [merge extras [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
     [eval-doc: [fn [let acc@[env: Dict  tc: Any  last-result: Any  stderr: Any  diagnostics: Dict] doc]
       # Short-circuit: if a previous doc in this pass already has errors, skip remaining docs.
@@ -450,7 +450,7 @@
           [match [builtin-eq-int n-re 0]
             0: [merge acc [diagnostics: [append-diags acc.diagnostics res.diagnostics]  stderr: new-stderr]]
             1: [call [fn [let]
-                 [tc-result: [builtin-typecheck-doc res.doc acc.tc]]
+                 [tc-result: [builtin-typecheck-doc res.doc acc.tc doc-env]]
                  [typed:     tc-result.doc]
                  [lowered:   [builtin-lower typed]]
                  [try-result: [builtin-try [call [fn [] [builtin-eval lowered doc-env]]]]]
@@ -467,8 +467,8 @@
                                         1: []]]]]
                        [merge acc [env: next-env  tc: acc.tc  last-result: exports  stderr: new-stderr]]]]]
                    ...: [call [fn [let]
-                        [diag: [@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  secondary-spans: Any  blame: Any  macro-expand: Any] try-result]]
-                        [eval-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat [format-diagnostic diag] "\n"] new-stderr]]
+                        [diag: [@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any] try-result]]
+                        [eval-stderr: [call [builtin-dict-get "write" %stderr] [builtin-string-concat [format-diagnostic diag] "\n"] new-stderr]]
                         [merge acc [diagnostics: [append-diags acc.diagnostics [$try-result]]  stderr: eval-stderr]]]]]]]]]]]]]
     # Split documents by stage: check meta.stage string
     [split: [reduce
@@ -485,8 +485,7 @@
     # Pass 1: evaluate type-stage documents. Accumulator threads env dict.
     [ts-acc: [reduce eval-doc [env: seed-env  tc: _tc0  last-result: []  stderr: state.stderr  diagnostics: []] split.ts]]
     # Type-stage env wire: in the env-dict protocol there is no scope-id,
-    # so _tc is ts-acc.tc directly (type_stage_scope_id is a no-op in
-    # builtin-typecheck-doc when ScopeArena is absent).
+    # so _tc is ts-acc.tc directly.
     [_tc: ts-acc.tc]
     # Pass 2: evaluate runtime documents. Seed diagnostics from ts-acc so pass-1 errors
     # short-circuit pass-2 docs immediately.
@@ -534,7 +533,7 @@
     Ok:    [value: a]
     Error: [msg: String]]
 
-  write-str: [fn [let h@[write: Callable] s] [call [builtin-get "write" h] s h]]
+  write-str: [fn [let h@[write: Callable] s] [call [builtin-dict-get "write" h] s h]]
 
   # extract-source: given file content, return everything before "\n=== ".
   extract-source: [fn [let content]
@@ -614,7 +613,7 @@
               0: [merge st [diagnostics: [append-diags st.diagnostics r.diagnostics]
                              stderr: new-stderr]]
               1: [call [fn [let]
-                   [typed:   [builtin-typecheck-doc r.doc st.tc].doc]
+                   [typed:   [builtin-typecheck-doc r.doc st.tc doc-env].doc]
                    [lowered: [builtin-lower typed]]
                    # Wrap builtin-eval in builtin-try to capture eval errors as diagnostics.
                    [try-result: [builtin-try [call [fn [] [builtin-eval lowered doc-env]]]]]
@@ -648,8 +647,8 @@
                            doc-results: [merge st.doc-results [$st.doc-index: validated-result]]]
                            ]]]
                      ...: [call [fn [let]
-                          [diag: [@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  secondary-spans: Any  blame: Any  macro-expand: Any] try-result]]
-                          [eval-stderr: [call [builtin-get "write" %stderr]
+                          [diag: [@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any] try-result]]
+                          [eval-stderr: [call [builtin-dict-get "write" %stderr]
                                           [builtin-string-concat [format-diagnostic diag] "\n"] new-stderr]]
                           [merge st [diagnostics: [append-diags st.diagnostics [$try-result]]
                                      stderr: eval-stderr]]]]]]]]]]]]
@@ -692,11 +691,11 @@
              # Per-document name-set injection: inject %: prev-result for non-first
              # documents so the resolver sees % in scope.
              [resolve-env: [match [builtin-eq-int doc-index 0]
-               0: [merge state.env [%: [builtin-get [builtin-int-sub doc-index 1] doc-results]]]
+               0: [merge state.env [%: [builtin-dict-get [builtin-int-sub doc-index 1] doc-results]]]
                1: state.env]]
              [name-set: [env-to-name-set resolve-env]]
              [res: [builtin-resolve doc name-set]]
-             [typed: [builtin-typecheck-doc res.doc tc]]
+             [typed: [builtin-typecheck-doc res.doc tc resolve-env]]
              # If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
              [input-warn-diags: [match [builtin-int-gt doc-index 0]
                0: []
@@ -918,7 +917,7 @@
     [p:         [match item
                   ProgramItem.File: item.path
                   ...:                    "<expr>"]]
-    [new-stderr: [call [builtin-get "write" %stderr] [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
+    [new-stderr: [call [builtin-dict-get "write" %stderr] [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
     [base-result: [match item
       [case [let payload] [ProgramItem.File payload]
         [run-test-file payload prelude-env prelude-tc new-stderr]]
@@ -1024,12 +1023,12 @@
                     [match [builtin-int-gte [builtin-dict-length _w] 0]
                       0: [builtin-raise "llt.llt formatter failed to load"]
                       1: [builtin-raise "llt.llt formatter failed to load"]]]
-              [call [builtin-get "write" %stderr]
+              [call [builtin-dict-get "write" %stderr]
                 [builtin-string-concat "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\nCause: "
                   [builtin-string-concat
                     [match [builtin-has-key? "message" _raw]
                       0: "(unknown — try result has no message field)"
-                      1: [@String _raw.message]]
+                      1: [@String [@Diagnostic _raw].message]]
                     "\n"]] %stderr]]
         1: 1]]
     [builtin-try [builtin-program-docs _llt-formatter-expanded]]]
@@ -1044,7 +1043,7 @@
             [builtin-int->string [count-errors _pr-diagnostics]]
             " error(s) — cannot run tests\n"
             [reduce
-              [fn [let acc d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  secondary-spans: Any  blame: Any  macro-expand: Any]]
+              [fn [let acc d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any]]
                 [match [builtin-eq-string d.level "error"]
                   0: acc
                   1: [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]]
@@ -1062,7 +1061,7 @@
       [result: [@[path: String  passed: Boolean  actual: String  expected: String  stderr: Any] [run-test item _prelude-env _pr-tc-ready state.stderr]]]
       # Thread stdout and stderr handles forward — each write returns the next handle.
       # Both chains collapse when the final dict's stdout/stderr fields are forced.
-      [new-stdout: [call [builtin-get "write" %stdout] [format-result result] state.stdout]]
+      [new-stdout: [call [builtin-dict-get "write" %stdout] [format-result result] state.stdout]]
       [delta: [match result.passed Boolean.False: 0 Boolean.True: 1]]
       [idx:        [builtin-int-add state.idx 1]
        total:      [builtin-int-add state.total 1]
@@ -1092,11 +1091,11 @@
           0
           _pr-diagnostics]]
 [n-failed: [builtin-int-add prelude-error-count [builtin-int-sub final-state.total final-state.passed]]]
-[summary-stdout: [call [builtin-get "write" %stdout] [join "" [
+[summary-stdout: [call [builtin-dict-get "write" %stdout] [join "" [
     "\n"
     [builtin-int->string final-state.passed] "/" [builtin-int->string final-state.total] " tests passed"
     [match [builtin-eq-int n-failed 0]
       0: [join "" [", " [builtin-int->string n-failed] " failed\n" final-state.first-fail "\n"]]
       1: "\n"]]]
   final-state.stdout]]
-[merge [%stdout.flush summary-stdout] [%stderr.flush final-state.stderr]]
+[merge [%stdout.flush summary-stdout] [%stderr.flush [@[stderr: Any] final-state].stderr]]

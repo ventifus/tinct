@@ -10,7 +10,7 @@ The type checker uses the `Type` Rust enum (defined in `src/type_def.rs`) as its
 
 Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-class tinct values) is a planned future refactor. It is not yet implemented. Until then, `Type` is the authoritative representation.
 
-**TypeVar is a `Type` variant.** `Type::TypeVar(name: String, level: u32)` is a regular Rust enum variant. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. `state.levels` maps TypeVar name → current (possibly lowered) level; `state.levels` is authoritative. The `level` field inside the `TypeVar` variant is the creation-time level (fixed at `fresh_type_var()` call time) and is used only as the initial value when registering in `state.levels`.
+**`Var` is a `Type` variant.** `Type::Var(name: String, level: u32)` is a regular Rust enum variant. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. `state.levels` maps TypeVar name → current (possibly lowered) level; `state.levels` is authoritative. The `level` field inside the `Var` variant is the creation-time level (fixed at `fresh_type_var()` call time) and is used only as the initial value when registering in `state.levels`.
 
 **`Type` variants available to the type checker** (representative set; see `src/type_def.rs` for the complete list):
 
@@ -25,9 +25,9 @@ Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-cla
 | `Type::TyCon(String)` | type constructor name |
 | `Type::App(Box<Type>, Box<Type>)` | type constructor application |
 | `Type::Recursive { var, body }` | equirecursive type |
-| `Type::TypeVar(String, u32)` | inference variable |
+| `Type::Var(String, u32)` | inference variable |
 
-`Substitution` maps TypeVar name `String → Type`. `fresh_type_var()` creates `Type::TypeVar("_tN", current_level)`. Substitution lookup: `subst.type_map.get(typevar_name)`.
+`Substitution` maps TypeVar name `String → Type`. `fresh_type_var()` creates `Type::Var("_tN", current_level)`. Substitution lookup: `subst.type_map.get(typevar_name)`.
 
 ## Type Grammar
 
@@ -44,7 +44,7 @@ Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-cla
     | App(τ, τ)                  curried type constructor application — left-to-right
     | Record(f₁:τ₁...fₙ:τₙ, tail)  closed record with optional uniform tail
     | Proxy                      opaque proxy (field access dispatches to handler)
-    | α                          type variable  (Type::TypeVar(name, level) in the current implementation)
+    | α                          type variable  (Type::Var(name, level) in the current implementation)
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
     | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[or A B]`)
@@ -60,7 +60,7 @@ Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-cla
 ```text
 Seq Int     → App(TyCon("Seq"), Int)
 Map Str Int → App(App(TyCon("Map"), Str), Int)   # curried: left-to-right
-Tree a      → App(TyCon("Tree"), TypeVar("a"))
+Tree a      → App(TyCon("Tree"), Var("a", level))
 ```
 
 `Type::Operator(String)` remains for type constructor *variables* (class params like `f` in `[class [f@Operator] ...]`); `TyCon` is for concrete *names*.
@@ -1060,10 +1060,10 @@ impl TypeScheme {
 **Levels.** Every type variable α carries an integer level ℓ(α). The type checker maintains a current level counter ℓ_current, incremented at each dict boundary (every `infer_dict` call):
 
 - Fresh type variables are created at ℓ_current
-- `Type::TypeVar(String)` becomes `Type::TypeVar(String, u32)` (name + level)
-- `PartialEq` for `Type` is implemented manually: `TypeVar(a, _) == TypeVar(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
+- `Type::Var(String)` becomes `Type::Var(String, u32)` (name + level)
+- `PartialEq` for `Type` is implemented manually: `Var(a, _) == Var(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
 - Under BAS, all records are closed. The `Row` struct contains only `fields: HashMap<String, Type>` with no tail. Width subtyping handles record openness.
-- `Display` for `TypeVar` hides the level (internal inference state, not user-facing).
+- `Display` for `Var` hides the level (internal inference state, not user-facing).
 
 **Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
 
@@ -1081,7 +1081,7 @@ pub struct InferState {
 
 `InferState.subst` accumulates type-variable constraints from [DOT-VAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** rather than dropped, maintaining substitution composition soundness. After merging, Pass 3d writes the fully-merged local substitution back into `state.subst` so that subsequent dicts in the same document see the letrec bindings. See the Pass 3b merge algorithm in [DICT-GEN] below for the precise pseudocode.
 
-When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
+When a `Var(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `Var(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 
 **Level adjustment during unification (symmetric).** Both branches of type variable unification perform level lowering:
 
@@ -1140,7 +1140,7 @@ pub fn instantiate_scheme(
 ) -> Type
 ```
 
-Creates fresh `TypeVar(_tN, level)` for each quantified variable, registers them in `state.levels`, applies the renaming substitution to the scheme body.
+Creates fresh `Var(_tN, level)` for each quantified variable, registers them in `state.levels`, applies the renaming substitution to the scheme body.
 
 **Modified dict inference (letrec with generalization):**
 
@@ -1259,13 +1259,13 @@ Mutually recursive entries constrain each other through unification during Pass 
 4. **Occurs check:** Unchanged — prevents infinite types regardless of levels.
 5. **Substitution idempotence:** Unchanged — transitive chasing is orthogonal to levels.
 6. **Letrec monomorphism during inference:** Within a letrec group, entries see each other as monomorphic during Pass 3 (fresh type variables, not schemes). Polymorphism only becomes visible after Pass 4 generalization.
-7. **PartialEq level-blindness:** `TypeVar` equality ignores levels, preserving [U-REFL] semantics. Levels are consulted only during generalization (via `InferState.levels`).
+7. **PartialEq level-blindness:** `Var` equality ignores levels, preserving [U-REFL] semantics. Levels are consulted only during generalization (via `InferState.levels`).
 
 **Key implementation types:**
 
 | Component | Specification |
 |-----------|--------------|
-| `Type::TypeVar` | `TypeVar(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
+| `Type::Var` | `Var(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
 | `TypeEnv.bindings` | `HashMap<String, TypeScheme>` |
 | `TypeEnv.tycon_defs` | `HashMap<String, Arc<TyConDef>>` — unified type declaration store; replaces old `type_aliases`. `Arc` wrapping enables pointer-identity checks in UNIFY-TYCON (B-343, implemented in S-856). |
 | `TypeEnv::get()` | Returns `&TypeScheme` |
@@ -1445,7 +1445,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 Tinct's MPTC/FD system is grounded in **Constraint Handling Rules** (CHRs, Sulzmann et al. 2007), which unify functional dependencies (propagation rules `==>`) and type-stage functions (simplification rules `<=>`). The central mechanism is `normalize()`, called before every `unify` step.
 
-**`Type::TypeStageApp` — lazy type-stage application.** When FD improvement fires and the determining positions are not yet ground, the type checker produces `TypeStageApp { fn_name, args }` rather than calling the resolver eagerly. `normalize()` reduces it to a concrete type when args become ground. When any determining position is `Unknown`, the result is `Unknown` directly (not deferred indefinitely).
+**`Type::StageApp` — lazy type-stage application.** When FD improvement fires and the determining positions are not yet ground, the type checker produces `TypeStageApp { fn_name, args }` rather than calling the resolver eagerly. `normalize()` reduces it to a concrete type when args become ground. When any determining position is `Unknown`, the result is `Unknown` directly (not deferred indefinitely).
 
 **`NormCtxt` — normalization context.** `normalize()` takes a `NormCtxt` carrying everything needed for a complete reduction pass: the current substitution chain (`subst`), the type-stage environment for calling resolver functions (`type_stage_env`), the alias table (`alias_env`), the current depth and max depth for the step limit, and the in-progress resolver call stack for cycle detection (`call_stack`). A normalization cache (`resolver_cache`) memoizes ground-arg results — same inputs always produce the same output under resolver purity. A fresh `NormCtxt` is constructed from the current `InferState` before every `unify` call.
 
@@ -1904,7 +1904,7 @@ A **resolver** is a tinct function declared in a `--- stage: type` section. It r
 --- stage: type
 [
   AddResult: [fn [...args]
-    [match [[builtin-get 0 args]  [builtin-get 1 args]]
+    [match [[builtin-dict-get 0 args]  [builtin-dict-get 1 args]]
       [[kind: "named" name: "Int"]    [kind: "named" name: "Int"]]:   [kind: "named" name: "Int"]
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
@@ -1916,7 +1916,7 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
   +: [fn@c [a b]]]
 ```
 
-The resolver receives all determining types as a positional sequence (via `...args`); `[builtin-get 0 args]` extracts the first, `[builtin-get 1 args]` extracts the second. Each argument and the return value are **type dicts** in the standard schema (see §Type Dict Schema in [Type Annotations](05-type-annotations.md) §16).
+The resolver receives all determining types as a positional sequence (via `...args`); `[builtin-dict-get 0 args]` extracts the first, `[builtin-dict-get 1 args]` extracts the second. Each argument and the return value are **type dicts** in the standard schema (see §Type Dict Schema in [Type Annotations](05-type-annotations.md) §16).
 
 ### Naming a Resolver
 
@@ -1937,7 +1937,7 @@ For FDs with multiple determined variables, the resolver returns a `multi-output
 --- stage: type
 [
   DivModResult: [fn [...args]
-    [match [[builtin-get 0 args]  [builtin-get 1 args]]
+    [match [[builtin-dict-get 0 args]  [builtin-dict-get 1 args]]
       [[kind: "named" name: "Int"]  [kind: "named" name: "Int"]]:
         [kind: "multi-output"
          q: [kind: "named" name: "Int"]
@@ -1956,7 +1956,7 @@ Resolvers are ordinary type-stage functions — they can call other type-stage f
 --- stage: type
 [
   NullableAddResult: [fn [...args]
-    [or [AddResult [builtin-get 0 args] [builtin-get 1 args]]
+    [or [AddResult [builtin-dict-get 0 args] [builtin-dict-get 1 args]]
         [kind: "named" name: "Null"]]]
 ]
 ```

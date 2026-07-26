@@ -70,12 +70,12 @@ Standard CHR notation (Frühwirth 1998): `<=>` for simplification (head replaced
 
 The unifying mechanism: FD propagation produces `TypeStageApp` nodes; simplification reduces them. Both rules drive the same normalization machinery.
 
-### `Type::TypeStageApp` — Lazy Type-Stage Application
+### `Type::StageApp` — Lazy Type-Stage Application
 
 A new type variant represents an unevaluated type-stage function application:
 
 ```rust
-Type::TypeStageApp {
+Type::StageApp {
     fn_name: String,         // "AddResult", "or", "Seq", ...
     args: Vec<Type>,         // may contain TypeVars
 }
@@ -553,7 +553,7 @@ Under BAS, a TypeVar bound during unification may resolve to a union type (`Int 
 improve_functional_dependency conditions:
   ∀ position p ∈ determining(FD):
     type[p] is Type::Int | Type::Float | Type::Bool | Type::Str | ...  (named primitive)
-    NOT Type::Union(...) | Type::Intersection(...) | Type::Negation(...) | Type::TypeVar(_)
+    NOT Type::Union(...) | Type::Intersection(...) | Type::Negation(...) | Type::Var(_)
 ```
 
 This is the conservative, sound approach. Distribution over union types (e.g., `Add (Int|Float) Int c ⟹ c = Int|Float`) would require proving the resolver function is covariant on the subtype lattice — a proof obligation deferred to future work.
@@ -601,7 +601,7 @@ The `normalize()` call is the load-bearing step: it reduces any `TypeStageApp` n
 
 **`Unknown` in CHR determining positions — defer.**
 
-`Type::Unknown` is not an atomic named monotype. FD improvement must not fire when any determining position is `Unknown`. Add it to the deferral predicate alongside `Type::TypeVar(_)`:
+`Type::Unknown` is not an atomic named monotype. FD improvement must not fire when any determining position is `Unknown`. Add it to the deferral predicate alongside `Type::Var(_)`:
 
 ```text
 improve_functional_dependency fires only when all determining positions are atomic:
@@ -1224,10 +1224,10 @@ Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable
 
 ## What Would Change
 
-### `src/types.rs` — New `Type::TypeStageApp` variant
+### `src/types.rs` — New `Type::StageApp` variant
 
 **Current:** No lazy type-stage application node. Type-stage functions are always called eagerly at annotation resolution time.  
-**Proposed:** Add `Type::TypeStageApp { fn_name: String, args: Vec<Type> }`. Update all exhaustive `match` arms across `src/types.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs` (~40–60 sites). Add `[kind: "type-stage-app"  fn: String  args: [<type-dict> ...]]` to the **type dict schema** used by the annotation resolver — this is distinct from `ast-of` output (which serializes `Value` nodes, not `Type::*` nodes). `collect_type_vars`, `has_type_vars`, `occurs_in` in `src/type_def.rs` must recurse into `TypeStageApp.args` — without this, TypeVars inside TypeStageApp nodes escape occurs-check and let-generalization, enabling infinite types and monomorphic FD-dependent bindings. `generalize()` in `src/type_infer.rs` must also collect TypeVars from `TypeStageApp.args` as candidates for quantification. `entails()` in `src/type_unify.rs` must call `normalize()` before comparing constraint types when those types may contain `TypeStageApp` nodes — it currently runs during inference where `NormCtxt` is available, so the function signature must accept a `NormCtxt` reference. Exception: for superclass chain traversal (reading `ClassDecl.superclasses` without touching type-stage functions), a minimal `NormCtxt` with an empty type-stage env is acceptable since no resolver calls are needed — superclass entailment is structural ClassDecl traversal, not type-family reduction. Types stored in runtime structs (`FnAnnotation`, etc.) are always post-normalization for ground TypeVars — no `TypeStageApp` nodes with fully-ground args survive into runtime representations. However, `FnAnnotation` for polymorphic functions stores scheme bodies that may contain `TypeStageApp` nodes with generalized TypeVar args (e.g., `TypeStageApp("AddResult", [TypeVar("a"), TypeVar("b")])`). `ast-of` on such a function returns these as `[kind: "type-stage-app"  fn: "AddResult"  args: [...]]` in the output. At each call site, `normalize()` reduces the TypeStageApp when args become ground. Add a `debug_assert!(!ty.contains_ground_type_stage_app())` at guard-creation time (in the boundary guard elaboration pass) to enforce that no fully-reducible TypeStageApp escapes into a `Guarded.expected` field.  
+**Proposed:** Add `Type::StageApp { fn_name: String, args: Vec<Type> }`. Update all exhaustive `match` arms across `src/types.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs` (~40–60 sites). Add `[kind: "type-stage-app"  fn: String  args: [<type-dict> ...]]` to the **type dict schema** used by the annotation resolver — this is distinct from `ast-of` output (which serializes `Value` nodes, not `Type::*` nodes). `collect_type_vars`, `has_type_vars`, `occurs_in` in `src/type_def.rs` must recurse into `TypeStageApp.args` — without this, TypeVars inside TypeStageApp nodes escape occurs-check and let-generalization, enabling infinite types and monomorphic FD-dependent bindings. `generalize()` in `src/type_infer.rs` must also collect TypeVars from `TypeStageApp.args` as candidates for quantification. `entails()` in `src/type_unify.rs` must call `normalize()` before comparing constraint types when those types may contain `TypeStageApp` nodes — it currently runs during inference where `NormCtxt` is available, so the function signature must accept a `NormCtxt` reference. Exception: for superclass chain traversal (reading `ClassDecl.superclasses` without touching type-stage functions), a minimal `NormCtxt` with an empty type-stage env is acceptable since no resolver calls are needed — superclass entailment is structural ClassDecl traversal, not type-family reduction. Types stored in runtime structs (`FnAnnotation`, etc.) are always post-normalization for ground TypeVars — no `TypeStageApp` nodes with fully-ground args survive into runtime representations. However, `FnAnnotation` for polymorphic functions stores scheme bodies that may contain `TypeStageApp` nodes with generalized TypeVar args (e.g., `TypeStageApp("AddResult", [TypeVar("a"), TypeVar("b")])`). `ast-of` on such a function returns these as `[kind: "type-stage-app"  fn: "AddResult"  args: [...]]` in the output. At each call site, `normalize()` reduces the TypeStageApp when args become ground. Add a `debug_assert!(!ty.contains_ground_type_stage_app())` at guard-creation time (in the boundary guard elaboration pass) to enforce that no fully-reducible TypeStageApp escapes into a `Guarded.expected` field.  
 **Impact:** Major — touches every type operation, but each arm is mechanical (normalize before proceeding).
 
 ### `src/types.rs` — `NormCtxt` and normalization subsystem

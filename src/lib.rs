@@ -12,10 +12,6 @@
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
-// TypeDiagnostic is a large struct used pervasively as the Err type across the type checker.
-// Boxing it at every return site would be invasive and would hurt readability for marginal
-// runtime benefit (errors are cold paths).
-#![allow(clippy::result_large_err)]
 // Increased recursion limit for deep Send/Sync bound evaluation through hyper/reqwest/tower
 // dependency chains (reqwest::Client -> hyper_util::Client -> Pool -> PoolInner chain).
 #![recursion_limit = "256"]
@@ -143,7 +139,7 @@ pub fn format_type_diagnostic(diag: &TypeDiagnostic, source: &str, file_name: &s
     for note in &diag.notes {
         out.push_str(&format!("  = note: {note}\n"));
     }
-    for help in &diag.help {
+    if let Some(help) = &diag.help {
         out.push_str(&format!("  = help: {help}\n"));
     }
     out
@@ -265,7 +261,7 @@ pub async fn run_loader_pipeline(
                 .map_err(|e| format!("type-stage materialization failed: {e}"))?;
             match ts_val {
                 crate::value::Value::Dict(entries) => {
-                    // Force all thunks and classify them as Resolved or Function.
+                    // Force all thunks and classify them into TypeStageEntry variants.
                     let mut map: std::collections::HashMap<
                         String,
                         crate::type_infer::TypeStageEntry,
@@ -281,30 +277,17 @@ pub async fn run_loader_pipeline(
                                     )
                                 })?;
 
-                            // Attempt TypeNode leaf conversion first.
-                            if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Resolved(ty),
-                                );
-                            } else if let Some(kind) =
-                                crate::type_normalize::typenode_typevar_kind(&val)
-                            {
-                                // TypeNode.TypeVar kind: "Operator"|"Label" → TypeStageEntry::TypeVar
-                                // Produced by builtin_core.llt for the Operator and Label type names.
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::TypeVar(kind),
-                                );
-                            } else if matches!(val, crate::value::Value::Function { .. }) {
-                                // Function → keep as ThunkId for parameterized types
-                                map.insert(
-                                    name.to_string(),
-                                    crate::type_infer::TypeStageEntry::Function(Arc::clone(thunk)),
-                                );
-                            } else {
-                                // Unknown type-stage value — not a recognized TypeNode, TypeVar, or function.
-                                // Skip it; do not insert a wrong TypeStageEntry kind.
+                            let scope_so_far = vec![map.clone()];
+                            let entry = crate::imports::classify_type_stage_entry(
+                                thunk,
+                                &val,
+                                &eval_ctx_with_frames,
+                                &scope_so_far,
+                            )
+                            .await
+                            .map_err(|e| format!("type-stage classify '{}' failed: {}", name, e))?;
+                            if let Some(e) = entry {
+                                map.insert(name.to_string(), e);
                             }
                         }
                     }
@@ -608,7 +591,7 @@ where
                 "Uri".to_string(),
                 span,
             ))),
-            value::Value::Timestamp(nanos) => visitor.visit_timestamp(*nanos, span),
+            value::Value::Timestamp(ts) => visitor.visit_timestamp(ts.as_nanosecond() as i64, span),
             value::Value::Duration(nanos) => Ok(visitor.visit_duration(*nanos)),
             value::Value::ClockCap(_) => visitor.visit_clock_cap(span),
             value::Value::Timezone(_) => visitor.visit_timezone(span),
@@ -892,11 +875,14 @@ impl ValueVisitor for TinctReprVisitor {
     fn visit_timestamp(
         &self,
         nanos: i64,
-        _span: ast::Span,
+        span: ast::Span,
     ) -> Result<String, Box<error::EvalError>> {
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("{ts}")),
-            Err(_) => Ok(format!("<timestamp:{nanos}ns>")),
+            Err(e) => Err(Box::new(error::EvalError::internal(
+                format!("invalid timestamp: {e}"),
+                span,
+            ))),
         }
     }
     fn visit_duration(&self, nanos: i64) -> String {
@@ -993,12 +979,15 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_timestamp(
         &self,
         nanos: i64,
-        _span: ast::Span,
+        span: ast::Span,
     ) -> Result<String, Box<error::EvalError>> {
         // Format as RFC 3339 for readability
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("Timestamp({})", ts)),
-            Err(_) => Ok(format!("Timestamp({} ns, invalid)", nanos)),
+            Err(e) => Err(Box::new(error::EvalError::internal(
+                format!("invalid timestamp: {e}"),
+                span,
+            ))),
         }
     }
     fn visit_duration(&self, nanos: i64) -> String {
@@ -1070,7 +1059,15 @@ pub async fn value_to_display_string(
 ///
 /// This is used by the type checker and runtime to resolve `%libdir` cap-qualified includes.
 pub fn find_libdir_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!(
+                "tinct: warning: could not determine executable path for libdir discovery: {e}"
+            );
+            return None;
+        }
+    };
     // Collect candidate stdlib dirs by walking up the directory hierarchy.
     // Each ancestor that contains a "stdlib" subdirectory is a valid candidate.
     // We try up to 4 levels up to handle both release binaries (2 levels) and
@@ -1357,8 +1354,13 @@ mod tests {
         let input = r#"[call $emit "this should not appear"]"#;
         // typecheck_source only parses, expands, desugars, resolves, and type-checks.
         // It does not evaluate — so no emit side-effect fires.
-        let _ = typecheck_source_errors_only(input).await;
-        // If we reach here without IO side-effects, the test passes.
+        // $emit is not in scope without the full prelude, so this produces a type error —
+        // what matters is that no eval happened and no stdout was written.
+        let result = typecheck_source_errors_only(input).await;
+        assert!(
+            result.is_err(),
+            "expected type error for undefined $emit reference (no prelude), got: Ok(())"
+        );
         // (Capturing stdout in a unit test would require infrastructure not worth adding.)
     }
 

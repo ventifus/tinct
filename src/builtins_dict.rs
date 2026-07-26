@@ -7,7 +7,7 @@
 //! - `keys`: Extract dict keys as an auto-indexed dict
 //! - `length`: Count dict entries
 //! - `append`: Insert value at next integer key
-//! - `builtin-get`: Primitive dict key lookup (errors on missing key)
+//! - `builtin-dict-get`: Primitive dict key lookup (errors on missing key)
 //! - `builtin-has-key?`: Returns Int 1 if key exists, Int 0 if not (O(1), no value force)
 //!
 //! **Dict single-step primitives (drive laziness from tinct side):**
@@ -245,7 +245,7 @@ pub(crate) fn builtin_length(
     })
 }
 
-/// `builtin-get`: Rust primitive for keyed access on Dict, Variant, and Proxy values.
+/// `builtin-dict-get`: Rust primitive for keyed access on Dict, Variant, and Proxy values.
 ///
 /// Takes 2 args: a key (Int or String) and a target value.
 /// Returns the value at that key, or errors if the key is not found.
@@ -258,7 +258,7 @@ pub(crate) fn builtin_length(
 /// - Proxy: invokes the proxy handler with the key string
 ///
 /// This is the single primitive backing both dot-access (`target.field`) and explicit
-/// `[get key target]`. The lowerer desugars dot-access to `[builtin-get key target]`.
+/// `[get key target]`. The lowerer desugars dot-access to `[builtin-dict-get key target]`.
 pub(crate) fn builtin_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -270,7 +270,7 @@ pub(crate) fn builtin_get(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-get", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-dict-get", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
@@ -281,7 +281,7 @@ pub(crate) fn builtin_get(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let key = value_to_hashable_key(&key_val, "builtin-get", thunk0.span.clone())?;
+        let key = value_to_hashable_key(&key_val, "builtin-dict-get", thunk0.span.clone())?;
 
         // Materialize the target
         let thunk1 = args[1].clone();
@@ -295,7 +295,7 @@ pub(crate) fn builtin_get(
     })
 }
 
-/// Inner recursive helper for `builtin-get`, handling Dict, Variant auto-unpack,
+/// Inner recursive helper for `builtin-dict-get`, handling Dict, Variant auto-unpack,
 /// TyConDef constructor constants, and Proxy dispatch.
 ///
 /// `variant_tag`: when accessing a Variant payload, carry the tag for TyConDef constant fallback.
@@ -415,7 +415,7 @@ async fn builtin_get_on_value(
                 HashableValue::Str(s) => format!("key \"{s}\""),
                 other_key => format!("key {other_key}"),
             };
-            let context = format!("builtin-get ({key_display})");
+            let context = format!("builtin-dict-get ({key_display})");
             Err(EvalError::type_mismatch_ctx(
                 context,
                 "Dict, Variant, or Proxy",
@@ -432,7 +432,7 @@ async fn builtin_get_on_value(
 /// Takes 2 args: a key (Int or String) and a dict.
 /// Returns `Int 1` if the key is present, `Int 0` if absent.
 /// Does NOT force the value at the key — O(1) spine-only lookup.
-/// Prelude composes this with `builtin-get` to implement `get?` without Rust knowing Absent.
+/// Prelude composes this with `builtin-dict-get` to implement `get?` without Rust knowing Absent.
 pub(crate) fn builtin_has_key(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -520,14 +520,16 @@ pub(crate) fn builtin_dict_has_nth(
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
-        let exists = if usize::try_from(idx)
-            .ok()
-            .and_then(|i| map.get_index(i))
-            .is_some()
-        {
-            1i64
-        } else {
-            0i64
+        if idx < 0 {
+            return Err(EvalError::user_error(
+                "builtin-dict-has-nth?: dict index must be non-negative".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        let exists = match usize::try_from(idx) {
+            Ok(i) => i64::from(map.get_index(i).is_some()),
+            Err(_) => 0i64, // idx exceeds addressable range — not in dict
         };
         ok_val(Value::Int(exists), call_span)
     })
@@ -577,7 +579,11 @@ pub(crate) fn builtin_dict_nth(
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
-        match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
+        let entry = match usize::try_from(idx) {
+            Ok(i) => map.get_index(i),
+            Err(_) => None, // idx exceeds addressable range — not in dict
+        };
+        match entry {
             Some((_, thunk)) => Ok(Arc::clone(thunk)),
             None => Err(EvalError::user_error(
                 format!(
@@ -638,14 +644,16 @@ pub(crate) fn builtin_dict_has_key_nth(
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
-        let exists = if usize::try_from(idx)
-            .ok()
-            .and_then(|i| map.get_index(i))
-            .is_some()
-        {
-            1i64
-        } else {
-            0i64
+        if idx < 0 {
+            return Err(EvalError::user_error(
+                "builtin-dict-has-key-nth?: dict index must be non-negative".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        let exists = match usize::try_from(idx) {
+            Ok(i) => i64::from(map.get_index(i).is_some()),
+            Err(_) => 0i64, // idx exceeds addressable range — not in dict
         };
         ok_val(Value::Int(exists), call_span)
     })
@@ -694,7 +702,11 @@ pub(crate) fn builtin_dict_key_nth(
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
-        match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
+        let entry = match usize::try_from(idx) {
+            Ok(i) => map.get_index(i),
+            Err(_) => None, // idx exceeds addressable range — not in dict
+        };
+        match entry {
             Some((key, _)) => {
                 let key_val = hashable_value_to_value(key);
                 ok_val(key_val, call_span)
@@ -758,14 +770,16 @@ pub(crate) fn builtin_dict_has_kv_nth(
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
-        let exists = if usize::try_from(idx)
-            .ok()
-            .and_then(|i| map.get_index(i))
-            .is_some()
-        {
-            1i64
-        } else {
-            0i64
+        if idx < 0 {
+            return Err(EvalError::user_error(
+                "builtin-dict-has-kv-nth?: dict index must be non-negative".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        let exists = match usize::try_from(idx) {
+            Ok(i) => i64::from(map.get_index(i).is_some()),
+            Err(_) => 0i64, // idx exceeds addressable range — not in dict
         };
         ok_val(Value::Int(exists), call_span)
     })
@@ -814,7 +828,11 @@ pub(crate) fn builtin_dict_kv_nth(
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
-        match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
+        let entry = match usize::try_from(idx) {
+            Ok(i) => map.get_index(i),
+            Err(_) => None, // idx exceeds addressable range — not in dict
+        };
+        match entry {
             Some((key, val_thunk)) => {
                 let key_val = hashable_value_to_value(key);
                 let mut kv: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();

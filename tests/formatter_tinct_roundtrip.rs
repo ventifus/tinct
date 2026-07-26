@@ -11,10 +11,16 @@ fn test_file(_src: &str) -> Arc<str> {
 
 // format_source_tinct is async; run it synchronously inside the large-stack thread.
 fn fmt_sync(input: &str, script: &std::path::Path) -> Result<String, String> {
+    let script_source = std::fs::read_to_string(script)
+        .map_err(|e| format!("cannot read formatter script {}: {e}", script.display()))?;
+    let script_name = script
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("formatter.llt");
     tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(format_source_tinct(input, script))
+        .block_on(format_source_tinct(input, &script_source, script_name))
 }
 
 // format_source_tinct_with_dir triggers deep recursion (macro expansion + AST dict

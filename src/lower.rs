@@ -8,7 +8,7 @@
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
-//! - `Field` → `Call(builtin-get, [Str/Int(key), target])` (unified key-based lookup)
+//! - `Field` → `Call(builtin-dict-get, [Str/Int(key), target])` (unified key-based lookup)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
 //! - All other variants: structural lowering, recursing into child nodes
 
@@ -226,7 +226,7 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
     match name {
         "Int" => Type::Int,
         "Float" => Type::Float,
-        "String" | "Str" => Type::Str,
+        "String" => Type::Str,
         "Bytes" => Type::Bytes,
         "Proxy" => Type::Proxy,
         // Variadic 0-required-param function = any callable (Function or Builtin).
@@ -319,20 +319,20 @@ fn lower_expr(
             ..
         } => {
             // Build the getter function Var and the key argument.
-            // The resolver writes a VarAddr for builtin-get into Field.resolution.
-            // All dot-access desugars to [builtin-get key target] — one correct path.
+            // The resolver writes a VarAddr for builtin-dict-get into Field.resolution.
+            // All dot-access desugars to [builtin-dict-get key target] — one correct path.
             let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
                 state @ (Some(None) | None) => {
                     let why = if state.is_none() {
                         "resolver did not run on this node"
                     } else {
-                        "builtin-get not found in any scope (resolver ran but returned None)"
+                        "builtin-dict-get not found in any scope (resolver ran but returned None)"
                     };
                     diagnostics.push(LowerDiagnostic {
                         kind: LowerDiagnosticKind::Error,
                         message: format!(
-                            "builtin-get: missing resolver coordinates for `.{}` — {}",
+                            "builtin-dict-get: missing resolver coordinates for `.{}` — {}",
                             field, why
                         ),
                         span: arc.span.clone(),
@@ -348,7 +348,7 @@ fn lower_expr(
 
             let getter_var = Arc::new(crate::ast::Spanned::new(
                 CoreExpr::Var {
-                    name: "builtin-get".to_string(),
+                    name: "builtin-dict-get".to_string(),
                     addr: getter_addr,
                     annotation: None,
                 },
@@ -1281,12 +1281,10 @@ fn annotation_dispatch_tag(ann: &crate::ast::Annotation) -> Option<String> {
         Annotation::Annotated(base, inner) => {
             // @A@B form — combine both parts.
             let base_tag = annotation_dispatch_tag(base)?;
-            let inner_tag = annotation_dispatch_tag(inner).unwrap_or_default();
-            Some(if inner_tag.is_empty() {
-                base_tag
-            } else {
-                format!("{}@{}", base_tag, inner_tag)
-            })
+            match annotation_dispatch_tag(inner) {
+                Some(inner_tag) => Some(format!("{}@{}", base_tag, inner_tag)),
+                None => Some(base_tag),
+            }
         }
         Annotation::Quote => None,
     }
@@ -1694,8 +1692,6 @@ fn infer_child_role_from_type_expr(expr: &SurfaceExpression) -> &'static str {
 /// 1. Bare VarRef uppercase → unit constructor (e.g., `Red`, `None`)
 /// 2. Annotated uppercase → unit constructor with annotation
 /// 3. Call with uppercase func + no named args → unit constructor (e.g., `[Ok a]`, `[Error String]`)
-/// 4. (legacy) Call with uppercase func + named args → named-field constructor (e.g., `[Circle r: Int]`, old form)
-/// 5. (legacy) Dict with first positional VarRef/Annotated + keyed entries → named-field constructor
 /// 6. (T-1538 new form) Dict with named uppercase-key entries → payload/unit constructors:
 ///    `File: [path: String]` (payload), `Noop` (unit)
 fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorInfo> {
@@ -1726,169 +1722,22 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     field_annotations: indexmap::IndexMap::new(),
                 });
             }
-            // Call with uppercase func → unit or named-field constructor
+            // Call with uppercase func → unit constructor (form 3).
             // [Ok a] → Call { func: VarRef("Ok"), args: [VarRef("a")], named_args: [] } → unit
-            // [Circle r: Int] → Call { func: VarRef("Circle"), named_args: [(r, Int)] } → named-field
-            //
-            // T-1357: With lookup-table constants, `named_args` may contain a mix of:
-            //   - Constant entries: `name: literal` (Int/Float/Str/U64 value) → NOT a runtime field
-            //   - Payload field entries: `name: TypeExpr` (non-literal) → runtime field
-            // And `args` may contain:
-            //   - Annotated positional entries: `name@TypeExpr` → named runtime payload field
-            //   - Bare positional entries: old-style positional payload (type params for unit ctors)
-            SurfaceExpression::Call {
-                func,
-                args,
-                named_args,
-                ..
-            } => {
+            // Old named-arg form [Circle r: Int] (form 4) and annotated positional form (form 5)
+            // are both rejected at parse time by T-1539 and never reach this branch.
+            SurfaceExpression::Call { func, .. } => {
                 if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                     if is_ctor(name) {
-                        // Payload fields from named_args: only non-literal values are runtime fields.
-                        // Literal values (Int/Float/Str/U64/StringLiteral) are compile-time constants.
-                        let is_literal = |expr: &SurfaceExpression| {
-                            matches!(
-                                expr,
-                                SurfaceExpression::Int(_)
-                                    | SurfaceExpression::U64(_)
-                                    | SurfaceExpression::Float(_)
-                                    | SurfaceExpression::StringLiteral { .. }
-                            )
-                        };
-                        let payload_named_fields: Vec<String> = named_args
-                            .iter()
-                            .filter(|na| !is_literal(&na.node.value.expr))
-                            .map(|na| na.node.name.clone())
-                            .collect();
-
-                        // Payload fields from annotated positional args (data@String form).
-                        // Now represented as VarRef { name, annotation: Some(_) }.
-                        let payload_annotated_fields: Vec<String> = args
-                            .iter()
-                            .filter_map(|arg| {
-                                if let SurfaceExpression::VarRef {
-                                    name,
-                                    annotation: Some(_),
-                                    ..
-                                } = &arg.expr
-                                {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        let is_unit =
-                            payload_named_fields.is_empty() && payload_annotated_fields.is_empty();
-                        let fields = if is_unit {
-                            vec![]
-                        } else {
-                            // Collect all payload fields: annotated positional args first,
-                            // then named args (non-literal values are runtime fields).
-                            let mut all_fields = payload_annotated_fields;
-                            all_fields.extend(payload_named_fields);
-                            all_fields
-                        };
-                        // Extract @Child field annotations from named_args and annotated positional args.
-                        let mut field_anns = indexmap::IndexMap::new();
-                        for na in named_args.iter() {
-                            if let Some(ref ann) = na.node.annotation {
-                                if matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
-                                {
-                                    let role = infer_child_role_from_type_expr(&na.node.value.expr);
-                                    field_anns.insert(na.node.name.clone(), role.to_string());
-                                }
-                            }
-                        }
-                        for arg in args.iter() {
-                            if let SurfaceExpression::VarRef {
-                                name: field_name,
-                                annotation: Some(ref ann),
-                                ..
-                            } = &arg.expr
-                            {
-                                if matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
-                                {
-                                    // For annotated positional args, the "type expr" is not available
-                                    // in this form — default to "One".
-                                    field_anns.insert(field_name.clone(), "One".to_string());
-                                }
-                            }
-                        }
                         ctors.push(ConstructorInfo {
                             name: name.clone(),
-                            is_unit,
+                            is_unit: true,
                             annotation: None,
-                            fields,
-                            field_annotations: field_anns,
+                            fields: vec![],
+                            field_annotations: indexmap::IndexMap::new(),
                         });
                     }
                 }
-            }
-            // Dict `[Constructor field: Type ...]` — single named-field constructor
-            SurfaceExpression::Dict(entries) if !entries.is_empty() => {
-                let first = &entries[0];
-                if first.node.key.is_some() {
-                    return;
-                }
-                // Extract constructor name and annotation from the first (positional) entry.
-                // Both plain and annotated VarRef are now VarRef { name, annotation }.
-                let (ctor_name, ctor_annotation) = match &first.node.value.expr {
-                    SurfaceExpression::VarRef {
-                        name, annotation, ..
-                    } if is_ctor(name) => {
-                        let ann = annotation.as_ref().and_then(|ann| match &ann.node {
-                            crate::ast::Annotation::PropertyDict(entries)
-                                if !entries.is_empty() =>
-                            {
-                                Some(entries.clone())
-                            }
-                            _ => None,
-                        });
-                        (name.clone(), ann)
-                    }
-                    _ => return,
-                };
-                let is_unit =
-                    entries[1..].is_empty() || entries[1..].iter().all(|e| e.node.key.is_none());
-                // Collect field names and @Child annotations from keyed entries.
-                let mut fields: Vec<String> = Vec::new();
-                let mut field_anns = indexmap::IndexMap::new();
-                if !is_unit {
-                    for e in &entries[1..] {
-                        if let Some(k) = &e.node.key {
-                            let (field_name, has_child_ann) = match &k.expr {
-                                SurfaceExpression::VarRef {
-                                    name, annotation, ..
-                                } => {
-                                    let is_child = annotation.as_ref().is_some_and(|ann| {
-                                        matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
-                                    });
-                                    (Some(name.clone()), is_child)
-                                }
-                                SurfaceExpression::StringLiteral { content, .. } => {
-                                    (Some(content.clone()), false)
-                                }
-                                _ => (None, false),
-                            };
-                            if let Some(name) = field_name {
-                                if has_child_ann {
-                                    let role = infer_child_role_from_type_expr(&e.node.value.expr);
-                                    field_anns.insert(name.clone(), role.to_string());
-                                }
-                                fields.push(name);
-                            }
-                        }
-                    }
-                }
-                ctors.push(ConstructorInfo {
-                    name: ctor_name,
-                    is_unit,
-                    annotation: ctor_annotation,
-                    fields,
-                    field_annotations: field_anns,
-                });
             }
             _ => {}
         }
@@ -1980,28 +1829,13 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     }
                 }
             } else {
-                // Old body forms: single-constructor dict or union of positional constructors.
-                //
-                // Distinguish "single named-field constructor dict" from "union of constructors":
-                // - Constructor dict: first positional is VarRef/Annotated uppercase AND has keyed entries
-                // - Union: each positional entry is a separate constructor
-                let is_single_ctor_dict = entries.first().is_some_and(|first| {
-                    if first.node.key.is_some() {
-                        return false;
-                    }
-                    // Both plain and annotated VarRef are now VarRef { name, annotation }.
-                    let first_is_ctor = matches!(&first.node.value.expr,
-                        SurfaceExpression::VarRef { name, .. } if is_ctor(name));
-                    let has_keyed = entries[1..].iter().any(|e| e.node.key.is_some());
-                    first_is_ctor && has_keyed
-                });
-                if is_single_ctor_dict {
-                    try_extract_one(body, &mut ctors);
-                } else {
-                    for entry in entries {
-                        if entry.node.key.is_none() {
-                            try_extract_one(&entry.node.value.expr, &mut ctors);
-                        }
+                // Old body form: union of positional unit constructors.
+                // Each positional entry is a separate unit constructor (form 3).
+                // The old single-constructor dict form (form 5, first positional VarRef + keyed entries)
+                // is rejected at parse time by T-1539 and never appears here.
+                for entry in entries {
+                    if entry.node.key.is_none() {
+                        try_extract_one(&entry.node.value.expr, &mut ctors);
                     }
                 }
             }

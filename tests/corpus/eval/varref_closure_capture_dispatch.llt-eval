@@ -1,0 +1,8 @@
+# ClosureCapture VarAddr path: a function captures a variable from its enclosing dict.
+# f is a zero-arg function; $outer is a free variable that the resolver converts to
+# VarAddr::ClosureCapture(0). At call time eval_core.rs looks it up via frame.closure_env[0].
+[outer: 42  f: [fn [let] $outer]  result: [f]]
+---
+%.result
+=== out
+Int(42)

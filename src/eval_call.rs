@@ -372,8 +372,8 @@ pub(crate) async fn bind_args_thunks(
     // Named args always go into the rest bucket (keyed by their string name). They are not
     // type-discriminated into typed buckets because their names carry caller intent.
     //
-    // Typed buckets are bound as lazy Seq cons-lists (Value::Variant Seq.Cons cells).
-    // The rest bucket is bound as Dict{int: positional, string: named}.
+    // Typed buckets are collected into auto-indexed Value::Dict entries (integer keys 0, 1, 2, ...).
+    // The rest bucket is a Value::Dict with integer keys for positional args and string keys for named args.
     if has_any_variadic {
         let extra_positionals = &positional[max_positional.min(positional.len())..];
 
@@ -454,8 +454,7 @@ pub(crate) async fn bind_args_thunks(
             for (i, thunk) in bucket_args.into_iter().enumerate() {
                 dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
             }
-            param_slots[slot] =
-                Some(Arc::new(Thunk::value(Value::Dict(dict), call_span.clone())));
+            param_slots[slot] = Some(Arc::new(Thunk::value(Value::Dict(dict), call_span.clone())));
         }
 
         // BIND-RESULT: Bind the untyped rest bucket as a Dict (if present).

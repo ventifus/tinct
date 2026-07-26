@@ -8,7 +8,7 @@
   [parsed:  [builtin-parse src "test.llt"]]
   [desug:   [builtin-desugar parsed.program]]
   [docs:    [builtin-program-docs desug]]
-  [doc0:    [builtin-get 0 docs]]
+  [doc0:    [builtin-dict-get 0 docs]]
   [resolved: [builtin-resolve doc0 []]]
   [tc:      [builtin-make-type-ctx]]
   [typed:   [builtin-typecheck-doc resolved.doc tc]]

@@ -37,6 +37,7 @@ use crate::ast::Span;
 use crate::builtins::ok_val;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
+use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value};
 
@@ -580,7 +581,11 @@ pub(crate) fn builtin_recv(
                 // Return value directly on success, [Closed] if sender dropped
                 match result {
                     Ok(value) => ok_val(value, call_span),
-                    Err(_) => {
+                    // tokio::sync::oneshot::error::RecvError is a tuple struct with a private
+                    // field — its constructor is not accessible outside tokio, so we cannot
+                    // match `RecvError(..)` by name. This is the only error variant produced
+                    // by oneshot Receiver::await (sender was dropped before sending).
+                    Err(_recv_err) => {
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
@@ -792,7 +797,7 @@ pub(crate) fn builtin_try_send(
 /// with the received value. Returns `{ok: handler_result}` on success; `{closed: []}` if
 /// all channels are closed (not an error). Context cancellation still raises an exception.
 ///
-/// B-468: The discriminated dict return (`{ok: ...}` vs `{closed: ...}`) prevents protocol
+/// The discriminated dict return (`{ok: ...}` vs `{closed: ...}`) prevents protocol
 /// ambiguity where a handler returning a Closed variant would prematurely terminate select loops.
 ///
 /// Channel type semantics:
@@ -965,7 +970,7 @@ pub(crate) fn builtin_select_once(
                         // this iteration — we will retry after yield_now().
                         let mut rx = match channel_inner.receiver.try_lock() {
                             Ok(guard) => guard,
-                            Err(_) => continue, // lock contended, try next channel
+                            Err(tokio::sync::TryLockError { .. }) => continue, // lock contended, try next channel
                         };
 
                         match rx.try_recv() {
@@ -978,7 +983,7 @@ pub(crate) fn builtin_select_once(
                                     closed_count += 1;
                                 }
                                 if closed_count == sources_len {
-                                    // B-468: All channels closed — return {closed: []}
+                                    // All channels closed — return {closed: []}
                                     // (discriminated from handler result {ok: v}).
                                     let mut closed_map = IndexMap::new();
                                     closed_map.insert(
@@ -1011,7 +1016,7 @@ pub(crate) fn builtin_select_once(
                                     closed_count += 1;
                                 }
                                 if closed_count == sources_len {
-                                    // B-468: All channels closed — return {closed: []}
+                                    // All channels closed — return {closed: []}
                                     // (discriminated from handler result {ok: v}).
                                     let mut closed_map = IndexMap::new();
                                     closed_map.insert(
@@ -1031,7 +1036,7 @@ pub(crate) fn builtin_select_once(
                         // Try to take the receiver (single-use)
                         let mut rx_opt = match receiver_inner.receiver.try_lock() {
                             Ok(guard) => guard,
-                            Err(_) => continue, // lock contended, try next channel
+                            Err(tokio::sync::TryLockError { .. }) => continue, // lock contended, try next channel
                         };
 
                         // Check if the receiver has already been consumed
@@ -1075,7 +1080,7 @@ pub(crate) fn builtin_select_once(
                                     closed_count += 1;
                                 }
                                 if closed_count == sources_len {
-                                    // B-468: All channels closed — return {closed: []}
+                                    // All channels closed — return {closed: []}
                                     // (discriminated from handler result {ok: v}).
                                     let mut closed_map = IndexMap::new();
                                     closed_map.insert(
@@ -1107,29 +1112,19 @@ pub(crate) fn builtin_select_once(
                             annotation: _,
                             ..
                         } => {
-                            if params.len() != 1 {
-                                return Err(EvalError::user_error(
-                                    format!(
-                                        "select-once handler expects 1 parameter, got {}",
-                                        params.len()
-                                    ),
-                                    call_span,
-                                )
-                                .into());
-                            }
-
-                            // T-1558: Use closure_env as call scope.
-                            // T-1555 gap: select-once handler closures skip bind_args_thunks — single-param function body evaluated
-                            // directly in closure_env rather than a dedicated call frame. Pattern variables not bound
-                            // in FlatEnv. Tracked as T-1555 match-arm-closures gap.
-                            eval_core_expr(
-                                &body,
-                                &crate::value::EvalFrame::for_function_call(
-                                    Arc::clone(&closure_env),
-                                    vec![],
-                                ),
-                                &ctx,
-                            )
+                            // Invoke the handler function with the received value as its single
+                            // argument, using the standard call path (bind_args_thunks) so that
+                            // pattern variables are bound in a proper call frame.
+                            let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
+                            invoke_function(&CallContext {
+                                params: &params,
+                                body: &body,
+                                closure_env,
+                                positional: &[arg_thunk],
+                                named: None,
+                                call_span: call_span.clone(),
+                                ctx: &ctx,
+                            })
                             .await?
                         }
                         Value::Builtin(def) => {
@@ -1154,7 +1149,7 @@ pub(crate) fn builtin_select_once(
                         }
                     };
 
-                    // B-468: Wrap handler result in {ok: handler_result} to distinguish
+                    // Wrap handler result in {ok: handler_result} to distinguish
                     // from the {closed: []} return. Prelude's select-impl uses
                     // builtin-has-key? "ok" to discriminate, avoiding the protocol
                     // ambiguity where a handler returning Closed.Closed would
@@ -1183,16 +1178,15 @@ pub(crate) fn builtin_select_once(
 ///
 /// Signature: `expr → Task@T`
 ///
-/// Spawns evaluation of `expr` immediately via spawn_local. Returns a Task handle
-/// that can be awaited. This is a hint to the runtime to start work now rather than
-/// waiting for demand.
+/// Spawns evaluation of `expr` on the tokio multi-threaded runtime via `tokio::spawn`.
+/// Returns a Task handle that can be awaited. This is a hint to the runtime to start
+/// work eagerly rather than waiting for demand — semantically equivalent to `task`,
+/// but the name communicates parallelism intent at the call site.
 ///
-/// Implementation: identical to `task` but the name signals eager intent.
+/// Both `par` and `task` use `tokio::spawn` internally; the distinction is stylistic.
 pub(crate) fn builtin_par(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    // For now, par is just an alias for task
-    // In a full multi-threaded implementation, this would use tokio::spawn instead of spawn_local
     builtin_task(ctx_arg)
 }
 
@@ -1312,11 +1306,20 @@ pub(crate) fn builtin_signal_channel(
                                 let (sig_tycon, sig_ctor) = sig_name
                                     .split_once('.')
                                     .unwrap_or(("", sig_name.as_str()));
-                                let _ = tx_clone.try_send(Value::Variant {
+                                match tx_clone.try_send(Value::Variant {
                                     tycon: Arc::from(sig_tycon),
                                     ctor: Arc::from(sig_ctor),
                                     payload: None,
-                                });
+                                }) {
+                                    Ok(_) => {}
+                                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                        // Receiver dropped the channel — stop sending.
+                                        break;
+                                    }
+                                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                        // Full is expected (capacity=1, last-write-wins); drop the signal.
+                                    }
+                                }
                             }
                         }
                     }
@@ -1441,15 +1444,31 @@ pub(crate) fn builtin_timer_channel(
                     _ = interval.tick() => {
                         // Get current time as nanoseconds since Unix epoch.
                         // Respects ClockCapInner::Fixed for deterministic testing.
-                        let now_nanos = match &clock_inner {
-                            ClockCapInner::Real => std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_nanos() as i64,
-                            ClockCapInner::Fixed(nanos) => *nanos,
+                        let now_ts = match &clock_inner {
+                            ClockCapInner::Real => {
+                                let nanos = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .expect("system clock is before Unix epoch")
+                                    .as_nanos() as i64;
+                                // All i64 nanosecond values are within jiff::Timestamp's range.
+                                jiff::Timestamp::from_nanosecond(nanos as i128)
+                                    .expect("i64 nanoseconds are always within jiff::Timestamp range")
+                            }
+                            ClockCapInner::Fixed(nanos) => {
+                                // All i64 nanosecond values are within jiff::Timestamp's range.
+                                jiff::Timestamp::from_nanosecond(*nanos as i128)
+                                    .expect("i64 nanoseconds are always within jiff::Timestamp range")
+                            }
                         };
                         // Non-blocking: if the receiver hasn't consumed the previous tick, drop this one.
-                        let _ = tx_clone.try_send(Value::Timestamp(now_nanos));
+                        // Full is expected (last-tick-wins, capacity=1); Closed means consumer dropped.
+                        match tx_clone.try_send(Value::Timestamp(now_ts)) {
+                            Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                // Receiver dropped the channel — stop ticking.
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1537,10 +1556,40 @@ pub(crate) fn builtin_watch_channel(
 
         // Spawn the filesystem polling task — all captured types are Send (Dir, String, Sender, CancellationToken)
         let handle = tokio::spawn(async move {
-            // Get the initial metadata to establish a baseline
+            // Get the initial metadata to establish a baseline.
+            // NotFound is expected (file not yet created) — start with no baseline.
+            // Other errors (permission denied, I/O error) terminate the task: proceeding
+            // without a valid baseline would produce incorrect change notifications.
+            // Dropping tx_clone closes the channel so the consumer sees a closed channel.
             let mut last_modified = match dir.metadata(&path) {
-                Ok(meta) => meta.modified().ok(),
-                Err(_) => None,
+                Ok(meta) => {
+                    match meta.modified() {
+                        Ok(mtime) => Some(mtime),
+                        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                            // Platform does not support mtime — treat as unknown baseline.
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "watch-channel: fatal error reading initial mtime for {:?}: {}",
+                                path, e
+                            );
+                            drop(tx_clone);
+                            return;
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    eprintln!(
+                        "watch-channel: fatal error reading initial metadata for {:?}: {}",
+                        path, e
+                    );
+                    // Close the channel so recv on the consumer side returns None (closed),
+                    // then terminate the task. Do not proceed with a None baseline.
+                    drop(tx_clone);
+                    return;
+                }
             };
 
             loop {
@@ -1553,29 +1602,62 @@ pub(crate) fn builtin_watch_channel(
                         // Check current metadata
                         match dir.metadata(&path) {
                             Ok(meta) => {
-                                if let Ok(current_modified) = meta.modified() {
+                                let current_modified_opt = match meta.modified() {
+                                    Ok(mtime) => Some(mtime),
+                                    Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                                        // Platform has no mtime — skip change detection this tick.
+                                        None
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "watch-channel: fatal error reading mtime for {:?}: {}",
+                                            path, e
+                                        );
+                                        drop(tx_clone);
+                                        return;
+                                    }
+                                };
+                                if let Some(current_modified) = current_modified_opt {
                                     // Compare with last known modification time
                                     // Only send if we have a previous baseline AND it's different
                                     if let Some(last) = last_modified {
                                         if current_modified != last {
                                             // File changed — send null on the channel
-                                            // Use try_send (non-blocking) for last-write-wins semantics
-                                            let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                                            // Full is expected (last-write-wins, capacity=1); Closed means consumer dropped.
+                                            match tx_clone.try_send(Value::Dict(IndexMap::new())) {
+                                                Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                                            }
                                             last_modified = Some(current_modified);
                                         }
                                     } else {
                                         // File appeared — treat as a change
-                                        let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                                        match tx_clone.try_send(Value::Dict(IndexMap::new())) {
+                                            Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                                        }
                                         last_modified = Some(current_modified);
                                     }
                                 }
                             }
-                            Err(_) => {
-                                // File no longer exists or is inaccessible — treat as a change
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                // File disappeared — treat as a change if we had a baseline
                                 if last_modified.is_some() {
-                                    let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                                    match tx_clone.try_send(Value::Dict(IndexMap::new())) {
+                                        Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                                    }
                                     last_modified = None;
                                 }
+                            }
+                            Err(e) => {
+                                // Genuine I/O error — watcher cannot continue reliably
+                                eprintln!(
+                                    "watch-channel: fatal error polling metadata for {:?}: {}",
+                                    path, e
+                                );
+                                drop(tx_clone);
+                                return;
                             }
                         }
                     }
@@ -1751,17 +1833,14 @@ pub(crate) fn builtin_with_timeout(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let _clock_inner: ClockCapInner = match &clock_val {
-            Value::ClockCap(inner) => inner.as_ref().clone(),
-            _ => {
-                return Err(EvalError::type_mismatch(
-                    "ClockCap",
-                    clock_val.type_name(),
-                    call_span.clone(),
-                )
-                .into())
-            }
-        };
+        if !matches!(clock_val, Value::ClockCap(_)) {
+            return Err(EvalError::type_mismatch(
+                "ClockCap",
+                clock_val.type_name(),
+                call_span.clone(),
+            )
+            .into());
+        }
 
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
         let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
@@ -1858,17 +1937,14 @@ pub(crate) fn builtin_with_deadline(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        let _clock_inner: ClockCapInner = match &clock_val {
-            Value::ClockCap(inner) => inner.as_ref().clone(),
-            _ => {
-                return Err(EvalError::type_mismatch(
-                    "ClockCap",
-                    clock_val.type_name(),
-                    call_span.clone(),
-                )
-                .into())
-            }
-        };
+        if !matches!(clock_val, Value::ClockCap(_)) {
+            return Err(EvalError::type_mismatch(
+                "ClockCap",
+                clock_val.type_name(),
+                call_span.clone(),
+            )
+            .into());
+        }
 
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
         let ts_val = materialize(&ts_thunk, Some(&call_span), &ctx).await?;
@@ -1888,7 +1964,7 @@ pub(crate) fn builtin_with_deadline(
                 // Treat Int as Unix milliseconds — convert to nanoseconds for uniform handling.
                 n.saturating_mul(1_000_000)
             }
-            Value::Timestamp(nanos) => nanos,
+            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Int or Timestamp",
@@ -1907,7 +1983,12 @@ pub(crate) fn builtin_with_deadline(
         // The ClockCap gate is for authorization, not for deterministic deadline behavior.
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("system clock is before Unix epoch: {e}"),
+                    call_span.clone(),
+                )
+            })?
             .as_nanos() as i64;
         let delay_ns = (deadline_unix_ns - now_ns).max(0) as u64;
 
@@ -2102,7 +2183,18 @@ pub(crate) fn builtin_drain(
             // background loops (signal/timer/watch) will have already exited cleanly via their
             // select! branch when cancel-root fired, so their abort() is also a no-op.
             handle.abort();
-            let _ = handle.await; // Ok(()) for clean exit, Err(JoinError::Cancelled) for aborted
+            match handle.await {
+                Ok(()) => {}                     // task completed normally
+                Err(e) if e.is_cancelled() => {} // expected: abort() was called
+                Err(e) => {
+                    // Task panicked — this is a bug; propagate as an internal error.
+                    return Err(EvalError::internal(
+                        format!("async background task panicked during drain: {e}"),
+                        call_span,
+                    )
+                    .into());
+                }
+            }
         }
 
         // Return null (empty dict)
@@ -2273,7 +2365,7 @@ pub(crate) fn builtin_with_context(
 }
 
 // =============================================================================
-// Reactive cell primitives (T-831)
+// Reactive cell primitives
 // =============================================================================
 
 /// `reactive-cell`: Create a new reactive cell with an initial value.

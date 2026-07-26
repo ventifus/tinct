@@ -43,33 +43,24 @@ thread_local! {
 }
 
 /// Evaluate a sequence of surface expression nodes as a scope chain, returning the
-/// last expression's thunk lazily and the document's root scope EnvId (bridge placeholder).
-///
-/// `parent_env_id`: retained as a bridge parameter for callers (builtins_meta.rs) that
-/// thread scope IDs. In the EvalFrame architecture, scope tracking is done via EvalFrame
-/// closure-conversion rather than arena env_ids. This parameter is accepted but not used
-/// for arena allocation (ScopeArena has been deleted).
+/// last expression's thunk lazily.
 ///
 /// `initial_group`: when `Some`, seeds the accumulated group with the given thunks before
 /// processing any expression node. Used by `builtin-eval` to inject env-dict thunks as the
 /// initial accumulated group so that LetrecGroupMember references resolve into the
 /// caller-supplied environment.
 ///
-/// Returns `(last_thunk, scope_id)` where `scope_id` is 0 (bridge placeholder — the
-/// env_id concept is being migrated to EvalFrame).
+/// Returns the thunk for the last expression in the sequence.
 pub(crate) async fn eval_document_exprs_with_env(
     expr_nodes: &[Arc<SurfaceNode>],
     ctx: &Arc<EvalContext>,
-    parent_env_id: Option<u32>,
     initial_group: Option<Vec<Arc<Thunk>>>,
-) -> EvalResult<(Arc<Thunk>, u32)> {
-    let fallback_env_id = parent_env_id.unwrap_or(0);
-
+) -> EvalResult<Arc<Thunk>> {
     if expr_nodes.is_empty() {
-        return Ok((
-            Arc::new(Thunk::value(Value::Dict(IndexMap::new()), rust_span!())),
-            fallback_env_id,
-        ));
+        return Ok(Arc::new(Thunk::value(
+            Value::Dict(IndexMap::new()),
+            rust_span!(),
+        )));
     }
 
     // Sequential document evaluation using accumulated_group.
@@ -115,8 +106,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             // the loader program at their canonical LGM slots.
             ctx.set_init_accumulated_group(Arc::clone(&spine));
             let thunk = crate::eval_core::eval_core_expr(&core_spanned, &frame, ctx).await?;
-            // Return fallback_env_id as bridge placeholder for callers that use the scope_id.
-            return Ok((thunk, fallback_env_id));
+            return Ok(thunk);
         }
 
         // Intermediate expression: eval and materialize to extract its exported bindings.
@@ -166,11 +156,11 @@ pub(crate) async fn eval_document_exprs_with_env(
 /// function accepts CoreExprs that are already lowered and evaluates them directly via
 /// `eval_core_expr`.
 ///
-/// `initial_group`: the env-dict thunks in insertion order. They occupy slots
-/// `root_group.len()..root_group.len()+initial_group.len()-1` in accumulated_group,
-/// matching the resolver's `resolve_surface_document_with_env_dict` which assigns
-/// `LGM(root_group_len+i)` to env-dict names and then cumulative slots
-/// starting at `root_group_len+env_names.len()` to document dict entries.
+/// `initial_group`: the env-dict thunks in insertion order. The env-dict IS the full
+/// scope — no root_spine prefix. Thunk j occupies slot j directly, matching the
+/// resolver's `resolve_surface_document_with_env_dict` called with `root_group_len=0`
+/// which assigns `LGM(j)` to the j-th env-dict name and cumulative slots starting
+/// at `env_names.len()` to document dict entries.
 ///
 /// Returns the last expression's thunk. The caller is responsible for materializing
 /// to a Dict (exports). Intermediate dict expressions are materialized to extract their
@@ -191,9 +181,11 @@ pub(crate) async fn eval_core_document_exprs(
         )));
     }
 
-    // Build accumulated_group: root-scope entries first, then env-dict entries.
+    // Build accumulated_group from env-dict entries only.
+    // The env-dict IS the full scope — no root_spine prefix. The resolver assigns
+    // LGM(j) directly for the j-th env-dict name (root_group_len=0 in builtin_resolve).
     // Document dict entries are appended at cumulative slots as each dict is evaluated.
-    let mut spine = ctx.root_spine.extend(initial_group);
+    let mut spine = crate::value::GroupSpine::from_flat(initial_group);
 
     let last_idx = core_entries.len() - 1;
 
@@ -266,7 +258,7 @@ pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    eval_surface_file_from_env(program, ctx, None).await
+    eval_surface_file_from_env(program, ctx).await
 }
 
 /// Evaluate a SurfaceProgram with an optional initial value injected into the environment.
@@ -302,29 +294,23 @@ async fn eval_surface_file_with_initial_group(
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
     for surface_doc in &program.documents {
         let expr_nodes: Vec<Arc<SurfaceNode>> = surface_doc.node.expressions().cloned().collect();
-        last = eval_document_exprs_with_env(&expr_nodes, ctx, None, initial_group.clone())
-            .await
-            .map(|(thunk, _env_id)| thunk)?;
+        last = eval_document_exprs_with_env(&expr_nodes, ctx, initial_group.clone()).await?;
     }
     Ok(last)
 }
 
-/// Evaluate a SurfaceProgram starting from the given parent env.
+/// Evaluate a SurfaceProgram, returning the last expression's thunk.
 ///
-/// Each document's expression scope chain is rooted at `parent_env_id` so that
-/// variable lookups can reach slots defined in that env (e.g. `%` for pipeline input).
-/// When `parent_env_id` is `None`, behavior is identical to `eval_surface_file`.
+/// Sequences through each document's expression scope chain. Identical to
+/// `eval_surface_file` but called as the underlying implementation.
 async fn eval_surface_file_from_env(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
-    parent_env_id: Option<u32>,
 ) -> EvalResult<Arc<Thunk>> {
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
     for surface_doc in &program.documents {
         let expr_nodes: Vec<Arc<SurfaceNode>> = surface_doc.node.expressions().cloned().collect();
-        last = eval_document_exprs_with_env(&expr_nodes, ctx, parent_env_id, None)
-            .await
-            .map(|(thunk, _env_id)| thunk)?;
+        last = eval_document_exprs_with_env(&expr_nodes, ctx, None).await?;
     }
     Ok(last)
 }
@@ -692,7 +678,9 @@ impl EvalContext {
             tycon_env: {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
-                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                    child_lock
+                        .set(std::sync::Arc::clone(env))
+                        .expect("impossible: fresh OnceLock already set");
                 }
                 child_lock
             },
@@ -731,7 +719,9 @@ impl EvalContext {
             tycon_env: {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
-                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                    child_lock
+                        .set(std::sync::Arc::clone(env))
+                        .expect("impossible: fresh OnceLock already set");
                 }
                 child_lock
             },
@@ -773,7 +763,9 @@ impl EvalContext {
             tycon_env: {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
-                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                    child_lock
+                        .set(std::sync::Arc::clone(env))
+                        .expect("impossible: fresh OnceLock already set");
                 }
                 child_lock
             },
@@ -810,7 +802,9 @@ impl EvalContext {
             tycon_env: {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
-                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                    child_lock
+                        .set(std::sync::Arc::clone(env))
+                        .expect("impossible: fresh OnceLock already set");
                 }
                 child_lock
             },
@@ -861,7 +855,9 @@ impl EvalContext {
             tycon_env: {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
-                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                    child_lock
+                        .set(std::sync::Arc::clone(env))
+                        .expect("impossible: fresh OnceLock already set");
                 }
                 child_lock
             },
@@ -913,8 +909,10 @@ impl EvalContext {
     /// expression node is evaluated — it contains every thunk for every intermediate dict the
     /// loader has evaluated so far, at their canonical LGM slots.
     pub fn set_init_accumulated_group(&self, group: std::sync::Arc<crate::value::GroupSpine>) {
-        // set() returns Err if already set; silently ignore — first write wins.
-        let _ = self.init_accumulated_group.set(group);
+        // get_or_init: first write wins; subsequent calls are no-ops (the existing value is
+        // returned, and the supplied closure is not called). This is the correct at-most-once
+        // initialization pattern — no Result to discard.
+        self.init_accumulated_group.get_or_init(|| group);
     }
 
     /// Retrieve the accumulated_group snapshot from the init program's evaluation.
@@ -940,22 +938,15 @@ impl EvalContext {
 
     /// Set the type constructor environment from type inference.
     /// Called after type checking to wire user-defined TyCon variance and structural rules
-    /// to the evaluator's subtype checker. The OnceLock silently no-ops if already set —
-    /// this covers two cases:
+    /// to the evaluator's subtype checker.
     ///
-    /// 1. **Child context inheritance** (normal, harmless): a child `EvalContext` propagates
-    ///    the parent's `TyConEnv` in its constructor, so `set_tycon_env` on the child is a
-    ///    no-op. This is correct — the child already has the right environment.
-    ///
-    /// 2. **REPL re-evaluation** (silent degradation): in REPL mode `ctx` is reused across
-    ///    REPL inputs. The first input's `set_tycon_env` succeeds; all subsequent inputs hit
-    ///    the no-op branch, meaning new `[type ...]` declarations entered after the first
-    ///    REPL input are invisible to the evaluator's TyConEnv. The TyCon is registered in
-    ///    `tycon_env` for type-checking purposes (InferState is fresh each input) but the
-    ///    evaluator cannot see it for runtime subtype checks. Tracked in B-329 (REPL
-    ///    TyConEnv frozen after first input).
+    /// Called once after typechecking. `EvalContext` must not be reused across evaluation
+    /// sessions (e.g. REPL inputs) because the OnceLock is write-once and cannot be updated.
+    /// Create a fresh `EvalContext` per evaluation session.
     pub fn set_tycon_env(&self, env: crate::type_def::TyConEnv) {
-        self.tycon_env.set(std::sync::Arc::new(env)).ok();
+        self.tycon_env.set(std::sync::Arc::new(env)).expect(
+            "tycon_env already set — EvalContext must not be reused across evaluation sessions",
+        );
     }
 
     /// Get the type constructor environment, if available.
@@ -1021,15 +1012,18 @@ impl EvalContext {
     }
 }
 
-/// Static assertions: verify EvalContext Send+Sync bounds.
-/// After T-1768 (Value: Send), T-1774 (ScopeArena eliminated), and T-1769 (BuiltinFn + Send),
-/// EvalContext must be Send+Sync so Arc<EvalContext>: Send+Sync.
-#[allow(dead_code)]
-fn _assert_eval_context_send_sync() {
+// Static assertions: verify EvalContext Send+Sync bounds.
+// After T-1768 (Value: Send), T-1774 (ScopeArena eliminated), and T-1769 (BuiltinFn + Send),
+// EvalContext must be Send+Sync so Arc<EvalContext>: Send+Sync.
+//
+// The assertion is in a #[test] so it is reachable at build time (the compiler must
+// monomorphize the bound-checks) and the test runner verifies it each run.
+#[test]
+fn eval_context_is_send_sync() {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
-    assert_send::<crate::eval::EvalContext>();
-    assert_sync::<crate::eval::EvalContext>();
+    assert_send::<EvalContext>();
+    assert_sync::<EvalContext>();
 }
 
 /// Extract the ground type of a runtime value for consistent subtyping validation.
@@ -1211,6 +1205,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                         "ReactiveCell" => matches!(value, Value::ReactiveCell(_)),
                         "ClockCap" => matches!(value, Value::ClockCap(_)),
                         "Timezone" => matches!(value, Value::Timezone(_)),
+                        "Timestamp" => matches!(value, Value::Timestamp(_)),
+                        "Duration" => matches!(value, Value::Duration(_)),
                         "Decimal" => matches!(value, Value::Decimal(_)),
                         "BigInt" => matches!(value, Value::BigInt(_)),
                         "QuicSession" => matches!(value, Value::QuicSession(_)),
@@ -1235,7 +1231,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
         };
     }
 
-    // B-450: pass tycon_env for variance-directed App comparison in fallthrough.
+    // Pass tycon_env for variance-directed App comparison in the fallthrough subtype check.
     Type::is_consistent_subtype(&ground_type_of(value), expected, ctx.tycon_env())
 }
 
@@ -1348,15 +1344,12 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
 /// The caller is responsible for checking default_expr and calling eval() with the default
 /// if this function returns an error. This keeps the helper focused on validation logic.
 /// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_and_wrap_record(
     entries: &IndexMap<HashableValue, Arc<Thunk>>,
     row: &Row,
     field_path: &mut Vec<String>,
     guard_span: Span,
     data_span: Span,
-    _env_id: u32,
-    _ctx: &Arc<EvalContext>,
     default: Option<GuardDefault>,
     blame_label: Option<crate::error::BlameLabel>,
 ) -> EvalResult<IndexMap<HashableValue, Arc<Thunk>>> {
@@ -1364,11 +1357,11 @@ pub(crate) fn validate_and_wrap_record(
     // Per doc/07:117, try HashableValue::Str first, then HashableValue::Int fallback
     for (field_name, _field_type) in row.fields.iter() {
         let has_field = entries.contains_key(&HashableValue::Str(Arc::from(field_name.as_str())))
-            || field_name
-                .parse::<i64>()
-                .ok()
-                .map(|idx| entries.contains_key(&HashableValue::Int(idx)))
-                .unwrap_or(false);
+            || if let Ok(idx) = field_name.parse::<i64>() {
+                entries.contains_key(&HashableValue::Int(idx))
+            } else {
+                false
+            };
 
         if !has_field {
             let field_path_prefix = if field_path.is_empty() {
@@ -1473,10 +1466,14 @@ pub(crate) fn is_constructor_name(name: &str) -> bool {
 /// `call_to_match_resolved` (looks up a pre-resolved instance binding name). Both
 /// dispatch through the same general LGM slot lookup path.
 ///
-/// Returns `false` gracefully in any of these situations:
+/// Returns `Ok(false)` in bootstrap/pre-prelude contexts where the dispatch infrastructure
+/// is not yet in place:
 /// - `ctx.init_accumulated_group` is not set (bootstrap/test context)
 /// - `ctx.scope_frames` is `None` (not yet populated)
 /// - `name` is not found in any scope frame
+/// - the slot index is out of bounds in the accumulated group
+///
+/// Returns `Err` if the dispatch infrastructure is in place but the call itself fails:
 /// - the thunk at the resolved slot fails to materialize
 /// - the thunk does not contain a function value
 /// - the function call result fails to materialize
@@ -1486,30 +1483,27 @@ async fn call_to_match_by_name(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
-) -> bool {
+) -> EvalResult<bool> {
     // Step 1: get the init accumulated group snapshot.
     let Some(acc_group) = ctx.get_init_accumulated_group() else {
-        return false;
+        return Ok(false);
     };
     // Step 2: find `name` in scope_frames to get its absolute LGM slot.
     let Some(scope_frames) = ctx.scope_frames.as_ref() else {
-        return false;
+        return Ok(false);
     };
     let slot = scope_frames
         .iter()
         .find_map(|frame| frame.get(name).copied());
     let Some(slot) = slot else {
-        return false;
+        return Ok(false);
     };
     // Step 3: index the accumulated group at that slot.
     let Some(fn_thunk) = acc_group.get(slot as usize) else {
-        return false;
+        return Ok(false);
     };
     // Step 4: materialize the thunk to get the to-match function value.
-    let fn_val = match materialize(&fn_thunk, Some(span), ctx).await {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
+    let fn_val = materialize(&fn_thunk, Some(span), ctx).await?;
     // Step 5: destructure as a user-defined function.
     let (params, body, closure_env) = match fn_val {
         Value::Function {
@@ -1518,7 +1512,15 @@ async fn call_to_match_by_name(
             closure_env,
             ..
         } => (params, body, closure_env),
-        _ => return false,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                format!("call_to_match_by_name({name})"),
+                "Function",
+                other.type_name(),
+                span.clone(),
+            )
+            .into());
+        }
     };
     // Step 6: wrap val as a pre-materialized thunk (already a concrete value — no eval needed).
     let val_thunk = Arc::new(Thunk::value(val.clone(), span.clone()));
@@ -1532,14 +1534,17 @@ async fn call_to_match_by_name(
         call_span: span.clone(),
         ctx,
     };
-    let result_thunk = match invoke_function(&call_ctx).await {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
+    let result_thunk = invoke_function(&call_ctx).await?;
     // Step 8: materialize the call result and check if it is a nonzero Int.
-    match materialize(&result_thunk, Some(span), ctx).await {
-        Ok(Value::Int(n)) => n != 0,
-        _ => false,
+    match materialize(&result_thunk, Some(span), ctx).await? {
+        Value::Int(n) => Ok(n != 0),
+        other => Err(EvalError::type_mismatch_ctx(
+            format!("call_to_match_by_name({name}) result"),
+            "Int",
+            other.type_name(),
+            span.clone(),
+        )
+        .into()),
     }
 }
 
@@ -1568,11 +1573,11 @@ async fn call_to_match_by_name(
 /// by ClassDecl lowering) and calls it with the value. The dispatch function internally
 /// resolves the correct instance binding based on the value's runtime type.
 ///
-/// Returns `false` in bootstrap/pre-prelude contexts (before `"to-match"` is in scope)
-/// or for types with no instance.
-pub async fn call_to_match(val: &Value, ctx: &Arc<EvalContext>, span: &Span) -> bool {
+/// Returns `Ok(false)` in bootstrap/pre-prelude contexts (before `"to-match"` is in scope).
+/// Returns `Err` if dispatch infrastructure is present but the call fails.
+pub async fn call_to_match(val: &Value, ctx: &Arc<EvalContext>, span: &Span) -> EvalResult<bool> {
     // Look up the "to-match" dispatch function by name in scope_frames and call it with val.
-    // Falls back to false in bootstrap/pre-prelude contexts where init_accumulated_group is
+    // Returns Ok(false) in bootstrap/pre-prelude contexts where init_accumulated_group is
     // not set or "to-match" is not in scope_frames.
     call_to_match_by_name("to-match", val, ctx, span).await
 }
@@ -1588,13 +1593,14 @@ pub async fn call_to_match(val: &Value, ctx: &Arc<EvalContext>, span: &Span) -> 
 /// binding name on the pattern or call site. The evaluator uses this pre-resolved name
 /// to avoid the `to-match` dispatch overhead.
 ///
-/// Returns `false` if the binding is not found in the environment (pre-prelude bootstrap).
+/// Returns `Ok(false)` if the binding is not found in the environment (pre-prelude bootstrap).
+/// Returns `Err` if dispatch infrastructure is present but the call fails.
 pub async fn call_to_match_resolved(
     val: &Value,
     binding_name: &str,
     ctx: &Arc<EvalContext>,
     span: &Span,
-) -> bool {
+) -> EvalResult<bool> {
     // Direct-dispatch variant: call the pre-resolved Matchable instance binding by name.
     call_to_match_by_name(binding_name, val, ctx, span).await
 }
@@ -1665,7 +1671,7 @@ pub async fn call_to_match_opt_resolved(
     binding_name: Option<&str>,
     ctx: &Arc<EvalContext>,
     span: &Span,
-) -> bool {
+) -> EvalResult<bool> {
     if let Some(name) = binding_name {
         call_to_match_resolved(val, name, ctx, span).await
     } else {
@@ -1724,9 +1730,8 @@ pub fn materialize<'a>(
                     _ => true,
                 };
                 if same {
-                    let cycle_path = crate::eval_materialize::TASK_EVAL_STACK
-                        .try_with(|s| s.borrow().clone())
-                        .unwrap_or_default();
+                    let cycle_path =
+                        crate::eval_materialize::TASK_EVAL_STACK.with(|s| s.borrow().clone());
                     let err = EvalError::circular_dependency(
                         thunk.span.name.as_deref().unwrap_or("thunk"),
                         thunk.span.clone(),
@@ -2248,9 +2253,6 @@ fn peel_annotated(v: Value) -> Value {
 }
 
 #[cfg(test)]
-#[allow(clippy::to_string_in_format_args)] // test diagnostics: .to_string() in format args is fine
-#[allow(clippy::useless_conversion)] // test helpers use .into() for clarity
-#[allow(clippy::approx_constant)] // test values intentionally use approximate constants
 mod tests {
     use super::*;
     use crate::ast::*;
@@ -2267,7 +2269,7 @@ mod tests {
 
     /// Test helper for tests that need dot-access to work.
     /// `build_core_env()` seeds the resolver with all builtin names. Dot-access desugars
-    /// to `builtin-get` (key-based lookup) and must be registered in the root env.
+    /// to `builtin-dict-get` (key-based lookup) and must be registered in the root env.
     fn core_env_and_ctx() -> (Arc<RwLock<crate::env::Env>>, Arc<EvalContext>) {
         let env = crate::builtins::build_core_env();
         let ctx = EvalContext::new();
@@ -2288,27 +2290,25 @@ mod tests {
         crate::eval_core::eval_core_expr(&core_expr, &crate::value::EvalFrame::empty(), ctx).await
     }
 
-    /// Test-only: evaluate a SurfaceNode after running the resolver against the provided env.
+    /// Test-only: evaluate a SurfaceNode after running the resolver against the root env.
     /// Use this instead of eval_for_test when the node contains $name variable references.
     async fn eval_for_test_resolved(
         node: Arc<SurfaceNode>,
-        env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
         use crate::resolve::resolve_surface_program;
-        let span = node.span.clone();
         let doc = SurfaceDocument {
             header: indexmap::IndexMap::new(),
             items: vec![SurfaceItem::Expr(Arc::clone(&node))],
         };
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
-            documents: vec![Spanned::new(Arc::new(doc), span.clone())],
+            documents: vec![Spanned::new(Arc::new(doc), node.span.clone())],
         });
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
-        let _ = span;
-        let _ = env;
+        // resolve_surface_program is called for its side effects on AST nodes (setting
+        // OnceLock resolution coordinates); the returned table and frames are not needed here.
         crate::eval_surface_file(&program, ctx).await
     }
 
@@ -2326,14 +2326,10 @@ mod tests {
     /// Parse a surface expression from text and evaluate it.
     /// Convenience for most test cases — avoids constructing SurfaceNode by hand.
     /// Runs the resolver so $name variable references work correctly.
-    async fn eval_str(
-        src: &str,
-        env: Arc<RwLock<crate::env::Env>>,
-        ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
+    async fn eval_str(src: &str, ctx: &Arc<EvalContext>) -> EvalResult<Arc<Thunk>> {
         let node = crate::parser::parse_surface_expression(src)
             .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
-        eval_for_test_resolved(node, env, ctx).await
+        eval_for_test_resolved(node, ctx).await
     }
 
     /// Build a zero-span SurfaceNode wrapping the given SurfaceExpression.
@@ -2409,38 +2405,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_eval_int() {
-        let thunk = eval_str("42", empty_env(), &test_ctx()).await.unwrap();
+        let thunk = eval_str("42", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, Value::Int(42));
     }
 
     #[tokio::test]
     async fn test_eval_float() {
-        let thunk = eval_str("3.14", empty_env(), &test_ctx()).await.unwrap();
+        let thunk = eval_str("2.5", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Float(3.14));
+        assert_eq!(val, Value::Float(2.5));
     }
 
     #[tokio::test]
     async fn test_eval_str() {
-        let thunk = eval_str("\"hello\"", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("\"hello\"", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("hello".into()));
+        assert_eq!(val, string_val("hello"));
     }
 
-    // T-1557: test_varref_found and test_varref_parent_scope removed — they used
-    // insert_value to inject runtime values into Env, which is now type-metadata only.
-    // Equivalent tests will be re-added in T-1558 using FlatEnv dispatch.
+    // VarRef dispatch — covers the three VarAddr paths in eval_core.rs CoreExpr::Var.
+    // LGM (LetrecGroupMember) path: covered by test_dict_letrec_sibling_reference and
+    // test_dict_letrec_forward_reference below.
+    // Parameter and ClosureCapture paths: covered by corpus tests
+    // tests/corpus/eval/varref_parameter_dispatch.llt-eval and
+    // tests/corpus/eval/varref_closure_capture_dispatch.llt-eval.
 
     #[tokio::test]
     async fn test_simple_dict() {
         // [x: 1  y: "hello"]
         let ctx = test_ctx();
-        let thunk = eval_str("[x: 1  y: \"hello\"]", empty_env(), &ctx)
-            .await
-            .unwrap();
+        let thunk = eval_str("[x: 1  y: \"hello\"]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -2449,10 +2444,7 @@ mod tests {
                 let x_id = map.get(&HashableValue::Str("x".into())).unwrap();
                 assert_eq!(mat_id(x_id, &ctx).await.unwrap(), Value::Int(1));
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
-                assert_eq!(
-                    mat_id(y_id, &ctx).await.unwrap(),
-                    string_val("hello".into())
-                );
+                assert_eq!(mat_id(y_id, &ctx).await.unwrap(), string_val("hello"));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2461,7 +2453,7 @@ mod tests {
     #[tokio::test]
     async fn test_auto_indexed_dict() {
         let ctx = test_ctx();
-        let thunk = eval_str("[10  20  30]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[10  20  30]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -2494,7 +2486,7 @@ mod tests {
     async fn test_dict_letrec_sibling_reference() {
         // [x: 5  y: $x]
         let ctx = test_ctx();
-        let thunk = eval_str("[x: 5  y: $x]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[x: 5  y: $x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -2510,7 +2502,7 @@ mod tests {
     async fn test_dict_letrec_forward_reference() {
         // [y: $x  x: 10] -- y references x which is defined after y
         let ctx = test_ctx();
-        let thunk = eval_str("[y: $x  x: 10]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[y: $x  x: 10]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -2526,7 +2518,7 @@ mod tests {
     async fn test_cycle_detection() {
         // [x: $x] -- x references itself
         let ctx = test_ctx();
-        let thunk = eval_str("[x: $x]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[x: $x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -2549,7 +2541,7 @@ mod tests {
         // it should cache the error in Failed state, not leave it in InProgress.
         // Subsequent materializations should return the cached error.
         let ctx = test_ctx();
-        let thunk = eval_str("[x: $x]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[x: $x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match val {
@@ -2590,7 +2582,6 @@ mod tests {
         // After failure, the thunk must be cached in Failed state (cacheable error),
         // and a second materialize attempt should return the SAME error, NOT "circular dependency".
         let ctx = test_ctx();
-        let _error_span = test_span(1, 5, 1, 15);
         let dict_core = Spanned::new(
             CoreExpr::Dict(vec![Spanned::new(
                 CoreEntry {
@@ -2638,9 +2629,7 @@ mod tests {
     async fn test_nested_dict_sees_outer_bindings() {
         // [x: 42  inner: [y: $x]]
         let ctx = test_ctx();
-        let thunk = eval_str("[x: 42  inner: [y: $x]]", empty_env(), &ctx)
-            .await
-            .unwrap();
+        let thunk = eval_str("[x: 42  inner: [y: $x]]", &ctx).await.unwrap();
         let outer = materialize(&thunk, None, &ctx).await.unwrap();
 
         match outer {
@@ -2698,9 +2687,7 @@ mod tests {
     #[tokio::test]
     async fn test_fn_creates_function_value() {
         // [fn [let x] $x] → Function
-        let thunk = eval_str("[fn [let x] $x]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[fn [let x] $x]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -2762,9 +2749,7 @@ mod tests {
         // Evaluating this should produce a Function, not look up $_
         let mut node = crate::parser::parse_surface_expression("$_.name").expect("parse failed");
         crate::desugar::desugar_surface_node(&mut node, 0);
-        let thunk = eval_for_test_resolved(node, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_for_test_resolved(node, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -2787,9 +2772,7 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_int_passes() {
         // [@Integer 42] -> 42
-        let thunk = eval_str("[@Integer 42]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[@Integer 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -2797,31 +2780,25 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_string_passes() {
         // [@String "hello"] -> "hello"
-        let thunk = eval_str("[@String \"hello\"]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[@String \"hello\"]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("hello".into()));
+        assert_eq!(val, string_val("hello"));
     }
 
     #[tokio::test]
     async fn test_type_assert_number_accepts_int() {
         // [@Number 42] -> 42 (Number accepts Int)
-        let thunk = eval_str("[@Number 42]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[@Number 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, Value::Int(42));
     }
 
     #[tokio::test]
     async fn test_type_assert_number_accepts_float() {
-        // [@Number 3.14] -> 3.14 (Number accepts Float)
-        let thunk = eval_str("[@Number 3.14]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        // [@Number 2.5] -> 2.5 (Number accepts Float)
+        let thunk = eval_str("[@Number 2.5]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Float(3.14));
+        assert_eq!(val, Value::Float(2.5));
     }
 
     #[tokio::test]
@@ -2882,9 +2859,7 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_property_dict_with_type() {
         // [@[type: Int] 42] -> 42
-        let thunk = eval_str("[@[type: Int] 42]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[@[type: Int] 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -2931,17 +2906,17 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_property_dict_without_type_passes() {
         // [@[default: 0] "hello"] -> "hello" (no type key, no check performed)
-        let thunk = eval_str("[@[default: 0] \"hello\"]", empty_env(), &test_ctx())
+        let thunk = eval_str("[@[default: 0] \"hello\"]", &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("hello".into()));
+        assert_eq!(val, string_val("hello"));
     }
 
     #[tokio::test]
     async fn test_type_assert_default_not_used_on_match() {
         // [@[type: Int  default: 0] 42] -> 42 (type matches, default not used)
-        let thunk = eval_str("[@[type: Int  default: 0] 42]", empty_env(), &test_ctx())
+        let thunk = eval_str("[@[type: Int  default: 0] 42]", &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
@@ -3158,7 +3133,7 @@ mod tests {
                     .get(&HashableValue::Str("name".into()))
                     .expect("name field missing");
                 let name = materialize(name_thunk, None, &ctx).await.unwrap();
-                assert_eq!(name, string_val("fallback".into()));
+                assert_eq!(name, string_val("fallback"));
             }
             _ => panic!("expected Dict, got: {:?}", val),
         }
@@ -3170,11 +3145,11 @@ mod tests {
         // Bare word `Config` is a VarRef which requires a binding to evaluate; use a string literal
         // to avoid an "undefined variable" lower error. The test verifies that TypeAssert
         // (with no resolved type from the type checker) passes through the value unchanged.
-        let thunk = eval_str("[@ConfigType \"Config\"]", empty_env(), &test_ctx())
+        let thunk = eval_str("[@ConfigType \"Config\"]", &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("Config".into()));
+        assert_eq!(val, string_val("Config"));
     }
 
     // test_chained_dot_access deleted — see T-1557 comment above test_dot_access.
@@ -3227,7 +3202,7 @@ mod tests {
     async fn test_cycle_has_materialization_span() {
         // [x: $x] -- force x with a known materialization site
         let ctx = test_ctx();
-        let thunk = eval_str("[x: $x]", empty_env(), &ctx).await.unwrap();
+        let thunk = eval_str("[x: $x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -3275,14 +3250,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_to_key_float_3_14() {
-        // Float keys are valid via bitwise equality (TotalF64). 3.14 as a dict key.
+        // Float keys are valid via bitwise equality (TotalF64). 2.5 as a dict key.
         let ctx = test_ctx();
         let z = rust_span!();
         let zz = z.clone();
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
-                key: Some(mk(SurfaceExpression::Float(3.14))),
+                key: Some(mk(SurfaceExpression::Float(2.5))),
                 value: mk(SurfaceExpression::Int(1)),
             },
             z,
@@ -3292,8 +3267,8 @@ mod tests {
         match val {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 1);
-                let key = HashableValue::Float(3.14f64.to_bits());
-                let entry_thunk = map.get(&key).expect("Float(3.14) key must exist");
+                let key = HashableValue::Float(2.5f64.to_bits());
+                let entry_thunk = map.get(&key).expect("Float(2.5) key must exist");
                 let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
                 assert_eq!(inner, Value::Int(1));
             }
@@ -3346,16 +3321,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_func_label_dot_access() {
-        // Dot access compiles to Call(builtin-get, [key, target]).
-        // The function position is a Var("builtin-get") so func_label_core returns "builtin-get".
+        // Dot access compiles to Call(builtin-dict-get, [key, target]).
+        // The function position is a Var("builtin-dict-get") so func_label_core returns "builtin-dict-get".
         use crate::eval_call::func_label_core;
         let func_var = CoreExpr::Var {
-            name: "builtin-get".to_string(),
+            name: "builtin-dict-get".to_string(),
             addr: crate::ast::VarAddr::ClosureCapture(0),
             annotation: None,
         };
         let label = func_label_core(&func_var);
-        assert_eq!(label.as_deref(), Some("builtin-get"));
+        assert_eq!(label.as_deref(), Some("builtin-dict-get"));
     }
 
     #[tokio::test]
@@ -3369,7 +3344,6 @@ mod tests {
     async fn test_materialize_chain_no_duplicate_frames() {
         // When the same mat_span propagates through nested materialize calls,
         // we should not get duplicate frames for the same span.
-        let _env = empty_env();
 
         // Create a thunk whose body is another unevaluated thunk that errors
         let inner_expr = Spanned::new(
@@ -3480,7 +3454,6 @@ mod tests {
     #[tokio::test]
     async fn test_pending_call_memoizes() {
         // PendingCall should memoize: second materialization returns cached value
-        let _env = empty_env();
 
         // Create a function that would fail if called twice
         // (we'll verify it's only called once by checking the state)
@@ -3544,7 +3517,6 @@ mod tests {
     #[tokio::test]
     async fn test_pending_call_with_unevaluated_args() {
         // PendingCall should work with unevaluated argument thunks (lazy evaluation)
-        let _env = empty_env();
 
         let identity_fn = Value::Function {
             params: Arc::new(vec![Param {
@@ -3629,11 +3601,9 @@ mod tests {
         );
 
         // Check that the thunk is now in Failed state
-        {
-            let _cached_err = x_thunk
-                .try_get_error()
-                .expect("thunk should be in Failed state");
-        }
+        x_thunk
+            .try_get_error()
+            .expect("thunk should be in Failed state");
 
         // Second materialization: should return the cached error (same message)
         let err2 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
@@ -3730,7 +3700,7 @@ mod tests {
         assert!(
             !err1.kind.to_string().is_empty(),
             "expected an error, got empty: {}",
-            err1.kind.to_string()
+            err1.kind
         );
 
         // The thunk SHOULD be in Failed state because Unimplemented is cacheable
@@ -3740,7 +3710,7 @@ mod tests {
         assert!(
             !cached_err.kind.to_string().is_empty(),
             "cached error should not be empty, got: {}",
-            cached_err.to_string()
+            cached_err
         );
     }
 
@@ -3814,7 +3784,7 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("hello".into()));
+        assert_eq!(val, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3834,7 +3804,7 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("anything".into()));
+        assert_eq!(val, string_val("anything"));
     }
 
     #[tokio::test]
@@ -4118,9 +4088,7 @@ mod tests {
     async fn test_typeassert_nominal_fallback() {
         // Nominal fallback path: resolved_type = None, annotation "Integer", value is Int -> pass
         // (This ensures the existing nominal path is preserved alongside the new structural path.)
-        let thunk = eval_str("[@Integer 7]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[@Integer 7]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, Value::Int(7));
     }
@@ -4237,13 +4205,9 @@ mod tests {
         // [@[name: String] [name: "hello"]] with resolved_type=None (no typecheck)
         // Should pass: value is a Dict (tag check succeeds).
         // "hello" is a string literal — bare identifier `hello` would be an undefined VarRef.
-        let thunk = eval_str(
-            "[@[name: String] [name: \"hello\"]]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .await
-        .unwrap();
+        let thunk = eval_str("[@[name: String] [name: \"hello\"]]", &test_ctx())
+            .await
+            .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert!(
             matches!(val, Value::Dict(_)),
@@ -4303,11 +4267,11 @@ mod tests {
     async fn test_elaboration_gap_default_only_no_structural_check() {
         // [@[default: 0] "hello"] with resolved_type=None
         // Should pass through without validation (no type, no structural fields)
-        let thunk = eval_str("[@[default: 0] \"hello\"]", empty_env(), &test_ctx())
+        let thunk = eval_str("[@[default: 0] \"hello\"]", &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, string_val("hello".into()));
+        assert_eq!(val, string_val("hello"));
     }
 
     // ── value_matches_type unit tests ────────────────────────────────────
@@ -4318,22 +4282,14 @@ mod tests {
     async fn test_value_matches_type_int() {
         let ctx = test_ctx();
         assert!(value_matches_type(&Value::Int(42), &Type::Int, &ctx));
-        assert!(!value_matches_type(
-            &string_val("x".into()),
-            &Type::Int,
-            &ctx
-        ));
+        assert!(!value_matches_type(&string_val("x"), &Type::Int, &ctx));
         assert!(!value_matches_type(&Value::Float(1.0), &Type::Int, &ctx));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_str() {
         let ctx = test_ctx();
-        assert!(value_matches_type(
-            &string_val("hello".into()),
-            &Type::Str,
-            &ctx
-        ));
+        assert!(value_matches_type(&string_val("hello"), &Type::Str, &ctx));
         assert!(!value_matches_type(&Value::Int(1), &Type::Str, &ctx));
         assert!(!value_matches_type(&Value::Float(0.0), &Type::Str, &ctx));
     }
@@ -4341,7 +4297,7 @@ mod tests {
     #[tokio::test]
     async fn test_value_matches_type_float() {
         let ctx = test_ctx();
-        assert!(value_matches_type(&Value::Float(3.14), &Type::Float, &ctx));
+        assert!(value_matches_type(&Value::Float(2.5), &Type::Float, &ctx));
         assert!(!value_matches_type(&Value::Int(3), &Type::Float, &ctx));
     }
 
@@ -4351,11 +4307,7 @@ mod tests {
         // Type::Any accepts all value kinds
         assert!(value_matches_type(&Value::Int(1), &Type::Any, &ctx));
         assert!(value_matches_type(&Value::Float(1.0), &Type::Any, &ctx));
-        assert!(value_matches_type(
-            &string_val("s".into()),
-            &Type::Any,
-            &ctx
-        ));
+        assert!(value_matches_type(&string_val("s"), &Type::Any, &ctx));
         assert!(value_matches_type(&Value::Float(1.0), &Type::Any, &ctx));
         assert!(value_matches_type(
             &Value::Dict(IndexMap::new()),
@@ -4383,7 +4335,7 @@ mod tests {
             &ctx
         ));
         assert!(!value_matches_type(
-            &string_val("5".into()),
+            &string_val("5"),
             &Type::IntLiteral(5),
             &ctx,
         ));
@@ -4404,12 +4356,12 @@ mod tests {
         // is_consistent_subtype(Type::Str, Type::StringLiteral("foo")) = is_subtype(Str, StringLiteral)
         // = false — Str is NOT a subtype of StringLiteral (it's the other way).
         assert!(!value_matches_type(
-            &string_val("foo".into()),
+            &string_val("foo"),
             &Type::StringLiteral("foo".into()),
             &ctx,
         ));
         assert!(!value_matches_type(
-            &string_val("bar".into()),
+            &string_val("bar"),
             &Type::StringLiteral("foo".into()),
             &ctx,
         ));
@@ -4429,20 +4381,20 @@ mod tests {
     #[tokio::test]
     async fn test_value_matches_type_typevar_always_true() {
         let ctx = test_ctx();
-        // Type::TypeVar is treated as Any (residual polymorphic instantiation)
+        // Type::Var is treated as Any (residual polymorphic instantiation)
         assert!(value_matches_type(
             &Value::Int(1),
-            &Type::TypeVar("a".into(), 0),
+            &Type::Var("a".into(), 0),
             &ctx,
         ));
         assert!(value_matches_type(
-            &string_val("x".into()),
-            &Type::TypeVar("a".into(), 0),
+            &string_val("x"),
+            &Type::Var("a".into(), 0),
             &ctx,
         ));
         assert!(value_matches_type(
             &Value::Dict(IndexMap::new()),
-            &Type::TypeVar("a".into(), 0),
+            &Type::Var("a".into(), 0),
             &ctx,
         ));
     }
@@ -4540,7 +4492,7 @@ mod tests {
         let tycon = Type::TyCon("MyInt".to_string());
         assert!(value_matches_type(&Value::Int(1), &tycon, &ctx));
         assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
-        assert!(!value_matches_type(&string_val("x".into()), &tycon, &ctx));
+        assert!(!value_matches_type(&string_val("x"), &tycon, &ctx));
     }
 
     #[tokio::test]
@@ -4649,11 +4601,7 @@ mod tests {
             Box::new(Type::TyCon("MySeq".to_string())),
             Box::new(Type::Int),
         );
-        assert!(value_matches_type(
-            &string_val("hello".into()),
-            &app_type,
-            &ctx
-        ));
+        assert!(value_matches_type(&string_val("hello"), &app_type, &ctx));
         assert!(!value_matches_type(&Value::Int(1), &app_type, &ctx));
     }
 
@@ -4759,7 +4707,7 @@ mod tests {
             "Dict is structural, not an opaque TyCon"
         );
         assert_eq!(
-            string_val("x".into()).value_tycon_name(),
+            string_val("x").value_tycon_name(),
             None,
             "String is a primitive type"
         );
@@ -4805,7 +4753,6 @@ mod tests {
 
         // Create entries that are missing field "y"
         let entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        let ctx = test_ctx();
 
         // Call validate_and_wrap_record with nested field_path ["outer", "inner"]
         let mut field_path = vec!["outer".to_string(), "inner".to_string()];
@@ -4818,8 +4765,6 @@ mod tests {
             &mut field_path,
             guard_span,
             data_span.clone(),
-            0,
-            &ctx,
             None,
             None,
         );
@@ -4867,7 +4812,6 @@ mod tests {
         };
 
         // Create entries with "x" plus an extra field "z"
-        let ctx = test_ctx();
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
@@ -4889,8 +4833,6 @@ mod tests {
             &mut field_path,
             guard_span,
             data_span,
-            0,
-            &ctx,
             None,
             None,
         );
@@ -4918,7 +4860,6 @@ mod tests {
 
         // Create empty entries (missing "name")
         let entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        let ctx = test_ctx();
 
         // Call with empty field_path
         let mut field_path = vec![];
@@ -4931,8 +4872,6 @@ mod tests {
             &mut field_path,
             guard_span,
             data_span.clone(),
-            0,
-            &ctx,
             None,
             None,
         );
@@ -4978,16 +4917,15 @@ mod tests {
         };
 
         // Create entries with "name" (valid) plus an integer-keyed entry
-        let ctx = test_ctx();
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Int(0),
-            Arc::new(Thunk::value(string_val("x".into()), span.clone())),
+            Arc::new(Thunk::value(string_val("x"), span.clone())),
         );
         entries.insert(
             HashableValue::Str("name".into()),
-            Arc::new(Thunk::value(string_val("y".into()), span)),
+            Arc::new(Thunk::value(string_val("y"), span)),
         );
 
         let mut field_path = vec![];
@@ -5000,8 +4938,6 @@ mod tests {
             &mut field_path,
             guard_span,
             data_span,
-            0,
-            &ctx,
             None,
             None,
         );
@@ -5026,16 +4962,15 @@ mod tests {
             tail: crate::type_def::RowTail::Empty,
         };
 
-        let ctx = test_ctx();
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Int(0),
-            Arc::new(Thunk::value(string_val("x".into()), span.clone())),
+            Arc::new(Thunk::value(string_val("x"), span.clone())),
         );
         entries.insert(
             HashableValue::Str("name".into()),
-            Arc::new(Thunk::value(string_val("y".into()), span)),
+            Arc::new(Thunk::value(string_val("y"), span)),
         );
 
         let mut field_path = vec![];
@@ -5048,8 +4983,6 @@ mod tests {
             &mut field_path,
             guard_span,
             data_span,
-            0,
-            &ctx,
             None,
             None,
         );
@@ -5148,7 +5081,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a String value — fails the Int guard.
-        let inner = Arc::new(Thunk::value(string_val("hello".into()), span.clone()));
+        let inner = Arc::new(Thunk::value(string_val("hello"), span.clone()));
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Arc::new(Thunk::guarded(
@@ -5253,7 +5186,6 @@ mod tests {
         use crate::error::ErrorKind;
 
         let ctx = test_ctx();
-        let env = empty_env();
 
         // Create a 3-node cycle: a→b→c→a
         // We'll use eval_dict to create labeled thunks
@@ -5272,7 +5204,8 @@ mod tests {
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) =
             crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
-        let _ = env;
+        // resolve_surface_program is called for its side effects on AST nodes (setting
+        // OnceLock resolution coordinates); the returned table and frames are not needed here.
         let thunk = super::eval_surface_file(&surface_program, &ctx)
             .await
             .expect("eval_surface_file should succeed (lazy dict construction)");
@@ -5346,8 +5279,8 @@ mod tests {
         // $builtin-raise is in core_env and raises an error when forced; the "unused"
         // entry must remain unforced so the raise never fires.
         let input = r#"[used: 1  unused: [call $builtin-raise "should not materialize"]]"#;
-        let (env, ctx) = core_env_and_ctx();
-        let thunk = eval_str(input, Arc::clone(&env), &ctx).await.unwrap();
+        let (_env, ctx) = core_env_and_ctx();
+        let thunk = eval_str(input, &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         // Extract the dict
@@ -5425,7 +5358,7 @@ mod tests {
         // Construct a BuiltinDef for `builtin_keys` with force_count=1.
         const KEYS_STRICTNESS: &[Strictness] = &[];
         let keys_def = BuiltinDef {
-            func: crate::builtins::builtin_keys as BuiltinFn,
+            func: crate::builtins_dict::builtin_keys as BuiltinFn,
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
@@ -5494,7 +5427,7 @@ mod tests {
         // Create a materialized func thunk wrapping Value::Builtin(keys_def).
         const KEYS_STRICTNESS: &[Strictness] = &[];
         let keys_def = BuiltinDef {
-            func: crate::builtins::builtin_keys as BuiltinFn,
+            func: crate::builtins_dict::builtin_keys as BuiltinFn,
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
@@ -5532,13 +5465,9 @@ mod tests {
         // No wildcard fallback → MatchExhaustion when forced.
         // (Resolver emits "undefined variable: x" warnings, but lowerer silently
         // produces CoreExpr::Placeholder for Some(None) — errors are resolver's responsibility.)
-        let thunk = eval_str(
-            "[match [a: 1  b: 2]  [a: x  b: x  ...]: x]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .await
-        .expect("eval_str must succeed (arm simply doesn't match, body never reached)");
+        let thunk = eval_str("[match [a: 1  b: 2]  [a: x  b: x  ...]: x]", &test_ctx())
+            .await
+            .expect("eval_str must succeed (arm simply doesn't match, body never reached)");
         let result = materialize(&thunk, None, &test_ctx()).await;
         assert!(
             result.is_err(),
@@ -5557,7 +5486,7 @@ mod tests {
     #[tokio::test]
     async fn test_pm3_placeholder_wildcard_matches_dict() {
         // Bare `...:` wildcard matches any scrutinee including dicts.
-        let thunk = eval_str("[match [a: 1  b: 2]  ...: 99]", empty_env(), &test_ctx())
+        let thunk = eval_str("[match [a: 1  b: 2]  ...: 99]", &test_ctx())
             .await
             .expect("Placeholder wildcard must not error on eval");
         let val = materialize(&thunk, None, &test_ctx())
@@ -5575,7 +5504,7 @@ mod tests {
     async fn test_pm3_undefined_vrefs_in_arms_produce_match_exhaustion() {
         // Undefined VarRefs in pattern position resolve to Some(None) → arm never matches.
         // `[match 42  x: 1  x: 2]` with x undefined → MatchExhaustion.
-        let thunk = eval_str("[match 42  x: 1  x: 2]", empty_env(), &test_ctx())
+        let thunk = eval_str("[match 42  x: 1  x: 2]", &test_ctx())
             .await
             .expect("Eval must not error before thunk is forced");
         let result = materialize(&thunk, None, &test_ctx()).await;
@@ -5600,7 +5529,6 @@ mod tests {
         // After B-597, the pin arm matches and r = "hit".
         let thunk = eval_str(
             "[x: 42  r: [match 42  $x: \"hit\"  ...: \"miss\"]]",
-            empty_env(),
             &test_ctx(),
         )
         .await
@@ -5633,7 +5561,6 @@ mod tests {
         // `[x: 42  r: [match 99  $x: "hit"  ...: "miss"]]` — $x=42, scrutinee=99, no match.
         let thunk = eval_str(
             "[x: 42  r: [match 99  $x: \"hit\"  ...: \"miss\"]]",
-            empty_env(),
             &test_ctx(),
         )
         .await
@@ -5713,9 +5640,7 @@ mod tests {
         // [type MyType Int] — standalone type alias in expression position.
         // The body "Int" is an uppercase VarRef; previously this was misinterpreted as a
         // unit constructor "Int" and produced a non-empty constructor dict {Int: <variant>}.
-        let thunk = eval_str("[type MyType Int]", empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_str("[type MyType Int]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
             Value::Dict(map) => assert!(
@@ -5737,7 +5662,7 @@ mod tests {
     // when the alias is bound to a name in a dict entry (Color: [type Red Green Blue]).
     #[tokio::test]
     async fn test_type_alias_sum_type_standalone_returns_empty_dict() {
-        let thunk = eval_str("[type Color Red Green Blue]", empty_env(), &test_ctx())
+        let thunk = eval_str("[type Color Red Green Blue]", &test_ctx())
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
@@ -5894,7 +5819,9 @@ mod tests {
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let root_frame = ctx.root_group_resolver_map();
-        let _ = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        // resolve_surface_program is called for its side effects on AST nodes (setting
+        // OnceLock resolution coordinates); the returned table and frames are not needed here.
         let thunk = crate::eval_surface_file(&program, &ctx)
             .await
             .expect("eval_surface_file must succeed");
@@ -5929,7 +5856,9 @@ mod tests {
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let root_frame = ctx.root_group_resolver_map();
-        let _ = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        // resolve_surface_program is called for its side effects on AST nodes (setting
+        // OnceLock resolution coordinates); the returned table and frames are not needed here.
         let thunk = crate::eval_surface_file(&program, &ctx)
             .await
             .expect("eval_surface_file must succeed");
@@ -5963,7 +5892,9 @@ mod tests {
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let root_frame = ctx.root_group_resolver_map();
-        let _ = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+        // resolve_surface_program is called for its side effects on AST nodes (setting
+        // OnceLock resolution coordinates); the returned table and frames are not needed here.
         let thunk = crate::eval_surface_file(&program, &ctx)
             .await
             .expect("eval_surface_file must succeed");

@@ -1,4 +1,4 @@
 # Unquote in nested call args: [quote [f [unquote (quote 1)]]] → call AST with arg value 1
 [= [get "value" [get 0 [get "args" [quote [f [unquote [quote 1]]]]]]] 1]
 === error
-builtin-get (key "args"): expected Dict, got Expression
+builtin-dict-get (key "args"): expected Dict, got Expression

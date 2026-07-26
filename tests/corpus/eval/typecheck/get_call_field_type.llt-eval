@@ -1,0 +1,14 @@
+# T-1890: [get "name" person] with type annotations verifies runtime evaluation succeeds.
+# The @String and @Integer annotations are checked at runtime by TypeAssert;
+# the runtime values String("Alice") and Int(30) satisfy these annotations.
+# T-1917 is now implemented: [get k c] carries constraint: [$Indexable c k v] with
+# resolver: FieldType, so static type precision is wired. See
+# tests/corpus/eval/typecheck/warnings/get_call_field_type_mismatch.llt-eval for
+# a test that proves FieldType fires statically and produces Type::Str (not Any).
+[
+  person: [name: "Alice"  age: 30]
+  n@String: [get "name" person]
+  a@Integer: [get "age" person]
+]
+=== out
+Dict({"person": Dict({"name": String("Alice"), "age": Int(30)}), "n": String("Alice"), "a": Int(30)})

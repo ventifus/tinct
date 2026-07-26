@@ -1,5 +1,4 @@
 //! Type introspection, evaluation control, and meta builtins.
-#![allow(clippy::needless_borrow)]
 //!
 //! These builtins provide type checking, evaluation control, AST manipulation,
 //! file inclusion, and schema validation.
@@ -234,9 +233,8 @@ pub(crate) fn builtin_try(
                 // Failure: full diagnostic dict matching the unified protocol.
                 // Discriminated by absence of "ok" key (success has "ok", failure does not).
                 let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-                let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
-                    make_span_dict(span, &ctx, &call_span)
-                };
+                let mk_span =
+                    |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
                 let primary_span = e.spans.first().map(|(s, _)| s).unwrap_or(&call_span);
                 let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 // Unified diagnostic protocol fields:
@@ -369,7 +367,7 @@ pub(crate) fn builtin_until(
                 &ctx,
                 &call_span,
             )
-            .await
+            .await?
             {
                 // Predicate holds, return the current value (as thunk)
                 return Ok(val_thunk);
@@ -861,7 +859,11 @@ pub(crate) fn builtin_is_variant(
 /// - Unevaluated thunks (Surface/AstNodeField) → `Value::Variant { tag: "Expr.<Tag>", .. }`
 /// - Materialized literals (Int/Float/Bool/String) → `Expr.Literal` variant
 /// - Other materialized values → error (cannot reconstruct original AST)
-/// - PendingCall/PendingBuiltin/Guarded/InProgress/Failed → descriptor dict (legacy, will be updated)
+/// - PendingCall → `{type: "pending-call"}`
+/// - PendingBuiltin → `{type: "pending-builtin", name: "<builtin-name>"}`
+/// - Guarded → `{type: "thunk", state: "guarded"}`
+/// - InProgress → `{type: "thunk", state: "in-progress"}`
+/// - Failed → `{type: "thunk", state: <error-message>}`
 pub(crate) fn builtin_ast_of(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -1013,15 +1015,9 @@ pub(crate) fn builtin_ast_of(
         // body without evaluating it.  For already-materialized thunks this is a no-op (cached).
         materialize(&thunk, Some(&call_span), &ctx).await?;
 
-        // Check for Materialized — construct synthetic SurfaceNode for simple literals
-        // For complex values, ast-of should be called on unevaluated expressions, but we
-        // provide a fallback for materialized literals to avoid breaking existing code.
+        // Check for Materialized Value::Function — build a metadata dict:
+        // {type: "fn", doc: ..., return-ann: ..., params: [...]}
         if let Some(val) = thunk.try_get_value().cloned() {
-            use crate::ast::{SurfaceExpression, SurfaceNode};
-            let make_node =
-                |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, call_span.clone()));
-
-            // Handle Value::Function — build a metadata dict: {type: "fn", doc: ..., return-ann: ..., params: [...]}
             if let crate::value::Value::Function {
                 params, annotation, ..
             } = &val
@@ -1104,33 +1100,10 @@ pub(crate) fn builtin_ast_of(
                 )));
             }
 
-            let synthetic_node: Arc<SurfaceNode> = match val {
-                crate::value::Value::Int(n) => make_node(SurfaceExpression::Int(n)),
-                crate::value::Value::U64(n) => make_node(SurfaceExpression::U64(n)),
-                crate::value::Value::Float(f) => make_node(SurfaceExpression::Float(f)),
-                crate::value::Value::String { source, start, end } => {
-                    make_node(SurfaceExpression::StringLiteral {
-                        prefix: String::new(),
-                        delimiter: "\"".to_string(),
-                        content: source[start..end].to_string(),
-                    })
-                }
-                // For other materialized values (Builtin, Dict, etc.), we cannot
-                // reconstruct the original AST, so error out.
-                _ => {
-                    return Err(EvalError::type_mismatch(
-                        "Expr.*",
-                        val.type_name(),
-                        call_span.clone(),
-                    )
-                    .into());
-                }
-            };
-
-            return Ok(Arc::new(crate::value::Thunk::value(
-                crate::surface_convert::surface_node_to_expr_variant(&synthetic_node, &ctx),
-                call_span,
-            )));
+            // ast-of is defined only for unevaluated expressions (AstNodeField) and
+            // Value::Function. If the thunk holds any other materialized value, the caller
+            // should have passed the unevaluated form instead.
+            return Err(EvalError::type_mismatch("Expr.*", val.type_name(), call_span).into());
         }
 
         // Placeholder or unknown state (should not be observable in user code)
@@ -1845,7 +1818,6 @@ pub(crate) fn builtin_parse(
             args,
             named,
             call_span,
-            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-parse", named.as_ref(), call_span.clone())?;
@@ -1913,8 +1885,7 @@ pub(crate) fn builtin_parse(
 
         // Build the integer-keyed diagnostics dict from TypeDiagnostic.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span =
-            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
+        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut errors_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in all_parse_diagnostics.iter().enumerate() {
             let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -2031,7 +2002,6 @@ pub(crate) fn builtin_resolve(
             args,
             named,
             call_span,
-            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-resolve", named.as_ref(), call_span.clone())?;
@@ -2099,19 +2069,17 @@ pub(crate) fn builtin_resolve(
         //   discarded — the evaluator uses inline OnceLock resolutions written directly onto each
         //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
         //   ResolutionTable is not read by the evaluator.
+        // root_group_len=0: env-dict IS the full scope. eval_core_document_exprs builds
+        // the spine from env-dict entries only (GroupSpine::from_flat), so env-dict name j
+        // maps to LGM(j) — no root_spine offset needed.
         let (_resolve_table, resolve_diagnostics, unreferenced_names) =
-            crate::resolve::resolve_surface_document_with_env_dict(
-                &doc_arc,
-                &env_names,
-                ctx.root_group.len() as u32,
-            );
+            crate::resolve::resolve_surface_document_with_env_dict(&doc_arc, &env_names, 0);
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
         // There is no separate "warnings" key — diagnostics is the single bag for all severities.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span =
-            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
+        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         for (i, diag) in resolve_diagnostics.iter().enumerate() {
@@ -2301,8 +2269,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
         // Build diagnostics dict using the same format as builtin-resolve.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span =
-            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
+        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in warnings.iter().enumerate() {
             let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -2358,9 +2325,13 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
 /// `builtin-typecheck-doc`: Type-check a single resolved `Value::Document`.
 ///
-/// Takes exactly 2 args:
+/// Takes 2 or 3 args:
 /// - arg0: Value::Document (already resolved)
 /// - arg1: Value::TypeContext
+/// - arg2 (optional): Value::Dict — the doc-env. When present, string-keyed thunks
+///   are extracted and built into a GroupSpine stored in `state.type_stage_eval_group`.
+///   This allows `eval_type_stage_expr` to resolve names from the accumulated
+///   environment instead of evaluating with an empty root scope.
 ///
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
@@ -2375,8 +2346,14 @@ pub(crate) fn builtin_typecheck_doc(
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        if args.len() < 2 || args.len() > 3 {
+            return Err(Box::new(EvalError::user_error(
+                format!(
+                    "builtin-typecheck-doc: expected 2 or 3 arguments, got {}",
+                    args.len()
+                ),
+                call_span,
+            )));
         }
 
         // arg0: Value::Document
@@ -2392,6 +2369,43 @@ pub(crate) fn builtin_typecheck_doc(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let tc_arc = require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone())?;
+
+        // arg2 (optional): Value::Dict — the doc-env.
+        // Extract string-keyed thunks in insertion order and build a GroupSpine so that
+        // eval_type_stage_expr can resolve names from the accumulated environment.
+        let doc_env_spine: Option<std::sync::Arc<crate::value::GroupSpine>> = if args.len() == 3 {
+            let env_val = args[2]
+                .try_get_value()
+                .expect("pre-materialized by force_count/pos_strictness")
+                .clone();
+            match env_val {
+                Value::Dict(dict_map) => {
+                    let thunks: Vec<Arc<Thunk>> = dict_map
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            if matches!(k, HashableValue::Str(_)) {
+                                Some(Arc::clone(v))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    Some(crate::value::GroupSpine::from_flat(thunks))
+                }
+                other => {
+                    return Err(EvalError::internal(
+                        format!(
+                            "builtin-typecheck-doc arg2 (doc-env) is not a Dict: {}",
+                            other.type_name()
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+            }
+        } else {
+            None
+        };
 
         // Extract TypeContext state
         let (mut state, mut type_map, parent_env) = {
@@ -2409,6 +2423,9 @@ pub(crate) fn builtin_typecheck_doc(
                     .type_stage_scope
                     .push(std::collections::HashMap::new());
             }
+
+            // Store doc-env GroupSpine for eval_type_stage_expr.
+            state.type_stage_eval_group = doc_env_spine;
 
             let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
@@ -2467,8 +2484,7 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span =
-            |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &ctx, &call_span) };
+        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         // Merge errors and type_diagnostics into one vec
@@ -2688,9 +2704,13 @@ pub(crate) fn builtin_fork_type_ctx(
 ///
 /// For each string-keyed entry in the env-dict:
 ///   - Materializes the thunk value
-///   - If the value is a TypeNode leaf (Int, String, etc.): adds TypeStageEntry::Resolved
-///   - If the value is a Function: adds TypeStageEntry::Function (parameterized type constructor)
-///   - Otherwise: skips (not a type-stage value)
+///   - Delegates to `classify_type_stage_entry` (same logic as the bootstrap path in imports.rs):
+///     - TypeNode leaf (Int, String, etc.) → TypeStageEntry::Resolved
+///     - TypeNode.TypeVar sentinel → TypeStageEntry::TypeVar
+///     - Complex TypeNode variant (Union, TypeApplication, Arrow, etc.) → TypeStageEntry::Resolved
+///       via `typenode_value_to_type` using the existing scope as context
+///     - Function → TypeStageEntry::Function (parameterized type constructor)
+///     - Otherwise: skips (not a type-stage value)
 ///
 /// The new frame is prepended to `TypeContextData.type_stage_scope` (Vec[0] = innermost,
 /// highest priority). Each module's type-stage is a distinct frame.
@@ -2758,20 +2778,30 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             })
             .collect();
 
+        // Snapshot the existing type_stage_scope so complex TypeNode variants (TypeApplication,
+        // Union, Arrow, etc.) can be resolved by typenode_value_to_type, which requires
+        // the scope chain for recursive conversion of child TypeNode values.
+        let existing_scope: Vec<
+            std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
+        > = {
+            let guard = tc_arc.lock().unwrap();
+            guard.type_stage_scope.clone()
+        };
+
         // Materialize each thunk and convert to TypeStageEntry
         let mut new_frame = std::collections::HashMap::new();
         for (name, thunk) in to_process {
             let val = materialize(&thunk, None, &ctx).await?;
-            let entry = if let Some(ty) = crate::type_normalize::typenode_leaf_to_type(&val) {
-                crate::type_infer::TypeStageEntry::Resolved(ty)
-            } else if let Some(kind) = crate::type_normalize::typenode_typevar_kind(&val) {
-                // TypeNode.TypeVar kind: "Operator"|"Label" → TypeStageEntry::TypeVar
-                // Produced by builtin_core.llt for the Operator and Label type names.
-                crate::type_infer::TypeStageEntry::TypeVar(kind)
-            } else if matches!(val, Value::Function { .. }) {
-                crate::type_infer::TypeStageEntry::Function(Arc::clone(&thunk))
-            } else {
-                continue; // not a type-stage value — skip
+            let entry = match crate::imports::classify_type_stage_entry(
+                &thunk,
+                &val,
+                &ctx,
+                &existing_scope,
+            )
+            .await?
+            {
+                Some(e) => e,
+                None => continue, // not a type-stage value — skip
             };
             new_frame.insert(name, entry);
         }
@@ -3122,10 +3152,9 @@ pub(crate) fn builtin_doc_meta(
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (key, node_arc) in &doc_arc.header {
             let nodes = vec![Arc::clone(node_arc)];
-            let eval_result =
-                crate::eval::eval_document_exprs_with_env(&nodes, &ctx, None, None).await;
+            let eval_result = crate::eval::eval_document_exprs_with_env(&nodes, &ctx, None).await;
             match eval_result {
-                Ok((thunk, _)) => {
+                Ok(thunk) => {
                     result.insert(HashableValue::Str(key.clone().into()), thunk);
                 }
                 Err(e) => return Err(e),
@@ -3201,8 +3230,9 @@ pub(crate) fn builtin_builtin_module(
 /// Returns `Value::Dict` — the exports dict produced by the document's last expression.
 /// Errors propagate via `EvalError` (raises on failure — no diagnostics wrapper).
 ///
-/// B-553: accepts `Value::CoreDocument` (output of `builtin-lower`), not `Value::Document`.
-/// T-1775: env-dict protocol replaces the old scope-id Int parameter.
+/// Accepts `Value::CoreDocument` (output of `builtin-lower`), not `Value::Document`.
+/// The env-dict protocol passes a `Dict<String, Arc<Thunk>>` as the second argument,
+/// replacing the old scope-id Int parameter.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -3250,10 +3280,10 @@ pub(crate) fn builtin_eval(
 
         // arg1: Value::Dict — env-dict: name → thunk.
         // Extract thunks in insertion order; these become the initial_group (env-dict entries)
-        // for eval_core_document_exprs. They are appended to accumulated_group after root_group
-        // entries, occupying slots root_group.len()..root_group.len()+env_names.len()-1.
-        // The env-dict keys must be in the same insertion order as the name-set passed to
-        // builtin-resolve, which determines the LGM slot assignments.
+        // for eval_core_document_exprs. The env-dict IS the full scope — thunk j occupies
+        // slot j directly (no root_group prefix). The env-dict keys must be in the same
+        // insertion order as the name-set passed to builtin-resolve (with root_group_len=0),
+        // which determines the LGM slot assignments.
         let env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -3410,22 +3440,12 @@ pub(crate) fn builtin_eval_macro_ast(
             named: _,
             call_span,
             ctx,
-            caller_env_id,
+            ..
         } = ctx_arg;
 
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-
-        // ── Step 1: Obtain call-site FlatEnv id ───────────────────────────────
-        //
-        // The @Expr PendingCallDispatch handler in eval_materialize.rs injects the
-        // call-site env id directly via BuiltinArgs.caller_env_id. bind_args_thunks
-        // (eval_call.rs BIND-SYSTEM) skips names containing '∷' — they are never
-        // stored in the FlatEnv — so caller_env_id is the sole authoritative source.
-        // caller_env_id is Some because builtin-eval-macro-ast is registered with needs_caller_env: true.
-        let call_site_env_id: u32 = caller_env_id
-            .expect("builtin-eval-macro-ast: caller_env_id is None — BuiltinDef.needs_caller_env must be true");
 
         // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
         let expr_val = args[0]
@@ -3467,13 +3487,9 @@ pub(crate) fn builtin_eval_macro_ast(
             )],
         });
 
-        // ── Step 4: Desugar + resolve in the call-site environment ────────────
-        // Seed resolver from the full parent chain of call_site_env_id so that all names
-        // visible at the macro call site (builtins, prelude, user-defined) resolve to
-        // de Bruijn coordinates rather than falling back to name-based lookup via MAX/MAX.
-        // Using the FlatEnv parent chain here is correct for macros: they are generated at
-        // runtime and need to see the same lexical scope as the call site.
-        // ScopeArena deleted — resolve with empty frames.
+        // ── Step 4: Desugar + resolve ─────────────────────────────────────────
+        // Resolve with empty frames — ScopeArena was deleted; de Bruijn coordinates
+        // resolve via MAX/MAX name-based lookup at eval time.
         let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
         let (_resolve_table, _new_frames) =
             crate::resolve::resolve_surface_program(&program, &initial_frames);
@@ -3493,13 +3509,8 @@ pub(crate) fn builtin_eval_macro_ast(
             .collect();
 
         // ── Step 6: Evaluate and return the result thunk ──────────────────────
-        let (result_thunk, _root_env_id) = crate::eval::eval_document_exprs_with_env(
-            &expression_nodes,
-            &ctx,
-            Some(call_site_env_id),
-            None,
-        )
-        .await?;
+        let result_thunk =
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, None).await?;
 
         Ok(result_thunk)
     })
@@ -3508,7 +3519,6 @@ pub(crate) fn builtin_eval_macro_ast(
 /// `eval-types`: same as `eval` but evaluates in the type-stage environment.
 ///
 /// This is used for evaluating type-level expressions (type aliases, class declarations).
-/// Base environment: uses the parent_env_id bridge placeholder (always None).
 pub(crate) fn builtin_eval_types(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -3527,9 +3537,6 @@ pub(crate) fn builtin_eval_types(
 
         // Reject all named args — eval-types takes only the positional document arg.
         crate::builtins::reject_named("eval-types", named.as_ref(), call_span.clone())?;
-
-        // parent_env_id is a bridge placeholder (always None → 0).
-        let parent_env_id: Option<u32> = None;
 
         // Materialize the input — accepts Value::Document only.
         let input_val = args[0]
@@ -3550,9 +3557,8 @@ pub(crate) fn builtin_eval_types(
                     }
                 })
                 .collect();
-            let (result_thunk, _root_env_id) =
-                crate::eval::eval_document_exprs_with_env(&expr_nodes, &ctx, parent_env_id, None)
-                    .await?;
+            let result_thunk =
+                crate::eval::eval_document_exprs_with_env(&expr_nodes, &ctx, None).await?;
             return Ok(result_thunk);
         }
 
@@ -3646,12 +3652,11 @@ pub(crate) fn builtin_validate(
         } = ctx_arg;
 
         // Expect exactly 2 args: schema, data
-        let (schema, data) =
-            expect_two_args("validate", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let (schema, data) = expect_two_args("validate", &args, named.as_ref(), call_span.clone())?;
 
         // Schema must be a Dict
         let schema_dict = match schema {
-            Value::Dict(ref d) => d.clone(),
+            Value::Dict(d) => d,
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Dict (schema)",
@@ -3687,7 +3692,6 @@ fn expect_two_args(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<(Value, Value)> {
     if args.len() != 2 {
@@ -3706,7 +3710,6 @@ fn expect_two_args(
         .expect("pre-materialized by force_count/pos_strictness")
         .clone();
 
-    let _ = ctx;
     Ok((val1, val2))
 }
 
@@ -3732,12 +3735,7 @@ fn validate_value(
         // Check `type` constraint
         if let Some(type_thunk) = schema.get(&HashableValue::Str("type".into())) {
             let type_val = materialize(type_thunk, Some(&span), &ctx).await?;
-            if let Value::String {
-                ref source,
-                start,
-                end,
-            } = type_val
-            {
+            if let Value::String { source, start, end } = type_val {
                 let expected_type = &source[start..end];
                 let actual_type = type_name(&data);
                 if expected_type != actual_type {
@@ -3849,10 +3847,10 @@ fn validate_value(
                                 ));
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
                             violations.push((
                                 path.clone(),
-                                format!("invalid regex pattern: {}", pattern_str),
+                                format!("invalid regex pattern {:?}: {}", pattern_str, e),
                             ));
                         }
                     }
@@ -3865,7 +3863,7 @@ fn validate_value(
         // are compared. Dict/payload-Variant are not structurally compared.
         if let Some(enum_thunk) = schema.get(&HashableValue::Str("enum".into())) {
             let enum_val = materialize(enum_thunk, Some(&span), &ctx).await?;
-            if let Value::Dict(ref enum_dict) = enum_val {
+            if let Value::Dict(enum_dict) = enum_val {
                 // Pre-materialize all enum values, then check membership via primitive equality.
                 let mut allowed_values = Vec::with_capacity(enum_dict.len());
                 for (_key, val_thunk) in enum_dict.iter() {
@@ -3888,10 +3886,10 @@ fn validate_value(
         // Check fields constraint (for dicts)
         if let Some(fields_thunk) = schema.get(&HashableValue::Str("fields".into())) {
             let fields_val = materialize(fields_thunk, Some(&span), &ctx).await?;
-            if let Value::Dict(ref fields_schema) = fields_val {
+            if let Value::Dict(fields_schema) = fields_val {
                 if let Value::Dict(ref data_dict) = data {
                     // Validate each field in the schema
-                    for (field_key, field_schema_thunk) in fields_schema {
+                    for (field_key, field_schema_thunk) in &fields_schema {
                         let field_schema_val =
                             materialize(field_schema_thunk, Some(&span), &ctx).await?;
                         if let Value::Dict(field_schema) = field_schema_val {
@@ -3939,7 +3937,7 @@ fn validate_value(
         if let Some(items_thunk) = schema.get(&HashableValue::Str("items".into())) {
             let items_val = materialize(items_thunk, Some(&span), &ctx).await?;
             if let Value::Dict(items_schema) = items_val {
-                if let Value::Dict(ref data_dict) = &data {
+                if let Value::Dict(data_dict) = &data {
                     for (idx, (_key, val_thunk)) in data_dict.iter().enumerate() {
                         let val = materialize(val_thunk, Some(&span), &ctx).await?;
                         let item_path = if path.is_empty() {

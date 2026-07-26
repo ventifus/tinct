@@ -4906,7 +4906,7 @@ fn profile_writes_llt_stream_readable_by_stream_input() {
     // Consume with -i stream — use a program that forces iteration over the seq.
     // We just verify the consumer exits 0 (the stream is parseable).
     let (consumer, _cdir) = write_temp_llt("profile_rt_consumer", "[count %]");
-    let consume = Command::new(tinct_bin())
+    let mut consume_child = Command::new(tinct_bin())
         .args([
             "run",
             "-i",
@@ -4915,16 +4915,22 @@ fn profile_writes_llt_stream_readable_by_stream_input() {
             "llt",
             consumer.to_str().unwrap(),
         ])
-        .stdin({
-            // CORPUS-OK: test infrastructure reads files via std::fs — no cap_std here
-            #[allow(clippy::disallowed_types)]
-            fn open_file(p: &std::path::Path) -> std::fs::File {
-                std::fs::File::open(p).expect("could not open profile stream file")
-            }
-            open_file(&stream_path)
-        })
-        .output()
-        .expect("failed to run tinct for profile stream consumption");
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn tinct for profile stream consumption");
+    {
+        use std::io::Write;
+        let stream_bytes = std::fs::read(&stream_path).expect("could not read profile stream file");
+        if let Some(mut w) = consume_child.stdin.take() {
+            w.write_all(&stream_bytes)
+                .expect("failed to write stream to stdin");
+        }
+    }
+    let consume = consume_child
+        .wait_with_output()
+        .expect("failed to wait for tinct profile stream consumption");
     assert!(
         consume.status.success(),
         "profile stream consumption failed; stderr: {}",

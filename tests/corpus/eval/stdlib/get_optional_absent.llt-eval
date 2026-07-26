@@ -1,0 +1,10 @@
+# Tests that get? returns the value on a hit and Absent.Absent on a miss.
+# absent? on the miss result returns Boolean.True.
+[
+  d: [a: 1  b: 2]
+  hit: [get? "a" d]
+  miss: [get? "z" d]
+  miss-absent?: [absent? miss]
+]
+=== out
+Dict({"d": Dict({"a": Int(1), "b": Int(2)}), "hit": Int(1), "miss": Variant(Absent.Absent, Null), "miss-absent?": Variant(Boolean.True, Null)})

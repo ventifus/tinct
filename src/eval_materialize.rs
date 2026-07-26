@@ -72,18 +72,16 @@ impl ProfilingSpanGuard {
             };
 
             // Creation-time data lookup via ThunkId is no longer available (ThunkId removed).
-            let (create_parent, create_time_us) = (None, 0u64);
-
-            let id = prof.lock().unwrap().open_span(
+            let id = prof.lock().unwrap().open_span(crate::profiling::SpanInfo {
                 source_file,
                 source_start,
                 source_end,
                 source_text,
                 builtin_name,
                 origin_builtin,
-                create_parent,
-                create_time_us,
-            );
+                create_parent: None,
+                create_time_us: 0,
+            });
             (Some(Arc::clone(prof)), Some(id))
         } else {
             (None, None)
@@ -440,7 +438,7 @@ struct EvalStackGuard {
 impl EvalStackGuard {
     /// Push an entry onto the eval_stack and create a guard that will pop on drop.
     fn push(entry: (Arc<str>, Span)) -> Self {
-        let _ = TASK_EVAL_STACK.try_with(|s| s.borrow_mut().push(entry));
+        TASK_EVAL_STACK.with(|s| s.borrow_mut().push(entry));
         EvalStackGuard { armed: true }
     }
 
@@ -465,7 +463,7 @@ impl EvalStackGuard {
 impl Drop for EvalStackGuard {
     fn drop(&mut self) {
         if self.armed {
-            let _ = TASK_EVAL_STACK.try_with(|s| s.borrow_mut().pop());
+            TASK_EVAL_STACK.with(|s| s.borrow_mut().pop());
         }
     }
 }
@@ -513,11 +511,7 @@ pub(crate) enum Action {
 /// materialized thunks that hold each field value.
 ///
 /// `file` is the path string if present, or `[]` (empty dict) when no source file is known.
-pub(crate) fn make_span_dict(
-    span: &crate::ast::Span,
-    ctx: &Arc<EvalContext>,
-    call_span: &crate::ast::Span,
-) -> Arc<Thunk> {
+pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Span) -> Arc<Thunk> {
     let mk = |v: Value| Arc::new(Thunk::value(v, call_span.clone()));
     let mut w: indexmap::IndexMap<HashableValue, Arc<Thunk>> = indexmap::IndexMap::new();
     w.insert(
@@ -546,7 +540,6 @@ pub(crate) fn make_span_dict(
         HashableValue::Str("end-col".into()),
         mk(Value::Int(span.end_col as i64)),
     );
-    let _ = ctx;
     Arc::new(Thunk::value(Value::Dict(w), call_span.clone()))
 }
 
@@ -930,7 +923,7 @@ async fn dispatch_state(
                 pipeline_blame,
             } = &core_expr.node
             {
-                // B-433/B-429: If inner is a Placeholder (lowered from a parse-time error or
+                // If inner is a Placeholder (lowered from a parse-time error or
                 // unresolvable VarRef) and annotation has default:, use the default instead.
                 let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
                     (&inner.node, annotation.node.get_property("default"))
@@ -1107,12 +1100,12 @@ async fn dispatch_state(
             }
         }
 
-        // T-1621: Deferred Value::Annotated wrapper.
+        // Deferred Value::Annotated wrapper.
         // Forces the inner thunk and wraps the result in Value::Annotated { annotation, inner }.
         UnevaluatedState::AnnotatedWrap {
             inner,
             annotation,
-            ctx: thunk_ctx,
+            ctx: _,
         } => {
             stack.push(Cont::AnnotatedWrapFinalize(Box::new(
                 AnnotatedWrapFinalizeData {
@@ -1124,7 +1117,6 @@ async fn dispatch_state(
                 },
             )));
             // inner is Arc<Thunk> directly — no arena lookup needed.
-            let _ = thunk_ctx;
             Action::Materialize {
                 thunk: inner,
                 mat_span: None,
@@ -1327,8 +1319,7 @@ pub(crate) async fn apply_cont(
                                             call_span.clone(),
                                         )),
                                     );
-                                    let span_thunk =
-                                        make_span_dict(&call_span, &thunk_ctx, &call_span);
+                                    let span_thunk = make_span_dict(&call_span, &call_span);
                                     named_map.insert(MACRO_CALL_SPAN_NAME.to_string(), span_thunk);
                                 }
                                 // If original_call is not CoreExpr::Call (e.g. it is a VarRef or
@@ -1629,8 +1620,6 @@ pub(crate) async fn apply_cont(
                                 &mut field_path,
                                 guard_span.clone(),
                                 inner_span.clone(),
-                                0,
-                                &guard_ctx,
                                 default.clone(),
                                 blame_label.clone(),
                             ) {
@@ -1948,7 +1937,7 @@ pub(crate) async fn apply_cont(
             let expected = *resolved;
             match result {
                 Err(e) => {
-                    // B-433: When inner expr materialization fails (Placeholder, undefined variable, etc.),
+                    // When inner expr materialization fails (Placeholder, undefined variable, etc.),
                     // check for `default:` annotation and evaluate it instead of propagating the error.
                     if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
@@ -2000,8 +1989,6 @@ pub(crate) async fn apply_cont(
                                 &mut vec![],
                                 expr_span.clone(),
                                 thunk_span.clone(),
-                                0,
-                                &ctx,
                                 default_opt.clone(),
                                 blame_label,
                             ) {
@@ -2209,8 +2196,8 @@ pub(crate) async fn apply_cont(
                         _ => None,
                     };
 
-                    if let Some(ref static_key_set) = static_keys {
-                        let _map = match intermediate_value {
+                    if static_keys.is_some() {
+                        let map = match intermediate_value {
                             Value::Dict(map) => map,
                             Value::Variant {
                                 payload: Some(payload_thunk),
@@ -2218,9 +2205,10 @@ pub(crate) async fn apply_cont(
                             } => {
                                 // Auto-unpack variant payload for sequential scope-chain binding.
                                 // Unit Variants (no payload) fall through to the type error below.
+                                let key_set = static_keys.unwrap();
                                 stack.push(Cont::VariantUnpackForLetrecChain(Box::new(
                                     VariantUnpackForLetrecChainData {
-                                        static_key_set: static_key_set.clone(),
+                                        static_key_set: key_set,
                                         next_idx,
                                         letrec_chain_expr: Arc::clone(&letrec_chain_expr),
                                         frame: Arc::clone(&frame),
@@ -2253,8 +2241,7 @@ pub(crate) async fn apply_cont(
                         // entries in insertion order (step 7 of the Sequential handler in
                         // resolve.rs). Appending the dict's string-key thunks (in insertion
                         // order) to the accumulated group preserves that slot alignment.
-                        let _ = static_key_set;
-                        let new_thunks: Vec<std::sync::Arc<crate::value::Thunk>> = _map
+                        let new_thunks: Vec<std::sync::Arc<crate::value::Thunk>> = map
                             .iter()
                             .filter_map(|(k, v)| {
                                 if matches!(k, crate::value::HashableValue::Str(_)) {
@@ -2339,7 +2326,7 @@ pub(crate) async fn apply_cont(
                         Err(e) => return Action::Continue(Err(e)),
                     };
 
-                    // B-591: Extend frame group with payload dict's string-keyed thunks,
+                    // Extend frame group with payload dict's string-keyed thunks,
                     // mirroring the Dict path in LetrecChainStep (lines above). Without
                     // this, subsequent LGM references would resolve to wrong thunks.
                     let next_expr = &exprs[next_idx];
@@ -2616,37 +2603,42 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let guard_passed = if let Some(ref binding_name) = guard_matchable_binding {
-                        // Compile-time resolved: use the pre-resolved Matchable instance binding.
-                        crate::eval::call_to_match_resolved(
-                            &guard_value,
-                            binding_name,
-                            &ctx,
-                            &match_span,
-                        )
-                        .await
-                    } else {
-                        // Type checking was skipped — fall back to dynamic dispatch.
-                        crate::eval::call_to_match(&guard_value, &ctx, &match_span).await
-                    };
+                    let guard_passed_result =
+                        if let Some(ref binding_name) = guard_matchable_binding {
+                            // Compile-time resolved: use the pre-resolved Matchable instance binding.
+                            crate::eval::call_to_match_resolved(
+                                &guard_value,
+                                binding_name,
+                                &ctx,
+                                &match_span,
+                            )
+                            .await
+                        } else {
+                            // Type checking was skipped — fall back to dynamic dispatch.
+                            crate::eval::call_to_match(&guard_value, &ctx, &match_span).await
+                        };
 
-                    if guard_passed {
-                        // Guard passed — evaluate the body.
-                        Action::EvalCore {
-                            expr: body,
-                            frame,
-                            ctx,
+                    match guard_passed_result {
+                        Err(e) => Action::Continue(Err(e)),
+                        Ok(true) => {
+                            // Guard passed — evaluate the body.
+                            Action::EvalCore {
+                                expr: body,
+                                frame,
+                                ctx,
+                            }
                         }
-                    } else {
-                        // Guard failed — try the next arm
-                        stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
-                            arm_idx: arm_idx + 1,
-                            match_expr: Arc::clone(&match_expr),
-                            frame,
-                            ctx: Arc::clone(&ctx),
-                            match_span: match_span.clone(),
-                        })));
-                        Action::Continue(Ok(scrutinee_value))
+                        Ok(false) => {
+                            // Guard failed — try the next arm
+                            stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
+                                arm_idx: arm_idx + 1,
+                                match_expr: Arc::clone(&match_expr),
+                                frame,
+                                ctx: Arc::clone(&ctx),
+                                match_span: match_span.clone(),
+                            })));
+                            Action::Continue(Ok(scrutinee_value))
+                        }
                     }
                 }
             }
@@ -2696,8 +2688,13 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let pred_passed =
+                    let pred_passed_result =
                         crate::eval::call_to_match(&predicate_value, &ctx, &expr_span).await;
+
+                    let pred_passed = match pred_passed_result {
+                        Err(e) => return Action::Continue(Err(e)),
+                        Ok(b) => b,
+                    };
 
                     if pred_passed {
                         // Predicate passed — return the original value
@@ -2967,7 +2964,7 @@ fn eval_structural_pattern_inner<'a>(
 
                     let pred_result = materialize(&pred_call_thunk, Some(match_span), ctx).await?;
 
-                    if !crate::eval::call_to_match(&pred_result, ctx, match_span).await {
+                    if !crate::eval::call_to_match(&pred_result, ctx, match_span).await? {
                         return Ok(false);
                     }
                 }
@@ -3139,7 +3136,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_result =
                                 materialize(&guard_thunk, Some(match_span), ctx).await?;
-                            Ok(crate::eval::call_to_match(&guard_result, ctx, match_span).await)
+                            crate::eval::call_to_match(&guard_result, ctx, match_span).await
                         }
 
                         other => Err(EvalError::type_mismatch_ctx(
@@ -3384,8 +3381,14 @@ mod tests {
     }
 
     /// Async shadow of `run()` for test contexts.
+    /// Sets up a TASK_EVAL_STACK scope so that EvalStackGuard::push/drop work correctly,
+    /// matching the scope that production callers (eval::materialize) establish.
     async fn run(initial: Action, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
-        super::run_with_stack(initial, Vec::new(), ctx).await
+        TASK_EVAL_STACK
+            .scope(std::cell::RefCell::new(vec![]), async {
+                super::run_with_stack(initial, Vec::new(), ctx).await
+            })
+            .await
     }
 
     #[tokio::test]
@@ -3870,7 +3873,7 @@ mod tests {
         // Construct a BuiltinDef for `builtin_keys` with force_count=1.
         const KEYS_STRICTNESS: &[Strictness] = &[];
         let keys_def = BuiltinDef {
-            func: crate::builtins::builtin_keys as BuiltinFn,
+            func: crate::builtins_dict::builtin_keys as BuiltinFn,
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
@@ -4240,7 +4243,7 @@ mod cek_lifecycle_tests {
         // Transition thunk to InProgress by claiming its UnevaluatedState.
         // After try_claim() the unevaluated field is None and evaluating_task is set
         // to the current task id — exactly the InProgress state.
-        let _claimed = thunk.try_claim().expect("fresh thunk must be claimable");
+        thunk.try_claim().expect("fresh thunk must be claimable");
 
         // Verify InProgress state before calling force_step.
         assert!(

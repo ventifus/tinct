@@ -78,7 +78,7 @@ fn extract_property_dict_from_annotation(
 /// Non-literal values (VarRefs, calls, fn expressions) are lowered to CoreExpr and
 /// evaluated in `parent_env_id` — the same environment as the enclosing dict's keys.
 ///
-/// Used by T-1119/T-1620 to evaluate `@[...]` annotations on dict key entries.
+/// Used to evaluate `@[...]` annotations on dict key entries.
 async fn eval_annotation_property_dict(
     entries: &[Spanned<crate::ast::SurfaceEntry>],
     _parent_env_id: u32,
@@ -88,11 +88,10 @@ async fn eval_annotation_property_dict(
     let mut auto_index: i64 = 0;
 
     for entry in entries {
-        // Evaluate the key to get a concrete HashableValue
+        // Evaluate the key to get a concrete HashableValue.
+        // Annotation property dict keys must be literal values or bare words — complex
+        // key expressions (calls, fn expressions, pipes) are not valid annotation syntax.
         let key = if let Some(key_node) = &entry.node.key {
-            // Evaluate the key expression (SurfaceExpression)
-            // We need to lower it to CoreExpr first, then evaluate
-            // For now, handle the common case of string literals directly
             match &key_node.expr {
                 SurfaceExpression::StringLiteral {
                     content: s,
@@ -125,9 +124,10 @@ async fn eval_annotation_property_dict(
                     HashableValue::Str(Arc::from(name.as_str()))
                 }
                 _ => {
-                    // For complex key expressions, we'd need to lower and evaluate
-                    // For now, treat as an error since annotation keys should be simple
-                    return Err(Box::new(EvalError::internal(
+                    // Annotation property dict keys must be string literals, int literals,
+                    // or bare words. Complex key expressions (calls, fn, pipes) are not
+                    // valid annotation syntax.
+                    return Err(Box::new(EvalError::user_error(
                         format!(
                             "annotation property dict keys must be string literals, int literals, or bare words, got: {:?}",
                             key_node.expr
@@ -171,7 +171,7 @@ async fn eval_annotation_property_dict(
                 name, resolution, ..
             } if resolution.get() == Some(None) => string_val(name),
             _ => {
-                // T-1620: Non-literal annotation values are lowered to CoreExpr and evaluated.
+                // Non-literal annotation values are lowered to CoreExpr and evaluated.
                 // This handles VarRefs (type names like Dict, String), fn expressions, and calls.
                 let mut lower_diags = Vec::new();
                 let core_expr = crate::lower::lower_inner(
@@ -230,7 +230,7 @@ async fn eval_annotation_property_dict(
 // produce no runtime entry — this is correct behavior. The type checker registers
 // class/instance declarations found inside dicts before the SCC inference loop, so
 // all declarations are visible regardless of order. FD consistency checks fire
-// correctly for class/instance inside dict values (fixed in B-164).
+// correctly for class/instance inside dict values.
 // ============================================================================
 
 /// Returns `true` if a dict key expression is "static" — i.e., its name is known at compile
@@ -274,7 +274,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 ///   — no CoreExpr→Expr round-trip for dict values.
 ///
 /// **Constructor dict**: Constructors (unit and named-field) are produced by the lower.rs
-/// pass (T-1193) as entries in the runtime constructor dict. No runtime pre-scan is needed —
+/// pass as entries in the runtime constructor dict. No runtime pre-scan is needed —
 /// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
@@ -282,7 +282,7 @@ pub(crate) async fn eval_dict_core(
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
-    // dict_env (legacy Arc<RwLock<Env>>) removed — T-1557. EvalFrame used instead.
+    // EvalFrame-based letrec state is initialized here; the legacy Arc<RwLock<Env>> has been removed.
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
@@ -384,7 +384,7 @@ pub(crate) async fn eval_dict_core(
                 }
             };
 
-        // T-1119: If the key is annotated (e.g., Pi@[doc: "..."]), wrap the value in Value::Annotated.
+        // If the key is annotated (e.g., Pi@[doc: "..."]), wrap the value in Value::Annotated.
         // The annotation PropertyDict is evaluated to a Value::Dict at dict construction time.
         let thunk = if let Some(key_expr) = &entry.node.key {
             if let CoreExpr::Var {
@@ -400,7 +400,7 @@ pub(crate) async fn eval_dict_core(
                     let annotation_value =
                         eval_annotation_property_dict(ann_entries, 0u32, ctx).await?;
 
-                    // T-1123/T-1621: Wrap value in Value::Annotated.
+                    // Wrap value in Value::Annotated.
                     // For literals (already materialized): wrap immediately in Value::Annotated.
                     // For non-literals (functions, VarRefs, calls): create a deferred
                     // AnnotatedWrap thunk that forces the inner value when accessed and wraps
@@ -435,7 +435,7 @@ pub(crate) async fn eval_dict_core(
             value_thunk
         };
 
-        // Values go into the dict map (T-1772: Dict stores Arc<Thunk> directly).
+        // Values go into the dict map (Dict stores Arc<Thunk> directly).
         if let Some(old_thunk) = dict_map.insert(key, Arc::clone(&thunk)) {
             let prev_span = old_thunk.span.clone();
             // key was moved; reconstruct string representation from entry for error message

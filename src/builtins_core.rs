@@ -208,7 +208,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["xs"]
         ),
         builtin!(
-            "builtin-get",
+            "builtin-dict-get",
             builtin_get,
             [Strictness::Seq, Strictness::Spine],
             2,
@@ -486,7 +486,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2,
             ["doc", "frames"]
         ),
-        // T-1742: Pipeline stage lint primitive
+        // Pipeline stage lint primitive
         builtin!(
             "builtin-lint-pipeline-docs",
             crate::builtins_meta::builtin_lint_pipeline_docs,
@@ -497,9 +497,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-typecheck-doc",
             builtin_typecheck_doc,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["doc", "tc"]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3,
+            ["doc", "tc", "doc-env"]
         ),
         // TypeContext primitives
         builtin!("builtin-get-type-context", builtin_get_type_context, [], 0),

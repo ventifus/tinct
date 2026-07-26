@@ -697,14 +697,16 @@ pub(crate) fn builtin_write_atomic(
         // Generate a unique temp filename in the same directory as the target
         // Use process ID and a random suffix to avoid collisions
         use std::io::Write;
-        let temp_name = format!(
-            ".tmp.{}.{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| {
+                EvalError::internal(
+                    format!("write-atomic: system clock is before Unix epoch: {e}"),
+                    call_span.clone(),
+                )
+            })?
+            .as_nanos();
+        let temp_name = format!(".tmp.{}.{}", std::process::id(), nanos);
 
         // Write to temp file
         let mut temp_file = dir.create(&temp_name).map_err(|e| {
@@ -743,12 +745,15 @@ pub(crate) fn builtin_write_atomic(
 
         // Atomically rename temp file to target path
         dir.rename(&temp_name, dir, &path).map_err(|e| {
-            // Clean up temp file on rename failure
-            let _ = dir.remove_file(&temp_name);
+            // Attempt to clean up temp file on rename failure; include any cleanup error in message.
+            let cleanup_note = match dir.remove_file(&temp_name) {
+                Ok(()) => String::new(),
+                Err(ce) => format!("; also failed to remove temp file: {ce}"),
+            };
             EvalError::user_error(
                 format!(
-                    "write-atomic: failed to rename temp file to '{}': {}",
-                    path, e
+                    "write-atomic: failed to rename temp file to '{}': {}{}",
+                    path, e, cleanup_note
                 ),
                 call_span.clone(),
             )
@@ -845,16 +850,30 @@ pub(crate) fn builtin_list_dir(
                 "other"
             };
 
-            // Get mtime as unix timestamp
-            let mtime = metadata
-                .modified()
-                .ok()
-                .and_then(|t| {
+            // Get mtime as unix timestamp (None if platform does not support mtime).
+            let mtime: Option<i64> = match metadata.modified() {
+                Ok(t) => {
                     use std::time::UNIX_EPOCH;
-                    t.into_std().duration_since(UNIX_EPOCH).ok()
-                })
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+                    match t.into_std().duration_since(UNIX_EPOCH) {
+                        Ok(d) => Some(d.as_secs() as i64),
+                        Err(e) => {
+                            return Err(EvalError::user_error(
+                                format!("list-dir: mtime is before Unix epoch: {e}"),
+                                call_span.clone(),
+                            )
+                            .into())
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
+                Err(e) => {
+                    return Err(EvalError::user_error(
+                        format!("list-dir: failed to read mtime: {e}"),
+                        call_span.clone(),
+                    )
+                    .into())
+                }
+            };
 
             // Build metadata dict
             let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -870,10 +889,12 @@ pub(crate) fn builtin_list_dir(
                 HashableValue::Str("size".into()),
                 ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
             );
-            dict.insert(
-                HashableValue::Str("mtime".into()),
-                ok_val(Value::Int(mtime), call_span.clone())?,
-            );
+            if let Some(mtime_secs) = mtime {
+                dict.insert(
+                    HashableValue::Str("mtime".into()),
+                    ok_val(Value::Int(mtime_secs), call_span.clone())?,
+                );
+            }
 
             entry_values.push(Value::Dict(dict));
         }
@@ -947,16 +968,30 @@ pub(crate) fn builtin_stat(
             "other"
         };
 
-        // Get mtime as unix timestamp
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|t| {
+        // Get mtime as unix timestamp (None if platform does not support mtime).
+        let mtime: Option<i64> = match metadata.modified() {
+            Ok(t) => {
                 use std::time::UNIX_EPOCH;
-                t.into_std().duration_since(UNIX_EPOCH).ok()
-            })
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+                match t.into_std().duration_since(UNIX_EPOCH) {
+                    Ok(d) => Some(d.as_secs() as i64),
+                    Err(e) => {
+                        return Err(EvalError::user_error(
+                            format!("stat: mtime is before Unix epoch: {e}"),
+                            call_span.clone(),
+                        )
+                        .into())
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
+            Err(e) => {
+                return Err(EvalError::user_error(
+                    format!("stat: failed to read mtime: {e}"),
+                    call_span.clone(),
+                )
+                .into())
+            }
+        };
 
         // Get permissions (Unix-specific)
         #[cfg(unix)]
@@ -981,10 +1016,12 @@ pub(crate) fn builtin_stat(
             HashableValue::Str("size".into()),
             ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
         );
-        dict.insert(
-            HashableValue::Str("mtime".into()),
-            ok_val(Value::Int(mtime), call_span.clone())?,
-        );
+        if let Some(mtime_secs) = mtime {
+            dict.insert(
+                HashableValue::Str("mtime".into()),
+                ok_val(Value::Int(mtime_secs), call_span.clone())?,
+            );
+        }
         dict.insert(
             HashableValue::Str("mode".into()),
             ok_val(Value::Int(mode), call_span.clone())?,
@@ -1133,16 +1170,30 @@ pub(crate) fn builtin_stat_symlink(
             "other"
         };
 
-        // Get mtime as unix timestamp
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|t| {
+        // Get mtime as unix timestamp (None if platform does not support mtime).
+        let mtime: Option<i64> = match metadata.modified() {
+            Ok(t) => {
                 use std::time::UNIX_EPOCH;
-                t.into_std().duration_since(UNIX_EPOCH).ok()
-            })
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+                match t.into_std().duration_since(UNIX_EPOCH) {
+                    Ok(d) => Some(d.as_secs() as i64),
+                    Err(e) => {
+                        return Err(EvalError::user_error(
+                            format!("stat-symlink: mtime is before Unix epoch: {e}"),
+                            call_span.clone(),
+                        )
+                        .into())
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
+            Err(e) => {
+                return Err(EvalError::user_error(
+                    format!("stat-symlink: failed to read mtime: {e}"),
+                    call_span.clone(),
+                )
+                .into())
+            }
+        };
 
         // Get permissions (Unix-specific)
         #[cfg(unix)]
@@ -1167,10 +1218,12 @@ pub(crate) fn builtin_stat_symlink(
             HashableValue::Str("size".into()),
             ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
         );
-        dict.insert(
-            HashableValue::Str("mtime".into()),
-            ok_val(Value::Int(mtime), call_span.clone())?,
-        );
+        if let Some(mtime_secs) = mtime {
+            dict.insert(
+                HashableValue::Str("mtime".into()),
+                ok_val(Value::Int(mtime_secs), call_span.clone())?,
+            );
+        }
         dict.insert(
             HashableValue::Str("mode".into()),
             ok_val(Value::Int(mode), call_span.clone())?,

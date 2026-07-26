@@ -25,5 +25,5 @@ pub(crate) fn widen_literal_types(ty: Type) -> Type {
 /// boundary for gradual typing. Unknown, Any, and unresolved TypeVars are
 /// not concrete — they admit any value and do not constrain the callee.
 pub(crate) fn is_concrete_type(ty: &Type) -> bool {
-    !matches!(ty, Type::Unknown | Type::Any | Type::TypeVar(_, _))
+    !matches!(ty, Type::Unknown | Type::Any | Type::Var(_, _))
 }

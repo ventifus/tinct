@@ -79,7 +79,7 @@ impl Substitution {
 
     fn apply_inner(ty: &Type, map: &HashMap<String, Type>) -> Type {
         match ty {
-            Type::TypeVar(name, _) => {
+            Type::Var(name, _) => {
                 if let Some(replacement) = map.get(name.as_str()) {
                     replacement.clone()
                 } else {
@@ -135,7 +135,7 @@ impl Substitution {
                 Type::Intersection(types.iter().map(|t| Self::apply_inner(t, map)).collect())
             }
             Type::Negation(inner) => Type::Negation(Box::new(Self::apply_inner(inner, map))),
-            Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+            Type::StageApp { fn_name, args } => Type::StageApp {
                 fn_name: fn_name.clone(),
                 args: args.iter().map(|a| Self::apply_inner(a, map)).collect(),
             },
@@ -180,9 +180,9 @@ pub struct TypeScheme {
     /// Quantified label variables (for HasField constraints with label polymorphism)
     pub label_vars: Vec<String>,
     /// Kinded quantified variables: pairs of (name, Kind) for variables that must
-    /// instantiate as something other than Type::TypeVar. Currently used for
+    /// instantiate as something other than Type::Var. Currently used for
     /// Kind::Operator variables, which instantiate as Type::Operator(fresh_name)
-    /// rather than Type::TypeVar(fresh_name, level). This enables builtin TypeSchemes
+    /// rather than Type::Var(fresh_name, level). This enables builtin TypeSchemes
     /// like ∀(f: Operator) a b. Mappable f ⇒ (a→b)→f a→f b where f must not be
     /// confused with a monomorphic type variable.
     ///
@@ -409,6 +409,12 @@ pub struct InferState {
     /// Added by T-1731 at VarRef instantiation time; drained by check_constraints_on_var
     /// when the TypeVar resolves to a concrete type.
     pub dispatch_obligations: Vec<DispatchObligation>,
+    /// Eval-stage GroupSpine for type-stage expression evaluation.
+    /// When set, `eval_type_stage_expr` uses this as the root scope frame instead of
+    /// `EvalFrame::empty()`. Built from the doc-env thunks passed to `builtin-typecheck-doc`
+    /// so that type-stage expressions (e.g. `@Integer`) can resolve names from the
+    /// accumulated environment.
+    pub type_stage_eval_group: Option<std::sync::Arc<crate::value::GroupSpine>>,
 }
 
 impl InferState {
@@ -459,6 +465,7 @@ impl InferState {
             tycon_env: std::collections::HashMap::new(),
             scope_frames: None,
             dispatch_obligations: Vec::new(),
+            type_stage_eval_group: None,
         }
     }
 
@@ -571,7 +578,7 @@ impl InferState {
     /// counter. Every call site must supply a real span: tinct-source sites pass the
     /// AST node span; Rust-internal sites use `rust_span!()`.
     ///
-    /// Returns `(name, Type::TypeVar(name, level))`.
+    /// Returns `(name, Type::Var(name, level))`.
     pub fn fresh_type_var_with(
         &mut self,
         source_name: Option<&str>,
@@ -586,7 +593,7 @@ impl InferState {
         self.type_vars
             .entry(name.clone())
             .or_insert_with(|| TypeVarEntry::blank(lvl, kind));
-        let ty = Type::TypeVar(name.clone(), lvl);
+        let ty = Type::Var(name.clone(), lvl);
         (name, ty)
     }
 
@@ -841,11 +848,11 @@ mod tests {
         let tv1 = state.fresh_type_var(&span_b); // registers name in levels at level 0
 
         let name0 = match &tv0 {
-            Type::TypeVar(n, _) => n.clone(),
+            Type::Var(n, _) => n.clone(),
             _ => panic!("not a TypeVar"),
         };
         let name1 = match &tv1 {
-            Type::TypeVar(n, _) => n.clone(),
+            Type::Var(n, _) => n.clone(),
             _ => panic!("not a TypeVar"),
         };
 
@@ -887,8 +894,8 @@ mod tests {
         let mut state = InferState::new();
         let span_a = Span::rust_source(file!(), line!());
         let span_b = Span::rust_source(file!(), line!() + 1);
-        let _ty_a = state.fresh_type_var(&span_a);
-        let _ty_b = state.fresh_type_var(&span_b);
+        state.fresh_type_var(&span_a);
+        state.fresh_type_var(&span_b);
 
         let count_before = state.levels.len();
         state.compact_levels();
@@ -920,7 +927,7 @@ mod tests {
             fields: IndexMap::new(),
             tail: RowTail::Uniform {
                 key: None,
-                value: Box::new(Type::TypeVar("_t7".to_string(), 0)),
+                value: Box::new(Type::Var("_t7".to_string(), 0)),
             },
         };
 

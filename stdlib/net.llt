@@ -72,7 +72,7 @@
             [str url.path [if [null? url.query] "" [str "?" url.query]]]
             [make-entry "user-agent" "tinct/0.1"]
             ""]]
-        [try [fn [let] [http2-session cap [uri-origin url] []]]]]
+        [try [fn [let] [http2-session cap [uri-origin url]]]]
       [if [= url.scheme "http"]
         [try [fn [let]
           [parse-http-response

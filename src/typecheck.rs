@@ -414,7 +414,7 @@ fn merge_env_schemes_into_env(
             guard.insert_tycon_def(name.clone(), Arc::clone(def));
         }
         // Wire classes into type_stage_scope so that imported declarations from loaded
-        // modules are visible to annotation resolution (T-1805).
+        // modules are visible to annotation resolution.
         if state.type_stage_scope.is_empty() {
             state
                 .type_stage_scope
@@ -426,7 +426,7 @@ fn merge_env_schemes_into_env(
                 .or_insert(crate::type_infer::TypeStageEntry::Class(decl.clone()));
         }
         // Wire tycon_defs into type_stage_scope so that imported type constructors from
-        // loaded modules resolve correctly in annotations (T-1805).
+        // loaded modules resolve correctly in annotations.
         for (name, _) in &frame.tycon_defs {
             state.type_stage_scope[0].entry(name.clone()).or_insert(
                 crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::TyCon(
@@ -588,12 +588,12 @@ pub(crate) async fn process_document(
     // Type::Dict(_):        ok — any dict (open, closed, uniform-tail) satisfies the constraint.
     // Type::Unknown:        ok — gradual escape hatch; cannot rule out a dict statically.
     // Type::Any:            ok — top type; cannot rule out a dict.
-    // Type::TypeVar(_, _):  ok — inference variable; deferred to the constraint solver.
+    // Type::Var(_, _):  ok — inference variable; deferred to the constraint solver.
     //                            is_subtype returns true for TypeVars (conservative approximation).
     // Type::Error(_):       ok — cascade sentinel; an upstream error already reported.
     // Everything else:      the type is known to be a non-dict → error.
     match &result_ty {
-        Type::Dict(_) | Type::Unknown | Type::Any | Type::TypeVar(_, _) | Type::Error(_) => {}
+        Type::Dict(_) | Type::Unknown | Type::Any | Type::Var(_, _) | Type::Error(_) => {}
         _ => errors.push(TypeDiagnostic::error(
             "type-error",
             format!(
@@ -768,7 +768,7 @@ pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
         // type name exactly (e.g., @SomeType not a shortened alias) for dispatch tags to align.
         Type::TyCon(name) => Some(name.clone()),
         // Unresolved inference variables and gradual types cannot be dispatched.
-        Type::TypeVar(_, _) | Type::Unknown | Type::Any | Type::Error(_) => None,
+        Type::Var(_, _) | Type::Unknown | Type::Any | Type::Error(_) => None,
         // Compound types don't correspond to single-param dispatch tags.
         _ => None,
     }
@@ -879,7 +879,7 @@ pub(crate) fn infer_class_decl_from_surface(
 
     state.env.write().unwrap().insert_class(class_decl.clone());
     state.invalidate_env_caches();
-    // T-1805: Wire class declarations into type_stage_scope so resolve_type_head
+    // Wire class declarations into type_stage_scope so resolve_type_head
     // can find class names via the scope chain. or_insert preserves type-stage
     // entries (type-stage has priority over runtime-declared classes).
     if state.type_stage_scope.is_empty() {
@@ -1068,7 +1068,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
         let mut method_types = HashMap::new();
 
-        // B-599: Inject class type parameter bindings into type_stage_scope so that
+        // Inject class type parameter bindings into type_stage_scope so that
         // method body annotations referencing the class's type parameters resolve to the
         // concrete pattern types for this arm.
         //
@@ -1086,7 +1086,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         let param_type_frame: std::collections::HashMap<String, crate::type_infer::TypeStageEntry> = {
             let mut frame = std::collections::HashMap::new();
             for (name, ty) in param_names.iter().zip(pattern_types.iter()) {
-                if !matches!(ty, Type::TypeVar(..)) {
+                if !matches!(ty, Type::Var(..)) {
                     frame.insert(
                         name.clone(),
                         crate::type_infer::TypeStageEntry::Resolved(ty.clone()),
@@ -1128,7 +1128,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 }
             };
 
-            // T-1853: Bidirectional type checking — look up the class method's polymorphic
+            // Bidirectional type checking — look up the class method's polymorphic
             // signature, instantiate it with the concrete pattern types, and set
             // state.expected_fn_params so infer_fn_push_cont can type unannotated params.
             //
@@ -1152,7 +1152,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     // This is purely local — no state mutation.
                     let tmp_subst = crate::type_infer::Substitution::new();
                     for (pname, pty) in param_names.iter().zip(pattern_types.iter()) {
-                        if !matches!(pty, Type::TypeVar(..)) {
+                        if !matches!(pty, Type::Var(..)) {
                             tmp_subst
                                 .type_map
                                 .borrow_mut()
@@ -1216,7 +1216,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 .insert_scheme_named_only(binding_name, scheme);
         }
 
-        // B-599: Pop the type param scope frame pushed before method body checking.
+        // Pop the type param scope frame pushed before method body checking.
         if pushed_frame {
             state.type_stage_scope.remove(0);
         }
@@ -1276,7 +1276,7 @@ pub(crate) fn contains_unknown_or_top(ty: &Type) -> bool {
         // before the substitution has resolved them. Without this arm, TypeVars in
         // an actual type would fall through to `_ => false` in is_subtype, causing
         // false subsumption failures against concrete expected types like Number or Str.
-        Type::TypeVar(_, _) => true,
+        Type::Var(_, _) => true,
         Type::Function { params, ret, .. } => {
             params.iter().any(|(_, t)| contains_unknown_or_top(t)) || contains_unknown_or_top(ret)
         }

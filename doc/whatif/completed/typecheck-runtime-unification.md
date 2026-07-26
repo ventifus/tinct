@@ -114,7 +114,7 @@ pub fn is_consistent_subtype(sub: &Type, sup: &Type) -> bool {
         return true;
     }
     // Unresolved TypeVar in annotation position: treat as Unknown (gradual)
-    if matches!(sup, Type::TypeVar(_, _)) {
+    if matches!(sup, Type::Var(_, _)) {
         return true;
     }
     // Error is never a consistent subtype of anything

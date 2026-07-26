@@ -198,8 +198,8 @@ async fn test_union_vs_union_with_typevars_defers() {
     state.set_level("b".to_string(), 0);
 
     // Union([Int, TypeVar(a)]) ~ Union([Str, TypeVar(b)])
-    let lhs = Type::Union(vec![Type::Int, Type::TypeVar("a".to_string(), 0)]);
-    let rhs = Type::Union(vec![Type::Str, Type::TypeVar("b".to_string(), 0)]);
+    let lhs = Type::Union(vec![Type::Int, Type::Var("a".to_string(), 0)]);
+    let rhs = Type::Union(vec![Type::Str, Type::Var("b".to_string(), 0)]);
 
     let result = unify_sync(&lhs, &rhs, &mut state, &mut Vec::new(), span).await;
 
@@ -253,10 +253,10 @@ async fn test_unify_type_var_occurs_in_type_stage_app() {
 
     state.set_level("a".to_string(), 0);
 
-    let type_var_a = Type::TypeVar("a".to_string(), 0);
-    let type_stage_app_f_a = Type::TypeStageApp {
+    let type_var_a = Type::Var("a".to_string(), 0);
+    let type_stage_app_f_a = Type::StageApp {
         fn_name: "F".to_string(),
-        args: vec![Type::TypeVar("a".to_string(), 0)],
+        args: vec![Type::Var("a".to_string(), 0)],
     };
 
     let result = unify_sync(
@@ -724,7 +724,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
 
     // Create a TypeVar _t0 and bind it to Int
     state.set_level("_t0".to_string(), 0);
-    let tv = Type::TypeVar("_t0".to_string(), 0);
+    let tv = Type::Var("_t0".to_string(), 0);
     unify_sync(&tv, &Type::Int, &mut state, &mut Vec::new(), span)
         .await
         .expect("test setup: binding _t0 to Int must succeed");
@@ -737,8 +737,8 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
         body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
-                m.insert("elem".to_string(), Type::TypeVar("_t0".to_string(), 0));
-                m.insert("self".to_string(), Type::TypeVar("μ_var".to_string(), 0));
+                m.insert("elem".to_string(), Type::Var("_t0".to_string(), 0));
+                m.insert("self".to_string(), Type::Var("μ_var".to_string(), 0));
                 m
             },
             tail: crate::type_def::RowTail::Empty,
@@ -782,7 +782,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Int);
-                m.insert("tail".to_string(), Type::TypeVar("_a".to_string(), 0));
+                m.insert("tail".to_string(), Type::Var("_a".to_string(), 0));
                 m
             },
             tail: crate::type_def::RowTail::Empty,
@@ -796,7 +796,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Int);
-                m.insert("tail".to_string(), Type::TypeVar("_b".to_string(), 0));
+                m.insert("tail".to_string(), Type::Var("_b".to_string(), 0));
                 m
             },
             tail: crate::type_def::RowTail::Empty,
@@ -826,7 +826,7 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Int);
-                m.insert("tail".to_string(), Type::TypeVar("_a".to_string(), 0));
+                m.insert("tail".to_string(), Type::Var("_a".to_string(), 0));
                 m
             },
             tail: crate::type_def::RowTail::Empty,
@@ -840,7 +840,7 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Str);
-                m.insert("tail".to_string(), Type::TypeVar("_b".to_string(), 0));
+                m.insert("tail".to_string(), Type::Var("_b".to_string(), 0));
                 m
             },
             tail: crate::type_def::RowTail::Empty,
@@ -866,14 +866,14 @@ async fn test_unify_typevar_binds_to_recursive_type() {
 
     state.set_level("_t0".to_string(), 1);
 
-    let tv = Type::TypeVar("_t0".to_string(), 1);
+    let tv = Type::Var("_t0".to_string(), 1);
     let rec_ty = Type::Recursive {
         var: "_μ".to_string(),
         body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
-                m.insert("self".to_string(), Type::TypeVar("_μ".to_string(), 0));
+                m.insert("self".to_string(), Type::Var("_μ".to_string(), 0));
                 m
             },
             tail: crate::type_def::RowTail::Empty,
@@ -1137,8 +1137,8 @@ async fn test_types_are_not_disjoint_function_vs_function() {
 #[tokio::test]
 async fn test_handle_capability_partialeq_limitation() {
     // Create two Handle types with different TypeVar names
-    let handle_a = Type::handle(Type::TypeVar("a".to_string(), 0));
-    let handle_b = Type::handle(Type::TypeVar("b".to_string(), 0));
+    let handle_a = Type::handle(Type::Var("a".to_string(), 0));
+    let handle_b = Type::handle(Type::Var("b".to_string(), 0));
 
     // PartialEq will return false (structural inequality)
     assert_ne!(
@@ -1245,7 +1245,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     // Unify t1 (determined position) with Str.
     // This should trigger the reverse FD and back-propagate t0 = Int.
 
-    let t1 = Type::TypeVar("t1".to_string(), 0);
+    let t1 = Type::Var("t1".to_string(), 0);
     let result = unify_sync(&t1, &Type::Str, &mut state, &mut constraints, rust_span!()).await;
 
     assert!(
@@ -1255,7 +1255,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     );
 
     // Check that t0 was back-propagated to Int via reverse FD.
-    let t0_bound = state.apply(&Type::TypeVar("t0".to_string(), 0));
+    let t0_bound = state.apply(&Type::Var("t0".to_string(), 0));
     assert!(
         matches!(t0_bound, Type::Int),
         "Reverse FD should have back-propagated t0 = Int, but got: {:?}",
@@ -1331,7 +1331,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
 
     // Unify t1 with Str — should NOT back-propagate t0.
 
-    let t1 = Type::TypeVar("t1".to_string(), 0);
+    let t1 = Type::Var("t1".to_string(), 0);
     let result = unify_sync(&t1, &Type::Str, &mut state, &mut constraints, rust_span!()).await;
 
     assert!(
@@ -1341,9 +1341,9 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     );
 
     // t0 must remain unbound (no reverse FD fired).
-    let t0_bound = state.apply(&Type::TypeVar("t0".to_string(), 0));
+    let t0_bound = state.apply(&Type::Var("t0".to_string(), 0));
     assert!(
-        matches!(t0_bound, Type::TypeVar(ref n, _) if n == "t0"),
+        matches!(t0_bound, Type::Var(ref n, _) if n == "t0"),
         "With non-injective resolver, t0 must remain unbound, but got: {:?}",
         t0_bound
     );
@@ -1541,7 +1541,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     // 2. Reverse FD: t1=Str → attempt to bind t0 (but t0 is in fd_in_progress, so skip)
     // Result: terminates successfully without infinite loop.
 
-    let t0 = Type::TypeVar("t0".to_string(), 0);
+    let t0 = Type::Var("t0".to_string(), 0);
     let result = unify_sync(&t0, &Type::Int, &mut state, &mut constraints, rust_span!()).await;
 
     assert!(
@@ -1552,8 +1552,8 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
 
     // Verify both variables were bound correctly.
     // Both t0 and t1 are bound in state.type_vars (the unified binding store).
-    let t0_bound = state.apply(&Type::TypeVar("t0".to_string(), 0));
-    let t1_bound = state.apply(&Type::TypeVar("t1".to_string(), 0));
+    let t0_bound = state.apply(&Type::Var("t0".to_string(), 0));
+    let t1_bound = state.apply(&Type::Var("t1".to_string(), 0));
 
     assert!(
         matches!(t0_bound, Type::Int),
@@ -1841,7 +1841,7 @@ async fn test_unify_empty_uniform_typevar_join() {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Uniform {
             key: None,
-            value: Box::new(Type::TypeVar(alpha.clone(), 0)),
+            value: Box::new(Type::Var(alpha.clone(), 0)),
         },
     };
 
@@ -1856,7 +1856,7 @@ async fn test_unify_empty_uniform_typevar_join() {
     );
 
     // After unification, α should be bound to Int (the field type from the Empty side).
-    let resolved = state.apply(&Type::TypeVar(alpha, 0));
+    let resolved = state.apply(&Type::Var(alpha, 0));
     assert_eq!(
         resolved,
         Type::Int,
@@ -2314,8 +2314,8 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     state.set_level("α".to_string(), 0);
     state.set_level("β".to_string(), 0);
 
-    let alpha = Type::TypeVar("α".to_string(), 0);
-    let beta = Type::TypeVar("β".to_string(), 0);
+    let alpha = Type::Var("α".to_string(), 0);
+    let beta = Type::Var("β".to_string(), 0);
     // Two TypeVars in the union: C-Var1 multi-TypeVar path → adds to bounds, not subst.
     let sup = Type::Union(vec![Type::Str, alpha.clone(), beta.clone()]);
 
@@ -2378,7 +2378,7 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     // Register α at level 0.
     state.set_level("α".to_string(), 0);
 
-    let alpha = Type::TypeVar("α".to_string(), 0);
+    let alpha = Type::Var("α".to_string(), 0);
     let sup = Type::Union(vec![Type::Str, alpha.clone()]);
 
     let result = constrain(&Type::Int, &sup, &mut state, &mut Vec::new(), span).await;
@@ -2393,7 +2393,7 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     // Int & ~Str ≈ Int (since Int and Str are disjoint). α must be bound to Int (or equivalent).
     let alpha_applied = state.apply(&alpha);
     assert!(
-        !matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
+        !matches!(alpha_applied, Type::Var(ref n, _) if n == "α"),
         "C-Var1 single-TypeVar must bind α in subst (not leave it free); got: {:?}",
         alpha_applied
     );
@@ -2417,7 +2417,7 @@ async fn test_constrain_typevar_lower_bound_added() {
     // Register β at level 0.
     state.set_level("β".to_string(), 0);
 
-    let beta = Type::TypeVar("β".to_string(), 0);
+    let beta = Type::Var("β".to_string(), 0);
 
     let result = constrain(&Type::Int, &beta, &mut state, &mut Vec::new(), span).await;
 
@@ -2430,7 +2430,7 @@ async fn test_constrain_typevar_lower_bound_added() {
     // β must NOT be bound in the substitution (directional bound accumulation, not equality).
     let beta_applied = state.apply(&beta);
     assert!(
-        matches!(beta_applied, Type::TypeVar(ref n, _) if n == "β"),
+        matches!(beta_applied, Type::Var(ref n, _) if n == "β"),
         "constrain(Int, TypeVar) must not bind β in subst (use bounds instead); got: {:?}",
         beta_applied
     );
@@ -2449,10 +2449,10 @@ async fn test_constrain_typevar_lower_bound_added() {
 }
 
 // ============================================================================
-// B-613: constrain() C-FN arm — function-type variance tests
+// constrain() C-FN arm — function-type variance tests
 // ============================================================================
 
-/// B-613 Part 2: C-FN basic — constrain(Fn(Int→Int), Fn(α→α)) must accumulate bounds
+/// C-FN basic — constrain(Fn(Int→Int), Fn(α→α)) must accumulate bounds
 /// on α rather than binding α = Int immediately in the substitution.
 ///
 /// Without the C-FN arm, constrain() falls through to unify(), which binds α = Int
@@ -2467,7 +2467,7 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
     let span = rust_span!();
 
     state.set_level("α".to_string(), 0);
-    let alpha = Type::TypeVar("α".to_string(), 0);
+    let alpha = Type::Var("α".to_string(), 0);
 
     // Fn(α→α): param = α, return = α
     let fn_with_typevar = Type::Function {
@@ -2506,7 +2506,7 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
     // α must NOT be bound in the substitution — bounds accumulate, not equality.
     let alpha_applied = state.apply(&alpha);
     assert!(
-        matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
+        matches!(alpha_applied, Type::Var(ref n, _) if n == "α"),
         "C-FN must not bind α in subst (directional bounds only); got: {:?}",
         alpha_applied
     );
@@ -2519,7 +2519,7 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
     );
 }
 
-/// B-613 Part 2: C-FN variance direction — contravariant params, covariant return.
+/// C-FN variance direction — contravariant params, covariant return.
 ///
 /// For init@a reducer pattern: `constrain(Fn(acc:a, elem:Int → a), Fn(acc:a, elem:Int → a))`
 /// should be identity (same type on both sides → no work needed; sub == sup short-circuits).
@@ -2536,7 +2536,7 @@ async fn test_constrain_cfn_init_reducer_pattern() {
     let span = rust_span!();
 
     state.set_level("α".to_string(), 0);
-    let alpha = Type::TypeVar("α".to_string(), 0);
+    let alpha = Type::Var("α".to_string(), 0);
 
     // Fn(α, Int → α): two-param function with TypeVar acc type
     let fn_init = Type::Function {
@@ -2569,13 +2569,13 @@ async fn test_constrain_cfn_init_reducer_pattern() {
     // α must NOT be bound in the substitution before bounds are discharged.
     let alpha_applied = state.apply(&alpha);
     assert!(
-        matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
+        matches!(alpha_applied, Type::Var(ref n, _) if n == "α"),
         "C-FN init@a pattern must not prematurely bind α in subst; got: {:?}",
         alpha_applied
     );
 }
 
-/// B-613 Part 2: C-FN arity mismatch falls through to unify() for structured error.
+/// C-FN arity mismatch falls through to unify() for structured error.
 ///
 /// constrain(Fn(Int → Int), Fn(Int, Str → Int)) — arity mismatch (1 vs 2 params).
 /// Must produce an error (not succeed silently).
@@ -2608,7 +2608,7 @@ async fn test_constrain_cfn_arity_mismatch_errors() {
     );
 }
 
-/// B-613 Part 2: C-FN any-function special case — constrain(zero-param-variadic, Fn(Int→Int))
+/// C-FN any-function special case — constrain(zero-param-variadic, Fn(Int→Int))
 /// constrains only the return types (covariant).
 #[tokio::test]
 async fn test_constrain_cfn_any_function_with_concrete() {
@@ -2643,10 +2643,10 @@ async fn test_constrain_cfn_any_function_with_concrete() {
 }
 
 // ============================================================================
-// B-614: constrain_rows, C-Dict, C-App variance, unify(Fn) bidirectionality
+// constrain_rows, C-Dict, C-App variance, unify(Fn) bidirectionality
 // ============================================================================
 
-/// B-614 / C-Dict: constrain(Dict{a: TypeVar(x)}, Dict{a: Int}) puts Int as an upper bound on x
+/// C-Dict: constrain(Dict{a: TypeVar(x)}, Dict{a: Int}) puts Int as an upper bound on x
 /// (covariant field: sub_ty ≤ sup_ty → constrain(sub_ty, sup_ty) → x gets upper bound Int).
 /// x must NOT be directly bound in the substitution — only bounds accumulate.
 /// Also verifies the trivial case: constrain(Dict{a: Int}, Dict{a: Int}) → Ok.
@@ -2681,7 +2681,7 @@ async fn test_constrain_dict_field_covariant() {
     // C-Dict → constrain_rows(sub, sup) → field "a": constrain(TypeVar(x), Int).
     // TypeVar(x) in sub position with concrete Int in sup → x gets upper bound Int (not equality).
     state.set_level("x".to_string(), 1);
-    let tv_x = Type::TypeVar("x".to_string(), 1);
+    let tv_x = Type::Var("x".to_string(), 1);
 
     let mut fields_sub = IndexMap::new();
     fields_sub.insert("a".to_string(), tv_x.clone());
@@ -2707,7 +2707,7 @@ async fn test_constrain_dict_field_covariant() {
     // x must NOT be bound in the substitution — C-Dict uses directional bounds.
     let x_applied = state.apply(&tv_x);
     assert!(
-        matches!(x_applied, Type::TypeVar(ref n, _) if n == "x"),
+        matches!(x_applied, Type::Var(ref n, _) if n == "x"),
         "C-Dict must not bind x in subst (use bounds); got: {:?}",
         x_applied
     );
@@ -2724,7 +2724,7 @@ async fn test_constrain_dict_field_covariant() {
     );
 }
 
-/// B-614 / C-Dict width subtyping: constrain(Dict{a: Int, b: Str}, Dict{a: Int}) → Ok.
+/// C-Dict width subtyping: constrain(Dict{a: Int, b: Str}, Dict{a: Int}) → Ok.
 /// The sup only requires field "a"; the sub has an extra field "b". Width subtyping allows this.
 #[tokio::test]
 async fn test_constrain_dict_width_subtyping() {
@@ -2756,7 +2756,7 @@ async fn test_constrain_dict_width_subtyping() {
     );
 }
 
-/// B-614 / C-Dict missing field: constrain(Dict{b: Int}, Dict{a: Int}) → Err.
+/// C-Dict missing field: constrain(Dict{b: Int}, Dict{a: Int}) → Err.
 /// The sup requires field "a"; the sub only has "b" and has no Uniform tail to cover it.
 /// constrain_rows must return a missing-field error.
 #[tokio::test]
@@ -2795,7 +2795,7 @@ async fn test_constrain_dict_missing_field() {
     );
 }
 
-/// B-614 / unify(Fn, Fn) bidirectionality: unify(Fn(Int→Int), Fn(TypeVar(a)→TypeVar(a)))
+/// unify(Fn, Fn) bidirectionality: unify(Fn(Int→Int), Fn(TypeVar(a)→TypeVar(a)))
 /// must NOT bind TypeVar(a) directly in the substitution.
 /// The bidirectional constrain accumulates both lower and upper bounds on a from:
 ///   constrain(Fn(Int→Int), Fn(a→a)): contravariant param → constrain(a, Int) → upper bound Int
@@ -2808,7 +2808,7 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
     let span = rust_span!();
 
     state.set_level("a".to_string(), 1);
-    let tv_a = Type::TypeVar("a".to_string(), 1);
+    let tv_a = Type::Var("a".to_string(), 1);
 
     let fn_concrete = Type::Function {
         params: vec![(None, Type::Int)],
@@ -2843,7 +2843,7 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
     // TypeVar a must NOT be directly bound in the substitution — bounds only.
     let a_applied = state.apply(&tv_a);
     assert!(
-        matches!(a_applied, Type::TypeVar(ref n, _) if n == "a"),
+        matches!(a_applied, Type::Var(ref n, _) if n == "a"),
         "unify(Fn, Fn) must not bind a in subst (bidirectional bounds only); got: {:?}",
         a_applied
     );
@@ -2871,7 +2871,7 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
     );
 }
 
-/// B-614 / C-App covariant: constrain(App(CovF, Int), App(CovF, TypeVar(x))) puts lower bound Int
+/// C-App covariant: constrain(App(CovF, Int), App(CovF, TypeVar(x))) puts lower bound Int
 /// on x. TyConDef "CovF" with Variance::Covariant at position 0 directs: constrain(sub_arg, sup_arg)
 /// = constrain(Int, TypeVar(x)) → x gets lower bound Int (not equality in substitution).
 /// "CovF" is a neutral fixture name — the test exercises the general C-App variance mechanism,
@@ -2900,7 +2900,7 @@ async fn test_constrain_app_covariant_arg() {
     state.tycon_env.insert("CovF".to_string(), cov_def);
 
     state.set_level("x".to_string(), 1);
-    let tv_x = Type::TypeVar("x".to_string(), 1);
+    let tv_x = Type::Var("x".to_string(), 1);
 
     // sub: App(TyCon("CovF"), Int)
     let sub = Type::App(
@@ -2923,7 +2923,7 @@ async fn test_constrain_app_covariant_arg() {
     // x must NOT be bound in the substitution.
     let x_applied = state.apply(&tv_x);
     assert!(
-        matches!(x_applied, Type::TypeVar(ref n, _) if n == "x"),
+        matches!(x_applied, Type::Var(ref n, _) if n == "x"),
         "C-App covariant must not bind x in subst; got: {:?}",
         x_applied
     );
@@ -2940,7 +2940,7 @@ async fn test_constrain_app_covariant_arg() {
     );
 }
 
-/// B-614 / C-App contravariant: constrain(App(F, TypeVar(x)), App(F, Int)) where F is
+/// C-App contravariant: constrain(App(F, TypeVar(x)), App(F, Int)) where F is
 /// Contravariant → the arm swaps directions: constrain(sup_arg, sub_arg) = constrain(Int, TypeVar(x)).
 /// constrain(Int, TypeVar(x)) hits the TypeVar-in-sup arm → x gets lower bound Int.
 /// (Contravariant reversal means the sub's TypeVar ends up as the sup in the inner constrain call.)
@@ -2967,7 +2967,7 @@ async fn test_constrain_app_contravariant_arg() {
     state.tycon_env.insert("F".to_string(), f_def);
 
     state.set_level("x".to_string(), 1);
-    let tv_x = Type::TypeVar("x".to_string(), 1);
+    let tv_x = Type::Var("x".to_string(), 1);
 
     // sub: App(TyCon("F"), TypeVar(x))
     let sub = Type::App(
@@ -2989,7 +2989,7 @@ async fn test_constrain_app_contravariant_arg() {
     // x must NOT be bound in the substitution.
     let x_applied = state.apply(&tv_x);
     assert!(
-        matches!(x_applied, Type::TypeVar(ref n, _) if n == "x"),
+        matches!(x_applied, Type::Var(ref n, _) if n == "x"),
         "C-App contravariant must not bind x in subst; got: {:?}",
         x_applied
     );
@@ -3008,10 +3008,10 @@ async fn test_constrain_app_contravariant_arg() {
 }
 
 // ============================================================================
-// B-614 panel additions — constrain() arm coverage
+// constrain() arm coverage — C-Dict, C-NominalVariant, C-App, C-Recursive, C-Negation, C-TypeStageApp
 // ============================================================================
 
-/// B-614 panel / C-NominalVariant: constrain(T·Ctor{a: TypeVar(x)}, T·Ctor{a: Int})
+/// C-NominalVariant: constrain(T·Ctor{a: TypeVar(x)}, T·Ctor{a: Int})
 /// same tycon and ctor — C-NominalVariant delegates to constrain_rows(fields1, fields2).
 /// Covariant field constraint: constrain(TypeVar(x), Int) → x gets upper bound Int.
 /// x must NOT be bound in the substitution — only bounds accumulate.
@@ -3021,7 +3021,7 @@ async fn test_constrain_nominal_variant_same_tycon_ctor() {
     let span = rust_span!();
 
     state.set_level("x".to_string(), 1);
-    let tv_x = Type::TypeVar("x".to_string(), 1);
+    let tv_x = Type::Var("x".to_string(), 1);
 
     // sub: T·Ctor{a: TypeVar(x)}
     let mut fields_sub = IndexMap::new();
@@ -3057,7 +3057,7 @@ async fn test_constrain_nominal_variant_same_tycon_ctor() {
     // x must NOT be bound in the substitution.
     let x_applied = state.apply(&tv_x);
     assert!(
-        matches!(x_applied, Type::TypeVar(ref n, _) if n == "x"),
+        matches!(x_applied, Type::Var(ref n, _) if n == "x"),
         "C-NominalVariant must not bind x in subst; got: {:?}",
         x_applied
     );
@@ -3074,7 +3074,7 @@ async fn test_constrain_nominal_variant_same_tycon_ctor() {
     );
 }
 
-/// B-614 panel / C-Recursive one-sided (left): constrain(Recursive{μ, Union([Int, TypeVar(μ)])}, Int).
+/// C-Recursive one-sided (left): constrain(Recursive{μ, Union([Int, TypeVar(μ)])}, Int).
 /// C-Recursive opens μ with a fresh TypeVar α: opened = Union([Int, α]).
 /// Then constrain(Union([Int, α]), Int) fires. The call must complete without infinite recursion.
 /// After the call, the fresh TypeVar opened from the Recursive body is registered in state.
@@ -3087,10 +3087,7 @@ async fn test_constrain_recursive_left_only_opens_and_constrains() {
     // The Recursive binder name "mu" is a string identifier — not registered in state.levels.
     let recursive_sub = Type::Recursive {
         var: "mu".to_string(),
-        body: Box::new(Type::Union(vec![
-            Type::Int,
-            Type::TypeVar("mu".to_string(), 0),
-        ])),
+        body: Box::new(Type::Union(vec![Type::Int, Type::Var("mu".to_string(), 0)])),
     };
 
     // sup: Int (concrete)
@@ -3122,7 +3119,7 @@ async fn test_constrain_recursive_left_only_opens_and_constrains() {
     );
 }
 
-/// B-614 panel / C-Negation contravariant swap:
+/// C-Negation contravariant swap:
 /// constrain(~TypeVar(x), ~Int) calls constrain(Int, TypeVar(x)) [swap!].
 /// TypeVar(x) in sup position with concrete Int in sub → x gets LOWER bound Int (not upper).
 #[tokio::test]
@@ -3131,7 +3128,7 @@ async fn test_constrain_negation_contravariant_swap() {
     let span = rust_span!();
 
     state.set_level("x".to_string(), 1);
-    let tv_x = Type::TypeVar("x".to_string(), 1);
+    let tv_x = Type::Var("x".to_string(), 1);
 
     // sub: ~TypeVar(x)
     let sub = Type::Negation(Box::new(tv_x.clone()));
@@ -3150,7 +3147,7 @@ async fn test_constrain_negation_contravariant_swap() {
     // x must NOT be bound in the substitution.
     let x_applied = state.apply(&tv_x);
     assert!(
-        matches!(x_applied, Type::TypeVar(ref n, _) if n == "x"),
+        matches!(x_applied, Type::Var(ref n, _) if n == "x"),
         "C-Negation must not bind x in subst; got: {:?}",
         x_applied
     );
@@ -3167,7 +3164,7 @@ async fn test_constrain_negation_contravariant_swap() {
     );
 }
 
-/// B-614 panel / C-TypeStageApp invariant bidirectional:
+/// C-TypeStageApp invariant bidirectional:
 /// constrain(TSA{f, [TypeVar(x)]}, TSA{f, [Int]}) is invariant — bidirectional on args.
 /// constrain(x, Int) → x gets upper bound Int.
 /// constrain(Int, x) → x gets lower bound Int.
@@ -3178,15 +3175,15 @@ async fn test_constrain_typestageapp_invariant_bidirectional() {
     let span = rust_span!();
 
     state.set_level("x".to_string(), 1);
-    let tv_x = Type::TypeVar("x".to_string(), 1);
+    let tv_x = Type::Var("x".to_string(), 1);
 
     // sub: TypeStageApp{fn_name: "f", args: [TypeVar(x)]}
-    let sub = Type::TypeStageApp {
+    let sub = Type::StageApp {
         fn_name: "f".to_string(),
         args: vec![tv_x.clone()],
     };
     // sup: TypeStageApp{fn_name: "f", args: [Int]}
-    let sup = Type::TypeStageApp {
+    let sup = Type::StageApp {
         fn_name: "f".to_string(),
         args: vec![Type::Int],
     };
@@ -3204,7 +3201,7 @@ async fn test_constrain_typestageapp_invariant_bidirectional() {
     // x must NOT be bound in the substitution.
     let x_applied = state.apply(&tv_x);
     assert!(
-        matches!(x_applied, Type::TypeVar(ref n, _) if n == "x"),
+        matches!(x_applied, Type::Var(ref n, _) if n == "x"),
         "C-TypeStageApp must not bind x in subst; got: {:?}",
         x_applied
     );
@@ -3226,7 +3223,7 @@ async fn test_constrain_typestageapp_invariant_bidirectional() {
     );
 }
 
-/// B-614 panel / constrain_rows Uniform-sup-tail:
+/// constrain_rows Uniform-sup-tail:
 /// constrain(Dict{a: Int, Empty}, Dict{Empty, Uniform(TypeVar(v))})
 /// Step 2 (tail): sub has Empty tail, sup has Uniform{v} tail.
 /// → constrain_rows constrains all sub named fields against sup_v:
@@ -3237,7 +3234,7 @@ async fn test_constrain_rows_uniform_sup_tail() {
     let span = rust_span!();
 
     state.set_level("v".to_string(), 1);
-    let tv_v = Type::TypeVar("v".to_string(), 1);
+    let tv_v = Type::Var("v".to_string(), 1);
 
     // sub: Dict{a: Int, tail: Empty}
     let mut fields_sub = IndexMap::new();
@@ -3269,7 +3266,7 @@ async fn test_constrain_rows_uniform_sup_tail() {
     // v must NOT be bound in the substitution.
     let v_applied = state.apply(&tv_v);
     assert!(
-        matches!(v_applied, Type::TypeVar(ref n, _) if n == "v"),
+        matches!(v_applied, Type::Var(ref n, _) if n == "v"),
         "constrain_rows Uniform-sup-tail must not bind v in subst; got: {:?}",
         v_applied
     );

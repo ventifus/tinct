@@ -315,7 +315,7 @@ async fn check_constraints_on_var(
                 match resolve_has_field(&label, concrete_ty, state, span.clone(), 0) {
                     Ok(field_ty) => {
                         // Found the field — unify the field TypeVar with the resolved type.
-                        let field_var_ty = Type::TypeVar(field_var.clone(), state.level);
+                        let field_var_ty = Type::Var(field_var.clone(), state.level);
                         let mut sub_constraints = Vec::new();
                         Box::pin(unify(
                             &field_var_ty,
@@ -495,7 +495,7 @@ async fn check_constraints_on_var(
             .map(|arg| match arg {
                 crate::type_class::ConstraintArg::Var(name) => state
                     .subst
-                    .apply(&crate::type_def::Type::TypeVar(name.clone(), state.level)),
+                    .apply(&crate::type_def::Type::Var(name.clone(), state.level)),
                 crate::type_class::ConstraintArg::Ground(ty) => ty.clone(),
             })
             .collect();
@@ -508,7 +508,7 @@ async fn check_constraints_on_var(
 
         if det_types
             .iter()
-            .any(|t| matches!(t, crate::type_def::Type::TypeVar(..)))
+            .any(|t| matches!(t, crate::type_def::Type::Var(..)))
         {
             continue;
         }
@@ -652,7 +652,7 @@ async fn improve_functional_dependency_inner(
                     // In-flight binding for bound_var — use the type being bound right now.
                     ConstraintArg::Var(v) if v.as_str() == bound_var => state.apply(bound_type),
                     // Another Var position — look up in substitution.
-                    ConstraintArg::Var(v) => state.apply(&Type::TypeVar(v.clone(), 0)),
+                    ConstraintArg::Var(v) => state.apply(&Type::Var(v.clone(), 0)),
                     // Ground position — type already known from generalization.
                     ConstraintArg::Ground(t) => t.clone(),
                 };
@@ -699,7 +699,7 @@ async fn improve_functional_dependency_inner(
                         if state.fd_in_progress.contains(det_var.as_str()) {
                             continue;
                         }
-                        let det_type_var = Type::TypeVar(det_var.clone(), 0);
+                        let det_type_var = Type::Var(det_var.clone(), 0);
                         state.fd_in_progress.insert(det_var.clone());
                         let result = Box::pin(unify(
                             &det_type_var,
@@ -749,7 +749,7 @@ async fn improve_functional_dependency_inner(
                 // In-flight binding for bound_var — use the type being bound right now.
                 ConstraintArg::Var(v) if v.as_str() == bound_var => state.apply(bound_type),
                 // Another Var position — look up in substitution.
-                ConstraintArg::Var(v) => state.apply(&Type::TypeVar(v.clone(), 0)),
+                ConstraintArg::Var(v) => state.apply(&Type::Var(v.clone(), 0)),
                 // Ground position — type already known from generalization.
                 ConstraintArg::Ground(t) => t.clone(),
             };
@@ -765,77 +765,21 @@ async fn improve_functional_dependency_inner(
         }
 
         // All determining positions are ground - look up the instance.
-        // Multiple paths:
-        // 1. Indexable + Record: special case for HasField-style resolution
-        // 2. Resolver classes: type-stage function normalization
-        // 3. General MPTC: InstanceEnv lookup (with literal widening on miss)
-
-        // Special case: Indexable on Record/Union/Intersection/Top types uses
-        // resolve_has_field for field lookup instead of instance registration.
-        // Records are structural (not nominal), so they don't register instances —
-        // instead, resolve_has_field applies [HAS-FIELD-REC], [HAS-FIELD-UNION],
-        // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules from type_unify.rs.
-        let indexable_record_result: Result<Option<Type>, TypeDiagnostic> = if class == "Indexable"
-            && det_types.len() == 2
-        {
-            let container_ty = &det_types[0].1;
-            let key_ty = &det_types[1].1;
-
-            match (container_ty, key_ty) {
-                (
-                    Type::Dict(_) | Type::Intersection(_) | Type::Any,
-                    Type::StringLiteral(field_name),
-                ) => {
-                    // Route through resolve_has_field to apply [HAS-FIELD-REC],
-                    // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules.
-                    let label = Label::Concrete(field_name.clone());
-                    resolve_has_field(&label, container_ty, state, span.clone(), 0).map(Some)
-                }
-                (Type::Union(members), Type::StringLiteral(field_name)) => {
-                    // [HAS-FIELD-UNION]: distribute field lookup across union members.
-                    // [get key (A | B)] → get(key, A) | get(key, B)
-                    // Each member must have the field; propagate errors.
-                    let label = Label::Concrete(field_name.clone());
-                    let members_clone: Vec<Type> = members.clone();
-                    let mut field_types: Vec<Type> = Vec::new();
-                    let mut lookup_err: Option<TypeDiagnostic> = None;
-                    for member in &members_clone {
-                        match resolve_has_field(&label, member, state, span.clone(), 1) {
-                            Ok(ty) => field_types.push(ty),
-                            Err(e) => {
-                                lookup_err = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    match lookup_err {
-                        Some(e) => Err(e),
-                        None => Ok(Some(Type::normalize_union(field_types))),
-                    }
-                }
-                (Type::Dict(_) | Type::Union(_) | Type::Intersection(_) | Type::Any, Type::Str) => {
-                    // Str key (from promoted StringLiteral) — can't resolve statically.
-                    // Defer to general MPTC lookup instead of producing Unknown.
-                    Ok(None)
-                }
-                _ => Ok(None), // Not a Record/Union/Intersection/Top case — fall through to general logic
-            }
-        } else {
-            Ok(None)
-        };
+        // Two paths:
+        // 1. Resolver classes: type-stage function normalization (falls through to MPTC on Unknown)
+        // 2. General MPTC: InstanceEnv lookup (with literal widening on miss)
 
         // Extract class_decl with a scoped read lock so the guard drops before
         // any subsequent &mut state borrows (e.g. in lookup_mptc).
         let class_decl_for_fd = { state.env.read().unwrap().get_class(class) };
-        let result_type = if let Some(ty) = indexable_record_result? {
-            ty
-        } else if let Some(class_decl) = class_decl_for_fd {
+        let result_type = if let Some(class_decl) = class_decl_for_fd {
             // Check for resolver or fall back to general MPTC instance lookup
-            if let Some(ref resolver_name) = class_decl.resolver.clone() {
+            // Try resolver first if available; fall through to MPTC on Unknown.
+            let resolver_result = if let Some(ref resolver_name) = class_decl.resolver.clone() {
                 // Resolver-based path: construct a TypeStageApp and normalize it.
                 // Normalization looks up fn_name in the type-stage scope chain and invokes it.
                 let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
-                let stage_app = Type::TypeStageApp {
+                let stage_app = Type::StageApp {
                     fn_name: resolver_name.clone(),
                     args: det_arg_types,
                 };
@@ -850,12 +794,25 @@ async fn improve_functional_dependency_inner(
 
                 // If normalization returned a stuck TypeStageApp, we can't improve yet.
                 // Defer: the deferred_equalities mechanism will retry when more types are ground.
-                if matches!(resolved, Type::TypeStageApp { .. }) {
+                if matches!(resolved, Type::StageApp { .. }) {
                     continue;
                 }
+                // If the resolver returned Unknown, fall through to MPTC instance lookup.
+                // This allows resolver-based classes (e.g. Indexable with FieldType) to have
+                // instances for types the resolver cannot handle (e.g. List, Bytes, Map)
+                // while still using the resolver for structural record field lookup.
+                if matches!(resolved, Type::Unknown) {
+                    None
+                } else {
+                    Some(resolved)
+                }
+            } else {
+                None
+            };
+            if let Some(resolved) = resolver_result {
                 resolved
             } else {
-                // No resolver — fall back to general MPTC instance lookup via InstanceEnv.
+                // No resolver result — fall back to general MPTC instance lookup via InstanceEnv.
                 // Literal widening: IntLiteral → Int, StringLiteral → Str. These are Rust-internal
                 // types; prelude cannot declare instances for them, but class satisfaction is
                 // covariant: if T <: S and S satisfies C, then T satisfies C. We widen on miss.
@@ -934,18 +891,11 @@ async fn improve_functional_dependency_inner(
                         }
                     }
                     None => {
-                        // All determining positions are ground at this point
-                        // (checked at line 525). If lookup_mptc returns None, there's
-                        // genuinely no matching instance — unless a determining position
-                        // is `Unknown` (gradual) or a structural type that could satisfy
-                        // the class at runtime. Only error when all determining positions
-                        // are definitively non-matching scalar types.
-                        //
-                        // For Indexable specifically: Record/Union/Intersection/Top are
-                        // structural types that may be sequences at runtime (Tinct's `[]`
-                        // syntax is ambiguous between record and sequence). Unknown is the
-                        // gradual escape hatch. Only scalar types (Int, Float, Bool, Str,
-                        // Function, etc.) are definitively non-Indexable.
+                        // All determining positions are ground at this point.
+                        // If lookup_mptc returns None, there's genuinely no matching
+                        // instance — unless a determining position is `Unknown` (gradual),
+                        // in which case we defer. Only error when all determining positions
+                        // are definitively non-matching.
                         let should_defer = det_types
                             .iter()
                             .any(|(_, ty)| !is_definitely_no_instance_for(class, ty));
@@ -993,7 +943,7 @@ async fn improve_functional_dependency_inner(
                 continue;
             }
 
-            let ded_type_var = Type::TypeVar(ded_var.clone(), 0);
+            let ded_type_var = Type::Var(ded_var.clone(), 0);
 
             // Bindings go directly into state.type_vars — no separate substitution needed.
             state.fd_in_progress.insert(ded_var.clone());
@@ -1026,39 +976,13 @@ async fn improve_functional_dependency_inner(
 /// structurally incompatible with the class. Structural types (Record, Union,
 /// Intersection, App, etc.) and the gradual `Unknown` can always
 /// potentially satisfy a class at runtime, so we return `false` for them.
-fn is_definitely_no_instance_for(class: &str, ty: &Type) -> bool {
-    match class {
-        "Indexable" => {
-            // A type is definitively non-Indexable only if it is a scalar/primitive
-            // that cannot possibly be a container at runtime.
-            // Record, Union, Intersection, Any, App, Unknown, NominalVariant — might work.
-            // Scalars (Int/Float/Str and their literals), Function, Never — cannot.
-            matches!(
-                ty,
-                Type::Int
-                    | Type::Float
-                    | Type::Str
-                    | Type::Never
-                    | Type::Function { .. }
-                    | Type::IntLiteral(_)
-                    | Type::StringLiteral(_)
-            )
-        }
-        _ => {
-            // For other MPTC classes, treat any ground non-Unknown type as
-            // definitely non-matching when lookup_mptc returns None.
-            // Unknown gets special handling (defer).
-            !matches!(ty, Type::Unknown)
-        }
-    }
+fn is_definitely_no_instance_for(_class: &str, ty: &Type) -> bool {
+    // For all MPTC classes, treat any ground non-Unknown type as
+    // definitely non-matching when lookup_mptc returns None.
+    // Unknown gets special handling (defer).
+    !matches!(ty, Type::Unknown)
 }
 
-/// When binding a constrained type variable, promote literal types to their parent types.
-/// This prevents `[+ 1 2]` from failing: without promotion, `_t0` (Numeric) would bind
-/// to `IntLiteral(1)`, then unification of `IntLiteral(1)` with `IntLiteral(2)` would fail.
-/// With promotion, `_t0` binds to `Int`, and both `IntLiteral(1)` and `IntLiteral(2)` unify
-/// with `Int` via the literal-to-parent promotion rules.
-///
 /// When binding a constrained type variable, promote literal types to their parent types.
 /// This prevents `[+ 1 2]` from failing: without promotion, `_t0` (Numeric) would bind
 /// to `IntLiteral(1)`, then unification of `IntLiteral(1)` with `IntLiteral(2)` would fail.
@@ -1203,7 +1127,7 @@ pub fn resolve_has_field(
         Type::Never => Ok(Type::Never),
 
         // TypeVar: defer constraint (handled by caller)
-        Type::TypeVar(_, _) => Err(TypeDiagnostic::error("type-error",
+        Type::Var(_, _) => Err(TypeDiagnostic::error("type-error",
             "cannot resolve HasField constraint on unbound type variable (expected caller to defer)".to_string(),
             span,
         )),
@@ -1254,7 +1178,7 @@ pub fn apply_type_with_visited<'a>(
         return Cow::Borrowed(ty);
     }
     match ty {
-        Type::TypeVar(name, level) => {
+        Type::Var(name, level) => {
             if visited_types.contains(name) {
                 return Cow::Borrowed(ty);
             }
@@ -1267,7 +1191,7 @@ pub fn apply_type_with_visited<'a>(
                     visited_types.remove(name);
                     Cow::Owned(result)
                 }
-                None => Cow::Owned(Type::TypeVar(name.clone(), *level)),
+                None => Cow::Owned(Type::Var(name.clone(), *level)),
             }
         }
         Type::Dict(row) => {
@@ -1351,7 +1275,7 @@ pub fn apply_type_with_visited<'a>(
 
             Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
         }
-        Type::TypeStageApp { fn_name, args } => Cow::Owned(Type::TypeStageApp {
+        Type::StageApp { fn_name, args } => Cow::Owned(Type::StageApp {
             fn_name: fn_name.clone(),
             args: args
                 .iter()
@@ -1568,7 +1492,7 @@ fn lower_levels_check_occurs(
     state: &mut InferState,
 ) -> bool {
     match ty {
-        Type::TypeVar(name, _) => {
+        Type::Var(name, _) => {
             let found = name == occurs_name;
             let current_level = state.get_level_for_occurs_check(name);
             state.set_level(name.clone(), current_level.min(cap_level));
@@ -1662,7 +1586,7 @@ fn lower_levels_check_occurs(
         | Type::QuicDatagramHandle
         | Type::DatagramHandle
         | Type::Never => false,
-        Type::TypeStageApp { fn_name: _, args } => {
+        Type::StageApp { fn_name: _, args } => {
             let mut found = false;
             for arg in args {
                 found |= lower_levels_check_occurs(arg, occurs_name, cap_level, state);
@@ -1788,11 +1712,11 @@ async fn bas_cvar1_rewrite(
     // Partition into TypeVars and concrete (non-TypeVar) members
     let type_vars: Vec<&Type> = compound_members
         .iter()
-        .filter(|m| matches!(m, Type::TypeVar(_, _)))
+        .filter(|m| matches!(m, Type::Var(_, _)))
         .collect();
     let concrete_members: Vec<&Type> = compound_members
         .iter()
-        .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+        .filter(|m| !matches!(m, Type::Var(_, _)))
         .collect();
 
     if type_vars.is_empty() {
@@ -1869,7 +1793,7 @@ async fn bas_cvar1_rewrite(
 
     // Bind each TypeVar
     for tv in &type_vars {
-        let Type::TypeVar(var_name, _) = tv else {
+        let Type::Var(var_name, _) = tv else {
             continue;
         };
 
@@ -1926,11 +1850,11 @@ async fn bas_cvar2_rewrite(
     // Partition into TypeVars and concrete (non-TypeVar) members
     let type_vars: Vec<&Type> = compound_members
         .iter()
-        .filter(|m| matches!(m, Type::TypeVar(_, _)))
+        .filter(|m| matches!(m, Type::Var(_, _)))
         .collect();
     let concrete_members: Vec<&Type> = compound_members
         .iter()
-        .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+        .filter(|m| !matches!(m, Type::Var(_, _)))
         .collect();
 
     if type_vars.is_empty() {
@@ -1968,7 +1892,7 @@ async fn bas_cvar2_rewrite(
 
     // Bind each TypeVar
     for tv in &type_vars {
-        let Type::TypeVar(var_name, _) = tv else {
+        let Type::Var(var_name, _) = tv else {
             continue;
         };
 
@@ -2140,11 +2064,11 @@ pub async fn unify(
         //
         // This behavior is SOUND and CORRECT for gradual typing. Do not change it to fail
         // or emit a diagnostic — that would break the gradual type system.
-        (Type::Unknown, Type::TypeVar(name, _)) => {
+        (Type::Unknown, Type::Var(name, _)) => {
             state.set_level(name.clone(), 0);
             Ok(())
         }
-        (Type::TypeVar(name, _), Type::Unknown) => {
+        (Type::Var(name, _), Type::Unknown) => {
             state.set_level(name.clone(), 0);
             Ok(())
         }
@@ -2162,16 +2086,13 @@ pub async fn unify(
             // runtime type error — missing annotation causes undefined behavior.
             if !matches!(
                 other,
-                Type::Unknown | Type::TypeVar(..) | Type::Error(_) | Type::Any
+                Type::Unknown | Type::Var(..) | Type::Error(_) | Type::Any
             ) {
-                state.diagnostics.push(TypeDiagnostic {
-                    level: crate::error::DiagnosticLevel::Warn,
-                    kind: "unknown-type",
-                    message: "type unknown".to_string(),
-                    spans: vec![(span.clone(), String::new())],
-                    notes: vec![],
-                    help: vec![],
-                });
+                state.diagnostics.push(TypeDiagnostic::warn(
+                    "unknown-type",
+                    "type unknown",
+                    span.clone(),
+                ));
             }
             Ok(())
         }
@@ -2180,11 +2101,11 @@ pub async fn unify(
         // Treat symmetrically with Unknown: zero levels to prevent over-generalization.
         // Any should not appear in unification positions in well-typed programs; when it does
         // (e.g., from explicit @Any annotations), this is the correct conservative treatment.
-        (Type::Any, Type::TypeVar(name, _)) => {
+        (Type::Any, Type::Var(name, _)) => {
             state.set_level(name.clone(), 0);
             Ok(())
         }
-        (Type::TypeVar(name, _), Type::Any) => {
+        (Type::Var(name, _), Type::Any) => {
             state.set_level(name.clone(), 0);
             Ok(())
         }
@@ -2203,7 +2124,7 @@ pub async fn unify(
         // variable already holds the minimum level, so the level-lowering step would be a
         // no-op. No occurs-check is needed because the two variables are distinct — the
         // same-name case (`a == b`) is caught by the early return above.
-        (Type::TypeVar(name_a, _), Type::TypeVar(name_b, _)) => {
+        (Type::Var(name_a, _), Type::Var(name_b, _)) => {
             let level_a = state.get_level_for_occurs_check(name_a);
             let level_b = state.get_level_for_occurs_check(name_b);
 
@@ -2213,17 +2134,17 @@ pub async fn unify(
             if level_a >= level_b {
                 // Bind name_a → TypeVar(name_b)
                 transfer_class_constraints(name_a, name_b, constraints);
-                state.bind_type_var(name_a.clone(), Type::TypeVar(name_b.clone(), level_b));
+                state.bind_type_var(name_a.clone(), Type::Var(name_b.clone(), level_b));
             } else {
                 // Bind name_b → TypeVar(name_a)
                 transfer_class_constraints(name_b, name_a, constraints);
-                state.bind_type_var(name_b.clone(), Type::TypeVar(name_a.clone(), level_a));
+                state.bind_type_var(name_b.clone(), Type::Var(name_a.clone(), level_a));
             }
             Ok(())
         }
 
         // U-VAR-LEVEL: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
-        (Type::TypeVar(name, _), _) => {
+        (Type::Var(name, _), _) => {
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
             // lower_levels_check_occurs returns true if `name` appears in the type tree
             // (infinite-type guard), and simultaneously lowers all var levels to cap_level.
@@ -2245,7 +2166,7 @@ pub async fn unify(
             // checked when β is bound to a concrete type. HasField constraints are NOT transferred
             // (they reference the dict variable, not the param).
             // bind_at_level routes the binding to the frame matching the TypeVar's creation level.
-            if let Type::TypeVar(beta_name, _) = &b {
+            if let Type::Var(beta_name, _) = &b {
                 transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 state.bind_type_var(name.clone(), b);
@@ -2261,7 +2182,7 @@ pub async fn unify(
             Ok(())
         }
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
-        (_, Type::TypeVar(name, _)) => {
+        (_, Type::Var(name, _)) => {
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
             let alpha_level = state.get_level_for_occurs_check(name);
             if lower_levels_check_occurs(&a, name, alpha_level, state) {
@@ -2279,7 +2200,7 @@ pub async fn unify(
             // checked when β is bound to a concrete type. HasField constraints are NOT transferred
             // (they reference the dict variable, not the param).
             // bind_at_level routes the binding to the frame matching the TypeVar's creation level.
-            if let Type::TypeVar(beta_name, _) = &a {
+            if let Type::Var(beta_name, _) = &a {
                 transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 state.bind_type_var(name.clone(), a);
@@ -2405,9 +2326,7 @@ pub async fn unify(
         // holds, the intersection is provably Never. For all other cases (uncertain overlap), we
         // remain conservative and allow unification to succeed. Runtime value_matches_type handles
         // the residual constraint for `[@[[without T]] expr]` TypeAsserts.
-        (concrete, Type::Negation(inner))
-            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
-        {
+        (concrete, Type::Negation(inner)) if !matches!(concrete, Type::Var(..) | Type::Unknown) => {
             if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
                 Err(TypeDiagnostic::error("type-error",
                     format!(
@@ -2420,9 +2339,7 @@ pub async fn unify(
                 Ok(()) // conservative: may still be empty but can't prove it statically
             }
         }
-        (Type::Negation(inner), concrete)
-            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
-        {
+        (Type::Negation(inner), concrete) if !matches!(concrete, Type::Var(..) | Type::Unknown) => {
             if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
                 Err(TypeDiagnostic::error("type-error",
                     format!(
@@ -2620,7 +2537,7 @@ pub async fn unify(
         // Guard: only fire when the union has no TypeVars. If it has TypeVars, fall through
         // to C-Var1 which handles constraint rewriting for inference variables.
         (Type::TyCon(n), Type::Union(members))
-            if !members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+            if !members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             if let Some(def) = state.tycon_env.get(n.as_str()) {
                 let body = def.body.clone();
@@ -2646,7 +2563,7 @@ pub async fn unify(
             }
         }
         (Type::Union(members), Type::TyCon(n))
-            if !members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+            if !members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             if let Some(def) = state.tycon_env.get(n.as_str()) {
                 let body = def.body.clone();
@@ -2708,7 +2625,7 @@ pub async fn unify(
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
             // bind_at_level routes to the frame matching the Operator variable's creation level.
-            if let Type::TypeVar(beta_name, _) = &b {
+            if let Type::Var(beta_name, _) = &b {
                 transfer_class_constraints(m, beta_name, constraints);
                 state.bind_type_var(m.clone(), b.clone());
             } else {
@@ -2732,7 +2649,7 @@ pub async fn unify(
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
             // bind_at_level routes to the frame matching the Operator variable's creation level.
-            if let Type::TypeVar(beta_name, _) = &a {
+            if let Type::Var(beta_name, _) = &a {
                 transfer_class_constraints(m, beta_name, constraints);
                 state.bind_type_var(m.clone(), a.clone());
             } else {
@@ -2829,10 +2746,10 @@ pub async fn unify(
                         .cloned()
                         .collect();
                     if !all_fields.is_empty() {
-                        if let Type::TypeVar(alpha, _) = &v_fixed {
+                        if let Type::Var(alpha, _) = &v_fixed {
                             let join = Type::normalize_union(all_fields);
                             Box::pin(unify(
-                                &Type::TypeVar(alpha.clone(), 0),
+                                &Type::Var(alpha.clone(), 0),
                                 &join,
                                 state,
                                 constraints,
@@ -2871,10 +2788,10 @@ pub async fn unify(
                     if field_types.is_empty() {
                         return Ok(());
                     }
-                    if let Type::TypeVar(alpha, _) = &v_fixed {
+                    if let Type::Var(alpha, _) = &v_fixed {
                         let join = Type::normalize_union(field_types);
                         Box::pin(unify(
-                            &Type::TypeVar(alpha.clone(), 0),
+                            &Type::Var(alpha.clone(), 0),
                             &join,
                             state,
                             constraints,
@@ -3008,7 +2925,7 @@ pub async fn unify(
         // Pattern: Union on one side containing at least one TypeVar
         (concrete, Type::Union(members))
             if !concrete.has_inference_vars()
-                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+                && members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             let members = members.clone();
             bas_cvar1_rewrite(&members, concrete, state, constraints, span, depth).await
@@ -3017,7 +2934,7 @@ pub async fn unify(
         // Symmetric C-Var1: Union on the left, concrete on the right
         (Type::Union(members), concrete)
             if !concrete.has_inference_vars()
-                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+                && members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             let members = members.clone();
             bas_cvar1_rewrite(&members, concrete, state, constraints, span, depth).await
@@ -3037,7 +2954,7 @@ pub async fn unify(
         // Pattern: Intersection on one side containing at least one TypeVar
         (Type::Intersection(members), concrete)
             if !concrete.has_inference_vars()
-                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+                && members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             let members = members.clone();
             bas_cvar2_rewrite(&members, concrete, state, constraints, span, depth).await
@@ -3046,7 +2963,7 @@ pub async fn unify(
         // Symmetric C-Var2: concrete on the left, Intersection on the right
         (concrete, Type::Intersection(members))
             if !concrete.has_inference_vars()
-                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+                && members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             let members = members.clone();
             bas_cvar2_rewrite(&members, concrete, state, constraints, span, depth).await
@@ -3055,11 +2972,11 @@ pub async fn unify(
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
         // Case 1: same function name -> pairwise bidirectional constrain args
         (
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: f1,
                 args: a1,
             },
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: f2,
                 args: a2,
             },
@@ -3084,7 +3001,7 @@ pub async fn unify(
             Ok(())
         }
         // Case 2: different function names -> error
-        (Type::TypeStageApp { fn_name: f1, .. }, Type::TypeStageApp { fn_name: f2, .. }) => {
+        (Type::StageApp { fn_name: f1, .. }, Type::StageApp { fn_name: f2, .. }) => {
             Err(TypeDiagnostic::error(
                 "type-error",
                 format!(
@@ -3097,8 +3014,8 @@ pub async fn unify(
         // Case 3: TypeStageApp vs concrete (non-TypeVar, non-Unknown, non-Top)
         // Defer to process_deferred_equalities (no resolvers available yet in chr-normalization)
         // In chr-prelude, this will attempt resolver evaluation before deferring
-        (Type::TypeStageApp { .. }, concrete) | (concrete, Type::TypeStageApp { .. })
-            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown | Type::Any) =>
+        (Type::StageApp { .. }, concrete) | (concrete, Type::StageApp { .. })
+            if !matches!(concrete, Type::Var(..) | Type::Unknown | Type::Any) =>
         {
             state.deferred_equalities.push((a.clone(), b.clone()));
             Ok(())
@@ -3192,11 +3109,11 @@ pub async fn constrain(
         (Type::Error(_), _) | (_, Type::Error(_)) => return Ok(()),
 
         // Unknown: directional — zero levels of affected vars, accept the constraint.
-        (Type::Unknown, Type::TypeVar(name, _)) => {
+        (Type::Unknown, Type::Var(name, _)) => {
             state.set_level(name.clone(), 0);
             return Ok(());
         }
-        (Type::TypeVar(name, _), Type::Unknown) => {
+        (Type::Var(name, _), Type::Unknown) => {
             state.set_level(name.clone(), 0);
             return Ok(());
         }
@@ -3217,7 +3134,7 @@ pub async fn constrain(
         // so the TypeVar in the union must absorb whatever sub is not covered by the other members.
         (_, Type::Union(members))
             if !sub.has_inference_vars()
-                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+                && members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             let members = members.clone();
             return bas_cvar1_rewrite(&members, &sub, state, constraints, span, 0).await;
@@ -3230,7 +3147,7 @@ pub async fn constrain(
         // to fit into sup. The TypeVar in the intersection contributes an upper bound.
         (Type::Intersection(members), _)
             if !sup.has_inference_vars()
-                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+                && members.iter().any(|m| matches!(m, Type::Var(_, _))) =>
         {
             let members = members.clone();
             return bas_cvar2_rewrite(&members, &sup, state, constraints, span, 0).await;
@@ -3241,7 +3158,7 @@ pub async fn constrain(
         // This preserves principal types: α can still be instantiated to any supertype of sub.
         // Guard: sub must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
         // as bounds. If sub contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
-        (_, Type::TypeVar(var_name, _)) if !sub.has_inference_vars() => {
+        (_, Type::Var(var_name, _)) if !sub.has_inference_vars() => {
             let alpha_level = state.get_level_for_occurs_check(var_name);
             if lower_levels_check_occurs(&sub, var_name, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
@@ -3266,7 +3183,7 @@ pub async fn constrain(
         // Collect sup as an upper bound of α rather than binding α = sup.
         // Guard: sup must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
         // as bounds. If sup contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
-        (Type::TypeVar(var_name, _), _) if !sup.has_inference_vars() => {
+        (Type::Var(var_name, _), _) if !sup.has_inference_vars() => {
             let alpha_level = state.get_level_for_occurs_check(var_name);
             if lower_levels_check_occurs(&sup, var_name, alpha_level, state) {
                 return Err(TypeDiagnostic::error(
@@ -3493,11 +3410,11 @@ pub async fn constrain(
 
         // [C-TypeStageApp] TypeStageApp is INVARIANT: same function name, bidirectional on args.
         (
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: f1,
                 args: args1,
             },
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: f2,
                 args: args2,
             },

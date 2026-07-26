@@ -615,7 +615,7 @@ type errors:
 
 The type-stage Env is discarded after type-checking; it does not exist at runtime.
 
-**Available builtins in type-stage:** `builtin-get`, `get?`, `keys`, `length`, `=`, `if`, `match`. The higher-level `get` (which is a program-stage wrapper) is not available — use `builtin-get` instead.
+**Available builtins in type-stage:** `builtin-dict-get`, `builtin-has-key?`, `builtin-keys`, `builtin-dict-length`, `builtin-eq-string`, `builtin-eq-int`, `if`, `match`. The higher-level prelude wrappers (`get`, `get?`, `keys`, `length`, `=`) depend on runtime prelude functions and are not available in type-stage — use the `builtin-*` primitives instead.
 
 **Recursive type-stage functions are not supported.** The lazy evaluator defers self-calls as thunks; the annotation resolver forces thunks during traversal, causing infinite unrolling. For recursive type structures, use named aliases (the expansion stack detects self-references automatically and produces `TypeNode.Recursive`) or the `mu` combinator for inline annotations.
 
@@ -857,7 +857,7 @@ Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rath
 
 Note: A `CheckerType` newtype wrapping `TypeNode` values as the type checker's primary representation is a planned future refactor (see `doc/whatif/equirecursive-types.md`) but is not yet implemented. Until then, `Type` is the authoritative representation inside the type checker. See [Type Inference](06-type-inference.md) for the canonical description of the `Type` enum and its role.
 
-**TypeVar in type-stage.** `TypeNode.TypeVar { name: String  level: Int }` is the tinct-level representation of an inference variable. After conversion via `typenode_value_to_type`, it becomes `Type::TypeVar(name, level)` inside the type checker. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_bas` / `is_atom_subtype`, `unify`, `Substitution::apply`, `PartialEq`) require explicit Rust arms for TypeVar.
+**TypeVar in type-stage.** `TypeNode.TypeVar { name: String  level: Int }` is the tinct-level representation of an inference variable. After conversion via `typenode_value_to_type`, it becomes `Type::Var(name, level)` inside the type checker. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_bas` / `is_atom_subtype`, `unify`, `Substitution::apply`, `PartialEq`) require explicit Rust arms for TypeVar.
 
 **TypeNode constructors** (all declared in the prelude `--- stage: type` section):
 
@@ -1225,7 +1225,7 @@ Mixed-stage routing for annotation brackets in general:
 
 Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-generalization (Kiselyov 2013).
 
-**TypeVar levels.** Each TypeVar carries an integer level representing the nesting depth of its binding scope. In the `Type` enum, this is `Type::TypeVar(name: String, level: u32)`; in the tinct-stage value representation it is `TypeNode.TypeVar { name: String  level: Int }`. `state.levels` maps TypeVar name to its authoritative current level (updated by level lowering); the level carried in the variant is the creation-time level only. Let-generalization uses `state.levels[name] > enclosing_level` — always use `state.levels`, never the creation-time level. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
+**TypeVar levels.** Each TypeVar carries an integer level representing the nesting depth of its binding scope. In the `Type` enum, this is `Type::Var(name: String, level: u32)`; in the tinct-stage value representation it is `TypeNode.TypeVar { name: String  level: Int }`. `state.levels` maps TypeVar name to its authoritative current level (updated by level lowering); the level carried in the variant is the creation-time level only. Let-generalization uses `state.levels[name] > enclosing_level` — always use `state.levels`, never the creation-time level. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
 
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
 

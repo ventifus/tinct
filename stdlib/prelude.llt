@@ -66,21 +66,28 @@
   # literal constructor so typenode_value_to_type receives a proper TypeNode variant.
   # Raw values arise when `[or 0 1]` or `[or "ok" "err"]` are written in type position —
   # the type-stage evaluator produces Value::Int / Value::String for the positional args.
-  # Using builtin-type-of (returns "Integer" / "String") to dispatch avoids importing
+  # Using builtin-type-of (returns "Int" / "String") to dispatch avoids importing
   # runtime builtins that are not available in the type-stage evaluator.
   _wrap-typenode-value: [fn [let t]
-    [match [builtin-eq-string [builtin-type-of t] "Integer"]
+    [match [builtin-eq-string [builtin-type-of t] "Int"]
+      1: [TypeNode.IntLiteral n: t]
       0: [match [builtin-eq-string [builtin-type-of t] "String"]
-           0: t
-           ...: [TypeNode.StringLiteral s: t]]
-      ...: [TypeNode.IntLiteral n: t]]]
+           1: [TypeNode.StringLiteral s: t]
+           0: t]]]
   union:   [fn [let ...types] [TypeNode.Union types: [object-map types _wrap-typenode-value]]]
   or:      [fn [let ...types] [TypeNode.Union types: [object-map types _wrap-typenode-value]]]
   all:     [fn [let ...types] [TypeNode.Intersect types: types]]
   without: [fn [let inner]    [TypeNode.Negation inner: [as-typenode inner]]]
 
-  # Normalize a TypeNode value using its constructor's as-type annotation
-  as-typenode: [fn [let t] [TypeNode.as-type t]]
+  # Normalize a TypeNode value using its constructor's as-type annotation.
+  # Handle raw Int and String values first (they arise when literal values
+  # flow into type-stage code), wrapping them as TypeNode.IntLiteral / TypeNode.StringLiteral.
+  as-typenode: [fn [let t]
+    [match [builtin-eq-string [builtin-type-of t] "Int"]
+      1: [TypeNode.IntLiteral n: t]
+      0: [match [builtin-eq-string [builtin-type-of t] "String"]
+           1: [TypeNode.StringLiteral s: t]
+           0: [TypeNode.as-type t]]]]
 
 # Boolean is declared in loader.llt Dict 2 before prelude loads — do not redeclare here.
 
@@ -103,16 +110,16 @@
   #   [object-map [a: 1  b: 2] [fn [let v] [+ v 10]]] => [a: 11  b: 12]
   #
   # Implemented using only core builtins (dict-merge, builtin-keys,
-  # builtin-get, builtin-dict-length, builtin-dict-nth, builtin-eq-int,
+  # builtin-dict-get, builtin-dict-length, builtin-dict-nth, builtin-eq-int,
   # builtin-int-add) so it is available in the type-stage evaluator.
   # Uses match for branching (Boolean.True/False not available at type stage).
   # Uses [$k: v] dynamic key syntax to preserve string keys.
   object-map-step: [fn@Dict [let obj f keys i n builder]
     [match [builtin-eq-int i n]
       0: [call [fn [let]
-            [k: [builtin-get i keys]]
+            [k: [builtin-dict-get i keys]]
             [object-map-step obj f keys [builtin-int-add i 1] n
-              [builtin-builder-set k [f [builtin-get k obj]] builder]]]]
+              [builtin-builder-set k [f [builtin-dict-get k obj]] builder]]]]
       ...: [builtin-builder-finish builder]]]
   object-map: [fn [let obj f]
     [keys: [builtin-keys obj]]
@@ -228,7 +235,7 @@
   Bytes: [fn [let ...args]
     [match [builtin-eq-int [builtin-dict-length args] 0]
       0: TypeNode.Bytes
-      ...: [TypeNode.SizedBytes n: [builtin-get 0 args]]]]
+      ...: [TypeNode.SizedBytes n: [builtin-dict-get 0 args]]]]
 
   # ============================================================================
   # TypeNode traversal helpers (T-1059, equirecursive-types)
@@ -250,18 +257,18 @@
     # Tag is always "TypeNode.X"; skip the 9-char "TypeNode." prefix to get "X".
     # builtin-split is in the string module (not core), so use builtin-str-slice instead.
     [tag: [builtin-tag-of t]]
-    [builtin-get [builtin-str-slice tag 9 [builtin-str-length tag]] TypeNode]]
+    [builtin-dict-get [builtin-str-slice tag 9 [builtin-str-length tag]] TypeNode]]
 
   # child-fields: return the Dict of @Child field names for a constructor.
   # Reads the "field-annotations" key from annotation-of(ctor) and returns its keys
   # (a Dict of int-indexed field name strings). Returns [] when no @Child fields exist
-  # (i.e., leaf constructors) or when T-1124 has not yet populated field-annotations.
+  # (i.e., leaf constructors with no @Child field declarations).
   # Uses builtin-has-key? (returns Int 1/0) to avoid the removed builtin-get?.
   child-fields: [fn [let ctor]
     [ann: [builtin-annotation-of ctor]]
     [match [builtin-has-key? "field-annotations" ann]
       0: []
-      ...: [builtin-keys [builtin-get "field-annotations" ann]]]]
+      ...: [builtin-keys [builtin-dict-get "field-annotations" ann]]]]
 
   # child-role: return the child role string ("One" or "MapValues") for a
   # given @Child field of a constructor.
@@ -269,9 +276,9 @@
   #   "MapValues" — field type is [Map K TypeNode] (map; map over values, preserve keys)
   # The "Seq" role was removed when Intersect.types migrated from [Seq TypeNode] to [Map Int TypeNode].
   child-role: [fn [let ctor field]
-    [builtin-get "role"
-      [builtin-get field
-        [builtin-get "field-annotations" [builtin-annotation-of ctor]]]]]
+    [builtin-dict-get "role"
+      [builtin-dict-get field
+        [builtin-dict-get "field-annotations" [builtin-annotation-of ctor]]]]]
 
   # child-field?: return Boolean.True iff field is an @Child field of the constructor.
   # Uses builtin-has-key? (Int 1/0) — builtin-get? no longer exists as a Rust builtin.
@@ -279,7 +286,7 @@
     [ann: [builtin-annotation-of ctor]]
     [match [builtin-has-key? "field-annotations" ann]
       0: Boolean.False
-      ...: [match [builtin-has-key? field [builtin-get "field-annotations" ann]]
+      ...: [match [builtin-has-key? field [builtin-dict-get "field-annotations" ann]]
         0: Boolean.False
         ...: Boolean.True]]]
 
@@ -327,7 +334,7 @@
       [match [builtin-eq-int i n]
         0: [call [fn [let]
               [field: [builtin-dict-nth fields i]]
-              [val:   [builtin-get field t]]
+              [val:   [builtin-dict-get field t]]
               [children-step t ctor fields [builtin-int-add i 1] n
                 [builtin-concat acc
                   [match [child-role ctor field]
@@ -388,7 +395,7 @@
       [ann: [builtin-annotation-of [TypeNode-ctor t]]]
       [match [builtin-has-key? "as-type" ann]
         0: t
-        ...: [[builtin-get "as-type" ann] t]]]]]
+        ...: [[builtin-dict-get "as-type" ann] t]]]]]
 
   # ============================================================================
   # TypeNodeResolve: typeclass for as-type dispatch (T-1059)
@@ -443,6 +450,33 @@
       0: [builtin-raise [builtin-string-concat "non-contractive recursive type: immediate recursion without structural container (binder: " [builtin-string-concat var ")"]]]
       ...: [TypeNode.Recursive var: var  body: body]]]
 
+  # ============================================================================
+  # FieldType: type-stage resolver for Indexable FD (T-1889)
+  # ============================================================================
+  #
+  # Given a container TypeNode and a key TypeNode, returns the field type.
+  # Used as the resolver for Indexable's (c, k) → v functional dependency.
+  # Handles Dict (record field lookup by string literal key), Union (distribute
+  # across members), Intersect (distribute across members), and Top (→ Unknown).
+  # Returns TypeNode.Unknown when the field type cannot be determined statically.
+  FieldType: [fn [let container-typenode key-typenode]
+    [match container-typenode
+      [case [let p] [TypeNode.Dict p]
+        [match [builtin-has-key? "key-type" p]
+          1: p.value-type
+          0: [match key-typenode
+                [case [let k] [TypeNode.StringLiteral k]
+                  [match [builtin-has-key? k.s p.fields]
+                    1: [builtin-dict-get k.s p.fields]
+                    0: TypeNode.Unknown]]
+                ...: TypeNode.Unknown]]]
+      [case [let p] [TypeNode.Union p]
+        [TypeNode.Union types: [object-map p.types [fn [let member] [FieldType member key-typenode]]]]]
+      [case [let p] [TypeNode.Intersect p]
+        [TypeNode.Intersect types: [object-map p.types [fn [let member] [FieldType member key-typenode]]]]]
+      TypeNode.Top: TypeNode.Unknown
+      ...: TypeNode.Unknown]]
+
 ]
 
 --- uses: ["core" "io" "math" "meta" "string" "async" "datetime"]
@@ -458,7 +492,7 @@
 #    sibling private helpers — never call public stdlib functions, because
 #    at eval time the first dict is materialized before the second dict's
 #    bindings exist in scope.
-#    Uses builtin-get (not the get wrapper), match for branching (not and/or),
+#    Uses builtin-dict-get (not the get wrapper), match for branching (not and/or),
 #    and builtin-int-gte instead of >= (which is in the public dict).
 #    Naming conventions:
 #      -impl   Internal recursive helper with extra state arguments.
@@ -481,7 +515,7 @@
 #
 #   Stable builtin-* aliases (used internally; pre-injected into bootstrap env):
 #     builtin-lt  builtin-eq-int  builtin-eq-string  builtin-int-add  builtin-mul  builtin-div
-#     builtin-get  map  reduce
+#     builtin-dict-get  map  reduce
 #     builtin-filter  builtin-take  builtin-drop
 #     builtin-concat  builtin-join
 #     (builtin-seq, builtin-head, builtin-tail, builtin-collect removed in S-893/S-896)
@@ -530,7 +564,7 @@
 #
 # Layering Rules — private dict restrictions:
 #   builtin-int-gte        instead of >= (which is in the public dict)
-#   builtin-get        instead of the get wrapper
+#   builtin-dict-get   instead of the get wrapper
 #   match for branching  instead of and/or
 #   builtin-dict-length     instead of length (prelude wrapper not yet in scope)
 #   builtin-keys       instead of keys
@@ -574,7 +608,7 @@ Boolean: [type True False]
 
 # Internal helper — not part of the public API.
 # Construct a single-entry dict from a computed key and value.
-# Access expressions like [builtin-get i ks] can't appear in key position syntactically;
+# Access expressions like [builtin-dict-get i ks] can't appear in key position syntactically;
 # passing through function params makes the key a plain k var_ref.
 make-entry: [fn@Dict [let k v] [$k: v]]
 
@@ -606,8 +640,8 @@ bool->int-priv: [fn [let b]
 # a Result.Ok / Result.Error variant for downstream match arms to consume.
 raw-to-result: [fn [let raw]
     [match [builtin-has-key? "ok" raw]
-        0: [Result.Error msg:   [builtin-get "message" raw]]
-        ...: [Result.Ok   value: [builtin-get "ok"     raw]]]]
+        0: [Result.Error msg:   [builtin-dict-get "message" raw]]
+        ...: [Result.Ok   value: [builtin-dict-get "ok"     raw]]]]
 
 # ============================================================================
 # List helpers (only depend on builtins + siblings)
@@ -661,18 +695,18 @@ partition-finish: [fn@[bind: [a]  return: a] [let result@a] result]
 
 # group-by-get-bucket: retrieve existing bucket for key k from acc dict, or [] if missing.
 group-by-get-bucket: [fn@Dict [let k acc@Dict]
-    [match [raw-to-result [builtin-try [builtin-get k acc]]]
+    [match [raw-to-result [builtin-try [builtin-dict-get k acc]]]
         [case [let p] [Result.Ok p]    p.value]
         [case [let _] [Result.Error]   []]]]
 
 # group-by-insert: update key k in plain dict acc with x appended to existing bucket.
 # Uses dict-merge (right-biased overlay) to store the updated bucket.
-# Separated from group-by-step to avoid [let k [f x]] LetDecl-nesting bug (B-264).
+# Separated from group-by-step to keep [let k [f x]] out of the calling function body.
 group-by-insert: [fn@Dict [let k x acc@Dict]
     [dict-merge acc [make-entry k [dict-append x [group-by-get-bucket k acc]]]]]
 
 # group-by-step: compute key via f, then delegate to group-by-insert.
-# The explicit k parameter avoids the [let k [f x]] LetDecl-nesting bug (B-264).
+# The explicit k parameter keeps the key computation separate from the accumulation step.
 group-by-step: [fn@[bind: [a k]  return: Dict] [let f@[Fn@k [a]] acc@Dict x]
     [group-by-insert [f x] x acc]]
 
@@ -702,7 +736,7 @@ env-to-name-set: [fn [let env]
   [go: [fn [let n i builder]
     [match [builtin-eq-int i n]
       0: [go n [builtin-int-add i 1]
-               [builtin-builder-set [builtin-get i keys] 1 builder]]
+               [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
       ...: [builtin-builder-finish builder]]]]
   [go [builtin-dict-length keys] 0 [builtin-make-builder]]]
 
@@ -714,12 +748,14 @@ env-to-name-set: [fn [let env]
 # Attempts thunk. On success returns value. On failure, if n > 0 retries.
 
 
-# Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers
-# (e.g. cond-impl uses builtin-get which carries an Indexable constraint).
+# Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers.
 # Re-exported in dict 2 as: Indexable: .Indexable
+# Note: builtin-dict-get has no Indexable constraint (typed fn@Any [let k@Any xs@Dict]).
+# FieldType fires at Indexable instance dispatch call sites (call_dispatch for typed containers)
+# and via the standalone `get` wrapper which carries constraint: [$Indexable c k v] (T-1917).
 Indexable:
   [class [let c k v]
-    [determines: [[[c k] v]]]
+    [determines: [[[c k] v]]  resolver: FieldType]
     get:    [Fn@v      [k c]]
     slice:  [Fn@c      [c Int Int]]
     length: [Fn@Integer    [c]]]
@@ -968,7 +1004,7 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 """] [let pred@[Fn@Boolean [a]] xs@Dict]
   [impl: [fn [let ks i len]
     [match [builtin-int-gte i len]
-      0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
+      0: [match [bool->int-priv [pred [builtin-dict-get [builtin-dict-get i ks] xs]]]
           0: [impl ks [builtin-int-add i 1] len]
           ...: 1]
       ...: 0]]]
@@ -987,7 +1023,7 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 """] [let pred@[Fn@Boolean [a]] xs@Dict]
   [impl: [fn [let ks i len]
     [match [builtin-int-gte i len]
-      0: [match [bool->int-priv [pred [builtin-get [builtin-get i ks] xs]]]
+      0: [match [bool->int-priv [pred [builtin-dict-get [builtin-dict-get i ks] xs]]]
           0: 0
           ...: [impl ks [builtin-int-add i 1] len]]
       ...: 1]]]
@@ -1200,9 +1236,9 @@ Note: Takes a list of [condition result] pairs. Returns the first result where c
 """] [let pairs@Dict]
   [cond-impl: [fn [let i]
     [match [builtin-int-gte i [builtin-dict-length pairs]]
-      0: [match [bool->int-priv [builtin-get i pairs].0]
+      0: [match [bool->int-priv [builtin-dict-get i pairs].0]
           0: [cond-impl [builtin-int-add i 1]]
-          ...: [builtin-get i pairs].1]
+          ...: [builtin-dict-get i pairs].1]
       ...: []]]]
   [cond-impl 0]]
 
@@ -1213,25 +1249,27 @@ Note: Takes a list of [condition result] pairs. Returns the first result where c
 # Dict Utilities
 # ============================================================================
 
-get: [fn@[bind: [a]  return: a  doc: """
-Get value by key (positional), or reverse-lookup by field on a type dict (named).
-
-Positional form: [get key collection] — key lookup on Dict, List, Bytes, or Map.
-Named form:      [get field: value TypeDict] — reverse lookup returning the first
-                 variant whose compile-time constant `field` equals `value`,
-                 or Absent.Absent if no match.
+get: [fn@[bind: [c k v]  return: v  constraint: [$Indexable c k v]  doc: """
+Get value by key. For typed containers (Dict, List, Map, Bytes), the Indexable FD
+resolver (FieldType) fires when c and k are ground, producing the precise field type.
 
 Example: [get "b" [a: 1  b: 2]] => 2
-Example: [get rcode: 2 DnsRcode]  => DnsRcode.ServFail
+Example: [get 0 ["x" "y" "z"]] => "x"
 
-Note: Positional signature is Key → Dict → Any (curried for pipeline composition).
-Note: Named-arg form dispatches to builtin-get-by-field (T-1378).
-"""] [let key dict@[default: []] ...named-selector]
-  [if [null? named-selector]
-    [builtin-get key dict]
-    [field-name:  [get 0 [keys named-selector]]
-     field-value: [builtin-get field-name named-selector]
-     [builtin-get-by-field field-name field-value key]]]]
+Note: Positional signature is Key → Collection → v (curried for pipeline composition).
+"""] [let k@k c@c]
+  [builtin-dict-get k c]]
+
+find-by@[doc: """
+Reverse-lookup in a type dict: find the first variant whose named field equals a value.
+
+Example: [find-by rcode: 2 DnsRcode]  => DnsRcode.ServFail
+Example: [find-by code: 1 H2FrameType] => H2FrameType.Data
+"""]:
+  [fn [let type-dict ...selector]
+    [field-name:  [get 0 [keys selector]]
+     field-value: [builtin-dict-get field-name selector]
+     [builtin-get-by-field field-name field-value type-dict]]]
 
 has?: [fn@[return: Boolean  doc: """
 Check if dict has key.
@@ -1352,7 +1390,7 @@ Note: Preserves dict insertion order: values are returned in the same order as k
   [seq: [fn [let ks i len]
     [match [builtin-int-gte i len]
       0: [Seq.Cons
-          head: [builtin-get [builtin-get i ks] xs]
+          head: [builtin-dict-get [builtin-dict-get i ks] xs]
           tail: [seq ks [builtin-int-add i 1] len]]
       ...: Seq.End]]]
   [collect [seq [keys xs] 0 [length [keys xs]]]]]
@@ -1366,11 +1404,11 @@ Note: Preserves dict insertion order: entries appear in the same order as the so
 """] [let xs@Record]
   [seq: [fn [let ks i len]
     [match [builtin-int-gte i len]
-      0: [step ks i len [builtin-get i ks]]
+      0: [step ks i len [builtin-dict-get i ks]]
       ...: Seq.End]]
    step: [fn [let ks i len k]
     [Seq.Cons
-      head: [key: k  value: [builtin-get k xs]]
+      head: [key: k  value: [builtin-dict-get k xs]]
       tail: [seq ks [builtin-int-add i 1] len]]]]
   [collect [seq [keys xs] 0 [length [keys xs]]]]]
 
@@ -1399,7 +1437,7 @@ Note: Inverse of entries. O(n) via build-dict builtin.
 nth@[doc: "Get nth element (supports negative indices)"]: [fn@[bind: [a]  return: a] [let n@Integer xs@Dict]
   [ks:  [keys xs]
    len: [length xs]]
-  [builtin-get [builtin-get [match [builtin-lt n 0] 0: n ...: [builtin-int-add len n]] ks] xs]]
+  [builtin-dict-get [builtin-dict-get [match [builtin-lt n 0] 0: n ...: [builtin-int-add len n]] ks] xs]]
 
 # Get the last element by insertion-order position, last character of a string, or last byte of Bytes (as Int).
 # last: delegates to builtin-last (see wrappers section at bottom of this dict).
@@ -1576,12 +1614,12 @@ Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: materialize to Di
      seq: [fn [let i]
        [match [builtin-int-gte i xlen]
          0: [match [builtin-int-gte i ylen]
-             0: [step i [builtin-get i xks] [builtin-get i yks]]
+             0: [step i [builtin-dict-get i xks] [builtin-dict-get i yks]]
              ...: Seq.End]
          ...: Seq.End]]
      step: [fn [let i xk yk]
        [Seq.Cons
-         head: [[builtin-get xk dx] [builtin-get yk dy]]
+         head: [[builtin-dict-get xk dx] [builtin-dict-get yk dy]]
          tail: [seq [builtin-int-add i 1]]]]]
     [collect [seq 0]]]]
   [if [and [seq? xs] [seq? ys]]
@@ -1664,10 +1702,10 @@ materialized integer-keyed dicts (eager). O(n) via Seq cons + reverse + collect 
 """] [let pred@[Fn@Boolean [a]] xs]
   [step: [fn [let acc e passes]
     [match [bool->int-priv passes]
-      0: [pass: [builtin-get "pass" acc]
-          fail: [dict-append e [builtin-get "fail" acc]]]
-      ...: [pass: [dict-append e [builtin-get "pass" acc]]
-            fail: [builtin-get "fail" acc]]]]]
+      0: [pass: [builtin-dict-get "pass" acc]
+          fail: [dict-append e [builtin-dict-get "fail" acc]]]
+      ...: [pass: [dict-append e [builtin-dict-get "pass" acc]]
+            fail: [builtin-dict-get "fail" acc]]]]]
   [partition-finish
     [reduce
       [fn [let acc e] [step acc e [pred e]]]
@@ -1698,10 +1736,10 @@ find-first-or@[doc: "Find first matching element or return default"]: [fn@[bind:
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
 # Elements with the same key are collected together (insertion order preserved).
 # Inherently materializing: must inspect all elements.
-# Uses plain dict accumulation (O(n²) via merge-per-element, but no mutable builder state — B-265 fix).
+# Uses plain dict accumulation (O(n²) via merge-per-element, but no mutable builder state).
 
 # group-by-finish: accumulate and return dict of lists.
-# Separated from group-by to avoid [let raw ...] LetDecl-nesting bug (B-264).
+# Separated from group-by to keep the reduce body clean and avoid deep nesting.
 # group-by-step/group-by-insert/group-by-get-bucket (private dict) handle per-element work.
 # Accumulator starts as [] (empty dict); each step merges one updated bucket entry.
 # Buckets are built with append — elements are in insertion order, no reverse needed.
@@ -1777,7 +1815,7 @@ Note: Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [
     [from-entries [map
       [fn [let col-key]
         [key: col-key
-         value: [collect [map [fn [let row] [builtin-get col-key row]] rows]]]]
+         value: [collect [map [fn [let row] [builtin-dict-get col-key row]] rows]]]]
       [each col-keys]]]]]
   [if [empty? rows]
     []
@@ -1860,13 +1898,13 @@ contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs
                 [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]]
         ...: [str-contains? val xs]]]
 
-uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses reduce (Rust loop) for performance (B-267)."]: [fn@Dict [let xs]
+uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses reduce (Rust loop) for performance."]: [fn@Dict [let xs]
   [reduce-step: [fn [let acc v]
-    [if [contains-seq? [builtin-get "seen" acc] v]
+    [if [contains-seq? [builtin-dict-get "seen" acc] v]
       acc
-      [seen:   [Seq.Cons head: v  tail: [builtin-get "seen" acc]]
-       result: [dict-append [builtin-get "result" acc] v]]]]]
-  [builtin-get "result"
+      [seen:   [Seq.Cons head: v  tail: [builtin-dict-get "seen" acc]]
+       result: [dict-append [builtin-dict-get "result" acc] v]]]]]
+  [builtin-dict-get "result"
     [reduce reduce-step [seen: Seq.End  result: []] xs]]]
 
 # Right fold: fold f over xs from the right, starting with acc.
@@ -1958,9 +1996,6 @@ Note: Wraps the function call in error handling. Returns the function's result i
 # The runtime representation uses Seq.Cons / Seq.End variant tags (S-896).
 # Seq a is structurally isomorphic to the recursive type End | [Cons head: a  tail: [Seq a]].
 #
-# Note: tail is typed Any (not [Seq a]) because equirecursive types are not yet fully
-# implemented (S-862). This is a conservative approximation; use Seq.End as terminal.
-#
 # Seq is declared here (public dict) so private Seq-building helpers below can
 # reference Seq.End and Seq.Cons directly. Callers who include the prelude get Seq.
 Seq: [type [let a]
@@ -1986,7 +2021,7 @@ contains-seq?: [fn@[bind: [a]  return: Boolean] [let seq@[Seq a] val@a]
 # take-while-seq: Build a lazy Seq of entries while predicate holds (on the .value field).
 take-while-seq: [fn@[bind: [a]  return: [Seq Dict]] [let pred@[Fn@Boolean [a]] entries]
     [match entries
-        [case [let p] [Seq.Cons p] [if [pred [builtin-get "value" p.head]]
+        [case [let p] [Seq.Cons p] [if [pred [builtin-dict-get "value" p.head]]
             [Seq.Cons head: p.head  tail: [take-while-seq pred p.tail]]
             Seq.End]]
         Seq.End:      Seq.End]]
@@ -1995,7 +2030,7 @@ take-while-seq: [fn@[bind: [a]  return: [Seq Dict]] [let pred@[Fn@Boolean [a]] e
 drop-while-seq: [fn@[bind: [a]  return: [Seq Dict]] [let pred@[Fn@Boolean [a]] entries dropping]
     [match entries
         [case [let p] [Seq.Cons p] [if dropping
-            [if [pred [builtin-get "value" p.head]]
+            [if [pred [builtin-dict-get "value" p.head]]
                 [drop-while-seq pred p.tail True]
                 [Seq.Cons head: p.head  tail: [drop-while-seq pred p.tail False]]]
             [Seq.Cons head: p.head  tail: [drop-while-seq pred p.tail False]]]]
@@ -2004,14 +2039,14 @@ drop-while-seq: [fn@[bind: [a]  return: [Seq Dict]] [let pred@[Fn@Boolean [a]] e
 # flatten-seq-impl / helpers: recursively build a Seq by appending sublists.
 flatten-seq-impl: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks i@Integer len@Integer]
     [match [builtin-int-gte i len]
-        0: [flatten-seq-step xs ks i len [builtin-get i ks]]
+        0: [flatten-seq-step xs ks i len [builtin-dict-get i ks]]
         ...: Seq.End]]
 
 flatten-seq-step: [fn@[bind: [a]  return: [Seq a]] [let xs@Dict ks i@Integer len@Integer k]
-    [match [builtin-get k xs]
-        [@Dict _]: [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-int-add i 1] len]]
+    [match [builtin-dict-get k xs]
+        [@Dict _]: [flatten-seq-append-dict [builtin-dict-get k xs] [flatten-seq-impl xs ks [builtin-int-add i 1] len]]
         ...:         [Seq.Cons
-                        head: [builtin-get k xs]
+                        head: [builtin-dict-get k xs]
                         tail: [flatten-seq-impl xs ks [builtin-int-add i 1] len]]]]
 
 flatten-seq-start: [fn@[bind: [a]  return: [Seq a]] [let ks d@Dict rest]
@@ -2023,7 +2058,7 @@ flatten-seq-append-dict: [fn@[bind: [a]  return: [Seq a]] [let d@Dict rest]
 flatten-seq-concat-values: [fn@[bind: [a]  return: [Seq a]] [let d@Dict ks i@Integer len@Integer rest@[Seq a]]
     [match [builtin-int-gte i len]
         0: [Seq.Cons
-            head: [builtin-get [builtin-get i ks] d]
+            head: [builtin-dict-get [builtin-dict-get i ks] d]
             tail: [flatten-seq-concat-values d ks [builtin-int-add i 1] len rest]]
         ...: rest]]
 
@@ -2149,7 +2184,7 @@ File: [
 # Controls which capabilities a narrowed DirCap inherits from its source.
 DirCapFlag: [type Statable Listable Deletable Renameable]
 # Constructors Statable, Listable, Deletable, Renameable are automatically exported
-# by the type checker (B-296 fix) — no explicit re-exports needed.
+# by the type checker — no explicit re-exports needed.
 
 # ============================================================================
 # Result Type and Combinators
@@ -3138,14 +3173,9 @@ ct-equal?@[doc: "Constant-time equality for two Bytes values (alias for bytes-eq
 bytes-to-int@[doc: "Reinterpret 8 Bytes as a little-endian signed 64-bit integer. Used by float-bits."]: builtin-bytes-to-int
 
 # Dict lookup with optional return (Absent on miss).
-# Composes builtin-has-key? + builtin-get + Absent.Absent — Rust does not know about Absent.
-# Uses match for branching (Int 1/0 from builtin-has-key?). Returns a (the found value)
-# or Absent.Absent when the key is missing.
+# Uses try-or to catch get errors and return Absent.Absent instead.
 get?@[return: [or a Absent]  doc: "Get a value by key; returns Absent.Absent if missing (unlike get which errors)."]:
-  [fn@[bind: [a]  return: [or a Absent]] [let k d]
-    [match [builtin-has-key? k d]
-      0: Absent.Absent
-      ...: [builtin-get k d]]]
+  [fn [let k c] [try-or Absent.Absent [fn [] [get k c]]]]
 
 # Type introspection
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
@@ -3195,9 +3225,9 @@ describe@[doc: "Get introspection dict for a value. For functions: {doc, return-
       [ast: [@Dict [ast-of val]]]
       [ann: [get-or "return-ann" [] ast]]
       [doc: [if [= ann []] ""
-              [if [builtin-eq-string [builtin-get "kind" [@Dict ann]] "dict"]
-                [doc-entry: [try-or-impl [raw-to-result [builtin-try [head [filter [fn [let e] [builtin-eq-string [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Dict ann]]]]]] []]
-                  [if [= doc-entry []] "" [builtin-get "value" doc-entry]]]
+              [if [builtin-eq-string [builtin-dict-get "kind" [@Dict ann]] "dict"]
+                [doc-entry: [try-or-impl [raw-to-result [builtin-try [head [filter [fn [let e] [builtin-eq-string [builtin-dict-get "key" e] "doc"]] [builtin-dict-get "entries" [@Dict ann]]]]]] []]
+                  [if [= doc-entry []] "" [builtin-dict-get "value" doc-entry]]]
                 ""]]]
       [doc:        doc
        return-ann: ann
@@ -3368,7 +3398,7 @@ Named document sections (--- name: "foo") accumulate as %foo bindings in env.
       [doc-env:  [dict-merge st.env [dict-merge uses [%: st.percent]]]]
       [name-set: [env-to-name-set doc-env]]
       [res:      [builtin-resolve doc name-set]]
-      [tc-result: [builtin-typecheck-doc res.doc tc]]
+      [tc-result: [builtin-typecheck-doc res.doc tc doc-env]]
       [typed:     tc-result.doc]
       [lowered:   [builtin-lower typed]]
       [exports:   [builtin-eval lowered doc-env]]
@@ -3633,7 +3663,7 @@ Accepts a Dict (integer-keyed or string-keyed). Raises on empty collection.
    len: [length xs]
    step: [fn [let i]
      [Seq.Cons
-       head: [builtin-get [builtin-get i ks] xs]
+       head: [builtin-dict-get [builtin-dict-get i ks] xs]
        tail: [step [mod [+ i 1] len]]]]]
   [if [empty? xs]
     [raise "cycle: empty collection"]
@@ -4014,9 +4044,8 @@ bytes-concat@[doc: "Concatenate a Seq or Dict of Bytes values into a single Byte
         [apply builtin-bytes [collect-dict [ft-to-seq chunks-seq]]]
         [apply builtin-bytes chunks-seq]]]]
 
-# Datetime functions — loaded via builtin-module "datetime" (T-1195 runtime wiring pending)
+# Datetime functions — loaded via builtin-module "datetime".
 # Each calls [builtin-module "datetime"] inline to access the datetime module's functions.
-# Once T-1195 is implemented, these can be simplified to direct builtin-* names.
 timestamp-nanos:   [get "timestamp-nanos"   [builtin-module "datetime"]]
 duration-nanos:    [get "duration-nanos"    [builtin-module "datetime"]]
 duration-seconds:  [get "duration-seconds"  [builtin-module "datetime"]]
@@ -4098,14 +4127,14 @@ recv:               builtin-recv
 broadcast-channel:  builtin-broadcast-channel
 oneshot-channel:    builtin-oneshot-channel
 try-send:           builtin-try-send
-# B-468: builtin-select-once returns {ok: result} | {closed: []}.
+# builtin-select-once returns {ok: result} | {closed: []}.
 # The public select-once unwraps {ok: v} to v, and {closed: []} to Closed.Closed,
 # preserving the original protocol (handler_result | Closed.Closed) for callers.
 select-once: [fn@Any [let ctx sources]
     [call [fn [let raw]
         [match [builtin-has-key? "ok" raw]
             0: Closed.Closed
-            [case [let _] ... [builtin-get "ok" raw]]]]
+            [case [let _] ... [builtin-dict-get "ok" raw]]]]
         [builtin-select-once ctx sources]]]
 
 # Emit function: write to stdout. The CLI may override this via the %emit channel.
@@ -4241,7 +4270,7 @@ Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sp
               0: Closed.Closed
               [case [let _] ...
                 [call [fn [let _ignored] [go]]
-                      [handler [builtin-get "ok" raw]]]]]]
+                      [handler [builtin-dict-get "ok" raw]]]]]]
            [builtin-select-once ctx sources]]
       ...: []]]]
   [go]]
@@ -4934,7 +4963,7 @@ IndexableList@[doc: "Indexable instance for List: O(log n) get by Int index, O(1
 
 IndexableMap@[doc: "Indexable instance for Map: O(1) get by key, O(1) length."]:
   [instance Indexable [let c@[Map k v] k v]:
-    [get:    [fn [let k d]            [builtin-get k d]]
+    [get:    [fn [let k d]            [builtin-dict-get k d]]
      slice:  [fn [let d start len]    d]
      length: [fn [let d]              [builtin-dict-length d]]]]
 
@@ -4950,6 +4979,12 @@ builtin-bytes-slice. v = Int (byte value 0..255).
     [get:    [fn [let i b]            [builtin-bytes-get i b]]
      slice:  [fn [let b start len]    [builtin-bytes-slice b start len]]
      length: [fn [let b]              [builtin-bytes-length b]]]]
+
+IndexableDict@[doc: "Indexable instance for Dict: O(1) get by key, O(1) length."]:
+  [instance Indexable [let c@Dict k v]:
+    [get:    [fn [let k d]          [builtin-dict-get k d]]
+     slice:  [fn [let d _start _len] [raise "Dict does not support integer-range slicing"]]
+     length: [fn [let d]            [builtin-dict-length d]]]]
 
 # ── Record typeclass ──────────────────────────────────────────────────────────
 # Record is an empty typeclass (no methods) with a structural discharge rule:
@@ -5002,7 +5037,7 @@ IterableSeq@[doc: "Iterable instance for Seq: each = identity (a Seq is already 
 
 each-val@[return: [Seq v]  doc: "Lazy Seq of Map values in insertion order."]:
   [fn@[bind: [k v]  return: [Seq v]] [let d@[Map k v]]
-    [map [fn [let k] [builtin-get k d]] [builtin-keys d]]]
+    [map [fn [let k] [builtin-dict-get k d]] [builtin-keys d]]]
 
 # ft-from-seq: O(n) — build a finger tree from a Seq by repeated push-right.
 ft-from-seq@[return: [List a]  doc: """

@@ -90,7 +90,7 @@ pub fn normalize<'a>(
 
         // Step 2: TypeStageApp reduction
         let result = match &ty_substituted {
-            Type::TypeStageApp { fn_name, args } => {
+            Type::StageApp { fn_name, args } => {
                 // Depth guard: if we've exceeded max depth, return stuck
                 if ctx.depth >= ctx.max_depth {
                     return Ok(ty_substituted.clone());
@@ -159,7 +159,7 @@ pub fn normalize<'a>(
                                 }
                             }
                         }
-                        found_type.unwrap_or_else(|| Type::TypeStageApp {
+                        found_type.unwrap_or_else(|| Type::StageApp {
                             fn_name: fn_name.clone(),
                             args: normalized_args,
                         })
@@ -167,7 +167,7 @@ pub fn normalize<'a>(
                         // allow_eval is false (inside unify/constrain) — return stuck TypeStageApp.
                         // This path never produces Err because evaluate_resolver_with_thunk is not
                         // called when allow_eval is false.
-                        Type::TypeStageApp {
+                        Type::StageApp {
                             fn_name: fn_name.clone(),
                             args: normalized_args,
                         }
@@ -179,7 +179,7 @@ pub fn normalize<'a>(
                     result
                 } else {
                     // Not all args are ground — return stuck TypeStageApp with normalized args
-                    Type::TypeStageApp {
+                    Type::StageApp {
                         fn_name: fn_name.clone(),
                         args: normalized_args,
                     }
@@ -199,11 +199,11 @@ pub fn normalize<'a>(
 
 // normalize_union and normalize_intersection moved to impl Type in type_def.rs
 
-/// Convert a `Type` to a TypeNode `Value` (T-1061).
+/// Convert a `Type` to a TypeNode `Value`.
 ///
 /// Resolver functions receive TypeNode Variant values as arguments.
 /// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
-fn type_to_typenode(ty: &Type) -> Option<Value> {
+pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given constructor name.
     // tycon is always "TypeNode" for all TypeNode variants.
     let leaf = |ctor: &str| -> Value {
@@ -215,12 +215,156 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
     };
 
     match ty {
-        Type::Int | Type::IntLiteral(_) => Some(leaf("Int")),
+        Type::Int => Some(leaf("Int")),
+        Type::IntLiteral(n) => {
+            let mut payload = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("n")),
+                Arc::new(crate::value::Thunk::value(
+                    Value::Int(*n),
+                    crate::rust_span!(),
+                )),
+            );
+            Some(Value::Variant {
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("IntLiteral"),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    Value::Dict(payload),
+                    crate::rust_span!(),
+                ))),
+            })
+        }
         Type::Float => Some(leaf("Float")),
-        Type::Str | Type::StringLiteral(_) => Some(leaf("String")),
+        Type::Str => Some(leaf("String")),
+        Type::StringLiteral(s) => {
+            let mut payload = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("s")),
+                Arc::new(crate::value::Thunk::value(
+                    Value::String {
+                        source: Arc::from(s.as_str()),
+                        start: 0,
+                        end: s.len(),
+                    },
+                    crate::rust_span!(),
+                )),
+            );
+            Some(Value::Variant {
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("StringLiteral"),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    Value::Dict(payload),
+                    crate::rust_span!(),
+                ))),
+            })
+        }
         Type::Unknown => Some(leaf("Unknown")),
         Type::Never => Some(leaf("Never")),
-        Type::Any => Some(leaf("Any")),
+        Type::Any => Some(leaf("Top")),
+        Type::Dict(row) => {
+            let mut fields_dict = indexmap::IndexMap::new();
+            for (field_name, field_type) in &row.fields {
+                let typenode_val = type_to_typenode(field_type).unwrap_or_else(|| leaf("Unknown"));
+                fields_dict.insert(
+                    crate::value::HashableValue::Str(Arc::from(field_name.as_str())),
+                    Arc::new(crate::value::Thunk::value(
+                        typenode_val,
+                        crate::rust_span!(),
+                    )),
+                );
+            }
+            let open_val = match &row.tail {
+                crate::type_def::RowTail::Empty => Value::Int(0),
+                _ => Value::Int(1),
+            };
+            let mut payload = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("fields")),
+                Arc::new(crate::value::Thunk::value(
+                    Value::Dict(fields_dict),
+                    crate::rust_span!(),
+                )),
+            );
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("open")),
+                Arc::new(crate::value::Thunk::value(open_val, crate::rust_span!())),
+            );
+            // key-type and value-type from Uniform tail
+            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
+                if let Some(key_type) = key {
+                    let kt_val = type_to_typenode(key_type).unwrap_or_else(|| leaf("Unknown"));
+                    payload.insert(
+                        crate::value::HashableValue::Str(Arc::from("key-type")),
+                        Arc::new(crate::value::Thunk::value(kt_val, crate::rust_span!())),
+                    );
+                }
+                let vt_val = type_to_typenode(value).unwrap_or_else(|| leaf("Unknown"));
+                payload.insert(
+                    crate::value::HashableValue::Str(Arc::from("value-type")),
+                    Arc::new(crate::value::Thunk::value(vt_val, crate::rust_span!())),
+                );
+            }
+            Some(Value::Variant {
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Dict"),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    Value::Dict(payload),
+                    crate::rust_span!(),
+                ))),
+            })
+        }
+        Type::Union(members) => {
+            let mut types_dict = indexmap::IndexMap::new();
+            for (i, member) in members.iter().enumerate() {
+                let member_val = type_to_typenode(member).unwrap_or_else(|| leaf("Unknown"));
+                types_dict.insert(
+                    crate::value::HashableValue::Int(i as i64),
+                    Arc::new(crate::value::Thunk::value(member_val, crate::rust_span!())),
+                );
+            }
+            let mut payload = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("types")),
+                Arc::new(crate::value::Thunk::value(
+                    Value::Dict(types_dict),
+                    crate::rust_span!(),
+                )),
+            );
+            Some(Value::Variant {
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Union"),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    Value::Dict(payload),
+                    crate::rust_span!(),
+                ))),
+            })
+        }
+        Type::Intersection(members) => {
+            let mut types_dict = indexmap::IndexMap::new();
+            for (i, member) in members.iter().enumerate() {
+                let member_val = type_to_typenode(member).unwrap_or_else(|| leaf("Unknown"));
+                types_dict.insert(
+                    crate::value::HashableValue::Int(i as i64),
+                    Arc::new(crate::value::Thunk::value(member_val, crate::rust_span!())),
+                );
+            }
+            let mut payload = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("types")),
+                Arc::new(crate::value::Thunk::value(
+                    Value::Dict(types_dict),
+                    crate::rust_span!(),
+                )),
+            );
+            Some(Value::Variant {
+                tycon: Arc::from("TypeNode"),
+                ctor: Arc::from("Intersect"),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    Value::Dict(payload),
+                    crate::rust_span!(),
+                ))),
+            })
+        }
         _ => None,
     }
 }
@@ -302,7 +446,7 @@ pub(crate) async fn call_strict_resolver(
     ));
     let result_val = crate::eval::materialize(&body_thunk, None, eval_ctx).await?;
 
-    Ok(typenode_leaf_to_type(&result_val))
+    crate::typecheck::typecheck_annot::typenode_value_to_type(&result_val, eval_ctx, &[]).await
 }
 
 /// Evaluate a resolver by Arc<Thunk> — materializes the thunk then delegates to `call_strict_resolver`.
@@ -322,7 +466,11 @@ pub(crate) async fn evaluate_resolver_with_thunk(
 }
 
 /// Convert a TypeNode variant value to a Type.
-/// Handles leaf constructors (no payload) and the Dict constructor (any payload → open Dict).
+/// Handles leaf constructors (Int, String, Float, etc.) and opaque TyCon sentinels.
+/// Also handles TypeNode.Dict as a bootstrap fallback — when payload thunks have closure
+/// captures that can't be evaluated (bootstrap scenario), TypeNode.Dict produces a generic
+/// open dict. `classify_type_stage_entry` calls `typenode_value_to_type` first for the full
+/// structural conversion; this function is the fallback when that returns None.
 pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
     let tag = match val {
         Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
@@ -336,28 +484,26 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
         "TypeNode.Never" => Some(Type::Never),
         "TypeNode.Unknown" => Some(Type::Unknown),
         "TypeNode.Top" => Some(Type::Any),
+        // Absent: the empty closed dict type. Runtime value [] is Value::Dict({}); @Absent is its static type.
+        "TypeNode.Absent" => Some(Type::Dict(crate::types::Row {
+            fields: indexmap::IndexMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
         "TypeNode.Proxy" => Some(Type::Proxy),
         // Any callable — variadic function with zero required params (top of the function lattice).
         "TypeNode.Callable" => Some(Type::Function {
             params: vec![],
             ret: Box::new(Type::Any),
             typed_variadics: vec![],
-            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
+            rest: Some(Box::new(("rest".to_string(), Type::Any))),
             required_count: 0,
         }),
-        // Dict with any payload → open structural dict (any keys, any values)
-        "TypeNode.Dict" => Some(Type::Dict(crate::types::Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Uniform {
-                key: None,
-                value: Box::new(Type::Any),
-            },
-        })),
         // Opaque builtin types — each maps to a TyCon that value_matches_type dispatches
         // via TyConDef.builtin_type. The discriminant string here must match the string
         // registered in build_builtin_core_envs_inner and the arm in value_matches_type.
         "TypeNode.Program" => Some(Type::TyCon("Program".to_string())),
         "TypeNode.Document" => Some(Type::TyCon("Document".to_string())),
+        "TypeNode.CoreDocument" => Some(Type::TyCon("CoreDocument".to_string())),
         "TypeNode.TypeContext" => Some(Type::TyCon("TypeContext".to_string())),
         "TypeNode.DirCap" => Some(Type::TyCon("DirCap".to_string())),
         "TypeNode.NetCap" => Some(Type::TyCon("NetCap".to_string())),
@@ -370,6 +516,8 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
         "TypeNode.ReactiveCell" => Some(Type::TyCon("ReactiveCell".to_string())),
         "TypeNode.ClockCap" => Some(Type::TyCon("ClockCap".to_string())),
         "TypeNode.Timezone" => Some(Type::TyCon("Timezone".to_string())),
+        "TypeNode.Timestamp" => Some(Type::TyCon("Timestamp".to_string())),
+        "TypeNode.Duration" => Some(Type::TyCon("Duration".to_string())),
         "TypeNode.Decimal" => Some(Type::TyCon("Decimal".to_string())),
         "TypeNode.BigInt" => Some(Type::TyCon("BigInt".to_string())),
         "TypeNode.QuicSession" => Some(Type::TyCon("QuicSession".to_string())),
@@ -503,7 +651,7 @@ impl fmt::Display for Type {
                 write!(f, "]")
             }
             Type::Proxy => write!(f, "Proxy"),
-            Type::TypeVar(name, _level) => write!(f, "{}", name),
+            Type::Var(name, _level) => write!(f, "{}", name),
             Type::Unknown => write!(f, "Unknown"),
             Type::Any => write!(f, "Any"),
             Type::Error(errs) => {
@@ -611,7 +759,7 @@ impl fmt::Display for Type {
             Type::TyCon(name) => write!(f, "{}", name),
             Type::TyConResolved(name, _def) => write!(f, "{}", name),
             Type::Operator(name) => write!(f, "{}", name),
-            Type::TypeStageApp { fn_name, args } => {
+            Type::StageApp { fn_name, args } => {
                 write!(f, "{}(", fn_name)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -679,7 +827,7 @@ mod tests {
             tv.insert("a".to_string(), entry);
         }
         let mut ctx = NormCtxt::new(None);
-        let ty = Type::TypeVar("a".to_string(), 0);
+        let ty = Type::Var("a".to_string(), 0);
         let result = norm(&ty, &tv, &mut ctx).await?;
         assert_eq!(result, Type::Str);
         Ok(())
@@ -714,7 +862,7 @@ mod tests {
         // Manually push "Recursive" to call_stack to simulate cycle
         ctx.call_stack.push("Recursive".to_string());
 
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "Recursive".to_string(),
             args: vec![Type::Int],
         };
@@ -724,7 +872,7 @@ mod tests {
         // Should return stuck (unchanged) due to cycle detection
         assert_eq!(
             result,
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: "Recursive".to_string(),
                 args: vec![Type::Int],
             }
@@ -741,7 +889,7 @@ mod tests {
         // Set depth to max_depth
         ctx.depth = ctx.max_depth;
 
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "Deep".to_string(),
             args: vec![Type::Int],
         };
@@ -751,7 +899,7 @@ mod tests {
         // Should return stuck (unchanged) due to depth exceeded
         assert_eq!(
             result,
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: "Deep".to_string(),
                 args: vec![Type::Int],
             }
@@ -762,7 +910,7 @@ mod tests {
     /// Test: has_type_stage_app() returns true for TypeStageApp
     #[tokio::test]
     async fn test_has_type_stage_app_true_for_type_stage_app() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
@@ -782,7 +930,7 @@ mod tests {
     async fn test_has_type_stage_app_true_for_app_containing_type_stage_app() {
         let ty = Type::App(
             Box::new(Type::TyCon("Box".into())),
-            Box::new(Type::TypeStageApp {
+            Box::new(Type::StageApp {
                 fn_name: "AddResult".to_string(),
                 args: vec![Type::Int, Type::Float],
             }),
@@ -800,11 +948,11 @@ mod tests {
     /// Test: TypeStageApp PartialEq - same fn_name+args equal
     #[tokio::test]
     async fn test_type_stage_app_partial_eq_same() {
-        let ty1 = Type::TypeStageApp {
+        let ty1 = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let ty2 = Type::TypeStageApp {
+        let ty2 = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
@@ -814,11 +962,11 @@ mod tests {
     /// Test: TypeStageApp PartialEq - different fn_name not equal
     #[tokio::test]
     async fn test_type_stage_app_partial_eq_different_fn_name() {
-        let ty1 = Type::TypeStageApp {
+        let ty1 = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let ty2 = Type::TypeStageApp {
+        let ty2 = Type::StageApp {
             fn_name: "SubResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
@@ -828,11 +976,11 @@ mod tests {
     /// Test: TypeStageApp PartialEq - different args not equal
     #[tokio::test]
     async fn test_type_stage_app_partial_eq_different_args() {
-        let ty1 = Type::TypeStageApp {
+        let ty1 = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let ty2 = Type::TypeStageApp {
+        let ty2 = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Float, Type::Int],
         };
@@ -842,7 +990,7 @@ mod tests {
     /// Test: TypeStageApp Display format
     #[tokio::test]
     async fn test_type_stage_app_display() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
@@ -853,7 +1001,7 @@ mod tests {
     /// Test: TypeStageApp Display format with single arg
     #[tokio::test]
     async fn test_type_stage_app_display_single_arg() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "Singleton".to_string(),
             args: vec![Type::Int],
         };
@@ -864,7 +1012,7 @@ mod tests {
     /// Test: TypeStageApp Display format with no args
     #[tokio::test]
     async fn test_type_stage_app_display_no_args() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "Nullary".to_string(),
             args: vec![],
         };
@@ -877,17 +1025,17 @@ mod tests {
     async fn test_normalize_type_stage_app_non_ground_args() -> crate::error::EvalResult<()> {
         let subst = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
-            args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
+            args: vec![Type::Var("a".to_string(), 0), Type::Float],
         };
         let result = norm(&ty, &subst, &mut ctx).await?;
         // Non-ground args - should return TypeStageApp with normalized args (but stuck)
         assert_eq!(
             result,
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: "AddResult".to_string(),
-                args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
+                args: vec![Type::Var("a".to_string(), 0), Type::Float],
             }
         );
         Ok(())
@@ -913,7 +1061,7 @@ mod tests {
         // Normalize a type with inference variables
         let ty_with_var = Type::App(
             Box::new(Type::TyCon("Box".into())),
-            Box::new(Type::TypeVar("a".to_string(), 0)),
+            Box::new(Type::Var("a".to_string(), 0)),
         );
         norm(&ty_with_var, &subst, &mut ctx).await?;
 
@@ -932,12 +1080,12 @@ mod tests {
     /// Test: TypeStageApp collect_type_vars
     #[tokio::test]
     async fn test_type_stage_app_collect_type_vars() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![
-                Type::TypeVar("a".to_string(), 0),
+                Type::Var("a".to_string(), 0),
                 Type::Int,
-                Type::TypeVar("b".to_string(), 1),
+                Type::Var("b".to_string(), 1),
             ],
         };
 
@@ -952,9 +1100,9 @@ mod tests {
     /// Test: TypeStageApp has_inference_vars
     #[tokio::test]
     async fn test_type_stage_app_has_inference_vars_true() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
-            args: vec![Type::TypeVar("a".to_string(), 0), Type::Int],
+            args: vec![Type::Var("a".to_string(), 0), Type::Int],
         };
         assert!(ty.has_inference_vars());
     }
@@ -962,7 +1110,7 @@ mod tests {
     /// Test: TypeStageApp has_inference_vars false for ground args
     #[tokio::test]
     async fn test_type_stage_app_has_inference_vars_false() {
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
@@ -974,14 +1122,14 @@ mod tests {
     async fn test_unknown_resolver_returns_stuck() -> crate::error::EvalResult<()> {
         let subst = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "UnknownResolver".to_string(),
             args: vec![Type::Int, Type::Float],
         };
         let result = norm(&ty, &subst, &mut ctx).await?;
         assert_eq!(
             result,
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: "UnknownResolver".to_string(),
                 args: vec![Type::Int, Type::Float],
             }
@@ -989,9 +1137,9 @@ mod tests {
         Ok(())
     }
 
-    // ── B-428: Re-implemented type-stage resolver tests ────────────────────────
+    // ── Type-stage resolver tests ────────────────────────
 
-    /// B-428: TypeStageApp with ground args resolves via type_stage_scope
+    /// TypeStageApp with ground args resolves via type_stage_scope
     #[tokio::test]
     async fn test_normalize_type_stage_app_ground_args_resolves() -> crate::error::EvalResult<()> {
         let tv = empty_type_vars();
@@ -1004,7 +1152,7 @@ mod tests {
         let mut ctx = NormCtxt::new(None);
         ctx.type_stage_scope = vec![type_stage_map];
 
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Int],
         };
@@ -1016,7 +1164,7 @@ mod tests {
         Ok(())
     }
 
-    /// B-428: TypeStageApp with recursive arg normalization
+    /// TypeStageApp with recursive arg normalization
     #[tokio::test]
     async fn test_normalize_type_stage_app_with_arg_substitution() -> crate::error::EvalResult<()> {
         let mut tv = IndexMap::new();
@@ -1037,9 +1185,9 @@ mod tests {
         ctx.type_stage_scope = vec![type_stage_map];
 
         // AddResult(Int, TypeVar("a")) where a is bound to Float → should normalize to Float
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::TypeVar("a".to_string(), 0)],
+            args: vec![Type::Int, Type::Var("a".to_string(), 0)],
         };
 
         let result = norm(&ty, &tv, &mut ctx).await?;
@@ -1049,7 +1197,7 @@ mod tests {
         Ok(())
     }
 
-    /// B-428: Resolver cache - AddResult(Int, Int) → Int
+    /// Resolver cache - AddResult(Int, Int) → Int
     #[tokio::test]
     async fn test_type_stage_app_resolver_caching_add_int_int() -> crate::error::EvalResult<()> {
         let tv = empty_type_vars();
@@ -1061,7 +1209,7 @@ mod tests {
         let mut ctx = NormCtxt::new(None);
         ctx.type_stage_scope = vec![type_stage_map];
 
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Int],
         };
@@ -1074,7 +1222,7 @@ mod tests {
         Ok(())
     }
 
-    /// B-428: Resolver cache - AddResult(Int, Float) → Float
+    /// Resolver cache - AddResult(Int, Float) → Float
     #[tokio::test]
     async fn test_type_stage_app_resolver_caching_add_int_float() -> crate::error::EvalResult<()> {
         let tv = empty_type_vars();
@@ -1089,7 +1237,7 @@ mod tests {
         let mut ctx = NormCtxt::new(None);
         ctx.type_stage_scope = vec![type_stage_map];
 
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
@@ -1102,7 +1250,7 @@ mod tests {
         Ok(())
     }
 
-    /// B-428: Resolver cache - DivResult(Int, Int) → Int
+    /// Resolver cache - DivResult(Int, Int) → Int
     #[tokio::test]
     async fn test_type_stage_app_resolver_caching_div_int_int() -> crate::error::EvalResult<()> {
         let tv = empty_type_vars();
@@ -1114,7 +1262,7 @@ mod tests {
         let mut ctx = NormCtxt::new(None);
         ctx.type_stage_scope = vec![type_stage_map];
 
-        let ty = Type::TypeStageApp {
+        let ty = Type::StageApp {
             fn_name: "DivResult".to_string(),
             args: vec![Type::Int, Type::Int],
         };

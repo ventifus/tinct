@@ -155,6 +155,12 @@ TypeContextData.type_stage_scope
 
 The `type_stage_scope` Vec IS the authoritative type-stage environment. There is no translation layer — each frame is a `HashMap<String, TypeStageEntry>` populated by `builtin-tc-update-type-stage-env` from the evaluated env Dict.
 
+**`builtin-typecheck-doc` third argument — doc-env GroupSpine protocol (T-1891):**
+
+`builtin-typecheck-doc` accepts an optional third argument: the doc-env Dict that was used as input to `builtin-eval` when the same document was evaluated. The implementation in `src/builtins_meta.rs` (`builtin_typecheck_doc`) builds a `GroupSpine` from this Dict and stores it in `state.type_stage_eval_group`. This GroupSpine is then used as the EvalFrame root scope inside `eval_type_stage_expr` so that type-stage VarRefs (LGM addresses assigned by `builtin-resolve`) resolve correctly against the accumulated loader environment.
+
+All call sites in `loader.llt`, `test-loader.llt`, and `prelude.llt` must pass the doc-env Dict as the third argument when calling `builtin-typecheck-doc`. Without this argument, `eval_type_stage_expr` falls back to `GroupSpine::empty()`, and any type-stage annotation that references a name from a previously evaluated document will fail to resolve — producing `Type::Unknown` silently instead of the correct type. The `type_stage_eval_group` field on `InferState` (see the InferState Fields table) holds the GroupSpine for the duration of the type-checking pass.
+
 ### `resolve_type_head` Lookup Order
 
 When the type checker encounters an uppercase annotation name (e.g., `@Integer`, `@Seq`, `@DirCap`), it resolves it through `resolve_type_head` via a single scope-chain loop:
@@ -200,13 +206,13 @@ Returns `(result_env, result_type, errors)`. The `result_env` is always parented
 ## Dict Type Inference — Multi-Pass Algorithm
 
 Dict entries form a letrec-scoped mutual recursion group. `run_typecheck_dict` in `src/typecheck_cek.rs` is the canonical implementation, called from:
-- `AfterDictPassZero` handler in `apply_cont`
+- `DictPassZero` handler in `apply_cont`
 - `process_document` (top-level dict expressions)
 - `infer_step::Sequential` (intermediate dict bodies)
 
 The algorithm uses Tarjan's SCC decomposition to find groups of mutually dependent entries, then infers each SCC together:
 
-**Pass 0 — Key resolution:** `entry_key_name` resolves the key for each entry (auto-index, string literal, or VarRef). Runs synchronously in the `Dict` arm of `infer_step` before pushing `AfterDictPassZero`.
+**Pass 0 — Key resolution:** `entry_key_name` resolves the key for each entry (auto-index, string literal, or VarRef). Runs synchronously in the `Dict` arm of `infer_step` before pushing `DictPassZero`.
 
 **Pass 1 — SCC decomposition + fresh TypeVar allocation:** `compute_sccs()` runs Tarjan's algorithm (iterative, not recursive, to avoid Rust stack overflow on large prelude dicts). `collect_dependencies` does a worklist walk of each entry's value AST to identify references to sibling bindings. Fresh TypeVars are allocated for all entries at `level + 1`.
 
@@ -330,7 +336,7 @@ Both `infer_step` and `apply_cont` are `async fn`. External async operations (an
 
 `TypeCheckCont` is the defunctionalized continuation enum. Each variant stores exactly the data needed to resume inference after a child expression has been processed. The current variants are:
 
-### AfterFnBody
+### FnBody
 
 **Pushed by:** the `Fn { params, body }` arm of `infer_step` (via `infer_fn_push_cont`).
 
@@ -338,77 +344,63 @@ Both `infer_step` and `apply_cont` are `async fn`. External async operations (an
 
 **What `apply_cont` does:** receives the body type. Restores `state.level` and `state.expected_return`. Constructs `Type::Function { params, typed_variadics, rest, ret: body_type, required_count }`. Returns `Done(fn_type)`.
 
-### AfterCallFunc
+### CallFunc
 
 **Pushed by:** the `Call { func, args, named_args }` arm of `infer_step` (general call path, after special-case handling).
 
 **Carries:** `args`, `named_args`, `env`, `span`, `call_node`.
 
-**What `apply_cont` does:** receives the inferred function type. Instantiates the scheme if polymorphic. If there are positional arguments, pushes `AfterCallArg` for the first argument and returns `Eval(args[0], env)`. If there are no arguments, performs arity checking and named-argument unification directly, then returns `Done(return_type)`.
+**What `apply_cont` does:** receives the inferred function type. Instantiates the scheme if polymorphic. If there are positional arguments, pushes `CallArg` for the first argument and returns `Eval(args[0], env)`. If there are no arguments, performs arity checking and named-argument unification directly, then returns `Done(return_type)`.
 
-### AfterCallArg
+### CallArg
 
-**Pushed by:** `AfterCallFunc` (for the first argument) and by itself (for each subsequent argument).
+**Pushed by:** `CallFunc` (for the first argument) and by itself (for each subsequent argument).
 
 **Carries:** `idx`, `remaining_args`, `accumulated_arg_types`, `arg_nodes`, `param_types`, `fn_ret`, `typed_variadics`, `rest`, `fn_required`, `env`, `named_args`, `span`, `call_node`.
 
-**What `apply_cont` does:** receives one argument type. Widens literal types (`IntLiteral → Int`, `StringLiteral → Str`) then unifies with the corresponding parameter type using Robinson unification. If `remaining_args` is non-empty, pushes another `AfterCallArg` and returns `Eval`. When all positional arguments are processed, handles named arguments inline (each named arg is unified with the corresponding parameter by name), checks arity against `fn_required`, and returns `Done(fn_ret)`.
+**What `apply_cont` does:** receives one argument type. Widens literal types (`IntLiteral → Int`, `StringLiteral → Str`) then unifies with the corresponding parameter type using Robinson unification. If `remaining_args` is non-empty, pushes another `CallArg` and returns `Eval`. When all positional arguments are processed, handles named arguments inline (each named arg is unified with the corresponding parameter by name), checks arity against `fn_required`, and returns `Done(fn_ret)`.
 
 This is the single canonical call-checking path — the old `check_call`/`check_call_with_scheme`/`check_call_args` functions have been absorbed here.
 
-### AfterMatchScrutinee
+### MatchScrutinee
 
 **Pushed by:** the `Match { scrutinee, arms }` arm of `infer_step`.
 
 **Carries:** `arms`, `env`, `span`.
 
-**What `apply_cont` does:** receives the scrutinee type. Runs exhaustiveness checking upfront on all arms via `run_match_exhaustiveness_check`. Sets up the first arm's environment (pattern bindings, guard inference, narrowing) via `setup_match_arm_env`. Pushes `AfterMatchArm` for the first arm and returns `Eval(arms[0].body_expr(), arm_env)`.
+**What `apply_cont` does:** receives the scrutinee type. Runs exhaustiveness checking upfront on all arms via `run_match_exhaustiveness_check`. Sets up the first arm's environment (pattern bindings, guard inference, narrowing) via `setup_match_arm_env`. Pushes `MatchArm` for the first arm and returns `Eval(arms[0].body_expr(), arm_env)`.
 
-### AfterMatchArm
+### MatchArm
 
-**Pushed by:** `AfterMatchScrutinee` (for the first arm body) and by itself (for each subsequent arm body).
+**Pushed by:** `MatchScrutinee` (for the first arm body) and by itself (for each subsequent arm body).
 
 **Carries:** `remaining_arms`, `env`, `accumulated_types`, `scrutinee_ty`, `remaining_scrutinee`, `span`.
 
-**What `apply_cont` does:** receives one arm body type. Appends it to `accumulated_types`. If `remaining_arms` is non-empty, calls `setup_match_arm_env` for the next arm and pushes another `AfterMatchArm`. When all arms are processed, computes the union of `accumulated_types` and returns `Done(union_type)`.
+**What `apply_cont` does:** receives one arm body type. Appends it to `accumulated_types`. If `remaining_arms` is non-empty, calls `setup_match_arm_env` for the next arm and pushes another `MatchArm`. When all arms are processed, computes the union of `accumulated_types` and returns `Done(union_type)`.
 
-Note: guard inference for each arm still calls `run_typecheck` internally (via `setup_match_arm_env`). Only arm body inference is fully iterative via the `AfterMatchArm` chain.
+Note: guard inference for each arm still calls `run_typecheck` internally (via `setup_match_arm_env`). Only arm body inference is fully iterative via the `MatchArm` chain.
 
-### AfterDictSccMember
+### DictPassZero
 
-**Status:** defined and has an `apply_cont` handler, but is **not currently pushed**. The `AfterDictPassZero` handler calls `run_typecheck_dict` directly, which manages the full SCC loop internally. `AfterDictSccMember` is a placeholder for future iterative SCC wiring (T-1644 follow-on). The `#[allow(dead_code)]` suppresses "variant never constructed" warnings.
-
-**Intended behavior (when T-1644 completes):** pushed by `AfterDictPassZero` for the first SCC member, self-re-pushes for each subsequent member. When an SCC is complete, performs generalization and extends `dict_env`. When all SCCs are processed, returns `Done(dict_type)`.
-
-### AfterDictPassZero
-
-**Pushed by:** the `Dict { entries }` arm of `infer_step`. The Dict arm runs Pass 0 (key name resolution) synchronously, then pushes `AfterDictPassZero` and returns `Done(Type::Unknown)` to immediately trigger `apply_cont`.
+**Pushed by:** the `Dict { entries }` arm of `infer_step`. The Dict arm runs Pass 0 (key name resolution) synchronously, then pushes `DictPassZero` and returns `Done(Type::Unknown)` to immediately trigger `apply_cont`.
 
 **Carries:** `dict_node`, `entries`, `key_entries` (from Pass 0), `env`, `enclosing_level`, `span`.
 
 **What `apply_cont` does:** calls `run_typecheck_dict(entries, env, state, type_map, span)` which runs the full multi-pass SCC-based dict inference. Returns `Done(dict_type)`.
 
-Note: `Done(Type::Unknown)` is returned by the `Dict` arm of `infer_step` as a sentinel to immediately trigger `apply_cont`. This `Unknown` is never propagated as an inference result — it is immediately consumed by the `AfterDictPassZero` handler which replaces it with the actual dict type.
+Note: `Done(Type::Unknown)` is returned by the `Dict` arm of `infer_step` as a sentinel to immediately trigger `apply_cont`. This `Unknown` is never propagated as an inference result — it is immediately consumed by the `DictPassZero` handler which replaces it with the actual dict type.
 
-### AfterTypeAliasReg
-
-**Status:** defined and has an `apply_cont` handler (returns `Done(child_ty)`), but is not currently pushed. Placeholder for T-1644 iterative SCC wiring.
-
-### AfterClassInstancePreReg
-
-**Status:** defined and has an `apply_cont` handler (returns `Done(child_ty)`), but is not currently pushed. Placeholder for T-1644 iterative SCC wiring.
-
-### AfterSequentialNonDictIntermediate
+### SequentialNonDictIntermediate
 
 **Pushed by:** the `Sequential(exprs)` arm of `infer_step` when it encounters a non-Dict intermediate body.
 
 **Carries:** `intermediate_span`, `remaining_intermediates`, `last`, `env`, `enclosing_level`.
 
-**What `apply_cont` does:** receives the type of the just-evaluated non-Dict intermediate. If it is `Type::Dict`, extends `env` with generalized schemes. If it is `Type::Unknown | Type::Any`, no extension. Otherwise, records a `not_a_record` error. Processes remaining intermediates: if the next intermediate is a Dict, calls `run_typecheck_dict` synchronously and loops; if it is non-Dict, pushes another `AfterSequentialNonDictIntermediate` and returns `Eval`. When all intermediates are done, returns `Eval(last, env)`.
+**What `apply_cont` does:** receives the type of the just-evaluated non-Dict intermediate. If it is `Type::Dict`, extends `env` with generalized schemes. If it is `Type::Unknown | Type::Any`, no extension. Otherwise, records a `not_a_record` error. Processes remaining intermediates: if the next intermediate is a Dict, calls `run_typecheck_dict` synchronously and loops; if it is non-Dict, pushes another `SequentialNonDictIntermediate` and returns `Eval`. When all intermediates are done, returns `Eval(last, env)`.
 
-Note: Dict intermediates inside a `Sequential` are handled synchronously within both `infer_step` and `AfterSequentialNonDictIntermediate` to avoid the overhead of an additional continuation level for the common case.
+Note: Dict intermediates inside a `Sequential` are handled synchronously within both `infer_step` and `SequentialNonDictIntermediate` to avoid the overhead of an additional continuation level for the common case.
 
-### AfterTypeAssertInner
+### TypeAssertInner
 
 **Pushed by:** the `TypeAssert { annotation, expr }` arm of `infer_step`, after resolving `annotation` synchronously (via `resolve_annotation`).
 
@@ -418,7 +410,7 @@ Note: Dict intermediates inside a `Sequential` are handled synchronously within 
 
 Does NOT write `TypeAnnotation` OnceLocks or `TypeAnnotationTable` entries — that is handled by the top-level `typecheck_surface_program_annotation_table_with_env` path and `process_document`.
 
-### AfterFieldBase
+### FieldBase
 
 **Pushed by:** the `Field { expr, field }` arm of `infer_step` (when `expr` is `Some`).
 
@@ -426,24 +418,21 @@ Does NOT write `TypeAnnotation` OnceLocks or `TypeAnnotationTable` entries — t
 
 **What `apply_cont` does:** receives the inferred base expression type. Calls `check_dot_access` (integer key) or `check_dot_access_str` (string key) to resolve the field type. Returns `Done(field_type)`.
 
-### AfterUnquote / AfterUnquoteSplice
+### Unquote / UnquoteSplice
 
 **Pushed by:** `Unquote(inner)` and `UnquoteSplice(inner)` arms of `infer_step`.
 
-**What `apply_cont` does:** `AfterUnquote` returns `Done(inner_ty)` (passes the type through). `AfterUnquoteSplice` returns `Done(Type::Unknown)` (splice positions are untyped).
+**What `apply_cont` does:** `Unquote` returns `Done(inner_ty)` (passes the type through). `UnquoteSplice` returns `Done(Type::Unknown)` (splice positions are untyped).
 
 ---
 
 ## Special-Cased Expressions in `infer_step`
 
-Several expressions are handled entirely within `infer_step` without pushing a continuation:
+One expression is handled entirely within `infer_step` without pushing a continuation:
 
-- **`[if cond t f]`** — path-sensitive narrowing. `infer_if_expr` is called inline (it recursively calls `run_typecheck` internally via `Box::pin`). The two branch types are unified and the narrowed scrutinee type is computed.
-- **`[builtin-get x y]` / `[get x y]` / `[get? x y]`** — row-polymorphic field access. `infer_get_call` is called inline.
-- **`[get-in x path]`** — nested field access. `infer_get_in_call` is called inline.
 - **`ℊꜱʏᴍ⧼do-infer⧽N`** — do-infer sentinel. Returns `Type::Unknown` immediately (the monad resolution happens via `state.do_infer_resolutions` as a side channel).
 
-These special cases reduce continuation stack depth for common patterns.
+All other call forms — including `[if cond t f]`, `[get k c]`, and `[get-in path c]` — route through the general `Call → CallFunc → CallArg` CEK path. The `infer_if_expr`, `infer_get_call`, and `infer_get_in_call` special-case functions were deleted in sprints S-985 and S-992.
 
 ---
 
@@ -455,7 +444,7 @@ Before the CEK machine, call type checking had three separate code paths that ha
 2. **`check_call_with_scheme`** in `typecheck_call.rs` — the principled polymorphic path
 3. **`check_call`** in `typecheck_call.rs` — the general case dispatcher
 
-The CEK machine consolidates all three into a single path through `AfterCallFunc` and `AfterCallArg`. There is no `CALL-MONO`/`CALL-POLY` dispatch — unification handles both cases uniformly. `typecheck_call.rs` now contains only two small helper functions:
+The CEK machine consolidates all three into a single path through `CallFunc` and `CallArg`. There is no `CALL-MONO`/`CALL-POLY` dispatch — unification handles both cases uniformly. `typecheck_call.rs` now contains only two small helper functions:
 - `widen_literal_types(ty: Type) -> Type` — `IntLiteral → Int`, `StringLiteral → Str` before arg unification
 - `is_concrete_type(ty: &Type) -> bool` — predicate for gradual typing boundary detection
 
@@ -468,10 +457,10 @@ Dict type inference is multi-pass. The CEK machine encodes this as:
 ```
 infer_step(Dict)
     → resolve key names synchronously (Pass 0)
-    → push AfterDictPassZero
+    → push DictPassZero
     → Done(Unknown)   ← sentinel to trigger apply_cont immediately
 
-apply_cont(AfterDictPassZero)
+apply_cont(DictPassZero)
     → run_typecheck_dict(entries, env, state, type_map, span)
         → compute_sccs() [Tarjan — iterative, synchronous]
         → allocate fresh TypeVars for all entries (Pass 1)
@@ -483,7 +472,7 @@ apply_cont(AfterDictPassZero)
     → Done(dict_type)
 ```
 
-The `Done(Unknown)` returned by `infer_step(Dict)` is a sentinel to immediately trigger `apply_cont`. It is consumed entirely by `AfterDictPassZero` and never propagates as an inference result.
+The `Done(Unknown)` returned by `infer_step(Dict)` is a sentinel to immediately trigger `apply_cont`. It is consumed entirely by `DictPassZero` and never propagates as an inference result.
 
 Both `compute_sccs` and `collect_dependencies` have their canonical implementations in `src/typecheck_cek.rs`. `src/typecheck_dict.rs` now contains only unit tests for `compute_sccs`.
 
@@ -537,6 +526,7 @@ The type checker communicates results to the evaluator through three channels:
 | `resolution_table` | `Option<Arc<ResolutionTable>>` | Pre-computed NodeId → (level, slot) for O(1) VarRef lookup |
 | `eval_ctx` | `Option<Arc<EvalContext>>` | EvalContext for type-stage scope-chain lookup |
 | `type_stage_scope` | `Vec<HashMap<String, TypeStageEntry>>` | Type-stage scope chain (Vec[0] = innermost). Populated by bootstrap or builtin-tc-update-type-stage-env |
+| `type_stage_eval_group` | `Option<Arc<GroupSpine>>` | Optional doc-env GroupSpine from `builtin-typecheck-doc`'s third argument; used as the EvalFrame root scope in `eval_type_stage_expr` so type-stage VarRefs resolve from the accumulated loader environment. Falls back to `GroupSpine::empty()` when None. |
 | `tycon_env` | `HashMap<String, Arc<TyConDef>>` | Type constructor definitions |
 | `type_annotation_table` | `TypeAnnotationTable` | Per-session TypeAssert NodeId → Type; drained by `process_document` |
 | `expects_resolved` | `HashMap<Span, Type>` | Resolved `--- expects:` contract types |
@@ -549,7 +539,7 @@ Note: `InferState` contains several fields marked as "compatibility fields" (`ty
 ## Annotation Resolution (`src/typecheck_annot.rs`)
 
 `resolve_annotation` is the main entry point for converting a tinct `Annotation` AST node into a `Type`. Called from:
-- `infer_step::TypeAssert` — to get the expected type before pushing `AfterTypeAssertInner`
+- `infer_step::TypeAssert` — to get the expected type before pushing `TypeAssertInner`
 - `infer_fn_push_cont` — to resolve parameter and return type annotations
 
 Key functions:
@@ -582,7 +572,7 @@ Key functions:
 
 Steps:
 1. Apply current substitution to resolve bound TypeVars
-2. If `TypeStageApp`: normalize each arg recursively; if all ground and `allow_eval = true`, look up `fn_name` in the type-stage scope chain via `eval_ctx.type_context.type_stage_scope_id` and call `call_strict_resolver`
+2. If `TypeStageApp`: normalize each arg recursively; if all ground and `allow_eval = true`, walk `NormCtxt.type_stage_scope` (a `Vec<HashMap<String, TypeStageEntry>>` copied from `InferState.type_stage_scope` at call sites in `type_unify.rs`) looking for `fn_name`, and call `evaluate_resolver_with_thunk` / `call_strict_resolver` on the found `TypeStageEntry::Function` thunk
 3. Cache the result (ground types only)
 
 `allow_eval` is set to `false` inside `unify()` to prevent resolver evaluation failures from becoming type errors. TypeStageApp nodes that cannot be reduced remain stuck and may be deferred via `state.deferred_equalities`.
@@ -622,7 +612,7 @@ The type checker interacts with other subsystems through well-defined channels. 
 
 3. **`infer_step::Sequential` calls `run_typecheck_dict` synchronously** for Dict intermediates to avoid an extra continuation level. This is correct but means Dict inference is not fully lazy within a Sequential — it runs before the non-Dict intermediates in the continuation queue are processed.
 
-4. **`infer_step` special-cases `if`, `get`, `get-in`** by calling `run_typecheck` recursively (via `Box::pin`). These are honest recursive calls inside an async context, bounded by the depth of nesting in the source program. The CEK machine does not eliminate these particular recursive calls.
+4. **`infer_step` no longer special-cases `if`, `get`, or `get-in`.** The `infer_if_expr`, `infer_get_call`, and `infer_get_in_call` special-case functions were deleted in sprints S-985 and S-992. All three call forms now route through the general `Call → CallFunc → CallArg` CEK path. No recursive `Box::pin(run_typecheck(...))` calls remain in `infer_step`.
 
 5. **Two parallel type-checking paths.** `typecheck_surface_program_annotation_table_with_env` (eval pipeline) and `typecheck_surface_program_with_env` (LSP + loader pipeline) share `process_document` and `run_typecheck_dict` but have different entry-point signatures and seed different parts of `InferState`. A caller that wants both the `TypeAnnotationTable` and the full LSP output must use `typecheck_surface_program_with_env` and extract the `annotation_table` from its return tuple.
 
@@ -632,7 +622,7 @@ The type checker interacts with other subsystems through well-defined channels. 
 
 | File | Role |
 |---|---|
-| `src/typecheck_cek.rs` | `TypeCheckCont`, `TypeCheckAction`, `run_typecheck`, `infer_step`, `apply_cont`, `run_typecheck_dict`, `compute_sccs`, `collect_dependencies`, `entry_key_name`, `infer_fn_push_cont`, `infer_var_ref`, `infer_if_expr`, `infer_get_call`, `infer_get_in_call` |
+| `src/typecheck_cek.rs` | `TypeCheckCont`, `TypeCheckAction`, `run_typecheck`, `infer_step`, `apply_cont`, `run_typecheck_dict`, `compute_sccs`, `collect_dependencies`, `entry_key_name`, `infer_fn_push_cont`, `infer_var_ref` |
 | `src/typecheck.rs` | Top-level entry points (`typecheck_surface_program_annotation_table`, `typecheck_surface_program_annotation_table_with_env`, `typecheck_surface_program_with_env`, `typecheck_surface_program`); `process_document`; `merge_env_schemes_into_env`; `register_type_aliases_env`; module declarations for all typecheck submodules |
 | `src/typecheck_dict.rs` | Unit tests for `compute_sccs`. Dict inference is fully in `typecheck_cek::run_typecheck_dict`. |
 | `src/typecheck_call.rs` | `widen_literal_types`, `is_concrete_type` — two small helpers retained after CEK machine migration absorbed all call-checking logic |

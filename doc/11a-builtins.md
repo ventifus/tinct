@@ -77,16 +77,16 @@ Convert a Dict to a lazy Seq of its contents. All three builtins use an internal
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `builtin-get` | `[Fn@Any [Dict String]]` | Look up key (Int or String) in dict; returns value thunk or errors if key absent |
+| `builtin-dict-get` | `[Fn@Any [Dict String]]` | Look up key (Int or String) in dict; returns value thunk or errors if key absent |
 | `each` | `[Fn@[Seq Any] [Dict]]` | Convert dict to lazy Seq of its values in insertion order; keys are discarded |
 | `each-key` | `[Fn@[Seq Any] [Dict]]` | Convert dict to lazy Seq of its keys in insertion order; values are discarded |
 | `each-kv` | `[Fn@[Seq Dict] [Dict]]` | Convert dict to lazy Seq of `[key: K  value: V]` dicts in insertion order |
 
-**`builtin-get` note:** This is a primitive for runtime key lookup by computed key value. Use `data.key` for static string-key dot access; `builtin-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
+**`builtin-dict-get` note:** This is a primitive for runtime key lookup by computed key value. Use `data.key` for static string-key dot access; `builtin-dict-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
 
 **Error cases:**
 
-- `builtin-get`: Type mismatch if first arg is not Int or String; key-not-found error if key is absent from dict
+- `builtin-dict-get`: Type mismatch if first arg is not Int or String; key-not-found error if key is absent from dict
 - `each`, `each-key`, `each-kv`: Type mismatch if arg is not Dict
 
 ## Strings
@@ -490,8 +490,9 @@ Low-level Rust builtins used by `loader.llt` to implement the document evaluatio
 | `builtin-resolve` | `[Fn@Dict [Document Dict]]` | Resolve name references in a SurfaceDocument; second arg is a `Dict<String,1>` name-set (all visible names, values ignored); returns `{doc: Document, diagnostics: Dict, unreferenced: Dict<String,1>, doc-span: SpanDict}`. The name-set is built from the accumulated env dict via `env-to-name-set`. `unreferenced` lists env names never referenced by any VarRef in the document. |
 | `builtin-lower` | `[Fn@CoreDocument [Document]]` | Lower a resolved, type-checked SurfaceDocument to a CoreDocument; reads inline OnceLocks set by the resolver and type checker; returns a CoreDocument ready for `builtin-eval` |
 | `builtin-eval` | `[Fn@Dict [CoreDocument Dict]]` | Evaluate a lowered CoreDocument against an env dict; returns the exports Dict directly (the last expression's value, or the merged sequential dict exports); raises on evaluation error — no `{result, scope-id, errors}` wrapper |
-| `builtin-typecheck-doc` | `[Fn@Dict [Document TypeContext]]` | Type-check a resolved SurfaceDocument against a TypeContext; updates the TypeContext in-place with new type schemes; returns `{doc: Document, diagnostics: Dict}` |
+| `builtin-typecheck-doc` | `[Fn@Dict [Document TypeContext]] \| [Fn@Dict [Document TypeContext Dict]]` | Type-check a resolved SurfaceDocument against a TypeContext; updates the TypeContext in-place with new type schemes; optional 3rd arg is the doc-env Dict — when present, its string-keyed thunks are built into a GroupSpine so `eval_type_stage_expr` resolves type-stage VarRefs from the accumulated environment (enables user type-stage functions like `FieldType` to be called during annotation resolution); returns `{doc: Document, diagnostics: Dict}` |
 | `builtin-doc-meta` | `[Fn@Dict [Document Dict]]` | Extract document header metadata (`--- stage:`, `--- uses:`, `--- name:`, `--- caps:`, etc.) from a SurfaceDocument; second arg is the env dict used to resolve `--- uses:` module names; returns a Dict of header values |
+| `builtin-tc-update-type-stage-env` | `[TypeContext Dict → TypeContext]` | Updates the type-stage environment in an existing TypeContext with entries from a new dict; returns the updated TypeContext |
 
 **`builtin-resolve` name-set interface:**
 
@@ -527,7 +528,7 @@ Each document's exports are merged into the accumulated env for the next documen
 - `builtin-resolve`: Type mismatch if first arg is not Document or second arg is not Dict; resolution errors returned in `diagnostics` dict rather than raising
 - `builtin-lower`: Type mismatch if arg is not a resolved, type-checked Document; lowering errors recorded as `CoreExpr::Placeholder` sentinels in the output
 - `builtin-eval`: Type mismatch if first arg is not a CoreDocument or second arg is not a string-keyed Dict; raises on any evaluation error (no wrapping)
-- `builtin-typecheck-doc`: Type mismatch if first arg is not Document or second arg is not TypeContext; type errors returned in `diagnostics` dict rather than raising
+- `builtin-typecheck-doc`: Type mismatch if first arg is not Document or second arg is not TypeContext; type mismatch if optional third arg is present but is not a Dict; type errors returned in `diagnostics` dict rather than raising
 - `builtin-doc-meta`: Type mismatch if first arg is not Document or second arg is not Dict
 
 ## Sequences

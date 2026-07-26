@@ -1,7 +1,6 @@
 //! Hand-written tokenizer for tinct.
 //!
-//! Produces a flat token stream with accurate source spans. Used by the formatter
-//! and eventually by an iterative parser.
+//! Produces a flat token stream with accurate source spans. Used by the formatter.
 //!
 //! See doc/02-syntax.md §Tokenization Rules for the full specification.
 
@@ -1241,12 +1240,6 @@ pub(crate) fn fmt_int(n: i64) -> String {
     n.to_string()
 }
 
-#[allow(dead_code)] // Used by Display impls for U64 literals
-/// Format an unsigned 64-bit integer as a tinct literal (with `u` suffix).
-pub(crate) fn fmt_u64(n: u64) -> String {
-    format!("{n}u")
-}
-
 /// Format a float as a tinct literal.
 ///
 /// Returns an error for NaN and Inf (not representable as tinct literals).
@@ -1351,11 +1344,8 @@ mod tests {
     fn test_numbers() {
         assert_eq!(tok("42"), vec![Token::Int(42)]);
         assert_eq!(tok("-1"), vec![Token::Int(-1)]);
-        // 3.14 tests the lexer's float parsing — intentionally not PI.
-        #[allow(clippy::approx_constant)]
-        {
-            assert_eq!(tok("3.14"), vec![Token::Float(3.14)]);
-        }
+        // 3.15 tests the lexer's float parsing — intentionally not a named constant.
+        assert_eq!(tok("3.15"), vec![Token::Float(3.15)]);
         assert_eq!(tok("-2.5"), vec![Token::Float(-2.5)]);
     }
 
@@ -1401,11 +1391,8 @@ mod tests {
         assert_eq!(tok("1_000"), vec![Token::Int(1000)]);
         assert_eq!(tok("1_000_000"), vec![Token::Int(1_000_000)]);
         assert_eq!(tok("1_000_000u"), vec![Token::U64Lit(1_000_000)]);
-        #[allow(clippy::approx_constant)]
-        {
-            // 1_000.5 → Float(1000.5)
-            assert_eq!(tok("1_000.5"), vec![Token::Float(1000.5)]);
-        }
+        // 1_000.5 → Float(1000.5)
+        assert_eq!(tok("1_000.5"), vec![Token::Float(1000.5)]);
     }
 
     #[test]
@@ -2084,17 +2071,14 @@ mod tests {
         );
 
         // Float followed by @ with no whitespace — ImmediateAt
-        #[allow(clippy::approx_constant)]
-        {
-            assert_eq!(
-                tok("3.14@Float"),
-                vec![
-                    Token::Float(3.14),
-                    Token::ImmediateAt,
-                    Token::Identifier("Float".into())
-                ]
-            );
-        }
+        assert_eq!(
+            tok("3.15@Float"),
+            vec![
+                Token::Float(3.15),
+                Token::ImmediateAt,
+                Token::Identifier("Float".into())
+            ]
+        );
 
         // U64Lit followed by @ with no whitespace — ImmediateAt
         assert_eq!(

@@ -4,9 +4,9 @@
   [parsed: [builtin-parse src "test.llt"]]
   [desugared: [builtin-desugar parsed.program]]
   [docs: [builtin-program-docs desugared]]
-  [doc: [builtin-get 0 docs]]
+  [doc: [builtin-dict-get 0 docs]]
   [resolved: [builtin-resolve doc []]]
-  [d: [builtin-get 0 resolved.diagnostics]]
+  [d: [builtin-dict-get 0 resolved.diagnostics]]
   [all-ok: [builtin-int-add
     [builtin-int-add [builtin-int-add [builtin-has-key? "level" d] [builtin-has-key? "kind" d]]
                      [builtin-int-add [builtin-has-key? "message" d] [builtin-has-key? "span" d]]]

@@ -1,10 +1,11 @@
-# Class declaration with injective: True flag on the resolver metadata.
-# Verifies that injective: True parses and type-checks without error.
+# Class declaration with injective: 1 flag on the resolver metadata.
+# Verifies that injective: 1 parses and type-checks without error.
+# Integer encoding: 1 = injective, 0 = not injective (protocol-level, not prelude Boolean).
 [
   TestClass: [class [let TestClass a b c]
     [determines: [[[a b] c]]
      resolver: TestResolver
-     injective: True]
+     injective: 1]
     test: [Fn@c [a b]]]
 
   result: "ok"

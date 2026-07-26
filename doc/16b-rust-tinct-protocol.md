@@ -255,7 +255,7 @@ DirCap: TypeNode.DirCap   # exports as @DirCap annotation
 | `CoreDocument: TypeNode.CoreDocument` | Core document with entries and span |
 | `TypeContext: TypeNode.TypeContext` | Type checker context |
 
-Additionally, `Value::U64(u64)` (unsigned 64-bit, from `42u` literals), `Value::Timestamp(i64)`, `Value::Duration(i64)`, and `Value::RevocableDirCap` exist as Rust-internal variants not yet exported as protocol-level types. `Value::Builder`, `Value::Arena`, `Value::Annotated`, `Value::BroadcastChannel`, `Value::OneshotSender`, `Value::OneshotReceiver`, and `Value::Expression` are infrastructure variants used internally by the evaluator.
+Additionally, `Value::U64(u64)` (unsigned 64-bit, from `42u` literals), `Value::Timestamp(jiff::Timestamp)`, `Value::Duration(i64)`, and `Value::RevocableDirCap` exist as Rust-internal variants not yet exported as protocol-level types. `Value::Builder`, `Value::Arena`, `Value::Annotated`, `Value::BroadcastChannel`, `Value::OneshotSender`, `Value::OneshotReceiver`, and `Value::Expression` are infrastructure variants used internally by the evaluator.
 
 ### String and Bytes lifetime
 
@@ -278,6 +278,7 @@ The three-way binding below defines the contract. Any deviation — in the annot
 | `@Any` | `Any: TypeNode.Top` | `Type::Any` |
 | `@Unknown` | `Unknown: TypeNode.Unknown` | `Type::Unknown` |
 | `@Never` | `Never: TypeNode.Never` | `Type::Never` |
+| `@Absent` | `Absent: TypeNode.Absent` | `Type::Dict(Row { fields: {}, tail: RowTail::Empty })` — the empty closed dict; the static type of the null/absent sentinel `[]` |
 | `@Proxy` | `Proxy: TypeNode.Proxy` | `Type::Proxy` |
 | `@Callable` | `builtin_core.llt` declares `TypeNode.Callable` constructor; `prelude.llt` exports `Callable: TypeNode.Callable` | `Type::Function { params:[], rest:Some(..), ret:Any, .. }` |
 | `@Dict` | `Dict: [TypeNode.Dict fields:[] open:1 ..]` | `Type::Dict(open row)` |
@@ -310,15 +311,22 @@ The three-way binding below defines the contract. Any deviation — in the annot
 | `@Uri` | `Uri: TypeNode.Uri` | `Type::TyCon("Uri")` |
 | `@Urn` | `Urn: TypeNode.Urn` | `Type::TyCon("Urn")` |
 
-### The canonical mapping function
+### The canonical mapping functions
 
-`typenode_leaf_to_type(val: &Value) -> Option<Type>` in `src/type_normalize.rs` is the **only** Rust code that should translate TypeNode variant values to `Type` variants. If a new primitive type is added:
+Two functions in `src/type_normalize.rs` and `src/typecheck_annot.rs` translate TypeNode variant values to `Type` variants:
+
+- `typenode_leaf_to_type(val: &Value) -> Option<Type>` — handles leaf (no-payload or opaque) TypeNode constructors: `Int`, `String`, `Float`, `Bytes`, `Never`, `Top`, `Unknown`, `Absent`, `Proxy`, `Callable`, and all opaque Rust types.
+- `typenode_value_to_type(val: &Value, ...) -> Result<Option<Type>>` in `src/typecheck_annot.rs` — handles both leaf constructors (`Unknown`, `Top`, `Never`, `Bytes`, `Absent`, `Proxy`, `Callable`) and complex (payload-carrying) TypeNode constructors: `Dict`, `TypeConstructor`, `TypeApplication`, `TypeVar`, `IntLiteral`, `StringLiteral`, `Union`, `Intersect`, `Negation`, `Arrow`, `Recursive`, and `RecursiveRef`. Each arm reads specific payload field names that are part of the protocol (documented in §7).
+
+No other Rust code may hardcode TypeNode constructor names.
+
+If a new primitive type is added:
 1. Add a `Value` variant in `src/value.rs`
 2. Add a `Type` variant in `src/type_def.rs`
 3. Declare a `TypeNode` constructor in `stdlib/builtin_core.llt`
-4. Add an arm to `typenode_leaf_to_type` in `src/type_normalize.rs`
+4. Add an arm to `typenode_leaf_to_type` (leaf types) or `typenode_value_to_type` (complex types) in the appropriate file
 
-These four changes must happen together. Nothing else in Rust should know TypeNode names.
+These changes must happen together. Nothing else in Rust should know TypeNode names.
 
 ---
 
@@ -377,7 +385,7 @@ The parameter and return types use only the primitive types defined in this prot
 
 **Builtins may return any composition of primitive types.** Returning a structured dict such as `[fn@[program: Program  diagnostics: Dict] ...]` is correct and encouraged — that dict is built from primitives (`Program` is an opaque primitive, `Dict` is a primitive). The field names (`program:`, `diagnostics:`) are part of the builtin's protocol definition, documented in `builtin_core.llt` and available to all code that calls the builtin.
 
-**`Any` in type annotations is strongly discouraged.** A return type of `Any` means the type checker cannot verify anything about what the builtin produces, which weakens all downstream type checking. Use `Any` only when Rust genuinely cannot know the type — for example, `builtin-get` returns `Any` because the type of a dict value at a given key is unknown at compile time. When the type IS known (a specific opaque type, a specific structural dict, a specific integer range), it must be stated precisely. Prefer `Unknown` over `Any` for gradual-typing escape hatches — `Unknown` signals "we don't know" rather than "anything goes".
+**`Any` in type annotations is strongly discouraged.** A return type of `Any` means the type checker cannot verify anything about what the builtin produces, which weakens all downstream type checking. Use `Any` only when Rust genuinely cannot know the type — for example, `builtin-dict-get` returns `Any` because the type of a dict value at a given key is unknown at compile time. When the type IS known (a specific opaque type, a specific structural dict, a specific integer range), it must be stated precisely. Prefer `Unknown` over `Any` for gradual-typing escape hatches — `Unknown` signals "we don't know" rather than "anything goes".
 
 ### Integer return types and range annotations
 
@@ -482,7 +490,7 @@ These are names that Rust unconditionally references by string in its source —
 | `tmpl` | `src/desugar.rs` | Called for every interpolated string literal (`i"..."`) |
 | `unindent` | `src/desugar.rs` | Called for every triple-quoted string literal (`"""..."""`) |
 | `as-typenode` | `src/typecheck_annot.rs` | Converts composite type expressions to TypeNode values during annotation resolution |
-| `builtin-get` | `src/resolve.rs` | The resolver pre-resolves `builtin-get` for field access desugaring (`.x` syntax lowers to `[builtin-get "x" val]`) |
+| `builtin-dict-get` | `src/resolve.rs` | The resolver pre-resolves `builtin-dict-get` for field access desugaring (`.x` syntax lowers to `[builtin-dict-get "x" val]`) |
 | `builtin-make-annotated` | `src/lower.rs` | Wraps variant/constructor values with annotation metadata dict |
 | `to-match` | `src/eval.rs` | Match signal dispatch — called when pattern matching needs to test whether a value matches a given arm. Injected by class declaration lowering. |
 | `Fn` | `src/typecheck_annot.rs` | Function type annotation syntax: `@[Fn@ReturnType [Params]]` — the `Fn` identifier in bracket-head position is detected structurally to produce a concrete `Type::Function`. Any prelude that provides the function type annotation form must use this name. |
@@ -491,8 +499,22 @@ These are names that Rust unconditionally references by string in its source —
 
 | `each` | `src/typecheck_annot.rs` | Constraint annotation list syntax: `@[constraint: [each Cls1 Cls2]]` — the `each` identifier in bracket-head position in a constraint list is detected to expand multiple class names. Analogous to `Fn` for function type annotations. |
 | `=`, `and`, `has?`, `type-of` | `src/typecheck_narrow.rs` | Structural narrowing protocol entries (D-8). Rust dispatches path-sensitive type narrowing when it detects these specific function names as the condition in a guard expression. Documented in `doc/feature/narrowing.md §Structural Narrowing Protocol Entries`. |
+| `IntLiteral` (payload field `n: Int`), `StringLiteral` (payload field `s: String`) | `src/type_normalize.rs` (`type_to_typenode`), `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructors for integer and string literal types. `type_to_typenode` produces `Value::Variant { tycon: "TypeNode", ctor: "IntLiteral", payload: Dict { "n": i64 } }` from `Type::IntLiteral(i64)` and `Value::Variant { tycon: "TypeNode", ctor: "StringLiteral", payload: Dict { "s": String } }` from `Type::StringLiteral(String)`. `typenode_value_to_type` reads the `"n"` field from an `IntLiteral` payload and the `"s"` field from a `StringLiteral` payload to reconstruct `Type::IntLiteral` / `Type::StringLiteral`. A conforming custom prelude must declare `TypeNode.IntLiteral` with payload field `n: Int` and `TypeNode.StringLiteral` with payload field `s: String` for literal integer and string types to work correctly. |
+| `Union` (payload field `types: Dict`), `Intersect` (payload field `types: Dict`) | `src/type_normalize.rs` (`type_to_typenode`), `src/typecheck_annot.rs` (`typenode_value_to_type`), `src/builtins_meta.rs` (`is_contractive_value`) | TypeNode constructors for union and intersection types. `type_to_typenode` produces `Value::Variant { tycon: "TypeNode", ctor: "Union"/"Intersect", payload: Dict { "types": integer-keyed Dict of child TypeNode values } }` from `Type::Union`/`Type::Intersection`. `typenode_value_to_type` reads the `"types"` field (an integer-keyed dict of child TypeNode values) to reconstruct the corresponding `Type` variant. `is_contractive_value` recurses into the `"types"` field to check contractiveness of recursive types. A conforming custom prelude must declare `TypeNode.Union` and `TypeNode.Intersect` each with payload field `types: Any` (an integer-keyed dict of child TypeNode values) for union/intersection types and recursive-type contractiveness checking to work correctly. |
+| `Negation` (payload field `inner: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for negation types. `typenode_value_to_type` reads the `"inner"` field (a single child TypeNode value) from a `Negation` payload to reconstruct `Type::Negation`. A conforming custom prelude must declare `TypeNode.Negation` with payload field `inner: Any` for negation type annotations to work correctly. |
+| `Arrow` (payload fields `params: Any`, `result: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for arrow (function) types. `typenode_value_to_type` reads the `"params"` field (an integer-keyed dict of parameter TypeNode values) and `"result"` field (the return TypeNode value) from an `Arrow` payload to reconstruct `Type::Function`. A conforming custom prelude must declare `TypeNode.Arrow` with payload fields `params: Any` and `result: Any` for arrow type annotations to work correctly. |
+| `Recursive` (payload fields `var: Any`, `body: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for recursive (mu) types. `typenode_value_to_type` reads the `"var"` field (a string type variable name) and `"body"` field (the body TypeNode value) from a `Recursive` payload to reconstruct `Type::Recursive`. A conforming custom prelude must declare `TypeNode.Recursive` with payload fields `var: Any` and `body: Any` for recursive type annotations to work correctly. |
+| `RecursiveRef` (payload field `name: Any`), `types` (field name on `Union`/`Intersect` payloads) | `src/typecheck_annot.rs` (`typenode_value_to_type`), `src/builtins_meta.rs` (`is_contractive_value`) | TypeNode constructor for recursive type variable references (the bound variable inside a `Recursive` type body). `typenode_value_to_type` reads the `"name"` field (a string type variable name) from a `RecursiveRef` payload to reconstruct `Type::RecursiveRef`. `is_contractive_value` treats a `Value::Variant` with `ctor == "RecursiveRef"` as non-contractive (a bare recursive reference with no guarding constructor). A conforming custom prelude must declare `TypeNode.RecursiveRef` with payload field `name: Any` for recursive type references to work correctly. |
+| `Closed` (tycon `"Closed"`, ctor `"Closed"`) | `src/builtins_async.rs` (`builtin_recv`, `builtin_send`, `builtin_select_once`) | Channel-closed sentinel variant. `builtin-recv` returns `Value::Variant { tycon: "Closed", ctor: "Closed", payload: None }` when the underlying channel is closed (MPSC channel: sender dropped; broadcast channel: all senders dropped; oneshot receiver: sender dropped). `builtin-send` returns the same variant in the `TrySendError::Closed` arm. Any conforming prelude must declare a type `Closed: [type Closed]` and export `Closed.Closed` as the channel-closed constructor to correctly match these return values. The `builtin_async.llt` declaration annotates the channel-closed path with this return type. |
+| `"ch"`, `"handler"` (input dict keys), `"ok"`, `"closed"` (output dict keys) | `src/builtins_async.rs` (`builtin_select_once`) | `builtin-select-once` reads input source entries as dicts with two required keys: `"ch"` (the channel value: Channel, BroadcastChannel, or OneshotReceiver) and `"handler"` (a single-argument function called with the received value). On success, `builtin-select-once` returns `Value::Dict { "ok": handler_result }`. When all channels are closed, it returns `Value::Dict { "closed": Value::Dict {} }` (the empty dict as the closed-sentinel value). These four field names are part of the Rust-tinct protocol: any conforming prelude wrapper for `select-once` must structure its source entries with `ch:` and `handler:` fields, and must discriminate the return by checking for the `"ok"` vs `"closed"` key. |
 
-Note: `class == "Indexable"` dispatch in `src/type_unify.rs` and `"get"`/`"get?"`/`"get-in"` name dispatch in `src/typecheck_cek.rs` are **known Axiom 1 violations** blocked on S-992, which will implement general annotation-driven dispatch. `if` must have no special Rust handling — it is a plain tinct function defined in prelude.
+| `"String"`, `"Int"`, `"Float"`, `"Dict"`, `"Bytes"` (recognized type annotation names) | `src/builtins_meta.rs` (`builtin_check_type`) | `builtin-check-type` performs runtime type validation by matching the first argument (a string type annotation name) against the second argument's runtime type. The five recognized names map exactly to `Value` variants: `"String"` → `Value::String { .. }`, `"Int"` → `Value::Int(_)`, `"Float"` → `Value::Float(_)`, `"Dict"` → `Value::Dict(_)`, `"Bytes"` → `Value::Bytes { .. }`. Any other annotation name (type variables, parameterized types, user-defined type names) passes conservatively — the runtime cannot distinguish them without full evaluation. These five names are the tinct-side annotation names that a conforming prelude must use when calling `builtin-check-type` for runtime primitive type assertions. They correspond to the `Value::type_name()` returns for the matching variants (reported as `"String"`, `"Int"`, `"Float"`, `"Dict"`, `"Bytes"`). |
+
+| `merge` | `src/lower.rs` | Called for spread-dict desugaring (`[...a ...b]`). The lowering pass resolves `merge` through scope frames and emits a left-associative chain of `[merge seg rest]` calls. Any conforming prelude must define a function named `merge` that takes two positional arguments (left dict, right dict) and returns their right-biased merge — entries from the right dict overwrite entries from the left dict for any keys that appear in both. Omitting `merge` from a custom prelude causes spread-dict expressions to lower to `CoreExpr::Placeholder` and produce a resolution diagnostic. |
+
+| `builtin-typecheck-doc` third argument (env Dict) | `src/builtins_meta.rs` (`builtin_typecheck_doc`) | Optional third argument: an env Dict whose `HashableValue::Str`-keyed entries (in insertion order) are collected and used to build a `GroupSpine::from_flat` that becomes `state.type_stage_eval_group` for the type-stage evaluation. Rust filters the dict for string-keyed thunks in insertion order — non-string keys are ignored. The insertion order of string-keyed entries must match the name-set insertion order used by `builtin-resolve` (called with `root_group_len=0`) for the same document, so that LGM slot `j` in the `GroupSpine` corresponds to env-dict string-keyed entry `j`. A conforming custom loader must pass the accumulated env Dict (built from all previously resolved document entries) as the third argument when calling `builtin-typecheck-doc`. Omitting the third argument causes the type-stage to evaluate without accumulated bindings from prior documents (correct only for the first document in a pipeline). |
+
+Note: `class == "Indexable"` dispatch in `src/type_unify.rs` and `"get"`/`"get?"`/`"get-in"` name dispatch in `src/typecheck_cek.rs` were removed in S-992. Neither violation exists in the current codebase.
 
 ---
 

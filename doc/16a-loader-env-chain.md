@@ -267,7 +267,7 @@ builtins listed in the loader's header comment:
 `builtin-file-read`, `builtin-parse`, `builtin-resolve`,
 `builtin-typecheck-doc`, `builtin-lower`, `builtin-eval`,
 `builtin-tc-update-type-stage-env`, `builtin-make-type-ctx`, `builtin-channel`,
-`builtin-send`, `builtin-str`, `builtin-get`, `builtin-keys`,
+`builtin-send`, `builtin-str`, `builtin-dict-get`, `builtin-keys`,
 `builtin-dict-length`, `builtin-build-dict`, `builtin-tag-of`,
 `builtin-path-dirname`, and `builtin-string-concat`.
 

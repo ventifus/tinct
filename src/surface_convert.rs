@@ -639,14 +639,18 @@ fn dict_to_annotation(
         let payload_val = payload_thunk
             .try_get_value()
             .cloned()
-            .unwrap_or_else(|| Value::Dict(indexmap::IndexMap::new()));
+            .ok_or_else(|| AstError {
+                message: "annotation payload thunk is not yet materialized".to_string(),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })?;
         let ann = match ctor.as_ref() {
             "Quote" => Annotation::Quote,
             "Simple" => match &payload_val {
                 Value::Dict(d) => {
-                    let name = get_string_field(d, "name", path, ctx).unwrap_or_else(|_| {
-                        get_string_field(d, "text", path, ctx).unwrap_or_default()
-                    });
+                    // Try "name" first (canonical field); fall back to "text" if absent.
+                    // If both are absent, propagate the "text" field error.
+                    let name = get_string_field(d, "name", path, ctx)
+                        .or_else(|_| get_string_field(d, "text", path, ctx))?;
                     Annotation::Simple(name)
                 }
                 _ => Annotation::Simple(String::new()),
@@ -655,7 +659,7 @@ fn dict_to_annotation(
                 // Reconstruct as a simple annotation using the text field
                 match &payload_val {
                     Value::Dict(d) => {
-                        let text = get_string_field(d, "text", path, ctx).unwrap_or_default();
+                        let text = get_string_field(d, "text", path, ctx)?;
                         Annotation::Simple(text)
                     }
                     _ => Annotation::Simple(String::new()),
@@ -666,19 +670,14 @@ fn dict_to_annotation(
                     // Deserialize outer: non-Simple outer is stored as a nested "outer" Annotation
                     // value; Simple outer uses the flat "name" string for backward compatibility.
                     let outer_ann = if let Ok(outer_val) = get_field(d, "outer", path, ctx) {
-                        dict_to_annotation(&outer_val, path, ctx)
-                            .map(|s| s.node)
-                            .unwrap_or_else(|_| Annotation::Simple(String::new()))
+                        dict_to_annotation(&outer_val, path, ctx)?.node
                     } else {
-                        let name = get_string_field(d, "name", path, ctx).unwrap_or_default();
+                        let name = get_string_field(d, "name", path, ctx)?;
                         Annotation::Simple(name)
                     };
                     // Deserialize inner from "inner-ann" (structured recursive Annotation value).
-                    let inner_ann_val = get_field(d, "inner-ann", path, ctx)
-                        .unwrap_or(Value::Dict(IndexMap::new()));
-                    let inner_ann = dict_to_annotation(&inner_ann_val, path, ctx)
-                        .map(|s| s.node)
-                        .unwrap_or_else(|_| Annotation::Simple(String::new()));
+                    let inner_ann_val = get_field(d, "inner-ann", path, ctx)?;
+                    let inner_ann = dict_to_annotation(&inner_ann_val, path, ctx)?.node;
                     Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann))
                 }
                 _ => Annotation::Simple(String::new()),
@@ -1369,7 +1368,7 @@ pub(crate) fn get_child_opt_field_with_aliases(
                 e
             }),
         Ok(_) => Ok(None),
-        Err(_) => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -1626,7 +1625,7 @@ pub(crate) fn get_annotation_opt_field_with_aliases(
     match get_field_with_aliases(dict, key, aliases, ctx) {
         Ok(val) if !is_empty_dict(&val) => dict_to_annotation(&val, &[key], ctx).map(Some),
         Ok(_) => Ok(None),
-        Err(_) => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

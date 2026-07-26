@@ -169,7 +169,7 @@ pub struct ClassDecl {
     pub(crate) resolver: Option<String>,
     /// Whether the resolver is injective (one-to-one mapping).
     /// If true, the type checker uses the resolver result to refine the determining types
-    /// via reverse functional dependency improvement (T-913).
+    /// via reverse functional dependency improvement.
     ///
     /// When `resolver_injective = true` and a determined-position variable becomes ground,
     /// `improve_functional_dependency_inner` in `type_unify.rs` fires the reverse FD:
@@ -379,10 +379,11 @@ impl InstanceEnv {
                     .det_positions
                     .iter()
                     .map(|&pos| {
-                        row.fields
-                            .get(&pos.to_string())
-                            .map(type_to_string_key)
-                            .unwrap_or_default()
+                        type_to_string_key(
+                            row.fields
+                                .get(&pos.to_string())
+                                .expect("determining position field must exist in instance row"),
+                        )
                     })
                     .collect(),
                 // Fallback: if not a Record, use the canonical string for each position
@@ -442,7 +443,7 @@ impl InstanceEnv {
         candidate: &InstanceDecl,
         state: &mut InferState,
     ) -> Result<(), String> {
-        // Walk the parent chain to check for overlap across all frames (T-1031).
+        // Walk the parent chain to check for overlap across all frames.
         // A user instance can overlap with a prelude instance in the parent frame,
         // which should be detected and reported.
         let mut current_env: Option<&InstanceEnv> = Some(self);
@@ -633,7 +634,7 @@ impl InstanceEnv {
     /// alongside the determining-position indices.
     ///
     /// This implements the reverse functional dependency improvement needed for injective
-    /// resolvers (T-913): if we know the output of an injective resolver, we can infer the inputs.
+    /// resolvers: if we know the output of an injective resolver, we can infer the inputs.
     ///
     /// Returns `Some((determining_types, det_positions))` where `determining_types[i]` is
     /// the type at `det_positions[i]` in the matched instance.
@@ -948,7 +949,7 @@ impl InstanceEnv {
 
         // This unification must succeed — we confirmed it in Pass 1.
         let mut winner_constraints: Vec<Constraint> = Vec::new();
-        let _ = Box::pin(unify(
+        Box::pin(unify(
             &freshened_instance_type,
             target_type,
             state,
@@ -956,7 +957,8 @@ impl InstanceEnv {
             rust_span!(),
             0,
         ))
-        .await;
+        .await
+        .expect("unify failed in Pass 2 after succeeding in Pass 1 — invariant violation");
 
         // Apply the unification bindings to method types (capture BEFORE restoring state).
         let freshened_method_types: HashMap<String, Type> = winner
@@ -1002,11 +1004,10 @@ fn count_unresolved_vars(
     type_vars: &indexmap::IndexMap<String, crate::type_infer::TypeVarEntry>,
 ) -> usize {
     match ty {
-        Type::TypeVar(name, level) => {
+        Type::Var(name, level) => {
             // Apply the substitution: if still a TypeVar, it is unresolved.
-            match crate::types::apply_substitution(&Type::TypeVar(name.clone(), *level), type_vars)
-            {
-                Type::TypeVar(_, _) => 1,
+            match crate::types::apply_substitution(&Type::Var(name.clone(), *level), type_vars) {
+                Type::Var(_, _) => 1,
                 _ => 0,
             }
         }
@@ -1041,7 +1042,7 @@ fn count_unresolved_vars(
             .map(|m| count_unresolved_vars(m, type_vars))
             .sum(),
         Type::Negation(inner) => count_unresolved_vars(inner, type_vars),
-        Type::TypeStageApp { fn_name: _, args } => args
+        Type::StageApp { fn_name: _, args } => args
             .iter()
             .map(|a| count_unresolved_vars(a, type_vars))
             .sum(),
@@ -1096,7 +1097,7 @@ mod tests {
     }
 
     fn make_coll_a() -> Type {
-        make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0))
+        make_tycon_app("Coll", Type::Var("a".to_string(), 0))
     }
 
     fn make_coll_int() -> Type {
@@ -1166,9 +1167,9 @@ mod tests {
         let mut env = InstanceEnv::new();
 
         let coll_a_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
+            make_appendable_instance(make_tycon_app("Coll", Type::Var("a".to_string(), 0)));
         let coll_b_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
+            make_appendable_instance(make_tycon_app("Coll", Type::Var("b".to_string(), 0)));
 
         env.insert(coll_a_inst).unwrap();
 
@@ -1205,12 +1206,16 @@ mod tests {
 
         // This will detect overlap and return Err — but type_vars must be restored.
         // per_origin_counter advances monotonically and is NOT restored (by design).
-        let _ = check_structural_overlap_sync(
+        let result = check_structural_overlap_sync(
             &env,
             &make_appendable_instance(make_coll_int()),
             &mut state,
         )
         .await;
+        assert!(
+            result.is_err(),
+            "expected overlap detection error but got Ok"
+        );
 
         assert_eq!(
             state.type_vars, type_vars_before,
@@ -1222,8 +1227,8 @@ mod tests {
     /// must select `[Coll Int]` (score 0) over `[Coll a]` (score 1) by specificity.
     ///
     /// Note: We insert directly (bypassing `check_structural_overlap`) to simulate the
-    /// scenario T-914 addresses — `resolve_instance` must handle this case even when both
-    /// instances are registered (e.g., from different scopes or via built-in seeding).
+    /// case where both instances are registered (e.g., from different scopes or via
+    /// built-in seeding) — `resolve_instance` must handle this correctly.
     #[tokio::test]
     async fn test_resolve_instance_specificity_concrete_wins_over_polymorphic() {
         let mut state = InferState::new();
@@ -1272,9 +1277,9 @@ mod tests {
         let mut env = InstanceEnv::new();
 
         let coll_a_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
+            make_appendable_instance(make_tycon_app("Coll", Type::Var("a".to_string(), 0)));
         let coll_b_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
+            make_appendable_instance(make_tycon_app("Coll", Type::Var("b".to_string(), 0)));
 
         env.insert(coll_a_inst).unwrap();
         env.insert(coll_b_inst).unwrap();
@@ -1321,7 +1326,7 @@ mod tests {
         );
     }
 
-    /// check_structural_overlap walks the parent chain (T-1031): an instance in a parent frame
+    /// check_structural_overlap walks the parent chain: an instance in a parent frame
     /// must be detected as overlapping with a candidate inserted into a child frame.
     #[tokio::test]
     async fn test_overlap_check_parent_chain() {

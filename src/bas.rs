@@ -351,7 +351,7 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         })]],
 
         // TypeVar: atom (inference variable — handled specially in is_subtype guards)
-        Type::TypeVar(name, level) => {
+        Type::Var(name, level) => {
             vec![vec![SignedAtom::Pos(Atom::TypeVar(name.clone(), *level))]]
         }
 
@@ -361,7 +361,7 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         }
 
         // TypeStageApp: atom (stuck computation)
-        Type::TypeStageApp { fn_name, args } => vec![vec![SignedAtom::Pos(Atom::TypeStageApp {
+        Type::StageApp { fn_name, args } => vec![vec![SignedAtom::Pos(Atom::TypeStageApp {
             fn_name: fn_name.clone(),
             args: args.clone(),
         })]],
@@ -855,9 +855,9 @@ fn atom_to_type(atom: &Atom) -> Type {
             var: var.clone(),
             body: body.clone(),
         },
-        Atom::TypeVar(name, level) => Type::TypeVar(name.clone(), *level),
+        Atom::TypeVar(name, level) => Type::Var(name.clone(), *level),
         Atom::Operator(name) => Type::Operator(name.clone()),
-        Atom::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+        Atom::TypeStageApp { fn_name, args } => Type::StageApp {
             fn_name: fn_name.clone(),
             args: args.clone(),
         },
@@ -875,7 +875,6 @@ fn atom_to_type(atom: &Atom) -> Type {
 /// Used by `constrain()` in type_unify.rs when pushing bounds to `state.bounds`:
 /// the RDNF form of a bound is normalized (simplifications applied) and then
 /// flattened back to a `Type` before accumulation.
-#[allow(dead_code)]
 pub fn flatten_rdnf_to_type(rdnf: Rdnf) -> Type {
     if rdnf.is_empty() {
         return Type::Never;

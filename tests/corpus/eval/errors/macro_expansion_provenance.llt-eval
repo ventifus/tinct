@@ -6,4 +6,4 @@
 
 [broken 1]
 === error
-builtin-get (key 5): expected Dict, got Expression
+builtin-dict-get (key 5): expected Dict, got Expression

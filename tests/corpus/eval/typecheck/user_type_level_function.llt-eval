@@ -1,0 +1,21 @@
+--- stage: type
+[
+  # User-defined type-stage function: extract the first type from a Union TypeNode.
+  # Exercises TypeNode.Union payload introspection: p.types is an integer-indexed dict
+  # mapping position → TypeNode value (enabled by T-1888: type_to_typenode now produces
+  # inspectable TypeNode.Union{types: {0: TypeNode.String, 1: TypeNode.Int}} instead of None).
+  Unwrap: [fn [let typenode]
+    [match typenode
+      [case [let p] [TypeNode.Union p] [builtin-dict-nth p.types 0]]
+      ...: typenode]]
+]
+---
+[
+  # @[Unwrap [or String Integer]] resolves at type-stage:
+  #   [or String Integer] → TypeNode.Union{types: {0: TypeNode.String, 1: TypeNode.Int}}
+  #   Unwrap extracts types.0 = TypeNode.String
+  #   x is therefore typed as String
+  x@[Unwrap [or String Integer]]: "hello"
+]
+=== out
+Dict({"x": String("hello")})

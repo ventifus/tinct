@@ -190,13 +190,12 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
-                                // "Bool" and "Seq" are prelude-defined types — Rust must
-                                // not hardcode their TyCon names (Axiom 4). Return None
-                                // (no narrowing) so the variable retains its original type.
-                                // Emitting Unknown would actively degrade type checking.
-                                // Predicate narrowing (@[is: T]) handles these via prelude
-                                // annotations instead.
-                                "Bool" | "Seq" => None,
+                                // Only the three primitive types above produce narrowing from
+                                // type-of. All other type names (including prelude-defined types
+                                // such as Bool and Seq) fall through to None — no narrowing —
+                                // so the variable retains its original type. Encoding prelude
+                                // names as explicit match arms would couple Rust to prelude
+                                // internals (Axiom 4), so the wildcard handles all remaining cases.
                                 _ => None,
                             };
                             return ty.map(|t| Narrowing::TypeOf {
@@ -478,8 +477,13 @@ async fn try_unify_probe(
             Ok(()) => {
                 // This pair can unify — continue.
             }
-            Err(_) => {
-                // Unification failed — no overlap.
+            Err(_td) => {
+                // Probe unification failure: the TypeDiagnostic in _td means these two types
+                // cannot unify — there is no overlap. This is the expected signal, not an
+                // internal error. The InferState is restored unconditionally below, so
+                // _td (which would only be relevant in that transient state) need not propagate.
+                // Binding to _td (not _) confirms at compile time that the discarded type is
+                // TypeDiagnostic and not some other error kind.
                 unified = false;
                 break;
             }

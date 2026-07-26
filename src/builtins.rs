@@ -16,8 +16,6 @@ use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
-#[allow(unused_imports)] // used in test modules via `use super::*`
-use crate::value::Strictness;
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -271,21 +269,6 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
     }
 }
 
-///// Helper: require that a materialized value is an Integer.
-#[allow(dead_code)]
-pub(crate) fn require_integer(name: &str, value: Value, def_span: Span) -> EvalResult<i64> {
-    match value {
-        Value::Int(n) => Ok(n),
-        other => Err(EvalError::type_mismatch_ctx(
-            name.to_string(),
-            "Integer",
-            other.type_name(),
-            def_span,
-        )
-        .into()),
-    }
-}
-
 /// Helper: require that a materialized value is a Document.
 pub(crate) fn require_document(
     name: &str,
@@ -333,104 +316,6 @@ pub(crate) fn reject_named(
     }
     Ok(())
 }
-
-// Arithmetic and comparison builtins: +, -, *, /, =, <.
-// Implementations live in builtins_math.rs; re-exported here so that
-// builtin_module() registration and unit tests (via `use super::*`) still work.
-#[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_math::{
-    builtin_acos,
-    builtin_asin,
-    builtin_atan,
-    builtin_atan2,
-    builtin_band,
-    builtin_bor,
-    builtin_bxor,
-    builtin_cos,
-    builtin_div_float,
-    builtin_eq_float,
-    builtin_eq_int,
-    builtin_eq_string,
-    builtin_exp,
-    builtin_finite_check,
-    builtin_float,
-    builtin_float_add,
-    builtin_float_gt,
-    builtin_float_gte,
-    builtin_float_lt,
-    builtin_float_mul,
-    builtin_float_sub,
-    builtin_inf_check,
-    // Monomorphic typed variants.
-    builtin_int_add,
-    builtin_int_gt,
-    builtin_int_gte,
-    builtin_int_mul,
-    builtin_int_sub,
-    builtin_int_to_float,
-    builtin_log,
-    builtin_log10,
-    builtin_log2,
-    builtin_lt,
-    builtin_lte,
-    builtin_mul,
-    builtin_nan_check,
-    builtin_pow,
-    builtin_shl,
-    builtin_shr,
-    builtin_sin,
-    builtin_sqrt,
-    builtin_str_gt,
-    builtin_str_gte,
-    builtin_str_lt,
-    builtin_tan,
-};
-
-// Dict/access builtins: keys, length, get, each, each-key, each-kv, build-dict.
-// Implementations live in builtins_dict.rs; re-exported here so that
-// builtin_module() registration and unit tests (via `use super::*`) still work.
-#[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_dict::{
-    builtin_build_dict, builtin_builder_delete, builtin_builder_finish, builtin_builder_get,
-    builtin_builder_get_or, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
-    builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth, builtin_get, builtin_keys,
-    builtin_length, builtin_make_builder,
-};
-
-// Type/eval/meta builtins: type-of, include, error, try, apply, validate.
-// Implementations live in builtins_meta.rs; re-exported here so that
-// builtin_module() registration and unit tests (via `use super::*`) still work.
-#[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_meta::{
-    builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_force,
-    builtin_gensym, builtin_llt_repr, builtin_macro_error, builtin_macro_injects,
-    builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of, builtin_try,
-    builtin_type_of, builtin_until, builtin_validate,
-};
-
-// String builtins: str, split, replace, trim, trim-start, trim-end,
-// str-length, str-index-of, str-slice, str-chars, char-code, chr, str-bytes, bytes-str,
-// str-to-upper-char, str-to-lower-char, str-map-chars, regex-match?.
-// Note: upper/lower are no longer Rust builtins; they live in stdlib/strings.llt and
-// are implemented using str-map-chars + str-to-upper-char / str-to-lower-char.
-// Implementations live in builtins_string.rs; re-exported here so that
-// builtin_module() registration and unit tests (via `use super::*`) still work.
-#[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
-    builtin_str_byte_count, builtin_str_bytes, builtin_str_has_nth_byte, builtin_str_index_of,
-    builtin_str_length, builtin_str_map_chars, builtin_str_nth_byte, builtin_str_nth_char,
-    builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_trim,
-    builtin_trim_end, builtin_trim_start,
-};
-
-// Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
-// Implementations live in builtins_bytes.rs.
-#[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_bytes::{
-    builtin_bytes, builtin_bytes_equal, builtin_bytes_find, builtin_bytes_of, builtin_ct_equal,
-};
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
 /// operation, materializes one numeric arg, and applies the operation to floats.
@@ -585,10 +470,6 @@ pub(crate) fn builtin_to_float(
     })
 }
 
-// Re-exported here for test access via `use super::*`.
-#[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
-
 pub(crate) fn builtin_proxy(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -664,19 +545,18 @@ pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
 }
 
 #[cfg(test)]
-// Test-code lint suppressions:
-// - useless_conversion: string_val("lit".into()) — `.into()` is a &str→&str no-op, idiomatic in test fixtures
-// - approx_constant: Value::Float(3.14) tests exact string→float parsing, not π
-// - to_string_in_format_args: legacy assert! patterns use `.to_string()` in conditions and format args;
-//   the condition `.to_string().contains(…)` is load-bearing, and format args already use `err.kind` in
-//   many cases — this suppresses any residual instances in complex multi-line assertions
-#[allow(
-    clippy::useless_conversion,
-    clippy::approx_constant,
-    clippy::to_string_in_format_args
-)]
 mod tests {
     use super::*;
+    use crate::builtins_dict::{
+        builtin_concat, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth, builtin_get,
+        builtin_keys, builtin_length, builtin_take,
+    };
+    use crate::builtins_math::{
+        builtin_div_float, builtin_eq_float, builtin_eq_int, builtin_eq_string, builtin_float_add,
+        builtin_float_sub, builtin_int_add, builtin_int_sub, builtin_lt, builtin_mul,
+    };
+    use crate::builtins_meta::{builtin_apply, builtin_raise, builtin_try, builtin_type_of};
+    use crate::builtins_string::{builtin_replace, builtin_trim};
     use crate::error::ErrorKind;
     use crate::rust_span;
     use crate::test_util::test_span;
@@ -1582,7 +1462,7 @@ mod tests {
     async fn to_int_rejects_float_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.14), &ctx)],
+            args: vec![alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1677,14 +1557,14 @@ mod tests {
     async fn to_float_valid_decimal() {
         let ctx = test_ctx();
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(string_val("3.14"), &ctx)],
+            args: vec![alloc(string_val("2.5"), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(3.14));
+        assert_eq!(result, Value::Float(2.5));
     }
 
     #[tokio::test]
@@ -1910,7 +1790,7 @@ mod tests {
     async fn to_float_rejects_float_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.14), &ctx)],
+            args: vec![alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2124,7 +2004,7 @@ mod tests {
     async fn try_success_with_string_body() {
         let ctx = test_ctx();
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(string_val("hello".into()), &ctx)],
+            args: vec![alloc(string_val("hello"), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2138,7 +2018,7 @@ mod tests {
                     .cloned()
                     .expect("success dict must have 'ok' key");
                 let ok_val_result = mat_id(ok_thunk, &ctx).await;
-                assert_eq!(ok_val_result, string_val("hello".into()));
+                assert_eq!(ok_val_result, string_val("hello"));
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
@@ -2560,21 +2440,21 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Int".into()));
+        assert_eq!(result, string_val("Int"));
     }
 
     #[tokio::test]
     async fn type_of_float() {
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.14), &ctx)],
+            args: vec![alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Float".into()));
+        assert_eq!(result, string_val("Float"));
     }
 
     #[tokio::test]
@@ -2588,7 +2468,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("String".into()));
+        assert_eq!(result, string_val("String"));
     }
 
     #[tokio::test]
@@ -2602,7 +2482,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Dict".into()));
+        assert_eq!(result, string_val("Dict"));
     }
 
     #[tokio::test]
@@ -2617,7 +2497,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Function".into()));
+        assert_eq!(result, string_val("Function"));
     }
 
     #[tokio::test]
@@ -2643,7 +2523,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Function".into()));
+        assert_eq!(result, string_val("Function"));
     }
 
     #[tokio::test]
@@ -2667,7 +2547,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Color".into()));
+        assert_eq!(result, string_val("Color"));
     }
 
     #[tokio::test]
@@ -2711,9 +2591,9 @@ mod tests {
     async fn keys_int_keyed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("a".into())));
-        map.insert(HashableValue::Int(1), thunk(string_val("b".into())));
-        map.insert(HashableValue::Int(2), thunk(string_val("c".into())));
+        map.insert(HashableValue::Int(0), thunk(string_val("a")));
+        map.insert(HashableValue::Int(1), thunk(string_val("b")));
+        map.insert(HashableValue::Int(2), thunk(string_val("c")));
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -2742,7 +2622,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(
             HashableValue::Str("name".into()),
-            thunk(string_val("Alice".into())),
+            thunk(string_val("Alice")),
         );
         map.insert(HashableValue::Str("age".into()), thunk(Value::Int(30)));
         let dict = thunk_dict(map, &ctx);
@@ -2759,9 +2639,9 @@ mod tests {
             Value::Dict(keys_map) => {
                 assert_eq!(keys_map.len(), 2);
                 let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
-                assert_eq!(k0, string_val("name".into()));
+                assert_eq!(k0, string_val("name"));
                 let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
-                assert_eq!(k1, string_val("age".into()));
+                assert_eq!(k1, string_val("age"));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2771,12 +2651,12 @@ mod tests {
     async fn keys_mixed_key_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("first".into())));
+        map.insert(HashableValue::Int(0), thunk(string_val("first")));
         map.insert(
             HashableValue::Str("label".into()),
-            thunk(string_val("second".into())),
+            thunk(string_val("second")),
         );
-        map.insert(HashableValue::Int(5), thunk(string_val("third".into())));
+        map.insert(HashableValue::Int(5), thunk(string_val("third")));
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -2793,7 +2673,7 @@ mod tests {
                 let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
                 assert_eq!(k0, Value::Int(0));
                 let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
-                assert_eq!(k1, string_val("label".into()));
+                assert_eq!(k1, string_val("label"));
                 let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
                 assert_eq!(k2, Value::Int(5));
             }
@@ -2823,9 +2703,9 @@ mod tests {
                 let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
                 let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
                 let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
-                assert_eq!(k0, string_val("z".into()));
-                assert_eq!(k1, string_val("a".into()));
-                assert_eq!(k2, string_val("m".into()));
+                assert_eq!(k0, string_val("z"));
+                assert_eq!(k1, string_val("a"));
+                assert_eq!(k2, string_val("m"));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2869,8 +2749,8 @@ mod tests {
     async fn length_int_keyed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("x".into())));
-        map.insert(HashableValue::Int(1), thunk(string_val("y".into())));
+        map.insert(HashableValue::Int(0), thunk(string_val("x")));
+        map.insert(HashableValue::Int(1), thunk(string_val("y")));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: vec![dict],
@@ -2889,7 +2769,10 @@ mod tests {
         // Updated in T-719: iterates builtin_module() groups instead of standard_builtins().
         let all_defs: Vec<crate::value::BuiltinDef> = ["core", "datetime", "net"]
             .iter()
-            .flat_map(|name| builtin_module(name).unwrap_or_default())
+            .flat_map(|name| {
+                builtin_module(name)
+                    .unwrap_or_else(|| panic!("builtin_module({name:?}) must exist"))
+            })
             .collect();
         for def in all_defs {
             // No builtin should have more than 10 positional arguments
@@ -2899,16 +2782,15 @@ mod tests {
                 def.name,
                 def.pos_strictness.len()
             );
-            // All strictness values should be valid variants
-            for (idx, &s) in def.pos_strictness.iter().enumerate() {
+            // All strictness values should be valid variants.
+            // The match has no wildcard arm, so adding a new Strictness variant
+            // without updating this test will cause a compile error.
+            for &s in def.pos_strictness.iter() {
                 match s {
                     Strictness::Id | Strictness::Seq | Strictness::Spine => {
                         // Valid
                     }
                 }
-                // The match above will fail to compile if a new variant is added
-                // without updating this test (because the match has no wildcard arm).
-                let _ = (idx, s); // Silence unused variable warning
             }
         }
     }
@@ -3095,7 +2977,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello Rust".into()));
+        assert_eq!(result, string_val("hello Rust"));
     }
 
     #[tokio::test]
@@ -3113,7 +2995,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("bonono".into()));
+        assert_eq!(result, string_val("bonono"));
     }
 
     #[tokio::test]
@@ -3131,7 +3013,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello".into()));
+        assert_eq!(result, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3149,7 +3031,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("-a-b-c-".into()));
+        assert_eq!(result, string_val("-a-b-c-"));
     }
 
     #[tokio::test]
@@ -3167,7 +3049,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("heo".into()));
+        assert_eq!(result, string_val("heo"));
     }
 
     #[tokio::test]
@@ -3226,7 +3108,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello".into()));
+        assert_eq!(result, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3240,7 +3122,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello".into()));
+        assert_eq!(result, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3254,7 +3136,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello".into()));
+        assert_eq!(result, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3268,7 +3150,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello".into()));
+        assert_eq!(result, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3282,7 +3164,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("".into()));
+        assert_eq!(result, string_val(""));
     }
 
     #[tokio::test]
@@ -3296,7 +3178,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("hello".into()));
+        assert_eq!(result, string_val("hello"));
     }
 
     #[tokio::test]
@@ -3310,7 +3192,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("".into()));
+        assert_eq!(result, string_val(""));
     }
 
     #[tokio::test]
@@ -3414,7 +3296,7 @@ mod tests {
             args: vec![
                 alloc(string_val("a"), &ctx),
                 alloc(string_val("b"), &ctx),
-                alloc(Value::Float(3.14), &ctx),
+                alloc(Value::Float(2.5), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3439,7 +3321,7 @@ mod tests {
     async fn trim_wrong_type() {
         let ctx = test_ctx();
         let err = run(builtin_trim(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.14), &ctx)],
+            args: vec![alloc(Value::Float(2.5), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4508,8 +4390,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(3.14), &ctx),
-                alloc(Value::Float(3.14), &ctx),
+                alloc(Value::Float(2.5), &ctx),
+                alloc(Value::Float(2.5), &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4525,7 +4407,7 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(3.14), &ctx),
+                alloc(Value::Float(2.5), &ctx),
                 alloc(Value::Float(2.71), &ctx),
             ],
             named: no_named(),
@@ -5459,7 +5341,7 @@ mod tests {
             "builtin-raise",
             "builtin-type-of",
             "builtin-keys",
-            "builtin-get",
+            "builtin-dict-get",
             "builtin-int-add",
             "builtin-float-add",
             "builtin-int-sub",
@@ -5563,9 +5445,9 @@ mod tests {
     async fn builtin_get_int_key_auto_indexed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("first".into())));
-        map.insert(HashableValue::Int(1), thunk(string_val("second".into())));
-        map.insert(HashableValue::Int(2), thunk(string_val("third".into())));
+        map.insert(HashableValue::Int(0), thunk(string_val("first")));
+        map.insert(HashableValue::Int(1), thunk(string_val("second")));
+        map.insert(HashableValue::Int(2), thunk(string_val("third")));
         let result = mat(builtin_get(BuiltinArgs {
             args: vec![alloc(Value::Int(1), &ctx), thunk_dict(map, &ctx)],
             named: no_named(),
@@ -5574,7 +5456,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("second".into()));
+        assert_eq!(result, string_val("second"));
     }
 
     #[tokio::test]

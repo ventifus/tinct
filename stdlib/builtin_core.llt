@@ -20,7 +20,17 @@
     Unknown
     Proxy
     Callable
-    Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
+    # Absent: the empty closed dict type — the Rust-protocol encoding of the absent/null sentinel.
+    # Maps to Type::Dict(Row { fields: {}, tail: RowTail::Empty }).
+    # The empty dict `[]` is `Value::Dict({})` at runtime; @Absent is its static type.
+    Absent
+    Union:        [types: Any]
+    Intersect:    [types: Any]
+    Negation:     [inner: Any]
+    Arrow:        [params: Any  result: Any]
+    Recursive:    [var: Any  body: Any]
+    RecursiveRef: [name: Any]
+    Dict: [fields: Dict  open: Integer  key-type: Any  value-type: Any]
     TypeConstructor: [name: Any]
     TypeApplication: [ctor: Any  args: Any]
     # Kind-annotated type variable sentinel: resolves to a fresh TypeVar of the given kind.
@@ -45,6 +55,8 @@
     ReactiveCell
     ClockCap
     Timezone
+    Timestamp
+    Duration
     Decimal
     BigInt
     QuicSession
@@ -55,12 +67,6 @@
     Urn]
 
   # ── Structural protocol types ────────────────────────────────────────────
-  # NOTE: Complex TypeNode.Dict values (non-leaf, with payload) are not yet
-  # registered in the type_stage_scope by build_builtin_core_envs_inner — only
-  # leaf TypeNode values (TypeNode.Int, TypeNode.String, etc.) are collected.
-  # These definitions are correct and will become active once the type-stage
-  # scope collection is extended to handle TypeNode.Dict with specific fields.
-  #
   # Span: source location produced by parser and carried on every diagnostic.
   Span: [TypeNode.Dict
     fields: [file:       TypeNode.String
@@ -72,16 +78,42 @@
     key-type: TypeNode.Top
     value-type: TypeNode.Top]
 
+  # CallFrame: one entry in a diagnostic's call-stack (function name + source location).
+  CallFrame: [TypeNode.Dict
+    fields: [span:  Span
+             label: TypeNode.String]
+    open: 1
+    key-type: TypeNode.Top
+    value-type: TypeNode.Top]
+
+  # SecondarySpan: a secondary source location with an annotation label.
+  SecondarySpan: [TypeNode.Dict
+    fields: [span:  Span
+             label: TypeNode.String]
+    open: 1
+    key-type: TypeNode.Top
+    value-type: TypeNode.Top]
+
+  # MacroExpand: macro expansion provenance carried on a diagnostic.
+  # Either absent ([]) or {name: String, span: Span}.
+  MacroExpand: [TypeNode.Dict
+    fields: [name: TypeNode.String
+             span: Span]
+    open: 1
+    key-type: TypeNode.Top
+    value-type: TypeNode.Top]
+
   # Diagnostic: a single type error, warning, or info message.
   Diagnostic: [TypeNode.Dict
     fields: [level:           TypeNode.String
              kind:            TypeNode.String
              message:         TypeNode.String
              span:            Span
-             secondary-spans: TypeNode.Top
+             help:            TypeNode.Top
              notes:           TypeNode.Top
-             call-stack:      TypeNode.Top
-             macro-expand:    TypeNode.Top
+             secondary-spans: [TypeNode.Dict fields: [] open: 1 key-type: TypeNode.Int value-type: SecondarySpan]
+             call-stack:      [TypeNode.Dict fields: [] open: 1 key-type: TypeNode.Int value-type: CallFrame]
+             macro-expand:    [TypeNode.Union types: [0: TypeNode.Absent  1: MacroExpand]]
              blame:           TypeNode.Top]
     open: 1
     key-type: TypeNode.Top
@@ -105,6 +137,7 @@
   Never:        TypeNode.Never
   Any:          TypeNode.Top
   Unknown:      TypeNode.Unknown
+  Absent:       TypeNode.Absent
   Proxy:        TypeNode.Proxy
   Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
   Program:      TypeNode.Program
@@ -122,6 +155,8 @@
   ReactiveCell: TypeNode.ReactiveCell
   ClockCap:     TypeNode.ClockCap
   Timezone:     TypeNode.Timezone
+  Timestamp:    TypeNode.Timestamp
+  Duration:     TypeNode.Duration
   Decimal:      TypeNode.Decimal
   BigInt:       TypeNode.BigInt
   QuicSession:        TypeNode.QuicSession
@@ -179,7 +214,7 @@
   builtin-bytes-length:      [fn@Integer [let b@Bytes] ...]
   # builtin-merge: implemented in tinct prelude and loader/test-loader (using builder API).
   # builtin-append: implemented in tinct prelude (derived from builtin-merge).
-  builtin-get:                [fn@Any [let k@Any xs@Dict] ...]
+  builtin-dict-get:           [fn@Any [let k@Any xs@Dict] ...]
   builtin-has-key?:          [fn@[or 0 1] [let k@Any xs@Dict] ...]
   builtin-get-by-field:      [fn@Any      [let field@String k@Any xs@Dict] ...]
   builtin-dict-has-nth?:     [fn@[or 0 1] [let d@Dict n@Integer] ...]
@@ -253,8 +288,9 @@
   # Returns the exports Dict directly (raises on error — no diagnostics wrapper).
   builtin-eval:           [fn@Dict     [let lowered@CoreDocument env@Dict] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
+  # Optional third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.
-  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext] ...]
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@[type: Dict  default: []]] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").

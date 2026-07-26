@@ -40,7 +40,7 @@ pub enum RowTail {
 /// Although row field order is semantically irrelevant at the type level (structural
 /// subtyping makes rows unordered), IndexMap preserves source order for diagnostic
 /// messages and deterministic output. All field access goes through key-based lookup
-/// via `builtin-get`; insertion order is NOT used for any slot-indexed access.
+/// via `builtin-dict-get`; insertion order is NOT used for any slot-indexed access.
 ///
 /// `PartialEq`, `Eq`, and `Hash` are order-independent (field set equality, not sequence
 /// equality) so that type equality is unaffected by the order fields were added to a row.
@@ -243,8 +243,7 @@ impl TyConDef {
     ///
     /// Convenience constructor for registration and testing (T-1112). The body is set to
     /// `Type::Unknown` (opaque until instantiated with type arguments).
-    pub fn new_parameterized(name: impl Into<String>, arity: usize) -> Self {
-        let _name = name.into(); // name is unused in main tree (TyCon carries name in Type::TyCon(String))
+    pub fn new_parameterized(arity: usize) -> Self {
         Self {
             params: (0..arity).map(|i| format!("a{i}")).collect(),
             body: Type::Unknown,
@@ -265,7 +264,7 @@ impl TyConDef {
 /// Values are `Arc<TyConDef>` so that distinct scope insertions of the same name produce
 /// distinct Arcs. `Arc::ptr_eq` in UNIFY-TYCON can then detect shadowing: if two TyCon("Foo")
 /// types came from different `[type Foo ...]` declarations in different scopes, their Arcs
-/// will differ even though the name string is equal. (B-343)
+/// will differ even though the name string is equal.
 pub type TyConEnv = HashMap<String, Arc<TyConDef>>;
 
 #[derive(Debug, Clone)]
@@ -300,12 +299,11 @@ pub enum Type {
         required_count: usize,
     },
     Proxy,
-    #[allow(clippy::enum_variant_names)]
     /// Type variable for parametric polymorphism.
     /// The u32 is the creation-time level; InferState.levels[name] holds the current
     /// (possibly lowered) level (Kiselyov 2013). PartialEq ignores the level field
     /// because type variables with the same name are identical regardless of level.
-    TypeVar(String, u32),
+    Var(String, u32),
     /// Unknown type — the gradual typing "?" type. Represents "I don't know the type"
     /// (unannotated params, inference defaults, builtin returns that can't be precisely typed).
     /// Related to other types via CONSISTENCY (~), not subtyping (<:).
@@ -397,11 +395,9 @@ pub enum Type {
     Operator(String),
     /// Type-stage function application — represents a pending type-level computation.
     /// Created during constraint generation for FD classes; reduced by normalize().
-    /// Example: TypeStageApp { fn_name: "MyResolver", args: vec![Int, Float] } reduces to the type
+    /// Example: StageApp { fn_name: "MyResolver", args: vec![Int, Float] } reduces to the type
     /// returned by the `MyResolver` function in the type-stage env.
-    #[allow(clippy::enum_variant_names)]
-    // Type prefix is intentional for type-level computation
-    TypeStageApp {
+    StageApp {
         fn_name: String,
         args: Vec<Type>,
     },
@@ -476,7 +472,7 @@ impl PartialEq for Type {
                     }
             }
             (Type::Proxy, Type::Proxy) => true,
-            (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
+            (Type::Var(n1, _), Type::Var(n2, _)) => n1 == n2,
             (Type::Unknown, Type::Unknown) => true,
             (Type::Any, Type::Any) => true,
             (Type::Error(_), Type::Error(_)) => true,
@@ -503,11 +499,11 @@ impl PartialEq for Type {
             }
             (Type::Operator(name1), Type::Operator(name2)) => name1 == name2,
             (
-                Type::TypeStageApp {
+                Type::StageApp {
                     fn_name: fn1,
                     args: args1,
                 },
-                Type::TypeStageApp {
+                Type::StageApp {
                     fn_name: fn2,
                     args: args2,
                 },
@@ -591,7 +587,7 @@ impl std::hash::Hash for Type {
                 }
                 ret.hash(state);
             }
-            Type::TypeVar(name, _) => name.hash(state), // Ignore level
+            Type::Var(name, _) => name.hash(state), // Ignore level
             Type::Union(members) => members.hash(state),
             Type::Intersection(members) => members.hash(state),
             Type::Negation(ty) => ty.hash(state),
@@ -606,7 +602,7 @@ impl std::hash::Hash for Type {
                 (Arc::as_ptr(arc) as usize).hash(state);
             }
             Type::Operator(name) => name.hash(state),
-            Type::TypeStageApp { fn_name, args } => {
+            Type::StageApp { fn_name, args } => {
                 fn_name.hash(state);
                 args.hash(state);
             }
@@ -655,7 +651,7 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
         // S-861: equirecursive-checker — the recursive self-reference is represented as a
         // TypeVar whose name is the globally-unique μ-binder name produced by
         // gensym_fresh. When we find it, substitute with the full Recursive type.
-        Type::TypeVar(name, _) if name == var_name => replacement.clone(),
+        Type::Var(name, _) if name == var_name => replacement.clone(),
 
         // Inner Recursive binder shadows: do not substitute into body if the inner var
         // has the same name as what we are substituting (capture avoidance).
@@ -714,7 +710,7 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
             Box::new(substitute_recvar(f, var_name, replacement)),
             Box::new(substitute_recvar(a, var_name, replacement)),
         ),
-        Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+        Type::StageApp { fn_name, args } => Type::StageApp {
             fn_name: fn_name.clone(),
             args: args
                 .iter()
@@ -916,7 +912,7 @@ impl Type {
     /// complete (TypeVar cases are always accepted). Callers that need the precise relation
     /// for already-resolved types must apply the substitution before calling `is_subtype`.
     ///
-    /// **Transitivity note (B-446):** Because TypeVar returns `true` on EITHER side,
+    /// **Transitivity note:** Because TypeVar returns `true` on EITHER side,
     /// the function does NOT preserve proper subtype transitivity when TypeVars are present:
     ///   `is_subtype(TypeVar("a"), Int)` = `true`  AND
     ///   `is_subtype(Int, TypeVar("b"))` = `true`  AND
@@ -966,12 +962,12 @@ impl Type {
         // unify()). We return `true` to avoid false rejections before substitution is applied.
         //
         // Callers that need the precise relation must apply the substitution FIRST and then
-        // call is_subtype on the resolved types. See B-446 for the transitivity discussion.
+        // call is_subtype on the resolved types. See the docstring transitivity note for the discussion.
         //
         // Note: this returns `true` even for two DIFFERENT TypeVars (TypeVar("a") <: TypeVar("b"))
         // which does NOT hold in general. The constraint solver enforces actual bounds; this
         // guard is a deferral, not a proof.
-        if matches!(sub, Type::TypeVar(_, _)) || matches!(sup, Type::TypeVar(_, _)) {
+        if matches!(sub, Type::Var(_, _)) || matches!(sup, Type::Var(_, _)) {
             return true;
         }
 
@@ -998,11 +994,11 @@ impl Type {
     /// can produce with `Unknown` at structural depth has an explicit arm here. The fallthrough
     /// to `is_subtype` is safe because it only handles types without structural sub-components
     /// or types that `ground_type_of` never produces.
-    /// B-450: `tycon_env` parameter threads through to the `is_subtype` fallthrough,
+    /// `tycon_env` parameter threads through to the `is_subtype` fallthrough,
     /// enabling variance-directed App comparison when TyCon definitions are available.
-    /// Pass `None` for conservative behavior (same as pre-B-450).
+    /// Pass `None` for conservative behavior.
     ///
-    /// B-451: Recursive arms unfold equirecursive types before consistent-subtype check,
+    /// Recursive arms unfold equirecursive types before consistent-subtype check,
     /// enabling runtime TypeAssert on recursive type aliases.
     pub fn is_consistent_subtype(sub: &Type, sup: &Type, tycon_env: Option<&TyConEnv>) -> bool {
         // Unknown or Any-as-sub: consistent (? ~<: T, Any ~<: T, T ~<: ? for all T).
@@ -1012,7 +1008,7 @@ impl Type {
             return true;
         }
         // Unresolved TypeVar in annotation position: treat as Unknown (gradual)
-        if matches!(sup, Type::TypeVar(_, _)) {
+        if matches!(sup, Type::Var(_, _)) {
             return true;
         }
         // Error is never a consistent subtype of anything
@@ -1020,7 +1016,7 @@ impl Type {
             return false;
         }
         match (sub, sup) {
-            // B-451: Unfold recursive types before consistent-subtype check.
+            // Unfold recursive types before consistent-subtype check.
             // This enables runtime TypeAssert on recursive type aliases like
             // `type List [Cons head: Int tail: List]` — without this arm,
             // Recursive types fall through to is_subtype(sub, sup, None) which
@@ -1105,7 +1101,7 @@ impl Type {
                     // Concrete-arity function ~<: any-function: always consistent
                     return true;
                 }
-                // B-454: variadic flag must match. A variadic function (collects rest args
+                // Variadic flag must match. A variadic function (collects rest args
                 // into a rest parameter) has fundamentally different call semantics from a non-variadic
                 // function with the same declared param count. Consistent subtyping cannot
                 // paper over that difference: a caller that passes extra arguments to a
@@ -1155,7 +1151,7 @@ impl Type {
                 .iter()
                 .all(|m| Self::is_consistent_subtype(sub, m, tycon_env)),
             // Remaining cases (NominalVariant, Handle at static level, etc.): fall to is_subtype.
-            // B-450: pass tycon_env through to is_subtype for variance-directed App comparison.
+            // Pass tycon_env through to is_subtype for variance-directed App comparison.
             _ => Self::is_subtype(sub, sup, tycon_env),
         }
     }
@@ -1270,7 +1266,7 @@ impl Type {
             }
 
             // TypeStageApp might overlap with anything (conservative)
-            (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => false,
+            (Type::StageApp { .. }, _) | (_, Type::StageApp { .. }) => false,
             // NominalVariant with different tags are disjoint (nominal disjointness)
             (
                 Type::NominalVariant {
@@ -1455,7 +1451,7 @@ impl Type {
             // TypeVar consistency: SOUND reflexivity check only.
             // Two TypeVars are consistent if they have the same name (same variable).
             // TypeVar vs concrete type is NOT consistent — callers must apply substitution first.
-            (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
+            (Type::Var(n1, _), Type::Var(n2, _)) => n1 == n2,
             // Negation: structurally consistent
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
             // Negation vs concrete type: consistent if the types are disjoint.
@@ -1464,7 +1460,7 @@ impl Type {
                 Type::types_are_disjoint(other, inner)
             }
             // TypeStageApp is consistent with everything (pending computation)
-            (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => true,
+            (Type::StageApp { .. }, _) | (_, Type::StageApp { .. }) => true,
             // NominalVariant: consistent iff tags match and fields are structurally consistent
             (
                 Type::NominalVariant {
@@ -1570,7 +1566,7 @@ impl Type {
 
     pub fn collect_type_vars(&self, vars: &mut HashSet<String>) {
         match self {
-            Type::TypeVar(name, _) => {
+            Type::Var(name, _) => {
                 vars.insert(name.clone());
             }
             Type::Dict(row) => {
@@ -1613,7 +1609,7 @@ impl Type {
                     member.collect_type_vars(vars);
                 }
             }
-            Type::TypeStageApp { fn_name: _, args } => {
+            Type::StageApp { fn_name: _, args } => {
                 for arg in args {
                     arg.collect_type_vars(vars);
                 }
@@ -1639,7 +1635,7 @@ impl Type {
     /// Used to determine whether a type is concrete or still under inference.
     pub fn has_inference_vars(&self) -> bool {
         match self {
-            Type::TypeVar(_, _) => true,
+            Type::Var(_, _) => true,
             Type::Dict(row) => {
                 row.fields.values().any(|ty| ty.has_inference_vars())
                     || match &row.tail {
@@ -1670,9 +1666,7 @@ impl Type {
             Type::App(f, a) => f.has_inference_vars() || a.has_inference_vars(),
             Type::TyCon(_) => false, // TyCon is a concrete named constructor, not a variable
             Type::Operator(_) => true, // Operator variables ARE inference variables
-            Type::TypeStageApp { fn_name: _, args } => {
-                args.iter().any(|arg| arg.has_inference_vars())
-            }
+            Type::StageApp { fn_name: _, args } => args.iter().any(|arg| arg.has_inference_vars()),
             Type::NominalVariant {
                 tycon: _,
                 ctor: _,
@@ -1690,7 +1684,7 @@ impl Type {
     /// Used to determine if deferred equalities can be resolved.
     pub fn has_type_stage_app(&self) -> bool {
         match self {
-            Type::TypeStageApp { .. } => true,
+            Type::StageApp { .. } => true,
             Type::Dict(row) => {
                 row.fields.values().any(|ty| ty.has_type_stage_app())
                     || match &row.tail {
@@ -1734,7 +1728,7 @@ impl Type {
     /// Collect type variables in a single tree walk.
     pub fn collect_all_vars(&self, type_vars: &mut HashSet<String>) {
         match self {
-            Type::TypeVar(name, _) => {
+            Type::Var(name, _) => {
                 type_vars.insert(name.clone());
             }
             Type::Dict(row) => {
@@ -1788,7 +1782,7 @@ impl Type {
             Type::Operator(name) => {
                 type_vars.insert(name.clone());
             }
-            Type::TypeStageApp { fn_name: _, args } => {
+            Type::StageApp { fn_name: _, args } => {
                 for arg in args {
                     arg.collect_all_vars(type_vars);
                 }
@@ -1828,7 +1822,7 @@ impl Type {
         type_vars: &mut HashSet<String>,
     ) -> bool {
         match self {
-            Type::TypeVar(name, _) => {
+            Type::Var(name, _) => {
                 let found = name == occurs_name;
                 type_vars.insert(name.clone());
                 found
@@ -1893,7 +1887,7 @@ impl Type {
                 type_vars.insert(name.clone());
                 found
             }
-            Type::TypeStageApp { fn_name: _, args } => {
+            Type::StageApp { fn_name: _, args } => {
                 let mut found = false;
                 for arg in args {
                     found |= arg.collect_all_vars_check_occurs(occurs_name, type_vars);
@@ -1934,7 +1928,7 @@ impl Type {
     /// uses the HashSet variant `collect_all_vars` instead.)
     pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>) {
         match self {
-            Type::TypeVar(name, _) => {
+            Type::Var(name, _) => {
                 type_vars.push(name.clone());
             }
             Type::Dict(row) => {
@@ -1987,7 +1981,7 @@ impl Type {
             Type::Operator(name) => {
                 type_vars.push(name.clone());
             }
-            Type::TypeStageApp { fn_name: _, args } => {
+            Type::StageApp { fn_name: _, args } => {
                 for arg in args {
                     arg.collect_all_vars_vec(type_vars);
                 }
@@ -2094,7 +2088,7 @@ impl Type {
                 f.collect_operator_names(operator_names);
                 a.collect_operator_names(operator_names);
             }
-            Type::TypeStageApp { fn_name: _, args } => {
+            Type::StageApp { fn_name: _, args } => {
                 for arg in args {
                     arg.collect_operator_names(operator_names);
                 }
@@ -2471,7 +2465,7 @@ impl Type {
                 Box::new(Type::simplify_type(*f)),
                 Box::new(Type::simplify_type(*a)),
             ),
-            Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+            Type::StageApp { fn_name, args } => Type::StageApp {
                 fn_name,
                 args: args.into_iter().map(Type::simplify_type).collect(),
             },
@@ -2508,7 +2502,7 @@ impl Type {
     /// Use this constructor for functions with no optional parameters (all params required).
     /// All builtin functions use this constructor. For user-defined functions with `default:`
     /// annotations, `infer_fn_push_cont` in `typecheck_cek.rs` computes `required_count` directly
-    /// (B-349: the fix for spurious arity errors on calls omitting optional params).
+    /// The fix ensures no spurious arity errors on calls omitting optional params.
     /// Construct a non-variadic function type. All builtins use this.
     /// For variadic functions, use direct struct construction with typed_variadics/rest.
     pub fn fn_type(params: Vec<(Option<String>, Type)>, ret: Type) -> Self {
@@ -2587,7 +2581,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::Dict(_) => 8,
         Type::Function { .. } => 9,
         Type::Proxy => 12,
-        Type::TypeVar(_, _) => 13,
+        Type::Var(_, _) => 13,
         Type::Unknown => 14,
         Type::Any => 15,
         Type::Error(_) => 16,
@@ -2610,7 +2604,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::App(_, _) => 34,
         Type::TyCon(_) => 35,
         Type::Operator(_) => 36,
-        Type::TypeStageApp { .. } => 37,
+        Type::StageApp { .. } => 37,
         Type::NominalVariant { .. } => 38,
         // S-860: equirecursive-types-core
         Type::Recursive { .. } => 39,
@@ -2624,14 +2618,14 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
     match (a, b) {
         (Type::IntLiteral(n1), Type::IntLiteral(n2)) => n1.cmp(n2),
         (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
-        (Type::TypeVar(name1, _), Type::TypeVar(name2, _)) => name1.cmp(name2),
+        (Type::Var(name1, _), Type::Var(name2, _)) => name1.cmp(name2),
         (Type::Operator(name1), Type::Operator(name2)) => name1.cmp(name2),
         (
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: fn1,
                 args: args1,
             },
-            Type::TypeStageApp {
+            Type::StageApp {
                 fn_name: fn2,
                 args: args2,
             },
@@ -2710,7 +2704,7 @@ pub fn check_kind_wellformed(
     span: Span,
 ) -> Result<(), TypeDiagnostic> {
     match ty {
-        Type::TypeVar(name, _) => {
+        Type::Var(name, _) => {
             if let Some(Kind::Label) = kind_env.get(name.as_str()) {
                 return Err(TypeDiagnostic::error(
                     "kind-error",
@@ -2787,7 +2781,7 @@ pub fn check_kind_wellformed(
             // that hasn't been kind-registered yet, or will be registered later)
             Ok(())
         }
-        Type::TypeStageApp { fn_name: _, args } => {
+        Type::StageApp { fn_name: _, args } => {
             for arg in args {
                 check_kind_wellformed(arg, kind_env, span.clone())?;
             }
@@ -2936,7 +2930,7 @@ mod tests {
             body: Box::new(Type::Union(vec![
                 Type::Int,
                 Type::Dict(Row {
-                    fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                    fields: [("x".to_string(), Type::Var("a".to_string(), 0))].into(),
                     tail: RowTail::Empty,
                 }),
             ])),
@@ -2946,7 +2940,7 @@ mod tests {
             body: Box::new(Type::Union(vec![
                 Type::Int,
                 Type::Dict(Row {
-                    fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
+                    fields: [("x".to_string(), Type::Var("b".to_string(), 0))].into(),
                     tail: RowTail::Empty,
                 }),
             ])),
@@ -3105,7 +3099,7 @@ mod tests {
         let rec = Type::Recursive {
             var: "a".to_string(),
             body: Box::new(Type::Dict(Row {
-                fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                fields: [("x".to_string(), Type::Var("a".to_string(), 0))].into(),
                 tail: RowTail::Empty,
             })),
         };
@@ -3135,7 +3129,7 @@ mod tests {
         let rec = Type::Recursive {
             var: "a".to_string(),
             body: Box::new(Type::Dict(Row {
-                fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                fields: [("x".to_string(), Type::Var("a".to_string(), 0))].into(),
                 tail: RowTail::Empty,
             })),
         };
@@ -3213,13 +3207,13 @@ mod tests {
         // The TypeVar guard in is_subtype_bas fires before RDNF, so any TypeVar in
         // either position returns true without inspecting the other side.
         assert!(Type::is_subtype(
-            &Type::TypeVar("a".into(), 0),
+            &Type::Var("a".into(), 0),
             &Type::Int,
             None
         ));
         assert!(Type::is_subtype(
             &Type::Int,
-            &Type::TypeVar("a".into(), 0),
+            &Type::Var("a".into(), 0),
             None
         ));
     }
@@ -3247,21 +3241,13 @@ mod tests {
     fn test_bas_typevar_subtype_b446_approximation_semantics() {
         // Two DIFFERENT TypeVars: returns true (deferral, not a proof of subtyping).
         assert!(
-            Type::is_subtype(
-                &Type::TypeVar("a".into(), 0),
-                &Type::TypeVar("b".into(), 0),
-                None
-            ),
+            Type::is_subtype(&Type::Var("a".into(), 0), &Type::Var("b".into(), 0), None),
             "TypeVar(a) <: TypeVar(b) must be true (conservative approximation)"
         );
 
         // Same TypeVar on both sides: also true (subsumes the reflexivity short-circuit).
         assert!(
-            Type::is_subtype(
-                &Type::TypeVar("a".into(), 0),
-                &Type::TypeVar("a".into(), 0),
-                None
-            ),
+            Type::is_subtype(&Type::Var("a".into(), 0), &Type::Var("a".into(), 0), None),
             "TypeVar(a) <: TypeVar(a) must be true (reflexive)"
         );
 
@@ -3272,19 +3258,19 @@ mod tests {
         //   only Never <: Never holds (Nothing is a subtype of Bottom except Bottom).
         //   The TypeVar guard defers this to the constraint solver.
         assert!(
-            Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::Never, None),
+            Type::is_subtype(&Type::Var("a".into(), 0), &Type::Never, None),
             "TypeVar(a) <: Never is true per the approximation guard (see B-446)"
         );
         // Never sub, TypeVar sup: S-NEVER fires first (sub=Never) → true.
         assert!(
-            Type::is_subtype(&Type::Never, &Type::TypeVar("a".into(), 0), None),
+            Type::is_subtype(&Type::Never, &Type::Var("a".into(), 0), None),
             "Never <: TypeVar(a) must be true (S-NEVER fires first, correct)"
         );
 
         // TypeVar vs Error: Error guard fires first → false on BOTH sides.
         assert!(
             !Type::is_subtype(
-                &Type::TypeVar("a".into(), 0),
+                &Type::Var("a".into(), 0),
                 &Type::error_note("test error sentinel"),
                 None
             ),
@@ -3293,7 +3279,7 @@ mod tests {
         assert!(
             !Type::is_subtype(
                 &Type::error_note("test error sentinel"),
-                &Type::TypeVar("a".into(), 0),
+                &Type::Var("a".into(), 0),
                 None
             ),
             "Error <: TypeVar(a) must be false (Error guard fires first)"
@@ -3302,11 +3288,11 @@ mod tests {
         // TypeVar vs Unknown: Unknown guard fires first → false on BOTH sides.
         // Unknown is not in the subtype lattice; only is_consistent handles it.
         assert!(
-            !Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::Unknown, None),
+            !Type::is_subtype(&Type::Var("a".into(), 0), &Type::Unknown, None),
             "TypeVar(a) <: Unknown must be false (Unknown guard fires first)"
         );
         assert!(
-            !Type::is_subtype(&Type::Unknown, &Type::TypeVar("a".into(), 0), None),
+            !Type::is_subtype(&Type::Unknown, &Type::Var("a".into(), 0), None),
             "Unknown <: TypeVar(a) must be false (Unknown guard fires first)"
         );
     }

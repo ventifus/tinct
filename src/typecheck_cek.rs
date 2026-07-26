@@ -22,12 +22,12 @@ use crate::ast::{
 };
 use crate::coverage;
 use crate::env::Env;
-use crate::error::{DiagnosticLevel, TypeDiagnostic};
-use crate::type_def::{Label, Row, RowTail, TyConDef};
+use crate::error::TypeDiagnostic;
+use crate::type_def::{Row, RowTail, TyConDef};
 use crate::type_infer::Substitution;
 use crate::types::{
     constrain, generalize, generalize_with_doc, instantiate_at_level, instantiate_scheme,
-    resolve_has_field, Constraint, InferState, Kind, Type, TypeScheme,
+    Constraint, InferState, Kind, Type, TypeScheme,
 };
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
@@ -192,7 +192,7 @@ pub(crate) enum TypeCheckCont {
     /// Inferred the base expression of a Field access — look up the field type.
     ///
     /// Resolves the field type from the inferred base type and returns it via
-    /// `TypeCheckAction::Done`. All dot-access desugars to `builtin-get` (key-based lookup).
+    /// `TypeCheckAction::Done`. All dot-access desugars to `builtin-dict-get` (key-based lookup).
     FieldBase {
         field: crate::ast::DotKey,
         span: Span,
@@ -433,7 +433,7 @@ async fn infer_step(
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 } else {
                     // Non-Dict intermediate: push continuation, return Eval — no recursion.
-                    // The AfterSequentialNonDictIntermediate handler resumes after evaluation,
+                    // The SequentialNonDictIntermediate handler resumes after evaluation,
                     // extends env, and continues processing remaining intermediates.
                     let enc_level = state.level;
                     state.level += 1;
@@ -485,26 +485,7 @@ async fn infer_step(
                 }
             }
 
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                // Special-case: builtin-get / get / get?
-                if (name == "builtin-get" || name == "get" || name == "get?")
-                    && args.len() == 2
-                    && named_args.is_empty()
-                {
-                    let ty = infer_get_call(name, &args[0], &args[1], env, state, errors, type_map)
-                        .await;
-                    return TypeCheckAction::Done(ty);
-                }
-
-                // Special-case: get-in
-                if name == "get-in" && args.len() == 2 && named_args.is_empty() {
-                    let ty =
-                        infer_get_in_call(&args[0], &args[1], env, state, errors, type_map).await;
-                    return TypeCheckAction::Done(ty);
-                }
-            }
-
-            // General call: push AfterCallFunc, evaluate func
+            // General call: push CallFunc, evaluate func
             let args_cloned: Vec<Arc<SurfaceNode>> = args.iter().map(Arc::clone).collect();
             let named_args_cloned: Vec<Spanned<SurfaceNamedArg>> = named_args.to_vec();
             stack.push(TypeCheckCont::CallFunc {
@@ -660,7 +641,7 @@ async fn apply_cont(
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
     match cont {
-        // ===== AfterFnBody =====
+        // ===== FnBody =====
         TypeCheckCont::FnBody {
             saved_level,
             saved_expected_return,
@@ -683,7 +664,7 @@ async fn apply_cont(
                     if is_checkable_primitive {
                         let body_resolved = state.subst.apply(&child_ty);
                         let body_is_concrete =
-                            !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..));
+                            !matches!(body_resolved, Type::Unknown | Type::Any | Type::Var(..));
                         if body_is_concrete
                             && !Type::is_consistent_subtype(
                                 &body_resolved,
@@ -705,7 +686,7 @@ async fn apply_cont(
                     if let Type::Intersection(members) = &declared_ret {
                         let body_resolved = state.subst.apply(&child_ty);
                         let body_is_concrete =
-                            !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..));
+                            !matches!(body_resolved, Type::Unknown | Type::Any | Type::Var(..));
                         if body_is_concrete {
                             for member in members {
                                 if matches!(member, Type::Function { .. })
@@ -727,22 +708,17 @@ async fn apply_cont(
 
                     // T-1709: Emit diagnostic for explicit @Unknown return annotation
                     if matches!(&declared_ret, Type::Unknown) {
-                        state.diagnostics.push(TypeDiagnostic {
-                            level: DiagnosticLevel::Info,
-                            kind: "explicit-unknown",
-                            message:
-                                "explicit @Unknown return annotation — type is not statically known"
-                                    .to_string(),
-                            spans: vec![(node_span.clone(), String::new())],
-                            notes: vec![],
-                            help: vec![],
-                        });
+                        state.diagnostics.push(TypeDiagnostic::info(
+                            "explicit-unknown",
+                            "explicit @Unknown return annotation — type is not statically known",
+                            node_span.clone(),
+                        ));
                     }
 
                     // T-1710: Emit diagnostic for overbroad return annotation
                     {
                         let body_resolved = state.subst.apply(&child_ty);
-                        if !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..))
+                        if !matches!(body_resolved, Type::Unknown | Type::Any | Type::Var(..))
                             && !matches!(declared_ret, Type::Unknown | Type::Any)
                         {
                             let is_sub = Type::is_subtype(
@@ -756,17 +732,14 @@ async fn apply_cont(
                                 Some(&state.tycon_env),
                             );
                             if is_sub && !is_super {
-                                state.diagnostics.push(TypeDiagnostic {
-                                    level: DiagnosticLevel::Info,
-                                    kind: "overbroad-annotation",
-                                    message: format!(
+                                state.diagnostics.push(TypeDiagnostic::info(
+                                    "overbroad-annotation",
+                                    format!(
                                         "return type declared as {}, inferred as {}",
                                         declared_ret, body_resolved
                                     ),
-                                    spans: vec![(node_span.clone(), String::new())],
-                                    notes: vec![],
-                                    help: vec![],
-                                });
+                                    node_span.clone(),
+                                ));
                             }
                         }
                     }
@@ -837,7 +810,7 @@ async fn apply_cont(
             apply_cont_call_func(func_ty, args, named_args, env, call_node, &mut ctx, stack).await
         }
 
-        // ===== AfterCallArg =====
+        // ===== CallArg =====
         TypeCheckCont::CallArg {
             idx,
             remaining_args,
@@ -902,7 +875,7 @@ async fn apply_cont(
             .await
         }
 
-        // ===== AfterMatchScrutinee =====
+        // ===== MatchScrutinee =====
         TypeCheckCont::MatchScrutinee { arms, env, span } => {
             let scrutinee_ty = state.subst.apply(&child_ty);
             if arms.is_empty() {
@@ -912,7 +885,7 @@ async fn apply_cont(
             // Run exhaustiveness checking once upfront (using all arms).
             run_match_exhaustiveness_check(&scrutinee_ty, &arms, &span, state, errors);
 
-            // Set up the first arm's environment iteratively; subsequent arms via AfterMatchArm.
+            // Set up the first arm's environment iteratively; subsequent arms via MatchArm.
             let remaining_scrutinee = scrutinee_ty.clone();
             match setup_match_arm_env(
                 &arms[0],
@@ -943,7 +916,7 @@ async fn apply_cont(
             }
         }
 
-        // ===== AfterMatchArm — process one arm body result and continue with next arm =====
+        // ===== MatchArm — process one arm body result and continue with next arm =====
         TypeCheckCont::MatchArm {
             remaining_arms,
             env,
@@ -963,7 +936,7 @@ async fn apply_cont(
                 };
                 TypeCheckAction::Done(match_ty)
             } else {
-                // Set up environment for the next arm and push another AfterMatchArm.
+                // Set up environment for the next arm and push another MatchArm.
                 match setup_match_arm_env(
                     &remaining_arms[0],
                     &remaining_scrutinee,
@@ -996,7 +969,7 @@ async fn apply_cont(
             }
         }
 
-        // ===== AfterSequentialNonDictIntermediate =====
+        // ===== SequentialNonDictIntermediate =====
         TypeCheckCont::SequentialNonDictIntermediate {
             intermediate_span,
             remaining_intermediates,
@@ -1059,7 +1032,7 @@ async fn apply_cont(
             TypeCheckAction::Eval(last, current_env)
         }
 
-        // ===== AfterTypeAssertInner =====
+        // ===== TypeAssertInner =====
         TypeCheckCont::TypeAssertInner {
             expected,
             has_default,
@@ -1073,15 +1046,11 @@ async fn apply_cont(
 
             // T-1708: Emit diagnostic for explicit @Unknown annotation
             if expected_resolved == Type::Unknown {
-                state.diagnostics.push(TypeDiagnostic {
-                    level: DiagnosticLevel::Info,
-                    kind: "explicit-unknown",
-                    message: "explicit @Unknown annotation — type is not statically known"
-                        .to_string(),
-                    spans: vec![(span.clone(), String::new())],
-                    notes: vec![],
-                    help: vec![],
-                });
+                state.diagnostics.push(TypeDiagnostic::info(
+                    "explicit-unknown",
+                    "explicit @Unknown annotation — type is not statically known",
+                    span.clone(),
+                ));
             }
 
             let mismatch_err = compute_type_assert_mismatch(
@@ -1135,24 +1104,21 @@ async fn apply_cont(
             TypeCheckAction::Done(expected)
         }
 
-        // ===== AfterFieldBase =====
+        // ===== FieldBase =====
         TypeCheckCont::FieldBase { field, span } => {
             let resolved_base = state.subst.apply(&child_ty);
             let ty = field_type_from_base(&resolved_base, &field, &span, errors);
 
             // T-1711: Emit diagnostic for Unknown field access
             if ty == Type::Unknown {
-                state.diagnostics.push(TypeDiagnostic {
-                    level: DiagnosticLevel::Warn,
-                    kind: "unknown-type",
-                    message: format!(
+                state.diagnostics.push(TypeDiagnostic::warn(
+                    "unknown-type",
+                    format!(
                         "inferred type is Unknown for field access '.{}' — consider adding a type annotation",
                         field
                     ),
-                    spans: vec![(span.clone(), String::new())],
-                    notes: vec![],
-                help: vec![],
-                });
+                    span.clone(),
+                ));
             }
 
             // Record the field access result with the Field node's span for LSP hover.
@@ -1160,13 +1126,13 @@ async fn apply_cont(
             TypeCheckAction::Done(ty)
         }
 
-        // ===== AfterUnquote =====
+        // ===== Unquote =====
         TypeCheckCont::Unquote => TypeCheckAction::Done(child_ty),
 
-        // ===== AfterUnquoteSplice =====
+        // ===== UnquoteSplice =====
         TypeCheckCont::UnquoteSplice => TypeCheckAction::Done(Type::Unknown),
 
-        // ===== AfterDictPassZero =====
+        // ===== DictPassZero =====
         //
         // Pushed by the Dict arm of infer_step. Runs the full multi-pass dict inference via
         // run_typecheck_dict (T-1644). The entries from the continuation are passed directly;
@@ -1204,7 +1170,7 @@ async fn infer_var_ref(
         let (level, slot) = match addr {
             crate::ast::VarAddr::LetrecGroupMember { depth, slot } => (*depth, *slot),
             crate::ast::VarAddr::ClosureCapture(i) => (1u32, *i),
-            // B-593: Parameter maps to level=2 to avoid collision with LGM at level=0.
+            // Parameter maps to level=2 to avoid collision with LGM at level=0.
             crate::ast::VarAddr::Parameter(i) => (2u32, *i),
         };
         let slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
@@ -1278,7 +1244,7 @@ async fn infer_var_ref(
 
         result_type
     } else {
-        // T-1897: If the resolver successfully resolved this variable, the variable
+        // If the resolver successfully resolved this variable, the variable
         // genuinely exists in scope — the type checker simply doesn't have its type scheme.
         // Return Unknown (gradual typing) rather than a false "undefined variable" diagnostic.
         if let crate::ast::SurfaceExpression::VarRef { resolution, .. } = &node.expr {
@@ -1333,158 +1299,6 @@ async fn infer_var_ref(
             Type::error_with(vec![err])
         }
     }
-}
-
-// ===== Inline helper: get / builtin-get / get? special case =====
-
-async fn infer_get_call(
-    name: &str,
-    key_node: &Arc<SurfaceNode>,
-    container_node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Type {
-    let container_ty = {
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            container_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    };
-    let container_resolved = state.subst.apply(&container_ty);
-
-    let key_ty = {
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            key_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    };
-    let key_resolved = state.subst.apply(&key_ty);
-
-    let field_ty = if let Type::StringLiteral(field_name) = &key_resolved {
-        let label = Label::Concrete(field_name.clone());
-        match resolve_has_field(&label, &container_resolved, state, key_node.span.clone(), 0) {
-            Ok(ty) => ty,
-            Err(e) => {
-                errors.push(e);
-                Type::Unknown
-            }
-        }
-    } else {
-        Type::Unknown
-    };
-
-    if name == "get?" {
-        let null_ty = Type::Dict(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: RowTail::Empty,
-        });
-        if matches!(field_ty, Type::Unknown) {
-            Type::Unknown
-        } else {
-            Type::normalize_union(vec![field_ty, null_ty])
-        }
-    } else {
-        field_ty
-    }
-}
-
-// ===== Inline helper: get-in special case =====
-
-async fn infer_get_in_call(
-    path_node: &Arc<SurfaceNode>,
-    dict_node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Type {
-    let dict_ty = {
-        let mut local_stack = Vec::new();
-        Box::pin(run_typecheck(
-            dict_node,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        ))
-        .await
-    };
-    let dict_ty = state.subst.apply(&dict_ty);
-
-    let literal_path: Option<Vec<String>> = match &path_node.expr {
-        SurfaceExpression::Dict(path_entries) => {
-            let mut keys: Vec<String> = Vec::new();
-            let mut all_literal = true;
-            for (idx, entry) in path_entries.iter().enumerate() {
-                let is_auto_indexed = match &entry.node.key {
-                    None => true,
-                    Some(k) => {
-                        matches!(&k.expr, SurfaceExpression::Int(n) if *n == idx as i64)
-                    }
-                };
-                if !is_auto_indexed {
-                    all_literal = false;
-                    break;
-                }
-                match &entry.node.value.expr {
-                    SurfaceExpression::StringLiteral { content, .. } => keys.push(content.clone()),
-                    _ => {
-                        all_literal = false;
-                        break;
-                    }
-                }
-            }
-            if all_literal {
-                Some(keys)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    if let Some(keys) = literal_path {
-        let mut local_stack = Vec::new();
-        typecheck_for_errors(path_node, env, state, errors, type_map, &mut local_stack).await;
-        if keys.is_empty() {
-            return dict_ty;
-        }
-        let mut current = dict_ty;
-        for key in &keys {
-            current = state.subst.apply(&current);
-            match &current {
-                Type::Dict(row) => {
-                    if let Some(field_ty) = row.fields.get(key.as_str()) {
-                        current = field_ty.clone();
-                    } else {
-                        return Type::Unknown;
-                    }
-                }
-                Type::Unknown => return Type::Unknown,
-                _ => return Type::Unknown,
-            }
-        }
-        return current;
-    }
-
-    let mut local_stack = Vec::new();
-    typecheck_for_errors(path_node, env, state, errors, type_map, &mut local_stack).await;
-    Type::Unknown
 }
 
 // ===== Inline helper: evaluate args for error collection =====
@@ -1665,7 +1479,7 @@ async fn apply_cont_call_func(
             TypeCheckAction::Eval(first_arg, env)
         }
 
-        Type::TypeVar(_, _) => {
+        Type::Var(_, _) => {
             // Unbound TypeVar: infer args for side effects, return fresh TypeVar for return
             for arg in &args {
                 let mut local_stack = Vec::new();
@@ -1723,14 +1537,13 @@ async fn apply_cont_call_func(
                 )
                 .await;
             }
-            ctx.state.diagnostics.push(crate::error::TypeDiagnostic {
-                level: crate::error::DiagnosticLevel::Warn,
-                kind: "unknown-call",
-                message: "calling expression of Unknown type — may not be a function".to_string(),
-                spans: vec![(call_node.span.clone(), String::new())],
-                notes: vec![],
-                help: vec![],
-            });
+            ctx.state
+                .diagnostics
+                .push(crate::error::TypeDiagnostic::warn(
+                    "unknown-call",
+                    "calling expression of Unknown type — may not be a function",
+                    call_node.span.clone(),
+                ));
             TypeCheckAction::Done(Type::Unknown)
         }
 
@@ -2513,9 +2326,9 @@ fn extract_seq_elem_type(bucket_ty: &Type) -> Type {
     bucket_ty.clone()
 }
 
-// ===== Inline helper: Fn inference via AfterFnBody continuation =====
+// ===== Inline helper: Fn inference via FnBody continuation =====
 
-/// Resolve all function annotations, build the parameter environment, push `AfterFnBody`,
+/// Resolve all function annotations, build the parameter environment, push `FnBody`,
 /// and return `Eval(body, fn_env)` so the CEK loop evaluates the body iteratively without
 /// recursing on the Rust call stack.
 async fn infer_fn_push_cont(
@@ -3068,7 +2881,7 @@ fn compute_type_assert_mismatch(
 /// Resolve the type of a field access `base_ty.field`.
 ///
 /// Returns the type of the named field in `base_ty`, or `Type::Unknown` when the field
-/// is not statically known. All dot-access desugars to `builtin-get` (key-based lookup);
+/// is not statically known. All dot-access desugars to `builtin-dict-get` (key-based lookup);
 /// there is no slot-indexed fast path.
 ///
 /// ## Why Unknown is correct for missing fields
@@ -3118,7 +2931,7 @@ fn field_type_from_base(
         }
         // Gradual: Unknown/Any base → Unknown field (consistency, not subtyping).
         // TypeVar: the base type is not yet resolved — defer field type to Unknown.
-        Type::Unknown | Type::Any | Type::TypeVar(_, _) => Type::Unknown,
+        Type::Unknown | Type::Any | Type::Var(_, _) => Type::Unknown,
         // Negation, Union, NominalVariant, TyCon: structural field access is not defined
         // for these types in the static type system. Return Unknown (gradual) rather than
         // an error — these types may be refined by later unification or narrowing.
@@ -3391,7 +3204,7 @@ fn collect_dependencies(
 /// Occurs check: returns true if TypeVar `name` appears free anywhere in `ty`.
 pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
     match ty {
-        Type::TypeVar(n, _) => n.as_str() == name,
+        Type::Var(n, _) => n.as_str() == name,
         Type::Union(members) | Type::Intersection(members) => {
             members.iter().any(|m| type_contains_typevar(m, name))
         }
@@ -3434,7 +3247,7 @@ pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
 /// For non-ADT types, returns the body type unchanged.
 ///
 /// Called from `run_typecheck_dict` Pass 2 (type alias registration) and from
-/// `AfterDictPassZero` handler when building constructor scheme types.
+/// the `DictPassZero` handler when building constructor scheme types.
 pub(crate) fn adt_value_type(alias_body: &Type) -> Type {
     let members: Vec<&Type> = match alias_body {
         Type::Union(ms) => ms.iter().collect(),
@@ -3533,7 +3346,7 @@ pub(crate) async fn entry_key_name(
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
-/// - `AfterDictPassZero` handler (dict expressions encountered during CEK run_typecheck)
+/// - `DictPassZero` handler (dict expressions encountered during CEK run_typecheck)
 /// - `process_document` (top-level dict expressions in a document)
 /// - `run_typecheck`'s Sequential arm (intermediate dict bodies in multi-body functions)
 ///
@@ -3597,7 +3410,7 @@ pub(crate) async fn run_typecheck_dict(
         if *is_static_key {
             if let Some(ref name) = key_name {
                 if let SurfaceExpression::Fn { params, .. } = &entry.node.value.expr {
-                    // B-520: fn entries get Type::Function skeleton so recursive calls see a
+                    // fn entries get Type::Function skeleton so recursive calls see a
                     // function-shaped callee type without requiring a return annotation.
                     // Variadic params go into typed_variadics/rest, NOT into params — matching the
                     // structure that infer_fn_push_cont produces. Putting variadics in params with
@@ -3684,7 +3497,7 @@ pub(crate) async fn run_typecheck_dict(
         }
     }
 
-    // B-477: Inject a synthetic innermost scope frame into state.scope_frames for this dict.
+    // Inject a synthetic innermost scope frame into state.scope_frames for this dict.
     //
     // When the user declares an [instance ...] in this dict, Pass 1 above pre-inserts the
     // ɪ-prefixed mangled binding name into dict_env.slots with a fresh TypeVar placeholder.
@@ -3895,7 +3708,7 @@ pub(crate) async fn run_typecheck_dict(
                             .unwrap()
                             .insert_tycon_def(name.clone(), std::sync::Arc::clone(&tycon_def));
                         state.tycon_env.entry(name.clone()).or_insert(tycon_def);
-                        // T-1805: Wire type declarations into type_stage_scope so
+                        // Wire type declarations into type_stage_scope so
                         // resolve_type_head can find user-declared types via the
                         // scope chain. or_insert preserves type-stage entries
                         // (type-stage has priority over runtime-declared types).
@@ -4103,7 +3916,7 @@ pub(crate) async fn run_typecheck_dict(
 
                                         match method_type_result {
                                             Ok(method_type) => {
-                                                // T-1853: Store the polymorphic method type in
+                                                // Store the polymorphic method type in
                                                 // ClassDecl.method_signatures so that
                                                 // infer_instance_decl_from_surface can look up the
                                                 // expected function type for bidirectional checking.
@@ -4306,7 +4119,7 @@ pub(crate) async fn run_typecheck_dict(
 
                         if let Some(bound_var) = bound_var_opt {
                             match bound_var {
-                                Type::TypeVar(var_name, _) => {
+                                Type::Var(var_name, _) => {
                                     subst
                                         .type_map
                                         .borrow_mut()
@@ -4323,7 +4136,7 @@ pub(crate) async fn run_typecheck_dict(
                                         ..
                                     } = &value_ty
                                     {
-                                        if let Type::TypeVar(ret_name, _) = pre_ret.as_ref() {
+                                        if let Type::Var(ret_name, _) = pre_ret.as_ref() {
                                             let actual_ret_applied =
                                                 subst.apply(actual_ret.as_ref());
                                             if !type_contains_typevar(&actual_ret_applied, ret_name)
@@ -4338,7 +4151,7 @@ pub(crate) async fn run_typecheck_dict(
                                             pre_params.iter().zip(actual_params.iter())
                                         {
                                             match pre_ty {
-                                                Type::TypeVar(param_name, _) => {
+                                                Type::Var(param_name, _) => {
                                                     let actual_applied = subst.apply(actual_ty);
                                                     if !type_contains_typevar(
                                                         &actual_applied,
@@ -4357,7 +4170,7 @@ pub(crate) async fn run_typecheck_dict(
                                                         },
                                                     ..
                                                 }) => {
-                                                    if let Type::TypeVar(elem_name, _) =
+                                                    if let Type::Var(elem_name, _) =
                                                         elem_var.as_ref()
                                                     {
                                                         if let Type::Dict(Row {
@@ -4734,13 +4547,11 @@ pub(crate) async fn run_typecheck_dict(
             let after_local = subst.apply(&v);
             let after_state = state.subst.apply(&after_local);
             let resolved = match (&v, &after_local) {
-                (Type::TypeVar(orig_name, _), Type::TypeVar(next_name, _))
-                    if orig_name != next_name =>
-                {
+                (Type::Var(orig_name, _), Type::Var(next_name, _)) if orig_name != next_name => {
                     let local_map = subst.type_map.borrow();
                     let is_cycle = local_map
                         .get(next_name.as_str())
-                        .is_some_and(|t| matches!(t, Type::TypeVar(n, _) if n == orig_name));
+                        .is_some_and(|t| matches!(t, Type::Var(n, _) if n == orig_name));
                     drop(local_map);
                     if is_cycle {
                         Type::Unknown
@@ -4788,7 +4599,7 @@ pub(crate) async fn run_typecheck_dict(
         }
     }
 
-    // B-477: Pop the synthetic scope frame we pushed before Pass 2 (if we pushed one).
+    // Pop the synthetic scope frame we pushed before Pass 2 (if we pushed one).
     if pushed_synthetic_frame {
         if let Some(ref mut frames) = state.scope_frames {
             frames.pop();
@@ -4848,7 +4659,7 @@ mod tests {
         })
     }
 
-    /// B-524: `collect_dependencies` must not produce a dep edge from a function value to a
+    /// `collect_dependencies` must not produce a dep edge from a function value to a
     /// sibling binding whose name matches one of the function's parameter names.
     ///
     /// For `[x: 42  f: [fn [let x] x]]` the body VarRef "x" is a parameter reference, not a
@@ -4953,12 +4764,12 @@ mod tests {
         );
     }
 
-    // ===== AfterFieldBase type inference tests =====
+    // ===== FieldBase type inference tests =====
 
     /// `field_type_from_base` returns the correct type for a closed Dict row.
     ///
     /// For `{x: Int, y: Str}` (closed, Empty tail), accessing `.x` must return `Int`
-    /// and accessing `.y` must return `Str`. All dot-access desugars to `builtin-get`
+    /// and accessing `.y` must return `Str`. All dot-access desugars to `builtin-dict-get`
     /// (key-based lookup); no slot index is computed or returned.
     #[test]
     fn test_field_type_from_base_closed_dict_slot() {
@@ -5023,7 +4834,7 @@ mod tests {
     /// Open Dict rows (Uniform tail) resolve field types correctly.
     ///
     /// A Uniform tail means the row is open — additional fields may be present at runtime.
-    /// All dot-access desugars to `builtin-get` (key-based lookup) regardless of tail kind.
+    /// All dot-access desugars to `builtin-dict-get` (key-based lookup) regardless of tail kind.
     #[test]
     fn test_field_type_from_base_open_dict_no_slot() {
         use crate::ast::DotKey;
@@ -5054,9 +4865,9 @@ mod tests {
         assert!(errors.is_empty());
     }
 
-    /// `AfterFieldBase` resolves the field type and returns it via `TypeCheckAction::Done`.
+    /// `FieldBase` resolves the field type and returns it via `TypeCheckAction::Done`.
     ///
-    /// Directly calls `apply_cont` with an `AfterFieldBase` continuation and a closed
+    /// Directly calls `apply_cont` with a `FieldBase` continuation and a closed
     /// Dict base type `{x: Int, y: Str}` to verify that `.x` resolves to `Type::Int`.
     /// This tests the handler in isolation without requiring the full `run_typecheck` pipeline.
     #[tokio::test]
@@ -5098,10 +4909,10 @@ mod tests {
         // apply_cont must return Done(Int) for the .x field
         match action {
             TypeCheckAction::Done(ty) => {
-                assert_eq!(ty, Type::Int, "AfterFieldBase must resolve .x to Int");
+                assert_eq!(ty, Type::Int, "FieldBase must resolve .x to Int");
             }
             TypeCheckAction::Eval(_, _) => {
-                panic!("AfterFieldBase must not produce Eval action");
+                panic!("FieldBase must not produce Eval action");
             }
         }
 

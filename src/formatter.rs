@@ -5,11 +5,18 @@
 // The Rust `Formatter` struct was deleted — it was only ever used by the now-removed
 // `format_source` function that was dead code from `tinct fmt`'s perspective.
 /// Format source using the tinct-hosted formatter script.
+///
+/// `script_source` is the already-read content of the formatter script (e.g. pretty.llt).
+/// `script_name` is the name of the script file (used for compact-mode detection and
+/// error messages). The caller is responsible for reading the script file using appropriate
+/// capability-safe or bootstrap-phase filesystem access.
 pub async fn format_source_tinct_with_dir(
     input: &str,
-    script_path: &std::path::Path,
+    script_source: &str,
+    script_name: &str,
 ) -> Result<String, String> {
     use crate::desugar;
+    use crate::error::DiagnosticLevel;
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
     use crate::resolve;
@@ -18,24 +25,18 @@ pub async fn format_source_tinct_with_dir(
     use std::sync::Arc;
 
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
-    let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
+    let compact = std::path::Path::new(script_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        == Some("compact");
 
     // Parse the input source (no env/ctx needed yet).
     let file: Arc<str> = Arc::from("<formatter>");
     let parse_output = parse(input, file).map_err(|e| format!("{e}"))?;
 
-    // Load the formatter script BEFORE creating env/ctx.
-    // AMBIENT-OK: formatter script loaded from stdlib path.
-    #[allow(clippy::disallowed_methods)]
-    let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
-        format!(
-            "cannot read formatter script {}: {e}",
-            script_path.display()
-        )
-    })?;
-    let formatter_file: Arc<str> = Arc::from(script_path.display().to_string().as_str());
-    let formatter_parsed = parse(&formatter_source, formatter_file)
-        .map_err(|e| format!("formatter parse error: {e}"))?;
+    let formatter_file: Arc<str> = Arc::from(script_name);
+    let formatter_parsed =
+        parse(script_source, formatter_file).map_err(|e| format!("formatter parse error: {e}"))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let formatter_program = desugar::desugar_program_full(&formatter_parsed.program);
@@ -47,15 +48,41 @@ pub async fn format_source_tinct_with_dir(
     // The env-dict protocol assigns input-ast to LGM(root_group_len + 0), which is the slot
     // where eval_surface_file_with_input injects the AST thunk.
     let root_group_len = ctx.root_group.len() as u32;
+    let mut resolve_diags: Vec<crate::error::TypeDiagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
-        let _ = resolve::resolve_surface_document_with_env_dict(
+        let (_table, diags, _unresolved) = resolve::resolve_surface_document_with_env_dict(
             &doc_spanned.node,
             &["input-ast".to_string()],
             root_group_len,
         );
+        resolve_diags.extend(diags);
     }
+    let resolve_errors: Vec<_> = resolve_diags
+        .iter()
+        .filter(|d| d.level == DiagnosticLevel::Err)
+        .collect();
+    if !resolve_errors.is_empty() {
+        let msgs: Vec<String> = resolve_errors
+            .iter()
+            .map(|d| format!("resolve error: {}", d.message))
+            .collect();
+        return Err(msgs.join("\n"));
+    }
+
     // Typecheck the desugared formatter (writes inline type annotations).
-    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
+    let (tc_diags, _annotation_table, _tycon_env) =
+        typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
+    let tc_errors: Vec<_> = tc_diags
+        .iter()
+        .filter(|d| d.level == DiagnosticLevel::Err)
+        .collect();
+    if !tc_errors.is_empty() {
+        let msgs: Vec<String> = tc_errors
+            .iter()
+            .map(|d| format!("type error: {}", d.message))
+            .collect();
+        return Err(msgs.join("\n"));
+    }
 
     // Convert input AST to dict using the now-stable ctx.
     use crate::surface_convert::{surface_program_to_dict, AstToDictOpts, CommentMaps};
@@ -100,7 +127,9 @@ pub async fn format_source_tinct_with_dir(
             let display_str =
                 crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span.clone())
                     .await
-                    .unwrap_or_else(|_| "<error displaying value>".to_string());
+                    .map_err(|e| {
+                        format!("formatter returned non-string value (display failed: {e})")
+                    })?;
             Err(format!(
                 "formatter returned non-string value: {display_str}"
             ))
@@ -114,15 +143,16 @@ pub async fn format_source_tinct_with_dir(
 /// To signal failure the script should call `raise`, which propagates as an EvalError.
 /// Any non-String return value is a protocol error.
 ///
-/// `script_path` is the path to a `.llt` formatter script (e.g. `stdlib/cli/fmt/pretty.llt`).
-/// Whether to pass source/comment information is inferred from the script name:
-/// scripts named `compact` receive a minimal AST (no source, no comments); all others
-/// receive the full AST (with source info and comments for comment preservation).
+/// `script_source` is the already-read content of the formatter script.
+/// `script_name` is the name of the script file (e.g. `pretty.llt`). Scripts named
+/// `compact` receive a minimal AST (no source, no comments); all others receive the
+/// full AST (with source info and comments for comment preservation).
 ///
 /// Alias for `format_source_tinct_with_dir`.
 pub async fn format_source_tinct(
     input: &str,
-    script_path: &std::path::Path,
+    script_source: &str,
+    script_name: &str,
 ) -> Result<String, String> {
-    format_source_tinct_with_dir(input, script_path).await
+    format_source_tinct_with_dir(input, script_source, script_name).await
 }

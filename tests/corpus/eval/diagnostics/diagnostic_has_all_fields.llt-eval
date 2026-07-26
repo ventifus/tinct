@@ -2,7 +2,7 @@
 # Uses a parse error as it's the simplest to trigger.
 [call [fn [let]
   [r: [builtin-parse [builtin-str-bytes "[unclosed"] "test.llt"]]
-  [d: [builtin-get 0 r.diagnostics]]
+  [d: [builtin-dict-get 0 r.diagnostics]]
   [has-level: [builtin-has-key? "level" d]]
   [has-kind: [builtin-has-key? "kind" d]]
   [has-message: [builtin-has-key? "message" d]]

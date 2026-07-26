@@ -795,8 +795,9 @@ pub enum Value {
     },
     /// URI — a uniform resource identifier with scheme and URI string.
     Uri { scheme: String, uri: String },
-    /// UTC timestamp (nanoseconds since Unix epoch).
-    Timestamp(i64),
+    /// UTC timestamp — pre-validated jiff::Timestamp. Construction must succeed at creation
+    /// sites (all i64-nanosecond values are within jiff's representable range).
+    Timestamp(jiff::Timestamp),
     /// Signed duration (nanoseconds).
     Duration(i64),
     /// Clock capability for reading current time (object capability model).
@@ -961,7 +962,7 @@ impl Clone for Value {
                 scheme: scheme.clone(),
                 uri: uri.clone(),
             },
-            Value::Timestamp(n) => Value::Timestamp(*n),
+            Value::Timestamp(ts) => Value::Timestamp(ts.clone()),
             Value::Duration(n) => Value::Duration(*n),
             Value::ClockCap(c) => Value::ClockCap(Arc::clone(c)),
             Value::Timezone(tz) => Value::Timezone(Arc::clone(tz)),
@@ -1146,7 +1147,7 @@ impl Value {
             Value::QuicDatagramHandle(_) => Some("QuicDatagramHandle"),
             Value::Http2Session { .. } => Some("Http2Session"),
             Value::Http3Session(_) => Some("Http3Session"),
-            // All other values (Int, String, Float, Bool, Dict, Seq, Function,
+            // All other values (Int, String, Float, Dict, Function,
             // Builtin, Variant, Bytes, Uri, Proxy, Annotated, etc.) are handled through
             // structural type checking or TyConDef constructor matching.
             _ => None,
@@ -1225,7 +1226,7 @@ impl fmt::Debug for Value {
                 write!(f, "Bytes({} bytes)", bytes.len())
             }
             Value::Uri { scheme, uri } => write!(f, "Uri({scheme}:{uri})"),
-            Value::Timestamp(nanos) => write!(f, "Timestamp({nanos} ns)"),
+            Value::Timestamp(ts) => write!(f, "Timestamp({} ns)", ts.as_nanosecond()),
             Value::Duration(nanos) => write!(f, "Duration({nanos} ns)"),
             Value::ClockCap(inner) => match inner.as_ref() {
                 ClockCapInner::Real => write!(f, "ClockCap(Real)"),
@@ -1324,10 +1325,7 @@ impl fmt::Display for Value {
                 write!(f, "<bytes:{} bytes>", bytes.len())
             }
             Value::Uri { uri, .. } => write!(f, "{uri}"),
-            Value::Timestamp(nanos) => match jiff::Timestamp::from_nanosecond(*nanos as i128) {
-                Ok(ts) => write!(f, "{ts}"),
-                Err(_) => write!(f, "<invalid timestamp>"),
-            },
+            Value::Timestamp(ts) => write!(f, "{ts}"),
             Value::Duration(nanos) => {
                 write!(f, "{nanos}ns")
             }
@@ -1739,14 +1737,14 @@ impl Thunk {
     /// Set the terminal result for this thunk. Write-once via OnceCell:
     /// the first settle() wins, subsequent calls are no-ops.
     ///
-    /// **B-424**: Failed thunks cannot accumulate materialization spans from
-    /// later call sites. The first error's span is preserved; this is acceptable
-    /// because the first materialization span is closest to the definition site
-    /// and is the most informative for debugging.
+    /// Failed thunks cannot accumulate materialization spans from later call sites.
+    /// The first error's span is preserved; this is the accepted design — the first
+    /// materialization span is closest to the definition site and is the most
+    /// informative for debugging.
     ///
-    /// **B-425**: Once a thunk is settled (Ok or Err), it cannot transition to
-    /// any other state. A materialized thunk cannot become Failed, even at high
-    /// continuation depth. The depth limit is enforced at the continuation stack
+    /// Once a thunk is settled (Ok or Err), it cannot transition to any other state.
+    /// A materialized thunk cannot become Failed, even at high continuation depth.
+    /// The depth limit is enforced at the continuation stack
     /// level (MAX_CONTINUATION_STACK in eval_materialize.rs) before any thunk is
     /// settled, which is the correct enforcement point.
     pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
@@ -1891,11 +1889,28 @@ impl Thunk {
         }))
     }
 
+    /// Inspect the settled result without discarding the error case.
+    ///
+    /// Returns:
+    /// - `None` — thunk is not yet settled (still being evaluated)
+    /// - `Some(Ok(&value))` — thunk settled successfully; value is available
+    /// - `Some(Err(&arc_error))` — thunk settled with an evaluation error
+    ///
+    /// Use this when the caller needs to distinguish "not yet settled" from
+    /// "settled with error". For callers that only need the value and have
+    /// already handled the error case upstream, `try_get_value()` is the
+    /// convenience wrapper.
+    pub fn peek_result(&self) -> Option<Result<&Value, &Arc<EvalError>>> {
+        self.inner.result.get().map(|r| r.as_ref())
+    }
+
     /// Borrow the materialized value without cloning.
     ///
-    /// Returns `None` in two cases: the thunk is not yet settled, or it is settled with
-    /// an error. The two cases are not distinguished. All callers of this function must
-    /// operate under one of the following invariants:
+    /// Returns `None` if the thunk is not yet settled, or if it settled with
+    /// an error. Use `peek_result()` to distinguish these two cases.
+    ///
+    /// All callers of this function must operate under one of the following
+    /// invariants:
     ///
     /// 1. The thunk was created via `Thunk::value(...)` and can never be in an error state.
     /// 2. The thunk was already successfully materialized (via `materialize()` returning
@@ -1906,8 +1921,16 @@ impl Thunk {
     /// conjunction with this function, or call `materialize()` directly. Introducing a
     /// case where a settled-with-error thunk is passed here without prior error handling
     /// is an axiom violation (Never suppress errors).
+    ///
+    /// Returns `None` if the thunk is not yet settled or settled with an error.
+    /// Use `peek_result()` to distinguish these two `None` cases.
+    /// Callers using this method explicitly choose not to discriminate — they only
+    /// care whether a value is available, not why one is absent.
     pub fn try_get_value(&self) -> Option<&Value> {
-        self.inner.result.get()?.as_ref().ok()
+        match self.peek_result()? {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        }
     }
 
     /// Borrow the cached error without cloning. Returns `None` if the thunk
@@ -2078,7 +2101,7 @@ mod tests {
         );
     }
 
-    // B-424: Failed thunk cannot accumulate spans — first error wins.
+    // First-error-wins: failed thunk cannot accumulate spans — the first error's span is kept.
     #[test]
     fn test_b424_failed_thunk_first_error_wins() {
         let span1 = test_span(1, 1, 1, 10);
@@ -2106,7 +2129,7 @@ mod tests {
         );
     }
 
-    // B-425: Materialized thunk cannot transition to Failed.
+    // Settled thunk is write-once: a materialized thunk cannot transition to Failed.
     #[test]
     fn test_b425_materialized_thunk_cannot_become_failed() {
         let span = test_span(1, 1, 1, 10);
