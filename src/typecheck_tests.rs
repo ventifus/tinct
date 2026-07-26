@@ -2716,7 +2716,7 @@ async fn test_builtin_get_wrapper_with_label_typevar_returns_field_type(
     Ok(())
 }
 
-// -- LetDecl, CaseArm, and Placeholder (unified-bindings sprint) --
+// -- LetDecl and Placeholder (unified-bindings sprint) --
 
 #[tokio::test]
 async fn test_let_decl_in_expression_position_is_error() {

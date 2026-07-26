@@ -2818,28 +2818,52 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     help: None,
                                 });
                             } else {
-                                let body_expr = if body.len() == 1 {
-                                    body.into_iter().next().expect("body len == 1")
-                                } else {
-                                    mk(
-                                        SurfaceExpression::Sequential(body),
-                                        dict_span(span_start.clone()),
-                                    )
-                                };
-                                let spanned_case = mk(
-                                    SurfaceExpression::CaseArm {
-                                        let_bindings: let_bindings_val,
-                                        pattern: pattern_val,
-                                        body: body_expr,
-                                    },
-                                    dict_span(span_start),
-                                );
-                                if let Err(push_err) = push_value(
-                                    &mut stack,
-                                    &mut current_document_items,
-                                    spanned_case,
-                                ) {
-                                    close_bracket_recover!(push_err);
+                                // Validate: [case ...] cannot appear when a pattern is pending.
+                                // Check with immutable borrow before taking mutable borrow below.
+                                if let Some(StackFrame::Match {
+                                    pending_pattern_expr,
+                                    pending_pattern,
+                                    ..
+                                }) = stack.last()
+                                {
+                                    if pending_pattern_expr.is_some() || pending_pattern.is_some() {
+                                        close_bracket_recover!(ParseError {
+                                            message: "[case ...] cannot appear when a pattern is pending — complete the prior arm first".to_string(),
+                                            span: Some(dict_span(span_start.clone())),
+                                            help: None,
+                                        });
+                                    }
+                                }
+                                // CaseArm data goes directly into SurfaceMatchArm.let_bindings and body fields.
+                                // Push SurfaceMatchArm directly into the parent Match frame's arms list.
+                                let parent_frame = stack.last_mut().ok_or_else(|| ParseError {
+                                    message: "[case ...] must appear inside [match ...]"
+                                        .to_string(),
+                                    span: Some(dict_span(span_start.clone())),
+                                    help: None,
+                                });
+                                match parent_frame {
+                                    Ok(StackFrame::Match { arms, .. }) => {
+                                        arms.push(SurfaceMatchArm {
+                                            pattern: pattern_val,
+                                            let_bindings: Some(let_bindings_val),
+                                            guard: None,
+                                            body,
+                                            guard_matchable_binding:
+                                                crate::ast::MatchableBinding::new(),
+                                        });
+                                    }
+                                    Ok(_) => {
+                                        close_bracket_recover!(ParseError {
+                                            message: "[case ...] must appear inside [match ...]"
+                                                .to_string(),
+                                            span: Some(dict_span(span_start)),
+                                            help: None,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        close_bracket_recover!(e);
+                                    }
                                 }
                             }
                         } else {
@@ -5777,28 +5801,6 @@ fn push_expr_to_parent(
                     // This is the scrutinee
                     *scrutinee = Some(node);
                     Ok(())
-                } else if matches!(node.expr, SurfaceExpression::CaseArm { .. }) {
-                    // [case ...] arms are complete (pattern + body in one expression).
-                    // Store as a MatchArm with Wildcard sentinel pattern (as SurfaceNode) and the CaseArm as body.
-                    if pending_pattern_expr.is_some() || pending_pattern.is_some() {
-                        return Err(ParseError {
-                            message: "match pattern must be followed by `:` and a body before a [case ...] arm".to_string(),
-                            span: Some(node.span.clone()),
-                            help: None,
-                        });
-                    }
-                    // Create a wildcard SurfaceNode as the pattern placeholder
-                    let wildcard_pattern = mk(
-                        SurfaceExpression::Placeholder(None, None),
-                        node.span.clone(),
-                    );
-                    arms.push(SurfaceMatchArm {
-                        pattern: wildcard_pattern,
-                        guard: None,
-                        body: vec![node],
-                        guard_matchable_binding: crate::ast::MatchableBinding::new(),
-                    });
-                    Ok(())
                 } else if pending_pattern.is_none() && pending_pattern_expr.is_none() {
                     // No pending pattern or pattern expression — this is either the first
                     // pattern (will be converted on colon) or a body continuation for the
@@ -5813,6 +5815,7 @@ fn push_expr_to_parent(
                     let (pattern, guard) = pending_pattern.take().unwrap();
                     arms.push(SurfaceMatchArm {
                         pattern,
+                        let_bindings: None,
                         guard,
                         body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),

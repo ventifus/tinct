@@ -200,10 +200,6 @@ pub enum CoreExpr {
     LetDecl {
         bindings: Vec<Spanned<CoreExpr>>,
     },
-    CaseArm {
-        pattern: Arc<Spanned<CoreExpr>>,
-        body: Arc<Spanned<CoreExpr>>,
-    },
     Placeholder,
     Error(Span),
 }
@@ -234,6 +230,13 @@ pub struct CoreParam {
 /// A match arm in a CoreExpr::Match.
 pub struct CoreMatchArm {
     pub pattern: Arc<SurfaceNode>,
+    /// Set when this is a `[case [let bindings] pattern body]` arm. Holds the lowered
+    /// `[let ...]` LetDecl node. None for keyed arms (ordinary `pattern: body` form).
+    pub let_bindings: Option<Arc<Spanned<CoreExpr>>>,
+    /// The lowered CoreExpr version of `arm.pattern`. Set when `let_bindings` is Some.
+    /// None for keyed arms. Used by the evaluator for structural/guard pattern dispatch —
+    /// `eval_case_arm_structural_pattern` operates on CoreExpr, not SurfaceNode.
+    pub lowered_pattern: Option<Arc<Spanned<CoreExpr>>>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
 }
@@ -268,7 +271,6 @@ enum Annotation {
 | `TypeAssert` | `[@T expr]` | Type assertion |
 | `Annotated` | `Fn@Number` | Annotated bare word |
 | `LetDecl { bindings }` | `[let x@Integer y]` | Binding declaration list for fn params, case arms, and pattern contexts |
-| `CaseArm { pattern, body }` | `[case [let x] body]` | Match arm with explicit scoping — pattern can be LetDecl (binding) or exact-value match |
 | `Placeholder` | `...` | Placeholder expression — type Unknown, evaluates to lazy error on materialization |
 | `Rest(None)` | `...` | Open record marker in type expressions |
 | `Rest(Some("r"))` | `...r` | Named row variable |
@@ -282,7 +284,7 @@ enum Annotation {
 | `InstanceDecl { class_name, arms }` | `[instance ClassName [pattern [...]]: methods...]` | Type class instance with match-arm syntax; each arm pairs a `PatternDecl` expression with method entries |
 | `PatternDecl { bindings }` | `[pattern [a@Integer b@Float]]` | Pattern declaration for instance match arms; bindings are typically `Annotated` nodes |
 
-#### LetDecl, CaseArm, and Placeholder Details
+#### LetDecl, Case Arms, and Placeholder Details
 
 **LetDecl** — `SurfaceExpression::LetDecl { bindings: Vec<Arc<SurfaceNode>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
 
@@ -294,16 +296,23 @@ enum Annotation {
 LetDecl appears in:
 
 - Function parameter lists: `[fn [let x@Integer y] body]`
-- Case arm patterns: `[case [let x@Integer] body]`
+- Case arm patterns: `[case [let x@Integer] pattern body]`
 - Type class declarations: `[class [let Equatable a] ...]` (TypeVar binding list)
 - Instance patterns: `[instance Class [pattern [let a@Integer b@Float]] ...]`
 
-**CaseArm** — `SurfaceExpression::CaseArm { pattern, body }` — is a match arm with explicit scoping introduced by the `case` keyword. The pattern can be:
+**Case arms** — `[case [let bindings] pattern body]` — are 3-argument match arms with explicit binding scoping introduced by the `case` keyword. There is no `SurfaceExpression::CaseArm` variant; case arm data lives directly in `SurfaceMatchArm`:
 
-- `LetDecl` — binding pattern that introduces variables into the body's scope (e.g., `[case [let x@Integer] body]`)
-- Any other expression — exact-value match (e.g., `[case 42 body]`, `[case "hello" body]`)
+- `SurfaceMatchArm.let_bindings: Option<Arc<SurfaceNode>>` — the `[let ...]` LetDecl node; `Some` for case arms, `None` for keyed arms
+- `SurfaceMatchArm.pattern: Arc<SurfaceNode>` — the structural or guard pattern expression (second `case` arg)
+- `SurfaceMatchArm.body: Vec<Arc<SurfaceNode>>` — the arm body expressions (third `case` arg and beyond for multi-body arms; single-body arms have `len() == 1`)
 
-CaseArm is used inside `[match ...]` expressions. The `match` evaluator tries each arm's pattern in order. For LetDecl patterns, the type checker validates that the binding constraints are satisfiable and binds the matched value. For exact-value patterns, the evaluator compares the scrutinee for equality.
+The parser emits `SurfaceMatchArm` directly with `let_bindings: Some(...)`. The resolver drives case arm scoping from `arm.let_bindings`, calling `enter_param_scope` for the declared names. The lowerer populates `CoreMatchArm.let_bindings` and `CoreMatchArm.lowered_pattern` from the surface arm.
+
+The evaluator (`eval_materialize.rs`) dispatches on `arm.let_bindings`:
+- `None` — keyed arm: use `match_pattern` against the scrutinee
+- `Some` — case arm: inspect the surface pattern head via `is_structural_pattern_head(&arm.pattern.expr)`:
+  - **Structural** (uppercase VarRef, dot-access `Field { expr: Some(_) }`, `Call { func }` recursing on `func.expr` head (e.g. `[Result.Ok p]`), Dict, literals, Placeholder) — walk `lowered_pattern` against the scrutinee, bind `[let ...]` names to matched fragments
+  - **Guard** (lowercase VarRef, operator, etc.) — bind all `[let ...]` names to the scrutinee, evaluate `lowered_pattern` as a boolean predicate
 
 **Placeholder** — `SurfaceExpression::Placeholder` — represents the `...` token when used as an expression (not as a Rest marker in type contexts). The type checker assigns it type `Unknown`, meaning it satisfies any constraint without producing a type error. At evaluation time, forcing a Placeholder thunk raises an `UnimplementedError` with the message `"placeholder \`...\` was evaluated — replace with an implementation"`. This allows developers to write incomplete code that type-checks but defers implementation details.
 

@@ -45,6 +45,15 @@ Convert: [class [a b]  [determines: [[[a] b]  [[b] a]]  resolver: [AtoB BtoA]]  
 
 **`resolver:`** names the type-stage function that computes the determined type(s) from the determining types. See §Type-Stage Resolvers below.
 
+**`injective:`** declares whether the functional dependency is injective — i.e., whether a unique value of the determining variables corresponds to each value of the determined variable, enabling reverse-lookup dispatch. The value is an integer: `1` means injective, `0` (or omitted) means non-injective. Example:
+
+```tinct
+Foo: [class [let Foo a b]  [determines: [[[a] b]]  injective: 1  resolver: FooResolver]
+  foo: [Fn@b [a]]]
+```
+
+Note: `injective:` takes an integer `1` or `0`, not a Boolean constructor name. Writing `injective: true` would be silently treated as non-injective because `true` is a VarRef, not an integer literal, and the parser only reads `SurfaceExpression::Int` for this field.
+
 **`kinds:`** declares TypeVar kinds inline, replacing the `f@Operator` annotation form:
 
 ```tinct
@@ -114,7 +123,7 @@ A resolver is a function in a `--- stage: type` section that receives determinin
 --- stage: type
 [
   AddResult: [fn [...args]
-    [match [[builtin-get 0 args]  [builtin-get 1 args]]
+    [match [[builtin-dict-get 0 args]  [builtin-dict-get 1 args]]
       [[kind: "named" name: "Int"]    [kind: "named" name: "Int"]]:   [kind: "named" name: "Int"]
       [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
       [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
@@ -146,7 +155,7 @@ Resolvers may call other type-stage functions:
 --- stage: type
 [
   NullableAddResult: [fn [...args]
-    [or [AddResult [builtin-get 0 args] [builtin-get 1 args]]
+    [or [AddResult [builtin-dict-get 0 args] [builtin-dict-get 1 args]]
         [kind: "named" name: "Null"]]]
 ]
 ```
@@ -157,7 +166,7 @@ Resolvers may call other type-stage functions:
 --- stage: type
 [
   DivModResult: [fn [...args]
-    [match [[builtin-get 0 args]  [builtin-get 1 args]]
+    [match [[builtin-dict-get 0 args]  [builtin-dict-get 1 args]]
       [[kind: "named" name: "Int"]  [kind: "named" name: "Int"]]:
         [kind: "multi-output"
          q: [kind: "named" name: "Int"]
@@ -193,7 +202,7 @@ FDs are not limited to arithmetic. A `Merge` class with FD `(a, b) → c` expres
 --- stage: type
 [
   MergeResult: [fn [...args]
-    [match [[builtin-get 0 args] [builtin-get 1 args]]
+    [match [[builtin-dict-get 0 args] [builtin-dict-get 1 args]]
       [[kind: "record" fields: [host: _  port: _]]
        [kind: "record" fields: [timeout: _  retries: _]]]:
          [kind: "record"  fields: [host:    [kind: "named" name: "Str"]

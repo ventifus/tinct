@@ -241,9 +241,9 @@ error: no match arm satisfied
 
 See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.
 
-### Variable Names in Non-CaseArm Patterns
+### Variable Names in Keyed Patterns
 
-Non-`CaseArm` match arm patterns introduce **no new bindings**. A name in pattern position is either a pin comparison (if the name resolves in the enclosing scope) or a wildcard (if the name is not in scope). The body of the arm cannot reference a name introduced by the pattern itself — only names already in scope when the match expression was entered.
+Keyed match arm patterns introduce **no new bindings**. A name in pattern position is either a pin comparison (if the name resolves in the enclosing scope) or a wildcard (if the name is not in scope). The body of the arm cannot reference a name introduced by the pattern itself — only names already in scope when the match expression was entered.
 
 ```tinct
 [
@@ -256,7 +256,7 @@ Non-`CaseArm` match arm patterns introduce **no new bindings**. A name in patter
 ]
 ```
 
-If the same name appears twice in a non-CaseArm dict pattern (e.g., `[a: x  b: x  ...]`), each occurrence independently checks whether the matched field equals the in-scope value of `x` (if `x` is in scope) or silently passes (if `x` is not in scope). There is no binding of `x` from either occurrence.
+If the same name appears twice in a keyed dict pattern (e.g., `[a: x  b: x  ...]`), each occurrence independently checks whether the matched field equals the in-scope value of `x` (if `x` is in scope) or silently passes (if `x` is not in scope). There is no binding of `x` from either occurrence.
 
 **Equality matching:** To match when two dict fields have the same value, use `[case [let ...]]` with a guard:
 

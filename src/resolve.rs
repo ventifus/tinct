@@ -38,6 +38,28 @@ use std::sync::Arc;
 // ============================================================================
 // runtime-v2: SurfaceProgram resolver — produces ResolutionTable
 
+/// Extract binding variable names from a `[let name1 name2 ...]` node.
+/// Excludes `_` (wildcard) from the result — `_` is not a binding.
+fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
+    match &let_bindings.expr {
+        SurfaceExpression::LetDecl { bindings } => bindings
+            .iter()
+            .filter_map(|b| {
+                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
+                    if name == "_" {
+                        None // wildcard, not a binding
+                    } else {
+                        Some(name.clone())
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether a scope frame is a letrec dict scope or not.
 ///
 /// Used by `resolve_name_parent` to implement leading-dot (`.name`) parent-scope lookup:
@@ -1174,20 +1196,44 @@ impl SurfaceResolver {
             SurfaceExpression::Match { scrutinee, arms } => {
                 self.walk_surface_node(scrutinee);
                 for arm in arms {
-                    // Walk the pattern as a SurfaceNode with suppress_depth incremented.
-                    // This prevents undefined-variable errors for VarRefs in pattern position —
-                    // unresolved VarRefs get Some(None), which eval treats as "arm does not match".
-                    // CaseArm patterns are handled separately below (they have their own scope).
-                    self.suppress_depth += 1;
-                    self.walk_surface_node(&arm.pattern);
-                    self.suppress_depth -= 1;
-                    // Match arm patterns introduce NO new bindings to arm scope.
-                    // Only [case [let names] ...] form introduces bindings.
-                    if let Some(guard) = &arm.guard {
-                        self.walk_surface_node(guard);
-                    }
-                    for body_expr in &arm.body {
-                        self.walk_surface_node(body_expr);
+                    // If arm.let_bindings is Some(...), this is a [case [let names] pattern body] arm.
+                    // Extract binding names, enter_param_scope, walk pattern and body, exit_scope.
+                    if let Some(let_bindings) = &arm.let_bindings {
+                        self.walk_surface_node(let_bindings);
+                        // Extract binding variable names from [let name1 name2 ...].
+                        // `_` is excluded (wildcard, not a binding) so the pattern position
+                        // VarRef for `_` remains unresolved (Some(None)), which eval treats
+                        // as wildcard rather than a pin.
+                        let bound_names = extract_case_arm_binding_names(let_bindings);
+                        let has_bindings = !bound_names.is_empty();
+                        if has_bindings {
+                            self.enter_param_scope(&bound_names);
+                        }
+                        // Walk pattern with suppress_depth to allow unresolved pins (opaque arms).
+                        self.suppress_depth += 1;
+                        self.walk_surface_node(&arm.pattern);
+                        self.suppress_depth -= 1;
+                        if let Some(guard) = &arm.guard {
+                            self.walk_surface_node(guard);
+                        }
+                        for body_expr in &arm.body {
+                            self.walk_surface_node(body_expr);
+                        }
+                        if has_bindings {
+                            self.exit_scope();
+                        }
+                    } else {
+                        // Keyed arm (pattern: body) — no let_bindings, no scope entry.
+                        // Walk the pattern with suppress_depth incremented.
+                        self.suppress_depth += 1;
+                        self.walk_surface_node(&arm.pattern);
+                        self.suppress_depth -= 1;
+                        if let Some(guard) = &arm.guard {
+                            self.walk_surface_node(guard);
+                        }
+                        for body_expr in &arm.body {
+                            self.walk_surface_node(body_expr);
+                        }
                     }
                 }
             }
@@ -1202,52 +1248,6 @@ impl SurfaceResolver {
                     self.walk_surface_node(b);
                 }
                 self.suppress_depth -= 1;
-            }
-
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            } => {
-                self.walk_surface_node(let_bindings);
-                // Extract binding variable names from [let name1 name2 ...].
-                // Enter scope BEFORE walking the pattern so that binding VarRefs
-                // inside the pattern (e.g. `v` in `[Result.Ok v]`) resolve to
-                // the case arm's own scope rather than leaving OnceLocks unset.
-                let bound_names: Vec<String> = match &let_bindings.expr {
-                    SurfaceExpression::LetDecl { bindings } => bindings
-                        .iter()
-                        .filter_map(|b| {
-                            if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                                // `_` is a wildcard, not a binding — exclude it so the pattern
-                                // position VarRef for `_` remains unresolved (Some(None)), which
-                                // eval treats as wildcard rather than a pin.
-                                if name == "_" {
-                                    None
-                                } else {
-                                    Some(name.clone())
-                                }
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let has_bindings = !bound_names.is_empty();
-                if has_bindings {
-                    // Case arm bindings use Parameter addressing so they do not conflict with
-                    // root_group builtin LGM slots (which start at slot 0). Parameter(i) is
-                    // looked up via arm_frame.params[i], which the evaluator builds from the
-                    // bound thunks collected during pattern matching. This is analogous to
-                    // function parameter binding — locally scoped for the arm body only.
-                    self.enter_param_scope(&bound_names);
-                }
-                self.walk_surface_node(pattern);
-                self.walk_surface_node(body);
-                if has_bindings {
-                    self.exit_scope();
-                }
             }
 
             // Declaration embedded as a dict entry value — walk class/instance bodies so
@@ -1972,6 +1972,9 @@ fn collect_var_accesses_node(
             collect_var_accesses_node(scrutinee, var_name, accesses, dynamic_use);
             for arm in arms {
                 collect_var_accesses_node(&arm.pattern, var_name, accesses, dynamic_use);
+                if let Some(let_bindings) = &arm.let_bindings {
+                    collect_var_accesses_node(let_bindings, var_name, accesses, dynamic_use);
+                }
                 if let Some(guard) = &arm.guard {
                     collect_var_accesses_node(guard, var_name, accesses, dynamic_use);
                 }
@@ -1979,10 +1982,6 @@ fn collect_var_accesses_node(
                     collect_var_accesses_node(body_expr, var_name, accesses, dynamic_use);
                 }
             }
-        }
-        SurfaceExpression::CaseArm { pattern, body, .. } => {
-            collect_var_accesses_node(pattern, var_name, accesses, dynamic_use);
-            collect_var_accesses_node(body, var_name, accesses, dynamic_use);
         }
         SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
             collect_var_accesses_node(inner, var_name, accesses, dynamic_use);
@@ -2246,6 +2245,9 @@ mod tests {
                 collect_varrefs_in_node(scrutinee, name, out);
                 for arm in arms {
                     collect_varrefs_in_node(&arm.pattern, name, out);
+                    if let Some(let_bindings) = &arm.let_bindings {
+                        collect_varrefs_in_node(let_bindings, name, out);
+                    }
                     if let Some(guard) = &arm.guard {
                         collect_varrefs_in_node(guard, name, out);
                     }
@@ -2253,19 +2255,6 @@ mod tests {
                         collect_varrefs_in_node(body_expr, name, out);
                     }
                 }
-            }
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            } => {
-                // Walk into all three sub-nodes so VarRef searches reach the body.
-                // Note: let_bindings VarRefs are declarations (not references), but
-                // walking them here is safe — they'll have no entry in the resolution
-                // table (OnceLock unset for declaration-position names).
-                collect_varrefs_in_node(let_bindings, name, out);
-                collect_varrefs_in_node(pattern, name, out);
-                collect_varrefs_in_node(body, name, out);
             }
             _ => {}
         }
@@ -3001,6 +2990,9 @@ mod tests {
                 collect_fn_nodes(scrutinee, out);
                 for arm in arms {
                     collect_fn_nodes(&arm.pattern, out);
+                    if let Some(let_bindings) = &arm.let_bindings {
+                        collect_fn_nodes(let_bindings, out);
+                    }
                     if let Some(guard) = &arm.guard {
                         collect_fn_nodes(guard, out);
                     }
@@ -3008,15 +3000,6 @@ mod tests {
                         collect_fn_nodes(body_expr, out);
                     }
                 }
-            }
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            } => {
-                collect_fn_nodes(let_bindings, out);
-                collect_fn_nodes(pattern, out);
-                collect_fn_nodes(body, out);
             }
             SurfaceExpression::Pipe { lhs, rhs, .. } => {
                 collect_fn_nodes(lhs, out);

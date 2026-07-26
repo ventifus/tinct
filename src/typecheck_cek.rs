@@ -32,6 +32,30 @@ use crate::types::{
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
 
+// ===== Helper functions =====
+
+/// Extract binding variable names from a `[let name1 name2 ...]` node.
+/// Excludes `_` (wildcard) from the result — `_` is not a binding.
+fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
+    match &let_bindings.expr {
+        SurfaceExpression::LetDecl { bindings } => bindings
+            .iter()
+            .filter_map(|b| {
+                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
+                    if name == "_" {
+                        None // wildcard, not a binding
+                    } else {
+                        Some(name.clone())
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 // ===== Action enum =====
 
 /// Action returned by `infer_step` and `apply_cont`.
@@ -522,16 +546,6 @@ async fn infer_step(
                 span: node.span.clone(),
             });
             TypeCheckAction::Eval(Arc::clone(scrutinee), Arc::clone(env))
-        }
-
-        // ===== CaseArm — set up let bindings, eval body =====
-        SurfaceExpression::CaseArm {
-            let_bindings,
-            pattern: _,
-            body,
-        } => {
-            let arm_env = build_case_arm_env(let_bindings, env, state, node);
-            TypeCheckAction::Eval(Arc::clone(body), arm_env)
         }
 
         // ===== Decl — call declaration helpers directly (T-1641) =====
@@ -2570,10 +2584,13 @@ async fn setup_match_arm_env(
     errors: &mut Vec<TypeDiagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<(Arc<RwLock<Env>>, Type)> {
-    // Non-CaseArm match arm patterns introduce no bindings into the arm environment.
-    // Only [case [let ...]] arms introduce bindings, handled by the CaseArm branch of
-    // run_typecheck. The arm env starts as a clone of the outer env.
-    let arm_env: Arc<RwLock<Env>> = Arc::clone(env);
+    // If arm.let_bindings is Some(...), this is a [case [let names] pattern body] arm.
+    // Build a case arm env with those binding names. Otherwise, the arm env starts as the outer env.
+    let arm_env: Arc<RwLock<Env>> = if let Some(let_bindings) = &arm.let_bindings {
+        build_case_arm_env(let_bindings, env, state, &arm.pattern)
+    } else {
+        Arc::clone(env)
+    };
 
     // Guard inference and narrowing (guard is inferred for its type-map side effects only)
     let arm_env = if let Some(guard) = &arm.guard {
@@ -2691,6 +2708,27 @@ async fn setup_match_arm_env(
 
 // ===== Inline helper: Match exhaustiveness checking =====
 
+/// Recursively scan a pattern AST node for VarRef nodes with resolution Some(None).
+/// These are resolver errors (undefined variable references) that should make the arm
+/// opaque to coverage analysis.
+fn arm_has_unresolved_varrefs(node: &SurfaceNode) -> bool {
+    match &node.expr {
+        SurfaceExpression::VarRef { resolution, .. } => {
+            matches!(resolution.get(), Some(None))
+        }
+        SurfaceExpression::Call { func, args, .. } => {
+            arm_has_unresolved_varrefs(func) || args.iter().any(|a| arm_has_unresolved_varrefs(a))
+        }
+        SurfaceExpression::Dict(entries) => entries
+            .iter()
+            .any(|e| arm_has_unresolved_varrefs(&e.node.value)),
+        SurfaceExpression::Field { expr, .. } => expr
+            .as_ref()
+            .map_or(false, |e| arm_has_unresolved_varrefs(e)),
+        _ => false,
+    }
+}
+
 fn run_match_exhaustiveness_check(
     scrutinee_ty: &Type,
     arms: &[SurfaceMatchArm],
@@ -2733,7 +2771,14 @@ fn run_match_exhaustiveness_check(
             .iter()
             .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref)))
             .collect();
-        let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
+        // Mark arms with explicit guards OR unresolved VarRefs as opaque to coverage.
+        // Unresolved VarRefs are resolver errors — treating them as wildcards would mask
+        // non-exhaustiveness. Making them opaque means they neither contribute to coverage
+        // nor are flagged as redundant.
+        let has_guards: Vec<bool> = arms
+            .iter()
+            .map(|arm| arm.guard.is_some() || arm_has_unresolved_varrefs(&arm.pattern))
+            .collect();
         let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
 
         if !result.exhaustive {
@@ -2769,19 +2814,7 @@ fn build_case_arm_env(
     state: &mut InferState,
     node: &Arc<SurfaceNode>,
 ) -> Arc<RwLock<Env>> {
-    let binding_names: Vec<String> = match &let_bindings.expr {
-        SurfaceExpression::LetDecl { bindings } => bindings
-            .iter()
-            .filter_map(|b| {
-                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                    Some(name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+    let binding_names = extract_case_arm_binding_names(let_bindings);
     if binding_names.is_empty() {
         Arc::clone(env)
     } else {
@@ -3116,17 +3149,6 @@ fn collect_dependencies(
                     worklist.push((&named_arg.node.value, Arc::clone(&locals)));
                 }
             }
-            SurfaceExpression::Match { scrutinee, arms } => {
-                worklist.push((scrutinee, Arc::clone(&locals)));
-                for arm in arms {
-                    for body_expr in &arm.body {
-                        worklist.push((body_expr, Arc::clone(&locals)));
-                    }
-                    if let Some(ref guard) = arm.guard {
-                        worklist.push((guard, Arc::clone(&locals)));
-                    }
-                }
-            }
             SurfaceExpression::Field { expr, .. } => {
                 if let Some(target) = expr {
                     worklist.push((target, Arc::clone(&locals)));
@@ -3160,39 +3182,52 @@ fn collect_dependencies(
                     worklist.push((b, Arc::clone(&locals)));
                 }
             }
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            } => {
-                // let_bindings and pattern are scanned with the current locals.
-                worklist.push((let_bindings, Arc::clone(&locals)));
-                worklist.push((pattern, Arc::clone(&locals)));
-                // The arm body is scanned with the let-binding names added to locals,
-                // since those names are locally introduced by this arm.
-                let arm_local_names: HashSet<String> =
-                    if let SurfaceExpression::LetDecl { bindings } = &let_bindings.expr {
-                        bindings
-                            .iter()
-                            .filter_map(|b| {
-                                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect()
+            SurfaceExpression::Match { scrutinee, arms } => {
+                worklist.push((scrutinee, Arc::clone(&locals)));
+                for arm in arms {
+                    worklist.push((&arm.pattern, Arc::clone(&locals)));
+                    if let Some(let_bindings) = &arm.let_bindings {
+                        worklist.push((let_bindings, Arc::clone(&locals)));
+                        // The arm body is scanned with the let-binding names added to locals,
+                        // since those names are locally introduced by this arm.
+                        let arm_local_names: HashSet<String> =
+                            if let SurfaceExpression::LetDecl { bindings } = &let_bindings.expr {
+                                bindings
+                                    .iter()
+                                    .filter_map(|b| {
+                                        if let SurfaceExpression::VarRef { name, .. } = &b.expr {
+                                            Some(name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
+                            } else {
+                                HashSet::new()
+                            };
+                        let body_locals = if arm_local_names.is_empty() {
+                            Arc::clone(&locals)
+                        } else {
+                            let mut extended = (*locals).clone();
+                            extended.extend(arm_local_names);
+                            Arc::new(extended)
+                        };
+                        if let Some(guard) = &arm.guard {
+                            worklist.push((guard, body_locals.clone()));
+                        }
+                        for body_expr in &arm.body {
+                            worklist.push((body_expr, Arc::clone(&body_locals)));
+                        }
                     } else {
-                        HashSet::new()
-                    };
-                let body_locals = if arm_local_names.is_empty() {
-                    Arc::clone(&locals)
-                } else {
-                    let mut extended = (*locals).clone();
-                    extended.extend(arm_local_names);
-                    Arc::new(extended)
-                };
-                worklist.push((body, body_locals));
+                        // No let_bindings — keyed arm, body evaluates in outer env.
+                        if let Some(guard) = &arm.guard {
+                            worklist.push((guard, Arc::clone(&locals)));
+                        }
+                        for body_expr in &arm.body {
+                            worklist.push((body_expr, Arc::clone(&locals)));
+                        }
+                    }
+                }
             }
             SurfaceExpression::Error(_) => {}
         }

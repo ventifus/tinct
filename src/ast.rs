@@ -397,13 +397,6 @@ impl fmt::Display for SurfaceExpression {
                 }
                 write!(f, "]")
             }
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            } => {
-                write!(f, "[case {} {} {}]", let_bindings, pattern, body)
-            }
             SurfaceExpression::Decl(decl) => {
                 // Delegate to SurfaceDeclaration Display.
                 write!(f, "{}", decl)
@@ -776,18 +769,6 @@ pub enum SurfaceExpression {
         #[expr(key = "bindings", child_list)]
         bindings: Vec<Arc<SurfaceNode>>,
     },
-    #[expr(tag = "CaseArm")]
-    CaseArm {
-        /// The `[let ...]` node declaring which names in `pattern` are binding targets
-        /// vs. pin-comparisons. Always present — the parser (T-1151) requires exactly
-        /// three positional arguments: `[case [let bindings] pattern body]`.
-        #[expr(key = "let-bindings", child, key_aliases("let_bindings"))]
-        let_bindings: Arc<SurfaceNode>,
-        #[expr(key = "pattern", child)]
-        pattern: Arc<SurfaceNode>,
-        #[expr(key = "body", child)]
-        body: Arc<SurfaceNode>,
-    },
 
     // Placeholder `...` — typed hole; infers as a fresh TypeVar. Can carry an optional name
     // and type annotation from `...name@Type` syntax (used in open record contexts).
@@ -893,6 +874,10 @@ pub(crate) fn flatten_dot_access_to_tag_node(node: &SurfaceNode) -> Option<Strin
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMatchArm {
     pub pattern: Arc<SurfaceNode>,
+    /// The `[let ...]` node from `[case [let bindings] pattern body]` syntax. Declares which
+    /// names in `pattern` are binding targets vs pin-comparisons. `None` for keyed arms
+    /// (pattern: body), `Some(...)` for case arms with explicit scoping.
+    pub let_bindings: Option<Arc<SurfaceNode>>,
     pub guard: Option<Arc<SurfaceNode>>,
     /// Non-empty Vec of body expressions. Single-expression arms have `body.len() == 1`.
     /// Multi-expression arms have all-but-last as intermediate scope dicts and last as result.
@@ -1382,14 +1367,6 @@ pub enum CoreExpr {
     LetDecl {
         bindings: Vec<Spanned<CoreExpr>>,
     },
-    CaseArm {
-        /// The lowered `[let ...]` node declaring binding targets. Always present —
-        /// the parser (T-1151) requires exactly three positional arguments:
-        /// `[case [let bindings] pattern body]`.
-        let_bindings: Arc<Spanned<CoreExpr>>,
-        pattern: Arc<Spanned<CoreExpr>>,
-        body: Arc<Spanned<CoreExpr>>,
-    },
     Placeholder,
 }
 
@@ -1424,6 +1401,10 @@ pub struct CoreParam {
 #[derive(Debug, Clone)]
 pub struct CoreMatchArm {
     pub pattern: Arc<SurfaceNode>,
+    /// The lowered `[let ...]` node from `[case [let bindings] pattern body]`. `None` for keyed arms.
+    pub let_bindings: Option<Arc<Spanned<CoreExpr>>>,
+    /// The lowered pattern (structural match expression) from case arms. `None` for keyed arms.
+    pub lowered_pattern: Option<Arc<Spanned<CoreExpr>>>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
     /// Pre-resolved Matchable instance binding name for the guard's return type.

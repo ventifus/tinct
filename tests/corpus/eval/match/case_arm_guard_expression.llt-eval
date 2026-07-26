@@ -1,0 +1,26 @@
+# Guard expression pattern: [case [let x] [> x 0] body] evaluates [> x 0] as a guard,
+# returning body if truthy, skipping to next arm otherwise.
+[
+  positive: [match 5
+    [case [let x] [> x 0] "positive"]
+    ...:                  "non-positive"]
+
+  zero: [match 0
+    [case [let x] [> x 0] "positive"]
+    ...:                  "non-positive"]
+
+  # Multi-binding guard: [case [let x y] [ok: x y] body]
+  # The scrutinee is bound to both x and y; the guard checks a dict field on the scrutinee.
+  # ok: x binds x to scrutinee, y also to scrutinee. Guard [ok: x y] is a Dict —
+  # but here we use a simple dict-presence guard to test multi-binding dispatch.
+  #
+  # Simpler: two bindings, guard uses both.
+  same: [match 7
+    [case [let a b] [= a b] "same"]
+    ...:                    "different"]
+
+  # a and b are both bound to the scrutinee (7), so [= a b] = [= 7 7] = true → "same"
+]
+
+=== out
+["positive": "positive"  "zero": "non-positive"  "same": "same"]

@@ -531,22 +531,6 @@ pub fn core_expr_to_expr_value(
             make_variant("PatternDecl", payload)
         }
 
-        // ── CaseArm ──────────────────────────────────────────────────────────────
-        CoreExpr::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            payload.insert(
-                HashableValue::Str("let-bindings".into()),
-                recurse(let_bindings),
-            );
-            payload.insert(HashableValue::Str("pattern".into()), recurse(pattern));
-            payload.insert(HashableValue::Str("body".into()), recurse(body));
-            make_variant("CaseArm", payload)
-        }
-
         // ── Variant ──────────────────────────────────────────────────────────────
         // This is AST variant construction (Expr.Variant), NOT Value::Variant itself
         CoreExpr::Variant { tag, payload } => {
@@ -1598,6 +1582,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
         let body_node = dict_to_surface_node(&body_val, &arm_fallback_span, ctx)?;
         arms.push(SurfaceMatchArm {
             pattern,
+            let_bindings: None,
             guard,
             body: vec![body_node],
             guard_matchable_binding: crate::ast::MatchableBinding::new(),

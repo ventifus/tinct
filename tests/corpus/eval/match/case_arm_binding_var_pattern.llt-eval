@@ -1,0 +1,27 @@
+# Binding-var pattern: [case [let v] v body] — pattern `v` refers to the binding
+# variable itself, so it matches unconditionally (identity binding, not a guard).
+# This is distinct from [case [let v] [= v 42] body], which is a guard expression.
+[
+  identity: [match "hello"
+    [case [let v] v v]     # v is Parameter(0), matches unconditionally
+    ...:          "other"]
+
+  guard: [match "hello"
+    [case [let v] [= v "hello"] "matched"]
+    ...:                        "other"]
+
+  # Laziness proof: unused binding does not evaluate its expression.
+  # If `unused` were evaluated, [raise "never"] would fire. It is not evaluated
+  # because the binding-var arm matches unconditionally on `used` first — but more
+  # importantly, the body only references `used`, so `unused` is never forced.
+  lazy-proof: [match 42
+    [case [let used] used
+      [
+        unused: [raise "never"]
+        used:   used
+      ].used]
+    ...: -1]
+]
+
+=== out
+["identity": "hello"  "guard": "matched"  "lazy-proof": 42]

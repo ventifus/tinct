@@ -378,7 +378,9 @@ pub fn ast_pattern_to_coverage(
         // Placeholder `...` — always a wildcard.
         SurfaceExpression::Placeholder(..) => CoveragePattern::Wildcard,
 
-        // VarRef — distinguish pin from unresolvable.
+        // VarRef — distinguish binder from pin from unresolvable.
+        // A binder pattern (VarAddr::Parameter from [case [let names] ...] arms) is a wildcard
+        // with a binding name attached — it always matches and contributes to exhaustiveness.
         // A pin pattern (`foo:` where `foo` is in scope) matches only the current value of
         // `foo` — it is NOT exhaustive. Treat it as a named non-exhaustive "literal" so the
         // coverage algorithm does not falsely report it as exhaustive.
@@ -389,6 +391,10 @@ pub fn ast_pattern_to_coverage(
             name, resolution, ..
         } => {
             match resolution.get() {
+                Some(Some(crate::ast::VarAddr::Parameter(_))) => {
+                    // Binder pattern (case arm binding) — always matches (wildcard semantics)
+                    CoveragePattern::Wildcard
+                }
                 Some(Some(_)) => {
                     // Resolved pin — non-exhaustive, like a literal
                     CoveragePattern::Constructor {

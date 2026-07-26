@@ -495,6 +495,7 @@ fn eval_quote_preprocess<'a>(
                     };
                     processed_arms.push(SurfaceMatchArm {
                         pattern: arm.pattern.clone(),
+                        let_bindings: arm.let_bindings.clone(),
                         guard: processed_guard,
                         body: processed_body,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
@@ -982,13 +983,6 @@ pub(crate) fn eval_core_expr<'a>(
                 }
                 Ok(Arc::new(Thunk::value(Value::Dict(dict), span.clone())))
             }
-
-            // CaseArm: error (not an expression)
-            CoreExpr::CaseArm { .. } => Err(EvalError::internal(
-                "case arms are not expressions".to_string(),
-                span.clone(),
-            )
-            .into()),
 
             CoreExpr::Placeholder => Err(EvalError::unimplemented(
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),

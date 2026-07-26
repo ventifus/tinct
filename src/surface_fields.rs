@@ -148,13 +148,6 @@ pub fn surface_node_get_field(
             nodes_to_list_dict(bindings, ctx)
         }
 
-        // --- CaseArm ---
-        (SurfaceExpression::CaseArm { let_bindings, .. }, "let_bindings") => {
-            expr_variant(let_bindings)
-        }
-        (SurfaceExpression::CaseArm { pattern, .. }, "pattern") => expr_variant(pattern),
-        (SurfaceExpression::CaseArm { body, .. }, "body") => expr_variant(body),
-
         // --- Decl (TypeAlias) — expose arity for type declarations ---
         // Allows generate.llt to determine how many type parameters a type has
         // without executing the declaration (which is compile-time-only).
@@ -679,7 +672,6 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::UnquoteSplice(_) => "[unquote-splice ...]",
         SurfaceExpression::PatternDecl { .. } => "[pattern ...]",
         SurfaceExpression::LetDecl { .. } => "[let ...]",
-        SurfaceExpression::CaseArm { .. } => "[case ...]",
         SurfaceExpression::Error(_) => "<parse error>",
         SurfaceExpression::Decl(_) => "declaration",
     }

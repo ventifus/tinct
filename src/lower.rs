@@ -865,6 +865,14 @@ fn lower_expr(
                 .map(|arm| CoreMatchArm {
                     // T-1750: pattern is now Arc<SurfaceNode>, pass through directly (clone the Arc)
                     pattern: Arc::clone(&arm.pattern),
+                    let_bindings: arm
+                        .let_bindings
+                        .as_ref()
+                        .map(|lb| Arc::new(lower_inner(lb, diagnostics, scope_frames))),
+                    lowered_pattern: arm
+                        .let_bindings
+                        .as_ref()
+                        .map(|_| Arc::new(lower_inner(&arm.pattern, diagnostics, scope_frames))),
                     guard: arm
                         .guard
                         .as_ref()
@@ -926,16 +934,6 @@ fn lower_expr(
                     }
                 })
                 .collect(),
-        },
-
-        SurfaceExpression::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => CoreExpr::CaseArm {
-            let_bindings: Arc::new(lower_inner(let_bindings, diagnostics, scope_frames)),
-            pattern: Arc::new(lower_inner(pattern, diagnostics, scope_frames)),
-            body: Arc::new(lower_inner(body, diagnostics, scope_frames)),
         },
 
         SurfaceExpression::Decl(decl) => match decl.as_ref() {
@@ -1109,6 +1107,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 .iter()
                 .map(|arm| SurfaceMatchArm {
                     pattern: arm.pattern.clone(),
+                    let_bindings: None,
                     guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
                     body: vec![core_expr_to_surface_node(&arm.body)],
                     guard_matchable_binding: crate::ast::MatchableBinding::new(),
@@ -1140,15 +1139,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 })
                 .collect(),
         ),
-        CoreExpr::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => SurfaceExpression::CaseArm {
-            let_bindings: core_expr_to_surface_node(let_bindings.as_ref()),
-            pattern: core_expr_to_surface_node(pattern),
-            body: core_expr_to_surface_node(body),
-        },
         CoreExpr::Placeholder => SurfaceExpression::Placeholder(None, None),
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.

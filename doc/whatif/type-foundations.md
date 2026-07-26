@@ -979,7 +979,7 @@ The following is a precise mapping from the proposed design to the current codeb
 | `key_to_string` Bool arm | `parser.rs:96-108` | **Delete** the `Bool` arm. |
 | BoolLit → Pattern arm | `parser.rs:5187` | **Delete** `Bool(b) => Pattern::Literal(LiteralPattern::Bool(...))` arm. |
 | BoolLit → SurfaceExpr arm | `parser.rs:3016-3039` | **Delete** the `BoolLit` arm; `True`/`False` arrive as `Token::Identifier` and produce `VarRef`. |
-| `injective: SurfaceExpression::Bool` | `parser.rs:2473` | **Change** — class parser currently checks `SurfaceExpression::Bool(b)` for the `injective` field. Must become `VarRef("True")`/`VarRef("False")` equality check (or `VarRef("Boolean.True")`) once BoolLit is gone. |
+| `injective: SurfaceExpression::Int` | `parser.rs` | **No change needed** — the implementation uses integer encoding (`1`/`0`) directly. `SurfaceExpression::Bool` was never used for `injective`; `SurfaceExpression::Bool` itself has been removed entirely. The integer protocol (`1` = injective, `0` = not injective) is the correct final form. |
 
 **Chain 2 — `"Seq"` pattern special case (retire):**
 

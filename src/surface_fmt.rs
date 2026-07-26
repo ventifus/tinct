@@ -445,29 +445,6 @@ fn collect_free_vars(
                 collect_free_vars(&binding.node, param_scope, stdlib_env, out);
             }
         }
-
-        CoreExpr::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            // Extract binding names from let_bindings to build the arm scope.
-            let mut arm_scope = param_scope.clone();
-            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
-                for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
-                        arm_scope.insert(name.clone());
-                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
-                    } else if let CoreExpr::Var { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
-                    }
-                }
-            }
-
-            collect_free_vars(&let_bindings.node, param_scope, stdlib_env, out);
-            collect_free_vars(&pattern.node, param_scope, stdlib_env, out);
-            collect_free_vars(&body.node, &arm_scope, stdlib_env, out);
-        }
     }
 }
 
@@ -547,28 +524,6 @@ fn collect_free_vars_in_quote(
         }
         CoreExpr::TypeAssert { expr, .. } => {
             collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
-        }
-        CoreExpr::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            // Extract binding names from let_bindings to build the arm scope.
-            let mut arm_scope = param_scope.clone();
-            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
-                for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
-                        arm_scope.insert(name.clone());
-                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
-                    } else if let CoreExpr::Var { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
-                    }
-                }
-            }
-
-            collect_free_vars_in_quote(&let_bindings.node, depth, param_scope, stdlib_env, out);
-            collect_free_vars_in_quote(&pattern.node, depth, param_scope, stdlib_env, out);
-            collect_free_vars_in_quote(&body.node, depth, &arm_scope, stdlib_env, out);
         }
         CoreExpr::PatternDecl { bindings } | CoreExpr::LetDecl { bindings } => {
             for b in bindings {
@@ -915,38 +870,6 @@ fn core_expr_to_tinct(
             Ok(format!("[let {}]", parts.join(" ")))
         }
 
-        CoreExpr::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            // Extract binding names from let_bindings to build the arm scope.
-            let mut arm_scope = param_scope.clone();
-            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
-                for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
-                        arm_scope.insert(name.clone());
-                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
-                    } else if let CoreExpr::Var { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
-                    }
-                }
-            }
-
-            let lb_str = core_expr_to_tinct(
-                &let_bindings.node,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            let pattern_str =
-                core_expr_to_tinct(&pattern.node, param_scope, substitutions, rename_map, ctx)?;
-            let body_str =
-                core_expr_to_tinct(&body.node, &arm_scope, substitutions, rename_map, ctx)?;
-            Ok(format!("[case {} {} {}]", lb_str, pattern_str, body_str))
-        }
-
         // Variant: `TypeName.CtorName` or `[TypeName.CtorName payload]`
         CoreExpr::Variant { tag, payload } => {
             if let Some(inner) = payload {
@@ -1245,50 +1168,6 @@ fn core_expr_to_tinct_raw(
                 )?);
             }
             Ok(format!("[let {}]", parts.join(" ")))
-        }
-        CoreExpr::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            // Extract binding names from let_bindings to build the arm scope.
-            let mut arm_scope = param_scope.clone();
-            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
-                for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
-                        arm_scope.insert(name.clone());
-                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
-                    } else if let CoreExpr::Var { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
-                    }
-                }
-            }
-
-            let lb_s = core_expr_to_tinct_in_quote(
-                &let_bindings.node,
-                depth,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            let ps = core_expr_to_tinct_in_quote(
-                &pattern.node,
-                depth,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            let bs = core_expr_to_tinct_in_quote(
-                &body.node,
-                depth,
-                &arm_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            Ok(format!("[case {} {} {}]", lb_s, ps, bs))
         }
 
         // Variant: tag is opaque AST data inside quotes — emit as-is.

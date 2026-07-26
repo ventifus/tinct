@@ -1,0 +1,20 @@
+# Dot-access constructor pattern: [case [let p] [Result.Ok p] body]
+# Result.Ok lowers to a builtin-dict-get call in CoreExpr, so is_structural_pattern_head
+# must use the surface pattern (SurfaceExpression::Field) not CoreExpr.
+[
+  Result: [type [let a] Ok: [value: a] Err: [msg: String]]
+
+  ok: [Result.Ok value: 42]
+  err: [Result.Err msg: "oops"]
+
+  r1: [match ok
+    [case [let p] [Result.Ok p]    p.value]
+    [case [let]   [Result.Err ...] -1]]
+
+  r2: [match err
+    [case [let p] [Result.Ok p]    p.value]
+    [case [let]   [Result.Err ...] -1]]
+]
+
+=== out
+["r1": 42  "r2": -1]

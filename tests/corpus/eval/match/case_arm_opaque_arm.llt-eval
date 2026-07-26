@@ -1,0 +1,15 @@
+# Opaque arm: a match arm containing an undefined variable in the pattern position
+# is treated as opaque (has_guards = true) by the type checker's coverage analysis.
+# At eval time, an undefined VarRef in a keyed arm pattern resolves to Some(None) —
+# the arm does not silently match everything; it simply does not match.
+# The fallback arm (wildcard) is reached correctly.
+[
+  # undefined-name is not in scope — resolution yields Some(None) → arm does not match.
+  # The wildcard arm must fire.
+  result: [match 42
+    undefined-name: "should not match"
+    ...:            "fallback"]
+]
+
+=== out
+["result": "fallback"]
