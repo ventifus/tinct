@@ -1140,6 +1140,37 @@ pub(crate) fn builtin_llt_repr(
     })
 }
 
+/// `debug-repr`: Format a value as a Rust Debug string (DisplayVisitor format).
+///
+/// This produces the same output as the corpus test runner's DisplayVisitor format:
+/// `Int(42)`, `Dict({...})`, `String("text")`, `Variant(Tag.Ctor, Null)`, etc.
+/// Used by test-loader.llt for corpus test output formatting.
+pub(crate) fn builtin_debug_repr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "debug-repr",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        // value_to_display_string produces DisplayVisitor format: Int(42), Dict({...}), etc.
+        let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
+            .await
+            .map_err(|e| EvalError::internal(format!("debug-repr: {}", e.kind), call_span.clone()))?;
+        ok_val(string_val(&display_str), call_span)
+    })
+}
+
 /// `tag-of`: Return the tag of a Variant as a String.
 ///
 /// After T-974 (S-845), user-defined ADT constructors carry qualified tags (e.g.,

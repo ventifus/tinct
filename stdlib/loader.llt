@@ -255,18 +255,17 @@
             # Typecheck each document in the declaration file using the seed env.
             # No eval — just type-check to populate TypeContext with builtin signatures.
             [name-set: [env-to-name-set seed-env]]
-            [_:              [reduce
-                               [fn [let _ doc]
-                                 [res:    [builtin-resolve doc name-set]]
-                                 [typed:  [builtin-typecheck-doc res.doc seed-tc seed-env]]
-                                 []]
-                               []
-                               docs]]
-            []]]]]
-        [_warnings:  [match [builtin-has-key? "ok" tc-result]
-            0: []
-            ...: [builtin-dict-get "ok" tc-result]]]
-        [merge acc [builtin-module name]]]
+            [reduce
+              [fn [let acc doc]
+                [res: [builtin-resolve doc name-set]]
+                [builtin-int-add acc [builtin-dict-length [@Dict [builtin-typecheck-doc res.doc seed-tc seed-env].diagnostics]]]]
+              0
+              docs]]]]
+        # Force tc-result from the return so the TypeContext side-effect runs.
+        # builtin-has-key? forces tc-result; both arms return the same module dict.
+        [match [builtin-has-key? "ok" tc-result]
+          0: [merge acc [builtin-module name]]
+          1: [merge acc [builtin-module name]]]]
       []
       module-names]]
 

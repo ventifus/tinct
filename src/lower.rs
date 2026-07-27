@@ -758,6 +758,52 @@ fn lower_expr(
                         Arc::new(Spanned::new(lowered, k.span.clone()))
                     });
                     let value = Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
+                    // Trivial self-reference: [name: name] where the entire RHS is a bare
+                    // VarRef resolving to the same letrec binding. depth=0 means current
+                    // group; name equality guarantees same slot (names are unique per group).
+                    // Anything inside fn or call may be valid recursion — only the bare case
+                    // is detectable as definitely wrong.
+                    // Key representation: bare word keys are StringLiteral (normalized at parse
+                    // time); annotated keys (`name@[doc: "..."]`) stay as VarRef. Both must be
+                    // matched. Look through TypeAssert/annotation wrappers on the value too.
+                    if let Some(key_node) = &se.node.key {
+                        let key_name: Option<&str> = match &key_node.expr {
+                            SurfaceExpression::StringLiteral { content, .. } => {
+                                Some(content.as_str())
+                            }
+                            SurfaceExpression::VarRef {
+                                name,
+                                escaped: false,
+                                ..
+                            } => Some(name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(key_name) = key_name {
+                            // Peel TypeAssert wrappers added by the type checker or user
+                            // annotations — the bare Var may be wrapped in one or more guards.
+                            let mut inner = &value.node;
+                            while let CoreExpr::TypeAssert { expr, .. } = inner {
+                                inner = &expr.node;
+                            }
+                            if let CoreExpr::Var {
+                                name: var_name,
+                                addr: VarAddr::LetrecGroupMember { depth: 0, .. },
+                                ..
+                            } = inner
+                            {
+                                if var_name.as_str() == key_name {
+                                    diagnostics.push(LowerDiagnostic {
+                                        kind: LowerDiagnosticKind::Error,
+                                        message: format!(
+                                            "self-referential binding: '{}' refers to itself; use '.{}' to reference the parent scope",
+                                            key_name, key_name
+                                        ),
+                                        span: se.node.value.span.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
                     core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                 }
             }

@@ -1726,8 +1726,9 @@ pub fn materialize<'a>(
                 // Claim failed, not settled — thunk is InProgress.
                 let evaluating_task = thunk.inner.unevaluated.lock().unwrap().1;
                 let same = match (evaluating_task, tokio::task::try_id()) {
-                    (Some(e), Some(c)) => e == c,
-                    _ => true,
+                    (None, None) => true,         // both in block_on context → same
+                    (None, Some(_)) | (Some(_), None) => false, // mixed → wait (T-1646)
+                    (Some(e), Some(c)) => e == c, // both spawned → compare IDs
                 };
                 if same {
                     let cycle_path =

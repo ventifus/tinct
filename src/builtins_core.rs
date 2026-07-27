@@ -56,11 +56,11 @@ use crate::builtins_string::{
 use crate::builtins_bytes::{builtin_bytes, builtin_bytes_concat};
 // Meta/eval implementations — Core-46 only.
 use crate::builtins_meta::{
-    builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_desugar,
-    builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_get_type_context,
-    builtin_is_variant, builtin_llt_repr, builtin_parse, builtin_program_docs, builtin_raise,
-    builtin_resolve, builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck_doc,
-    builtin_variant_payload,
+    builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_debug_repr,
+    builtin_desugar, builtin_doc_expressions, builtin_doc_meta, builtin_eval,
+    builtin_get_type_context, builtin_is_variant, builtin_llt_repr, builtin_parse,
+    builtin_program_docs, builtin_raise, builtin_resolve, builtin_tag_of, builtin_try,
+    builtin_type_of, builtin_typecheck_doc, builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -595,6 +595,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-llt-repr",
             builtin_llt_repr,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-debug-repr",
+            builtin_debug_repr,
             [Strictness::Seq],
             0,
             ["x"]

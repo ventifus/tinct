@@ -279,6 +279,7 @@
   builtin-tag-of:          [fn@String  [let x@Any] ...]
   builtin-variant?:        [fn@[or 0 1] [let x@Any] ...]
   builtin-llt-repr:        [fn@String   [let x@Any] ...]
+  builtin-debug-repr:      [fn@String   [let x@Any] ...]
 
   # ── Capability ─────────────────────────────────────────────────────────────
   # cap-env-has?: true (1) if the named capability key is present in the env dict.

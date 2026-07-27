@@ -630,8 +630,19 @@ pub(crate) async fn force_step(
         {
             let evaluating_task = thunk.inner.unevaluated.lock().unwrap().1;
             let same = match (evaluating_task, tokio::task::try_id()) {
+                // Both in the block_on chain (no spawned task): same evaluation context.
+                // The main eval runs via LocalSet::block_on which does not create a
+                // task, so try_id() returns None throughout. (None, None) means same
+                // context → genuine cycle or same-context diamond-DAG.
+                (None, None) => true,
+                // Evaluating task has no ID but current does (or vice versa): mixed
+                // contexts. The thunk was claimed on the block_on thread but a spawned
+                // task is waiting on it — different contexts → wait for settlement.
+                // This is the canonical T-1646 case: spawned task waits for the main
+                // evaluation chain to settle the thunk.
+                (None, Some(_)) | (Some(_), None) => false,
+                // Both in spawned tasks: compare IDs directly.
                 (Some(e), Some(c)) => e == c,
-                _ => true,
             };
             if same {
                 let cycle_path = TASK_EVAL_STACK

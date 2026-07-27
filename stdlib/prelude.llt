@@ -3254,7 +3254,7 @@ describe@[doc: "Get introspection dict for a value. For functions: {doc, return-
                 [doc-entry: [try-or-impl [raw-to-result [builtin-try [head [filter [fn [let e] [builtin-eq-string [builtin-dict-get "key" e] "doc"]] [builtin-dict-get "entries" [@Dict ann]]]]]] []]
                   [if [= doc-entry []] "" [builtin-dict-get "value" doc-entry]]]
                 ""]]]
-      [doc:        doc
+      [doc:        .doc
        return-ann: ann
        params:     [get "params" ast]
        sig:        [sig-from-ast ast]]]]
@@ -3322,7 +3322,7 @@ read-all@[doc: "Read all content from a file handle. Returns [content: String  h
     [read-all-loop: [fn [let handle acc]
       [result: [read-chunk 65536 handle]]
       [if [builtin-eq-int [length result.bytes] 0]
-        [content: [bytes-str acc]  handle: handle]
+        [content: [bytes-str acc]  handle: .handle]
         [read-all-loop result.handle [builtin-bytes-concat acc result.bytes]]]]]
     [read-all-loop h [builtin-bytes]]]
 
@@ -3378,7 +3378,7 @@ cap-identity@[doc: "Return a stable string identity for a DirCap (used for conte
 # cap-data removed: operated on Value::Handle/WriteHandle which no longer exist.
 # env-to-name-set: Convert a flat env dict to a Dict<String,1> for builtin-resolve.
 # Replaces the old scope-to-frames helper — env is already a flat dict of name→thunk.
-env-to-name-set@[doc: "Convert an accumulated env dict to a flat Dict<String,1> for builtin-resolve. All visible names map to 1 (values ignored by resolver)."]: env-to-name-set
+env-to-name-set@[doc: "Convert an accumulated env dict to a flat Dict<String,1> for builtin-resolve. All visible names map to 1 (values ignored by resolver)."]: .env-to-name-set
 
 # module: resolve a module name to its export dict (used to build eval scope from doc.uses).
 module@[doc: "Resolve a builtin module name to its export dict."]: builtin-module
@@ -3433,7 +3433,7 @@ Named document sections (--- name: "foo") accumulate as %foo bindings in env.
                       [%: exports]
                       [dict-merge [make-entry [str "%" doc-name] exports] [%: exports]]]]]
       [env: next-env  percent: exports]]
-    [env: env  percent: initial-input]
+    [env: .env  percent: initial-input]
     docs]]
   state.percent]
 

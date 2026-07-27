@@ -4091,8 +4091,17 @@ fn arm_has_unresolved_varrefs(node: &SurfaceNode) -> bool {
         SurfaceExpression::VarRef { resolution, .. } => {
             matches!(resolution.get(), Some(None))
         }
-        SurfaceExpression::Call { func, args, .. } => {
-            arm_has_unresolved_varrefs(func) || args.iter().any(|a| arm_has_unresolved_varrefs(a))
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            arm_has_unresolved_varrefs(func)
+                || args.iter().any(|a| arm_has_unresolved_varrefs(a))
+                || named_args
+                    .iter()
+                    .any(|na| arm_has_unresolved_varrefs(&na.node.value))
         }
         SurfaceExpression::Dict(entries) => entries
             .iter()
