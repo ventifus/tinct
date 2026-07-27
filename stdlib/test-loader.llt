@@ -769,14 +769,16 @@
       | [if-ok typecheck-docs tc scope]]]
     # Run cli/out/llt.llt as the output formatter (second pipeline stage).
     # Only runs when the test program succeeded (no eval errors).
-    # %stdout is a StringWriter.Writer (prelude's functional string capture);
-    # llt.llt writes llt-repr(%) to it. The flushed writer is last-result;
-    # .cells contains the formatted output string.
+    # %stdout is a protocol dict with write/flush/close methods;
+    # llt.llt writes llt-repr(%) to it. The flushed protocol dict is last-result;
+    # .cells contains the accumulated string.
     [match [builtin-eq-int [count-errors test-result.diagnostics] 0]
       0: [merge test-result [output: ""]]
       1: [call [fn [let]
-           [make-sw:  [builtin-dict-get "make-string-writer" prelude-env]]
-           [sw:       [call make-sw]]
+           [sw: [cells: ""
+                 write: [fn [let s h] [merge h [cells: [builtin-string-concat h.cells s]]]]
+                 flush: [fn [let h] h]
+                 close: [fn [let h] h]]]
            [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw]]]
            [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr]
              | [if-ok load-bytes %libdir]

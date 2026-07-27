@@ -60,7 +60,7 @@
 #
 # Known initial-env entries (%cwd, %libdir, %args) are included in every
 # user document's scope by eval-document-runtime referencing them from its closure.
-# %stdout and %stderr are nominal type values (Stdout.Stdout, Stderr.Stderr) defined in Dict 2.
+# %stdout and %stderr are protocol dicts (with write/flush/close methods) defined in Dict 2.
 # User-specified caps declared via --- caps: headers are handled during that
 # processing step — not threaded here.
 #
@@ -189,15 +189,19 @@
 # environment — %cwd, %libdir, %stdout, %args etc. are bare names here.
 
 [
-  # ── stdio nominal types ──────────────────────────────────────────────────
-  # Stdout, Stderr, Stdin are tinct nominal types — not opaque Rust types.
-  # Writable/Readable instances in prelude.llt dispatch to stateless builtins.
-  # %stdout/%stderr are unit variant values, not protocol dicts.
-  Stdout: [type Stdout]
-  Stderr: [type Stderr]
+  # ── stdio protocol dicts and nominal types ───────────────────────────────
+  # %stdout and %stderr: protocol dicts wrapping the stateless Rust builtins.
+  # They implement the File.Writable protocol (write/flush/close methods) directly.
+  # No typeclass dispatch needed — the methods are called directly on the dict.
+  %stdout: [write:  [fn [let s h] [builtin-write-stdout s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+  %stderr: [write:  [fn [let s h] [builtin-write-stderr s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+
+  # Stdin remains a nominal type with a Readable instance in prelude.llt.
   Stdin:  [type Stdin]
-  %stdout: Stdout.Stdout
-  %stderr: Stderr.Stderr
 
   # ── Foundation ────────────────────────────────────────────────────────────
   # Boolean is declared here (loader.llt dict 2), before prelude loads.
@@ -550,7 +554,7 @@
 # Dict 3 — Intermediate bindings (prelude, channels, formatter)
 # ============================================================================
 # %cwd, %libdir, %stdout, %stderr, %args, %programs and any invoker-defined names are
-# all in scope here. %stdout and %stderr are Stdout.Stdout and Stderr.Stderr from Dict 2.
+# all in scope here. %stdout and %stderr are protocol dicts from Dict 2.
 # This dict creates bindings visible to the final expression below.
 
 [

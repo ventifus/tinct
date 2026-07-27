@@ -1166,7 +1166,9 @@ pub(crate) fn builtin_debug_repr(
         // value_to_display_string produces DisplayVisitor format: Int(42), Dict({...}), etc.
         let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
             .await
-            .map_err(|e| EvalError::internal(format!("debug-repr: {}", e.kind), call_span.clone()))?;
+            .map_err(|e| {
+                EvalError::internal(format!("debug-repr: {}", e.kind), call_span.clone())
+            })?;
         ok_val(string_val(&display_str), call_span)
     })
 }

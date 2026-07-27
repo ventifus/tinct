@@ -2191,15 +2191,6 @@ File: [
 [instance File.Readable
   [let h@File]: [read-chunk: [fn [let n h] [bytes: [builtin-file-read h n]  handle: h]]]]
 
-# Stdout and Stderr are Writable but NOT Closeable.
-[instance File.Writable
-  [let h@Stdout]: [write: [fn [let s h] [builtin-write-stdout s h]]
-                   flush: [fn [let h] h]]]
-
-[instance File.Writable
-  [let h@Stderr]: [write: [fn [let s h] [builtin-write-stderr s h]]
-                   flush: [fn [let h] h]]]
-
 # Stdin is Readable but NOT Closeable.
 [instance File.Readable
   [let h@Stdin]: [read-chunk: [fn [let n h] [bytes: [builtin-read-stdin n]  handle: h]]]]
@@ -3331,7 +3322,8 @@ write-file@[doc: "Write a string to a file under a DirCap"]: builtin-write
 write-file-atomic@[doc: "Atomically write a string to a file (via temp file + rename)"]: builtin-write-atomic
 # write, flush, close are Writable typeclass methods — injected by the class declaration.
 # read-chunk, close are Readable typeclass methods — injected by the class declaration.
-# Instances for File, StringWriter.Writer, Stdout, Stderr defined alongside their types.
+# Instances for File, StringWriter.Writer, Stdin defined alongside their types.
+# %stdout and %stderr are protocol dicts (not nominal types) — they have write/flush/close methods directly.
 # write-handle removed — replaced by typeclass-dispatched write (content first, handle last).
 seek@[doc: "Seek to a position in a seekable file handle."]:
   [fn [let pos h]
