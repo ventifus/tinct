@@ -2424,7 +2424,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
 
                     StackFrame::Match {
                         scrutinee,
-                        mut arms,
+                        arms,
                         mut pending_pattern_expr,
                         pending_pattern,
                         span_start,
@@ -2437,20 +2437,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             });
                         } else if pending_pattern_expr.is_some() {
                             // A pending_pattern_expr at close-bracket time means the last
-                            // expression was never followed by a colon, so it is not a pattern —
-                            // it is the final body expression of the current arm.
-                            let last_body_expr = pending_pattern_expr.take().unwrap();
-                            if let Some(last_arm) = arms.last_mut() {
-                                last_arm.body.push(last_body_expr);
-                            } else {
-                                close_bracket_recover!(ParseError {
-                                    message:
-                                        "match form has an expression with no arm to belong to"
-                                            .to_string(),
-                                    span: Some(span.clone()),
-                                    help: None,
-                                });
-                            }
+                            // expression was not followed by a colon — it is a positional
+                            // entry in the match call, not part of any arm. Discard it.
+                            // Match arms take exactly one body expression per arm.
+                            pending_pattern_expr.take();
                         } else if pending_pattern.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "match pattern must be followed by a body expression"
@@ -5822,20 +5812,21 @@ fn push_expr_to_parent(
                     });
                     Ok(())
                 } else {
-                    // pending_pattern_expr is set but not converted yet (no colon followed it).
-                    // This means the old pending_pattern_expr was NOT a pattern — it is a body
-                    // continuation for the current arm. Append it to the last arm's body,
-                    // then store the new node as the new pending_pattern_expr.
-                    let old_pending = pending_pattern_expr.take().unwrap();
-                    if let Some(last_arm) = arms.last_mut() {
-                        last_arm.body.push(old_pending);
-                    } else {
+                    // pending_pattern_expr was set but no colon followed it, and a new
+                    // expression has arrived. The pending expression is a positional entry
+                    // in the match call — not part of any arm body. Discard it and store
+                    // the new node as the next potential pattern or positional entry.
+                    // Match arms take exactly one body expression; extra positional entries
+                    // are not attached to any arm.
+                    if arms.is_empty() {
+                        let old_pending = pending_pattern_expr.take().unwrap();
                         return Err(ParseError {
                             message: "unexpected expression before first match arm (no pattern: body pair yet)".to_string(),
                             span: Some(old_pending.span.clone()),
                             help: None,
                         });
                     }
+                    let _discarded = pending_pattern_expr.take();
                     *pending_pattern_expr = Some(node);
                     Ok(())
                 }

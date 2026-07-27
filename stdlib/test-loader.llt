@@ -336,22 +336,28 @@
   # pragma-no-prelude?: true if the first document in a parsed state carries
   #   pragma: ["no-prelude"]
   # builtin-doc-meta is called with [] (empty env) so pragma values must be plain literals.
-  pragma-no-prelude?: [fn [let state@[diagnostics: Dict  parsed: [documents: Dict]]]
+  # check-pragma-docs: scan the first document's pragma list for "no-prelude".
+  # Returns Boolean.True if found, Boolean.False otherwise.
+  # Extracted helper so pragma-no-prelude? has no multi-body match arms.
+  check-pragma-docs: [fn@Boolean [let docs]
+    [meta:    [builtin-doc-meta [builtin-dict-get 0 docs] []]]
+    [pragmas: [get-or [] "pragma" meta]]
+    [n:       [builtin-dict-length pragmas]]
+    [find: [fn@Boolean [let i]
+      [match [builtin-int-gte i n]
+        0: [match [builtin-eq-string [get-or "" i pragmas] "no-prelude"]
+             0: [find [builtin-int-add i 1]]
+             1: Boolean.True]
+        1: Boolean.False]]]
+    [find 0]]
+
+  # Returns Boolean.True if the first document carries pragma: ["no-prelude"], Boolean.False otherwise.
+  pragma-no-prelude?: [fn@Boolean [let state@[diagnostics: Dict  parsed: [documents: Dict]]]
     [match [builtin-eq-int [count-errors [@Dict state.diagnostics]] 0]
-      0: 0  # parse failed — treat as no pragma
-      1: [docs: state.parsed.documents]
-         [match [builtin-eq-int [builtin-dict-length docs] 0]
-           0: 0  # no documents
-           1: [meta:    [builtin-doc-meta [builtin-dict-get 0 docs] []]]
-              [pragmas: [get-or [] "pragma" meta]]
-              [n:       [builtin-dict-length pragmas]]
-              [find: [fn [let i]
-                [match [builtin-int-gte i n]
-                  0: [match [builtin-eq-string [get-or "" i pragmas] "no-prelude"]
-                       0: [find [builtin-int-add i 1]]
-                       1: 1]
-                  1: 0]]]
-              [find 0]]]]
+      0: Boolean.False  # parse failed — treat as no pragma
+      1: [match [builtin-eq-int [builtin-dict-length state.parsed.documents] 0]
+           1: Boolean.False  # no documents → no pragma
+           0: [check-pragma-docs state.parsed.documents]]]]
 
   # ── Pipeline infrastructure ──────────────────────────────────────────────────
   # if-ok: pipeline combinator. Used as [prev-state | [if-ok f pre-args...]].
@@ -727,17 +733,13 @@
     [new-stderr: [emit-diagnostics all-with-lint state.stderr]]
     [merge state [tc-diagnostics: all-with-lint  stderr: new-stderr]]]
 
-  # format-output: format state.last-result into state.output using builtin-debug-repr.
-  format-output: [fn [let state@[last-result: Any]]
-    [merge state [output: [builtin-string-concat [builtin-debug-repr state.last-result] "\n"]]]]
-
   # run-test-pipeline: evaluate a test source string through the full pipeline.
   # Returns a state dict with output, tc-diagnostics, and stderr: final-handle.
-  # stderr-h threads through — next consumer forces the write chain.
-  # prelude-env: the accumulated env dict from prelude evaluation (contains all prelude exports).
-  # prelude-tc: the TypeContext returned by prel.tc-ready — already enriched with
-  # prelude's type schemes. Passed explicitly so test typechecking sees prelude's types.
-  run-test-pipeline: [fn [let source path prelude-env@Dict prelude-tc stderr-h]
+  # Mirrors loader.llt's cli-pipeline exactly: test program runs first, then
+  # cli/out/llt.llt runs as the output formatter with % = last-result.
+  # The formatter writes llt-repr(%) to a StringWriter (prelude's functional
+  # string capture). Output = formatter's StringWriter.cells — same as the CLI.
+  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Any] [let source path prelude-env@Dict prelude-tc stderr-h]
     [out: [make-string-handle]]
     # Parse first so pragma headers are available before the env is constructed.
     # .path references the function parameter from the parent scope, not the letrec
@@ -748,24 +750,45 @@
                     | [if-ok parse-source]]]
     # pragma: ["no-prelude"] → use empty env (no prelude); default → prelude.
     [env: [match [pragma-no-prelude? state]
-                   0: prelude-env
-                   ...: []]]
+                   Boolean.False: prelude-env
+                   Boolean.True:  []]]
     # For no-prelude tests, use core-tc (no prelude types needed).
     [tc: [match [pragma-no-prelude? state]
-                 0: prelude-tc
-                 ...: core-tc]]
+                 Boolean.False: prelude-tc
+                 Boolean.True:  core-tc]]
     [scope: [merge env
                   [%cwd:    .%cwd
                    %libdir: .%libdir
                    %stdout: out
                    %stderr: .%stderr
                    %args:   .%args]]]
-    [$state
-     | [if-ok log-step "  evaluating"]
-     | [if-ok eval-docs scope]
-     | [if-ok log-step "  typechecking"]
-     | [if-ok typecheck-docs tc scope]
-     | [if-ok format-output]]]
+    [test-result: [$state
+      | [if-ok log-step "  evaluating"]
+      | [if-ok eval-docs scope]
+      | [if-ok log-step "  typechecking"]
+      | [if-ok typecheck-docs tc scope]]]
+    # Run cli/out/llt.llt as the output formatter (second pipeline stage).
+    # Only runs when the test program succeeded (no eval errors).
+    # %stdout is a StringWriter.Writer (prelude's functional string capture);
+    # llt.llt writes llt-repr(%) to it. The flushed writer is last-result;
+    # .cells contains the formatted output string.
+    [match [builtin-eq-int [count-errors test-result.diagnostics] 0]
+      0: [merge test-result [output: ""]]
+      1: [call [fn [let]
+           [make-sw:  [builtin-dict-get "make-string-writer" prelude-env]]
+           [sw:       [call make-sw]]
+           [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw]]]
+           [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr]
+             | [if-ok load-bytes %libdir]
+             | [if-ok log-step "  formatting"]
+             | [if-ok parse-source]
+             | [if-ok eval-docs fmt-scope]]]
+           [output: [match [builtin-eq-int [count-errors fmt-result.diagnostics] 0]
+             0: ""
+             1: fmt-result.last-result.cells]]
+           [merge test-result [output: .output
+                                stderr: fmt-result.stderr
+                                diagnostics: [append-diags test-result.diagnostics fmt-result.diagnostics]]]]]]]
 
   # path-has-component: true if path contains "/component/" as a path segment.
   path-has-component: [fn [let path component]
