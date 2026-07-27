@@ -291,7 +291,7 @@
   # bootstrap (see lib.rs init_type_context call) — no explicit builtin-tc-update-type-stage-env
   # needed. Attempting to call builtin-tc-update-type-stage-env with type-stage letrec exports
   # causes circular-dependency errors because materializing letrec thunks in the same group
-  # creates mutual dependencies that the evaluator detects as cycles.
+  # creates mutual dependencies that the evaluator detects as cycles (T-1646).
   uses-scope: [fn [let module-names@Dict seed-tc seed-env@Dict starting-h]
     [reduce
       [fn [let acc@[impls: Dict  stderr: Any] name]
