@@ -1586,6 +1586,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
             guard,
             body: vec![body_node],
             guard_matchable_binding: crate::ast::MatchableBinding::new(),
+            case_captures: crate::ast::CapturesCell::new(),
         });
     }
     Ok(arms)

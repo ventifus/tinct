@@ -824,6 +824,7 @@ impl SurfaceResolver {
                 // Sequential expression. Mirrors the same mechanism in walk_surface_document:
                 // each body's sequential scope uses LGM slots starting at this offset so
                 // that LetrecChainStep's accumulated group has non-overlapping indices.
+                //
                 // Body 0 starts at offset 0; body 1 starts at body-0's key count; etc.
                 let mut sequential_offset: u32 = 0;
                 for (i, e) in exprs.iter().enumerate() {
@@ -1206,13 +1207,31 @@ impl SurfaceResolver {
                         // as wildcard rather than a pin.
                         let bound_names = extract_case_arm_binding_names(let_bindings);
                         let has_bindings = !bound_names.is_empty();
+
+                        // Push fn boundary BEFORE entering the param scope so that case arm
+                        // bindings (p, v, etc.) are INSIDE the boundary → local Parameters.
+                        // Outer scope names referenced in pattern/guard/body become ClosureCaptures.
+                        // This matches EvalFrame::for_function_call at eval time.
+                        let fn_boundary = self.scopes.len();
+                        self.fn_scope_boundaries.push(fn_boundary);
+                        self.fn_capture_lists.push(Vec::new());
+                        let saved_dict_offset = self.accumulated_dict_offset;
+                        self.accumulated_dict_offset = 0;
+
                         if has_bindings {
                             self.enter_param_scope(&bound_names);
                         }
-                        // Walk pattern with suppress_depth to allow unresolved pins (opaque arms).
+
+                        // Walk pattern INSIDE the fn boundary and param scope (suppress diagnostics).
+                        // Binding names (p, exports, etc.) are now in scope as Parameter(i), so they
+                        // lower to Var{addr:Parameter(i)} rather than Placeholder — enabling
+                        // bind_or_pin_name to recognise them as bindings at eval time.
+                        // External names (Option, builtin-dict-get) become ClosureCaptures, looked up
+                        // from the pre_arm_frame (with closure_env but empty params) at eval time.
                         self.suppress_depth += 1;
                         self.walk_surface_node(&arm.pattern);
                         self.suppress_depth -= 1;
+
                         if let Some(guard) = &arm.guard {
                             self.walk_surface_node(guard);
                         }
@@ -1222,6 +1241,15 @@ impl SurfaceResolver {
                         if has_bindings {
                             self.exit_scope();
                         }
+
+                        // Pop fn boundary, collect captures, write to case_captures OnceLock.
+                        self.fn_scope_boundaries.pop();
+                        let captures = self
+                            .fn_capture_lists
+                            .pop()
+                            .expect("fn_capture_lists is empty after case arm body walk");
+                        arm.case_captures.set(Arc::new(captures));
+                        self.accumulated_dict_offset = saved_dict_offset;
                     } else {
                         // Keyed arm (pattern: body) — no let_bindings, no scope entry.
                         // Walk the pattern with suppress_depth incremented.

@@ -1726,9 +1726,9 @@ pub fn materialize<'a>(
                 // Claim failed, not settled — thunk is InProgress.
                 let evaluating_task = thunk.inner.unevaluated.lock().unwrap().1;
                 let same = match (evaluating_task, tokio::task::try_id()) {
-                    (None, None) => true,         // both in block_on context → same
+                    (None, None) => true,                       // both in block_on context → same
                     (None, Some(_)) | (Some(_), None) => false, // mixed → wait (T-1646)
-                    (Some(e), Some(c)) => e == c, // both spawned → compare IDs
+                    (Some(e), Some(c)) => e == c,               // both spawned → compare IDs
                 };
                 if same {
                     let cycle_path =
@@ -2517,9 +2517,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_cycle_detection() {
-        // [x: $x] -- x references itself
+        // [x: y  y: x] -- mutual reference creates a genuine cycle.
+        // (Direct self-reference [x: x] is caught earlier by the resolver's
+        // self-reference check; mutual references create real eval-time cycles.)
         let ctx = test_ctx();
-        let thunk = eval_str("[x: $x]", &ctx).await.unwrap();
+        let thunk = eval_str("[x: y  y: x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
@@ -2541,8 +2543,9 @@ mod tests {
         // When a thunk detects a circular dependency (InProgress state),
         // it should cache the error in Failed state, not leave it in InProgress.
         // Subsequent materializations should return the cached error.
+        // Uses mutual reference [x: y  y: x] — a genuine eval-time cycle.
         let ctx = test_ctx();
-        let thunk = eval_str("[x: $x]", &ctx).await.unwrap();
+        let thunk = eval_str("[x: y  y: x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match val {
@@ -3201,9 +3204,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_cycle_has_materialization_span() {
-        // [x: $x] -- force x with a known materialization site
+        // [x: y  y: x] -- mutual cycle; force x with a known materialization site
         let ctx = test_ctx();
-        let thunk = eval_str("[x: $x]", &ctx).await.unwrap();
+        let thunk = eval_str("[x: y  y: x]", &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {

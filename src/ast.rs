@@ -886,6 +886,10 @@ pub struct SurfaceMatchArm {
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
+    /// Closure capture list for case arms (`let_bindings.is_some()`), set by the resolver
+    /// after walking the arm body with a fn boundary. Analogous to `Fn.resolved_captures`.
+    /// Empty OnceLock for keyed arms (no `let_bindings`).
+    pub case_captures: CapturesCell,
 }
 
 impl SurfaceMatchArm {
@@ -1410,6 +1414,10 @@ pub struct CoreMatchArm {
     /// Pre-resolved Matchable instance binding name for the guard's return type.
     /// Set by the type checker on the SurfaceMatchArm and carried through lowering.
     pub guard_matchable_binding: MatchableBinding,
+    /// Closure capture list for case arms (`let_bindings.is_some()`).
+    /// Populated by the lowerer from `SurfaceMatchArm.case_captures`.
+    /// `None` for keyed arms. `Some(empty)` for case arms with no free outer variables.
+    pub captures: Option<Arc<Vec<(String, VarAddr)>>>,
 }
 
 #[cfg(test)]

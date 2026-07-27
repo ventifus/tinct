@@ -2834,13 +2834,20 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 });
                                 match parent_frame {
                                     Ok(StackFrame::Match { arms, .. }) => {
+                                        let body_span = dict_span(span_start.clone());
+                                        let wrapped_body = if body.len() == 1 {
+                                            body
+                                        } else {
+                                            vec![mk(SurfaceExpression::Sequential(body), body_span)]
+                                        };
                                         arms.push(SurfaceMatchArm {
                                             pattern: pattern_val,
                                             let_bindings: Some(let_bindings_val),
                                             guard: None,
-                                            body,
+                                            body: wrapped_body,
                                             guard_matchable_binding:
                                                 crate::ast::MatchableBinding::new(),
+                                            case_captures: crate::ast::CapturesCell::new(),
                                         });
                                     }
                                     Ok(_) => {
@@ -5809,6 +5816,7 @@ fn push_expr_to_parent(
                         guard,
                         body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                        case_captures: crate::ast::CapturesCell::new(),
                     });
                     Ok(())
                 } else {

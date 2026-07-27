@@ -950,21 +950,18 @@ fn lower_expr(
                         .guard
                         .as_ref()
                         .map(|g| Arc::new(lower_inner(g, diagnostics, scope_frames))),
-                    body: Arc::new(if arm.body.len() == 1 {
-                        lower_inner(arm.body_expr(), diagnostics, scope_frames)
-                    } else {
-                        // Multi-body: wrap in Sequential, same as fn multi-body lowering.
-                        // The evaluator evaluates each expression in order and returns the last.
-                        Spanned::new(
-                            CoreExpr::Sequential(
-                                arm.body
-                                    .iter()
-                                    .map(|e| Arc::new(lower_inner(e, diagnostics, scope_frames)))
-                                    .collect(),
-                            ),
-                            arm.body_expr().span.clone(),
+                    // body is always a single node (parser wraps multi-body in Sequential).
+                    body: Arc::new(lower_inner(arm.body_expr(), diagnostics, scope_frames)),
+                    captures: if arm.let_bindings.is_some() {
+                        Some(
+                            arm.case_captures
+                                .get()
+                                .expect("resolver must set case_captures for every case arm")
+                                .clone(),
                         )
-                    }),
+                    } else {
+                        None
+                    },
                     guard_matchable_binding: arm.guard_matchable_binding.clone(),
                 })
                 .collect(),
@@ -1184,6 +1181,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                     guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
                     body: vec![core_expr_to_surface_node(&arm.body)],
                     guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                    case_captures: crate::ast::CapturesCell::new(),
                 })
                 .collect(),
         },

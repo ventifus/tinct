@@ -499,6 +499,7 @@ fn eval_quote_preprocess<'a>(
                         guard: processed_guard,
                         body: processed_body,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
+                        case_captures: crate::ast::CapturesCell::new(),
                     });
                 }
                 Ok(make_node(SurfaceExpression::Match {

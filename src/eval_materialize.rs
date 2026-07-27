@@ -2465,15 +2465,60 @@ pub(crate) async fn apply_cont(
                                 // lowercase, which would be misclassified as a guard expression.
                                 let is_structural = is_structural_pattern_head(&arm.pattern.expr);
 
+                                // Build closure_env from arm.captures (outer scope references).
+                                // Done BEFORE pattern evaluation because the pattern may reference
+                                // external names (pins) as ClosureCapture addresses — the
+                                // pre_arm_frame below provides those thunks for pin lookups.
+                                let closure_env_vec: Vec<Arc<Thunk>> = arm
+                                    .captures
+                                    .as_ref()
+                                    .map(|caps| {
+                                        caps.iter()
+                                            .map(|(name, original_addr)| {
+                                                use crate::ast::VarAddr;
+                                                match original_addr {
+                                                    VarAddr::LetrecGroupMember { slot, .. } => {
+                                                        frame.group.get(*slot as usize)
+                                                    }
+                                                    VarAddr::ClosureCapture(i) => {
+                                                        frame.closure_env.get(*i as usize)
+                                                    }
+                                                    VarAddr::Parameter(i) => {
+                                                        frame.params.get(*i as usize).cloned()
+                                                    }
+                                                }
+                                                .unwrap_or_else(|| {
+                                                    panic!(
+                                                        "case arm capture miss for '{}': {:?}",
+                                                        name, original_addr
+                                                    )
+                                                })
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                // pre_arm_frame: closure_env populated, params empty.
+                                // Used as pctx.frame in structural pattern matching so that
+                                // pin variables (external names resolved to ClosureCapture(K)
+                                // in the pattern) can be looked up via closure_env_vec.
+                                let pre_arm_frame =
+                                    std::sync::Arc::new(EvalFrame::for_function_call(
+                                        std::sync::Arc::new(closure_env_vec.clone()),
+                                        vec![],
+                                    ));
+
                                 let arm_bindings = if is_structural {
                                     // Structural pattern: walk pattern, bind [let ...] names at
                                     // their positions, pins = other names (compare for equality).
+                                    // pctx.frame = pre_arm_frame so ClosureCapture pin addresses
+                                    // resolve via the case arm's closure_env.
                                     match eval_case_arm_structural_pattern(
                                         lowered_pattern,
                                         &binding_map,
                                         &scrutinee_value,
                                         match_span.clone(),
-                                        &frame,
+                                        &pre_arm_frame,
                                         &ctx,
                                     )
                                     .await
@@ -2501,48 +2546,30 @@ pub(crate) async fn apply_cont(
                                     guard_bindings
                                 };
 
-                                // Pattern matched (or guard succeeded). Build an arm EvalFrame
-                                // with the bound variable thunks in params.
+                                // Pattern matched (or guard succeeded). Build the real arm EvalFrame.
                                 //
-                                // The resolver uses enter_param_scope(&bound_names)
-                                // for case arm bindings so they resolve to Parameter(i)
-                                // rather than LetrecGroupMember(i). This avoids
-                                // collisions with root_group builtin slots (which also
-                                // start at LGM(0)). arm_frame.params[i] holds the
-                                // bound thunk for the i-th declared binding.
+                                // Case arms use EvalFrame::for_function_call: fresh group=[],
+                                // ClosureCaptures in closure_env for outer references.
+                                // This matches how fn bodies work — the resolver pushes a fn
+                                // boundary for case arm bodies so outer refs become ClosureCapture
+                                // and Sequential intermediate dict bodies start at LGM slot 0.
                                 //
-                                // group and closure_env are inherited from the parent
-                                // frame — outer scope names remain accessible in the
-                                // arm body via their LGM or ClosureCapture addresses.
-                                let arm_frame = if arm_bindings.is_empty() {
-                                    // No bindings: body evaluates in parent frame unchanged.
-                                    Arc::clone(&frame)
-                                } else {
-                                    // Build params vec: slot 0, 1, 2, ... map to
-                                    // bound thunks in insertion order. arm_bindings
-                                    // is a vec of (param_index, thunk) pairs.
-                                    // Slots are sequential (0, 1, 2, ...) so we can
-                                    // sort by slot and fill a contiguous vec.
-                                    let mut sorted = arm_bindings;
-                                    sorted.sort_unstable_by_key(|(slot, _)| *slot);
-                                    let mut params_vec: Vec<Arc<Thunk>> =
-                                        Vec::with_capacity(sorted.len());
-                                    for (slot, thunk) in sorted {
-                                        let slot = slot as usize;
-                                        // Slots must be contiguous starting at 0.
-                                        // Gaps are a resolver invariant violation —
-                                        // fill defensively.
-                                        while params_vec.len() < slot {
-                                            params_vec.push(Arc::clone(&thunk));
-                                        }
-                                        params_vec.push(thunk);
+                                // Build params vec from arm_bindings (pattern-bound variables).
+                                let mut sorted = arm_bindings;
+                                sorted.sort_unstable_by_key(|(slot, _)| *slot);
+                                let mut params_vec: Vec<Arc<Thunk>> =
+                                    Vec::with_capacity(sorted.len());
+                                for (slot, thunk) in sorted {
+                                    let slot = slot as usize;
+                                    while params_vec.len() < slot {
+                                        params_vec.push(Arc::clone(&thunk));
                                     }
-                                    Arc::new(EvalFrame {
-                                        group: Arc::clone(&frame.group),
-                                        closure_env: Arc::clone(&frame.closure_env),
-                                        params: Arc::new(params_vec),
-                                    })
-                                };
+                                    params_vec.push(thunk);
+                                }
+                                let arm_frame = EvalFrame::for_function_call(
+                                    Arc::new(closure_env_vec),
+                                    params_vec,
+                                );
 
                                 // If guard expression pattern, evaluate it to check if truthy.
                                 // EXCEPT: when the pattern is a simple VarRef to a Parameter
@@ -3146,13 +3173,15 @@ fn eval_structural_pattern_inner<'a>(
                 named_args,
                 implied,
             } => {
-                // Evaluate the func expression (constructor lookup) in the parent scope.
-                // arm_env_id is a child of parent_env_id, so both work via the
-                // parent chain, but using parent_env_id is semantically clearer:
-                // constructors are resolved in the enclosing (non-arm) scope.
+                // Evaluate the func expression (constructor lookup) using the pattern's
+                // evaluation frame. The resolver walks the pattern inside the case arm's
+                // fn boundary, so external names (builtin-dict-get, Option, etc.) in the
+                // pattern are ClosureCapture addresses resolved via pctx.frame (which is
+                // pre_arm_frame at the call site). Using the correct frame is required for
+                // field-access constructor patterns like [Option.Some p].
                 let func_thunk = Arc::new(Thunk::core_expr(
                     Arc::clone(func),
-                    EvalFrame::empty(),
+                    Arc::clone(frame),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
