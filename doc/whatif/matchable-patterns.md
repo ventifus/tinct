@@ -2,6 +2,40 @@
 
 **State:** Proposal
 
+## Open Questions / TODOs
+
+### TODO: Design the `bind-primitive` / `bind-opaque` declaration form
+
+Context: tinct currently has no way to declare that a tinct type is backed by a Rust primitive or opaque Rust handle. This creates the TypeNode workaround — a shadow type system that the type checker uses because tinct types aren't first-class enough to represent Rust-backed types directly.
+
+The correct protocol (per `doc/16b-rust-tinct-protocol.md`) needs two new declaration forms:
+
+```tinct
+# Primitive: tinct type backed by a Rust primitive with visible data payload.
+# Match works on the payload. Arithmetic builtins operate on the payload.
+Integer: [type [bind-primitive: builtin-Int]]
+Float:   [type [bind-primitive: builtin-Float]]
+String:  [type [bind-primitive: builtin-String]]
+Bytes:   [type [bind-primitive: builtin-Bytes]]
+
+# Opaque: tinct type backed by an opaque Rust handle. No structural access.
+# Only identity — you can test if a value IS a DirCap, not inspect its internals.
+DirCap:       [type [bind-opaque: builtin-DirCap]]
+CoreDocument: [type [bind-opaque: builtin-CoreDocument]]
+```
+
+With these in place:
+- `TypeNode.Int`, `TypeNode.Float` etc. are redundant — `Integer` IS the type
+- All TypeNode.XxxCap / TypeNode.XxxSession variants are redundant — replaced by `bind-opaque`
+- The entire TypeNode system collapses: it was a workaround for not having `bind-primitive`/`bind-opaque`
+- A localized prelude (e.g. `整数: [type [bind-primitive: builtin-Int]]`) works without Rust changes
+
+Questions to resolve:
+1. How does the runtime registry work? EvalContext stores `RustPrimitive → tinct-type-name` mapping, populated when `bind-primitive`/`bind-opaque` is evaluated. Builtins use this to produce correctly-typed wrappers.
+2. Does `Value::Int` stay as-is (registry mediates in match) or does it become `Value::Variant("Integer", ...)`? Former is less disruptive; latter is purer.
+3. How does Matchable (this document) interact with `bind-primitive` types? Integer values need to be matchable with `Integer:` in keyed arms and `[case [let n] Integer n body]` in case arms.
+4. How does the type checker use bound types? Does `as-typenode` go away entirely, or does it become `[fn [let t] t]` (identity, since types are now first-class)?
+
 What would it take to unify tinct's `[match]` arm patterns and `[fn]` parameter
 patterns into a single open, user-extensible system?
 

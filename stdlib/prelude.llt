@@ -1967,16 +1967,16 @@ Note: Threads initial value v through each function in sequence. Each function r
 # Type predicates — tinct functions returning Boolean.
 # No builtins needed: tinct pattern matching covers all cases.
 # null? uses builtin-eq-int on the length — = would go through Equatable which calls null? (cycle).
-int?@[doc: "Check if value is Int"]:   [fn@Boolean [let x@[is: Int]] [match x [@Integer _]:      Boolean.True  ...: Boolean.False]]
-float?@[doc: "Check if value is Float"]: [fn@Boolean [let x@[is: Float]] [match x [@Float _]:  Boolean.True  ...: Boolean.False]]
-str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match x [@String _]:     Boolean.True  ...: Boolean.False]]
-bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
+int?@[doc: "Check if value is Integer"]:   [fn@Boolean [let x] [match x Integer: Boolean.True  ...: Boolean.False]]
+float?@[doc: "Check if value is Float"]:   [fn@Boolean [let x] [match x Float:   Boolean.True  ...: Boolean.False]]
+str?@[doc: "Check if value is String"]:    [fn@Boolean [let x] [match x String:  Boolean.True  ...: Boolean.False]]
+bool?@[doc: "Check if value is Boolean"]:  [fn@Boolean [let x] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
 null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False ...: Boolean.True] Boolean.False]]
-dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  ...: Boolean.False]]
-fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x@[is: Callable]] [match x [@Callable _]: Boolean.True  ...: Boolean.False]]
-proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  ...: Boolean.False]]
-seq?@[doc: "Check if value is a Seq"]:  [fn@Boolean [let x@[is: Seq]] [match x [@Seq _]:     Boolean.True  ...: Boolean.False]]
-bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x@[is: Bytes]] [match x [@Bytes _]:  Boolean.True  ...: Boolean.False]]
+dict?@[doc: "Check if value is Dict"]:   [fn@Boolean [let x] [match x Dict:     Boolean.True  ...: Boolean.False]]
+fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x Callable: Boolean.True  ...: Boolean.False]]
+proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x Proxy:   Boolean.True  ...: Boolean.False]]
+seq?@[doc: "Check if value is a Seq"]:   [fn@Boolean [let x] [match x Seq.Cons: Boolean.True  Seq.End: Boolean.True  ...: Boolean.False]]
+bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x] [match x Bytes:    Boolean.True  ...: Boolean.False]]
 
 num?@[doc: "Check if value is numeric (Int or Float)"]: [fn@Boolean [let x] [or [int? x] [float? x]]]
 

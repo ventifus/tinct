@@ -1829,6 +1829,18 @@ pub(crate) fn match_pattern<'a>(
                         };
                         // Materialize the pinned value and compare for equality.
                         let pinned_val = materialize(&pinned_thunk, Some(value_span), ctx).await?;
+
+                        // TypeNode type-pattern: if the pin resolves to a TypeNode unit variant
+                        // (e.g. Integer evaluates to Variant("TypeNode","Int",None)), treat it as
+                        // a runtime type check rather than a value equality check.
+                        // This bridges the current TypeNode system to the future bind-primitive
+                        // protocol (see doc/whatif/matchable-patterns.md).
+                        if let Value::Variant { tycon, ctor, payload: None } = &pinned_val {
+                            if tycon.as_ref() == "TypeNode" {
+                                return Ok(match_typenode_pattern(ctor.as_ref(), &value));
+                            }
+                        }
+
                         if primitive_eq(value, pinned_val) {
                             Ok(true)
                         } else {
@@ -2186,6 +2198,8 @@ pub(crate) fn match_pattern<'a>(
 /// - `Variant{payload:None}`: tag equality only (covers Bool and unit constructors).
 /// - All other combinations (including cross-type) return `false`.
 ///
+/// See also `match_typenode_pattern` for TypeNode-based type dispatch.
+///
 /// Annotated wrappers are stripped before comparison.
 ///
 /// Dict comparison is shallow: same keys and same thunk IDs (no value
@@ -2194,6 +2208,26 @@ pub(crate) fn match_pattern<'a>(
 /// No payload-Variant or Seq deep comparison. No cross-type Int/Float
 /// comparison — use type-specific builtins instead.
 ///
+/// Check if a runtime value matches the type named by a TypeNode constructor.
+///
+/// Called from `match_pattern` when a pin pattern evaluates to a TypeNode unit variant
+/// (e.g. `Integer` → `Variant("TypeNode","Int",None)`). Maps the TypeNode constructor
+/// name to a Rust value type check. This is a bridge to the future `bind-primitive`/
+/// `bind-opaque` protocol described in doc/whatif/matchable-patterns.md.
+fn match_typenode_pattern(typenode_ctor: &str, scrutinee: &Value) -> bool {
+    match typenode_ctor {
+        "Int" => matches!(scrutinee, Value::Int(_)),
+        "Float" => matches!(scrutinee, Value::Float(_)),
+        "String" => matches!(scrutinee, Value::String { .. }),
+        "Bytes" => matches!(scrutinee, Value::Bytes { .. }),
+        "Dict" => matches!(scrutinee, Value::Dict(_)),
+        "Callable" => matches!(scrutinee, Value::Function { .. } | Value::Builtin(_)),
+        "Proxy" => matches!(scrutinee, Value::Proxy { .. }),
+        // Unknown TypeNode constructor — does not match
+        _ => false,
+    }
+}
+
 /// This is the primitive equality kernel used by `builtin-eq-int/float/string`, pattern matching
 /// (Pin and case-arm exact-value checks), and bind-or-pin.
 pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
