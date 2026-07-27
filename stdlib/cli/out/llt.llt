@@ -1,9 +1,14 @@
-# LLT display format output formatter.
+# LLT display format output formatter — dependency-chain contract.
 #
-# Converts the pipeline input (%) to its LLT representation string and writes to %stdout.
-# Uses llt-repr which traverses and formats the value, materializing nested thunks on demand.
+# Converts each value to its LLT representation string: e.g. 42, "hello", [0: 1  ...], etc.
+# Uses the llt-repr builtin which traverses and formats the value, materializing nested thunks on demand.
 #
-# %stdout is a protocol dict with write/flush/close methods. The formatter calls
-# %stdout.write and %stdout.flush — no standalone typeclass method dispatch needed.
-[written: [call [builtin-dict-get "write" %stdout] [builtin-string-concat [builtin-llt-repr %] "\n"] %stdout]]
-[call [builtin-dict-get "flush" %stdout] written]
+# Chain: flush(written) depends on written which depends on llt-repr(%), creating
+# a dependency chain that forces everything when materialize() is called on loader's final thunk.
+
+--- uses: ["async"]
+[written: [if [seq? %]
+  [reduce [fn [let h x] [write [str [llt-repr x] "\n"] h]] %stdout %]
+  [write [str [llt-repr %] "\n"] %stdout]]]
+
+[flush written]
