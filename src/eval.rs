@@ -457,7 +457,7 @@ pub struct EvalContext {
     /// Used by `builtin_include` to inject `%libdir` into the included file's environment
     /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
     /// opened (e.g., --no-libdir, bootstrap contexts, tests).
-    /// Propagated through `with_base_dir` so nested includes see the same Dir.
+    /// Propagated to child contexts so nested includes see the same Dir.
     ///
     /// Note: `cap_std::fs::Dir` is `Send` on Linux (wraps `std::fs::File`, which is Send).
     /// The `Arc<Dir>` wrapper enables sharing across child contexts without dup-ing the fd.
@@ -476,8 +476,8 @@ pub struct EvalContext {
     pub task_registry: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Profiling collector: records span-level timing data during evaluation.
     /// None when profiling is disabled (the common case). When Some, every thunk materialization
-    /// opens and closes a span. Shared via Arc<Mutex<>> so child contexts created by `with_base_dir`
-    /// write to the same collector.
+    /// opens and closes a span. Shared via Arc<Mutex<>> so child contexts write to the same
+    /// collector.
     /// Public for CLI initialization (main.rs --profile flag).
     pub profiling: Option<Arc<Mutex<crate::profiling::ProfilingCollector>>>,
     /// Type constructor environment from type inference: name → TyConDef.
@@ -485,7 +485,7 @@ pub struct EvalContext {
     /// Used by `is_subtype` to determine variance and structural rules for user-defined
     /// type constructors. `None` before typechecking or when `--no-typecheck` is used;
     /// `is_subtype` falls back to invariant behaviour in that case.
-    /// Propagated to child contexts (with_base_dir, with_cancel_token, with_explicit_cancel,
+    /// Propagated to child contexts (with_cancel_token, with_explicit_cancel,
     /// with_timeout_ms) so nested includes and scoped cancellation see the same TyConEnv.
     pub tycon_env: std::sync::OnceLock<std::sync::Arc<crate::type_def::TyConEnv>>,
     /// Unified type environment handle for this evaluation scope.
@@ -494,7 +494,7 @@ pub struct EvalContext {
     /// across all child contexts via `Arc::clone` so that `builtin-typecheck-doc` side effects
     /// (TypeScheme registration) are visible everywhere in the pipeline.
     ///
-    /// Child contexts created via `with_base_dir`, `with_cancel_token`, `with_explicit_cancel`,
+    /// Child contexts created via `with_cancel_token`, `with_explicit_cancel`,
     /// and `with_timeout_ms` all share the same `Arc` — they see the same TypeContext state.
     /// This is intentional: type checking is monotonic (schemas are only added, never removed)
     /// and the pipeline must accumulate type knowledge across files.
@@ -514,8 +514,8 @@ pub struct EvalContext {
     /// path (where typecheck precedes eval) would produce `level=u32::MAX, slot=u32::MAX`
     /// Var nodes that crash with `EvalError::internal` when forced (B-513).
     ///
-    /// Propagated unchanged to all child contexts (with_base_dir, with_cancel_token, etc.)
-    /// because scope frames are read-only after initialization.
+    /// Propagated unchanged to all child contexts (with_cancel_token, with_explicit_cancel,
+    /// with_timeout_ms) because scope frames are read-only after initialization.
     pub scope_frames: Option<Arc<Vec<indexmap::IndexMap<String, u32>>>>,
     /// Root group: the thunks for all root-scope entries in slot order.
     ///
@@ -532,7 +532,7 @@ pub struct EvalContext {
     /// LGM(slot) addresses are in sync.
     ///
     /// Shared cheaply across child contexts via `Arc::clone`. Child contexts created by
-    /// `with_base_dir`, `with_cancel_token`, etc. all see the same root group (read-only).
+    /// `with_cancel_token`, `with_explicit_cancel`, etc. all see the same root group (read-only).
     pub root_group: Arc<Vec<Arc<Thunk>>>,
     /// GroupSpine representation of root_group for O(1) frame construction.
     ///
@@ -981,7 +981,7 @@ impl EvalContext {
     ///
     /// Called by the capability initialization boundary (main.rs) immediately
     /// after opening the libdir directory and creating the EvalContext. Propagated
-    /// through `with_base_dir` to child contexts (nested includes).
+    /// to child contexts (nested includes).
     pub fn set_libdir_dir(&self, dir: Arc<cap_std::fs::Dir>) {
         *self.libdir_dir.lock().unwrap() = Some(dir);
     }
@@ -1002,7 +1002,7 @@ impl EvalContext {
 
     /// Set the source file name for FnAnnotation (LSP hover) and child context propagation.
     /// Must be called on a freshly created context before any Arc::clone shares it.
-    /// Propagated through `with_base_dir` to child contexts (nested includes).
+    /// Propagated to child contexts (nested includes).
     /// Note: backtrace frame filenames are embedded in `Span.file` (populated by `parse()`),
     /// not derived from this field.
     pub fn set_source_file(&mut self, file: Option<String>) {
@@ -5237,10 +5237,15 @@ mod tests {
                 name
             );
 
-            // Note: cycle_path may be empty with the iterative CEK machine because
-            // eval_stack entries are popped at force_step exit (not at thunk completion).
-            // The cycle is still detected correctly; only the path visualization may be incomplete.
-            let _ = cycle_path; // Accept empty cycle_path in iterative evaluator
+            // The iterative CEK machine pops eval_stack entries at force_step exit rather than
+            // at thunk completion, so cycle_path is empty when circular dependency is detected —
+            // the cycle detector fires at the right time but the path reconstruction has no frames
+            // left to walk. The cycle is detected correctly; only the path is empty.
+            assert!(
+                cycle_path.is_empty(),
+                "iterative evaluator produces empty cycle_path (entries are popped at force_step exit, not thunk completion): got {:?}",
+                cycle_path
+            );
         } else {
             panic!("Expected CircularDependency error, got: {:?}", err.kind);
         }

@@ -768,7 +768,7 @@ Every `tinct run` pipeline ends with an output program — the file selected by 
 `%emit` and `%stdout` are capability handles in every output program's scope:
 
 - **`%emit`** — a bounded `Channel@Any` (64 slots) created by `eval-programs` and shared across all programs in the pipeline. `emit v` is `[send %emit v]`. The output program is the last to hold a reference; when it exits, the channel closes.
-- **`%stdout`** — a writable `Handle` to actual stdout, injected by the CLI.
+- **`%stdout`** — a tinct-defined protocol dict with `write`, `flush`, and `close` methods that delegate to `builtin-write-stdout`. Defined by the loader (loader.llt or the `--init` program), not injected by the CLI. The CLI injects only `%programs`, `%args`, `%cwd`, and `%libdir`.
 
 Forcing `%` drives the evaluation cascade and triggers any `emit` calls deferred inside lazy structures, so the drain must run concurrently — not sequentially after forcing:
 

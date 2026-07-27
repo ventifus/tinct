@@ -1,8 +1,8 @@
 //! Unit tests for type_precision_fixes sprint tasks
 
 use super::{
-    constrain, promote_literal_for_constrained_var, resolve_has_field, unify,
-    MAX_RESOLVE_HAS_FIELD_DEPTH,
+    constrain, process_deferred_equalities, promote_literal_for_constrained_var, resolve_has_field,
+    unify, MAX_RESOLVE_HAS_FIELD_DEPTH,
 };
 
 /// Async wrapper for `unify` — for use in tests only.
@@ -3280,5 +3280,48 @@ async fn test_constrain_rows_uniform_sup_tail() {
         v_bounds.lower.contains(&Type::Int),
         "constrain_rows Uniform-sup-tail must add Int as lower bound on v; got lower={:?}",
         v_bounds.lower
+    );
+}
+
+/// B-615: process_deferred_equalities resolves Union-vs-Union once TypeVars are ground.
+///
+/// Setup: Union([Int, Var(a)]) ~ Union([Str, Var(b)]) is deferred because both sides
+/// contain inference vars. After binding a→Str and b→Int in state.type_vars, both unions
+/// become Union([Int, Str]) and should unify successfully via process_deferred_equalities.
+#[tokio::test]
+async fn test_process_deferred_equalities_resolves_union_vs_union() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Register levels for the type vars
+    state.set_level("a".to_string(), 0);
+    state.set_level("b".to_string(), 0);
+
+    // Push a deferred equality: Union([Int, Var(a)]) ~ Union([Str, Var(b)])
+    state.deferred_equalities.push((
+        Type::Union(vec![Type::Int, Type::Var("a".to_string(), 0)]),
+        Type::Union(vec![Type::Str, Type::Var("b".to_string(), 0)]),
+    ));
+
+    // Bind a → Str and b → Int so both unions become Union([Int, Str])
+    state.bind_type_var("a".to_string(), Type::Str);
+    state.bind_type_var("b".to_string(), Type::Int);
+
+    // process_deferred_equalities should resolve the deferred equality now
+    let mut constraints = Vec::new();
+    let result = process_deferred_equalities(&mut state, &mut constraints, span).await;
+
+    assert!(
+        result.is_ok(),
+        "process_deferred_equalities should succeed once TypeVars are ground: {:?}",
+        result.unwrap_err()
+    );
+
+    // After processing, the deferred_equalities list should be drained
+    assert_eq!(
+        state.deferred_equalities.len(),
+        0,
+        "Resolved deferred equalities should be drained, got {}",
+        state.deferred_equalities.len()
     );
 }

@@ -103,12 +103,12 @@
   # %stdout and %stderr: protocol dicts wrapping the stateless Rust builtins.
   # These MUST be defined here because test-loader runs as --init and main.rs
   # does not inject %stdout/%stderr (that's loader.llt's job for normal runs).
-  %stdout: [write:  [fn [let s h] [builtin-write-stdout s h]]
-            flush:  [fn [let h] h]
-            close:  [fn [let h] h]]
-  %stderr: [write:  [fn [let s h] [builtin-write-stderr s h]]
-            flush:  [fn [let h] h]
-            close:  [fn [let h] h]]
+  %stdout: [write:  [fn@[bind: [h] return: h] [let s@String h] [builtin-write-stdout s h]]
+            flush:  [fn@[bind: [h] return: h] [let h] h]
+            close:  [fn@[bind: [h] return: h] [let h] h]]
+  %stderr: [write:  [fn@[bind: [h] return: h] [let s@String h] [builtin-write-stderr s h]]
+            flush:  [fn@[bind: [h] return: h] [let h] h]
+            close:  [fn@[bind: [h] return: h] [let h] h]]
 
   bytes-empty?: [fn [let b] [builtin-eq-int [builtin-bytes-length b] 0]]
 
@@ -140,7 +140,9 @@
     [loop: [fn [let i builder]
       [match [builtin-eq-int i n]
         0: [loop [builtin-int-add i 1]
-              [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
+             [match [builtin-eq-string [builtin-type-of [builtin-dict-get i keys]] "String"]
+               1: [builtin-builder-set [builtin-dict-get i keys] 1 builder]
+               0: builder]]
         1: [builtin-builder-finish builder]]]]
     [loop 0 [builtin-make-builder]]]
 
@@ -189,7 +191,7 @@
       1: [builtin-str-slice s 0 [builtin-int-sub n 1]]]]
 
   # Format a single diagnostic dict as a human-readable error line.
-  format-diagnostic: [fn@String [let d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any]]
+  format-diagnostic: [fn@String [let d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any  secondary-spans: Any]]
     [s: [@[file: String  start-line: Integer  start-col: Integer  end-line: Integer  end-col: Integer] d.span]]
     [file-part: [match [builtin-eq-int [builtin-str-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
@@ -283,81 +285,53 @@
   # Two-pass: evaluate type-stage docs first to enrich the TypeContext, then
   # typecheck all docs with the enriched TypeContext so that annotations like
   # @Integer/@String/@Never resolve correctly from the type-stage values.
+  # uses-scope: type-check builtin_X.llt declaration files using seed-tc.
+  # Matches loader.llt's design: type-check each doc (TypeContext updated as side effect),
+  # return runtime module bindings. The type-stage scope is pre-seeded via the Rust
+  # bootstrap (see lib.rs init_type_context call) — no explicit builtin-tc-update-type-stage-env
+  # needed. Attempting to call builtin-tc-update-type-stage-env with type-stage letrec exports
+  # causes circular-dependency errors because materializing letrec thunks in the same group
+  # creates mutual dependencies that the evaluator detects as cycles.
   uses-scope: [fn [let module-names@Dict seed-tc seed-env@Dict starting-h]
     [reduce
       [fn [let acc@[impls: Dict  stderr: Any] name]
-        [decl-path:     [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
-         tc-result:     [builtin-try [call [fn []
-             [decl-handle:   [builtin-file-open %libdir decl-path ["read"] -1 -1]]
-             [decl-bytes:    [read-file decl-handle [builtin-bytes]]]
-             [parse-result:  [builtin-parse decl-bytes decl-path]]
-             [desugared:     [builtin-desugar parse-result.program]]
-             [decl-docs:     [builtin-program-docs desugared]]
-             # Decl env: dot-access desugars to builtin-dict-get (a core builtin always in scope).
-             [decl-env:      seed-env]
-             # Split docs by stage so type-stage docs are processed first.
-             [split: [@[ts: Dict  rt: Dict] [reduce
-               [fn [let acc@[ts: Dict  rt: Dict] doc]
-                 [meta:  [builtin-doc-meta doc decl-env]]
-                 [stage: [get-or "runtime" "stage" meta]]
-                 [match [builtin-eq-string stage "type"]
-                   0: [ts: acc.ts  rt: [merge acc.rt [[builtin-dict-length acc.rt]: doc]]]
-                   1: [ts: [merge acc.ts [[builtin-dict-length acc.ts]: doc]]  rt: acc.rt]]]
-               [ts: []  rt: []]
-               decl-docs]]]
-             # Pass 1: evaluate type-stage docs to get an env with TypeNode values.
-             # This enriches the TypeContext so @Integer/@String etc. resolve correctly.
-             [ts-env: [reduce
-               [fn [let env doc]
-                 [name-set: [env-to-name-set env]]
-                 [r:        [builtin-resolve doc name-set]]
-                 [typed:    [builtin-typecheck-doc r.doc seed-tc env].doc]
-                 [lowered:  [builtin-lower typed]]
-                 [exports:  [builtin-eval lowered env]]
-                 [merge env exports]]
-               decl-env
-               split.ts]]
-             # Type-stage env wire: prepend the type-stage env as a new innermost
-             # scope frame on the TypeContext. This makes type-stage declarations
-             # (Integer, String, DirCap, etc.) visible to annotation resolution in
-             # subsequent typecheck passes.
-             [ts-tc: [builtin-tc-update-type-stage-env seed-tc ts-env]]
-             # Pass 2: typecheck all docs with the enriched TypeContext.
-             [resolve-diagnostics: [reduce
-               [fn [let acc doc]
-                 [name-set: [env-to-name-set decl-env]]
-                 [r: [builtin-resolve doc name-set]]
-                 [append-diags acc r.diagnostics]]
-               []
-               decl-docs]]
-             [typed-docs: [reduce
-               [fn [let acc doc]
-                 [name-set: [env-to-name-set decl-env]]
-                 [r: [builtin-resolve doc name-set]]
-                 [tc-result: [builtin-typecheck-doc r.doc ts-tc decl-env]]
-                 [merge acc [[builtin-dict-length acc]: tc-result]]]
-               []
-               decl-docs]]
-             [tc-diagnostics: [reduce
-               [fn [let acc tdoc@[diagnostics: Dict]] [append-diags acc tdoc.diagnostics]]
-               []
-               typed-docs]]
-             [all-diagnostics: [append-diags resolve-diagnostics tc-diagnostics]]
-             all-diagnostics]]]
-         diagnostics:    [match tc-result
-             [case [let v] [ok: v] v]
-             ...: [$tc-result]]
-         new-stderr:  [emit-diagnostics diagnostics acc.stderr]
-         module-impl: [builtin-module name]]
-        [impls:  [merge acc.impls module-impl]
-         stderr: new-stderr]]
+        # Intermediate dict: decl-path and tc-result (type-checking side effect).
+        # builtin-typecheck-doc updates seed-tc as a side effect — TypeContext is mutable.
+        # The type-stage scope is pre-seeded by lib.rs; no builtin-tc-update-type-stage-env needed.
+        # tc-result is forced via new-stderr (which references it through the diagnostics chain)
+        # so that the TypeContext side-effect runs. Matches loader.llt's structure.
+        [decl-path: [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
+         tc-result: [@Any [builtin-try [call [fn []
+                       [decl-handle:  [builtin-file-open %libdir decl-path ["read"] -1 -1]]
+                       [decl-bytes:   [read-file decl-handle [builtin-bytes]]]
+                       [parse-result: [builtin-parse decl-bytes decl-path]]
+                       [desugared:    [builtin-desugar parse-result.program]]
+                       [docs:         [builtin-program-docs desugared]]
+                       [name-set:     [env-to-name-set seed-env]]
+                       [_:            [reduce
+                                         [fn [let _ doc]
+                                           [res:  [builtin-resolve doc name-set]]
+                                           [_:    [builtin-typecheck-doc res.doc seed-tc seed-env]]
+                                           []]
+                                         []
+                                         docs]]
+                       []]]]]]
+        [_ok: [match [builtin-has-key? "ok" tc-result] 0: [] 1: []]]
+        # Return value: merge module runtime bindings into acc.impls.
+        # Reference _ok to force tc-result (and thus the TypeContext side-effect).
+        [impls:  [merge acc.impls [builtin-module name]]
+         stderr: [match [builtin-int-gte [builtin-dict-length _ok] -1]
+                   0: acc.stderr
+                   1: acc.stderr]]]
       [impls: []  stderr: starting-h]
       module-names]]
 
-  # Fundamental-types TypeContext: start from an empty TypeContext and populate
-  # it by type-checking builtin_core.llt. No scope-id: uses empty env dict as seed.
-  # Core types (DirCap, Int, Bytes, etc.) are available to all downstream
-  # builtin-typecheck calls via this explicit seed.
+  # Fundamental-types TypeContext: start from the TypeContext pre-initialized by lib.rs
+  # with the builtin_core type-stage scope (Integer, String, DirCap, Any, etc.).
+  # lib.rs calls init_type_context before running the init program, so builtin-make-type-ctx
+  # is a no-op (init_type_context is idempotent). builtin-get-type-context returns the
+  # pre-seeded TypeContext directly. uses-scope ["core"] enriches it further with
+  # TypeSchemes from core's runtime docs (type-checking as side effect via builtin-typecheck-doc).
   _fundamental-base-tc: [builtin-make-type-ctx]
   fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc [] %stderr]] 0]
     0: _fundamental-base-tc
@@ -367,10 +341,10 @@
   # pragma-no-prelude?: true if the first document in a parsed state carries
   #   pragma: ["no-prelude"]
   # builtin-doc-meta is called with [] (empty env) so pragma values must be plain literals.
-  pragma-no-prelude?: [fn [let state@[diagnostics: Dict  parsed: [documents: Any]]]
+  pragma-no-prelude?: [fn [let state@[diagnostics: Dict  parsed: [documents: Dict]]]
     [match [builtin-eq-int [count-errors [@Dict state.diagnostics]] 0]
       0: 0  # parse failed — treat as no pragma
-      1: [docs: [@Dict state.parsed.documents]]
+      1: [docs: state.parsed.documents]
          [match [builtin-eq-int [builtin-dict-length docs] 0]
            0: 0  # no documents
            1: [meta:    [builtin-doc-meta [builtin-dict-get 0 docs] []]]
@@ -392,7 +366,7 @@
   # through unchanged on failure. Supports 0, 1, or 2 pre-args before state.
   if-ok: [fn [let f@Callable ...args]
     [n:     [builtin-dict-length args]]
-    [state: [builtin-dict-nth args [builtin-int-sub n 1]]]
+    [state: [@[diagnostics: Dict] [builtin-dict-nth args [builtin-int-sub n 1]]]]
     [match [builtin-eq-int [count-errors state.diagnostics] 0]
       0: state
       1: [match [builtin-int-sub n 1]
@@ -431,10 +405,17 @@
   # Uses env-dict protocol: builtin-resolve takes name-set, builtin-eval takes
   # (lowered, env) and returns the exports Dict directly.
   # Adds: env, last-result, _tc.
-  eval-program: [fn [let extras@Dict tc state@[parsed: [documents: Any]  stderr: Any  diagnostics: Dict]]
-    # Seed env: extras (e.g. %prelude env ref, Boolean, etc.).
-    # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
-    [seed-env: [merge extras [Boolean: Boolean  True: Boolean.True  False: Boolean.False]]]
+  eval-program: [fn [let extras tc state@[parsed: [documents: Dict]  stderr: Any  diagnostics: Dict]]
+    # Seed env: extras (e.g. %prelude env ref) merged with Boolean/True/False from
+    # eval-program's own closure (Dict 2's Boolean). Boolean/True/False are needed so
+    # runtime docs can match on Boolean.True/Boolean.False. They are NOT forwarded to
+    # builtin-tc-update-type-stage-env (which would create circular-dependency errors) —
+    # uses-scope now passes only the type-stage module's own exports (ts-result.ts-only)
+    # to builtin-tc-update-type-stage-env, never the full seed-env. See the ts-result
+    # reduce in uses-scope.
+    [seed-env: [merge extras [Boolean: Boolean
+                               True:    [builtin-dict-get "True"  Boolean]
+                               False:   [builtin-dict-get "False" Boolean]]]]
     [eval-doc: [fn [let acc@[env: Dict  tc: Any  last-result: Any  stderr: Any  diagnostics: Dict] doc]
       # Short-circuit: if a previous doc in this pass already has errors, skip remaining docs.
       [match [builtin-eq-int [count-errors acc.diagnostics] 0]
@@ -466,19 +447,21 @@
                                         0: [$doc-name: exports]
                                         1: []]]]]
                        [merge acc [env: next-env  tc: acc.tc  last-result: exports  stderr: new-stderr]]]]]
+                   # Catch-all: try-result is an error Diagnostic. Accumulate without formatting
+                   # (format-diagnostic requires narrowed Diagnostic type; try-result is a union).
                    ...: [call [fn [let]
-                        [diag: [@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any] try-result]]
-                        [eval-stderr: [call [builtin-dict-get "write" %stderr] [builtin-string-concat [format-diagnostic diag] "\n"] new-stderr]]
-                        [merge acc [diagnostics: [append-diags acc.diagnostics [$try-result]]  stderr: eval-stderr]]]]]]]]]]]]]
+                     [merge acc [diagnostics: [append-diags acc.diagnostics [$try-result]]  stderr: new-stderr]]]]]]]]]]]]]
     # Split documents by stage: check meta.stage string
     [split: [reduce
       [fn [let acc@[ts: Dict  rt: Dict] doc]
+        [acc-ts: [@Dict [builtin-dict-get "ts" acc]]]
+        [acc-rt: [@Dict [builtin-dict-get "rt" acc]]]
         [meta: [builtin-doc-meta doc seed-env]]
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
-          0: [ts: acc.ts  rt: [merge acc.rt [[builtin-dict-length acc.rt]: doc]]]
-          1: [ts: [merge acc.ts [[builtin-dict-length acc.ts]: doc]]  rt: acc.rt]]]
-      [ts: []  rt: []]
+          0: [ts: acc-ts  rt: [merge acc-rt [[builtin-dict-length acc-rt]: doc]]]
+          1: [ts: [merge acc-ts [[builtin-dict-length acc-ts]: doc]]  rt: acc-rt]]]
+      [@[ts: Dict  rt: Dict] [ts: []  rt: []]]
       state.parsed.documents]]
     # Capture tc parameter to avoid letrec self-reference.
     [_tc0: tc]
@@ -585,22 +568,30 @@
   # at the pipeline level when diagnostics has errors.
   # builtin-eval errors ARE caught via a nested builtin-try per-document.
   # Adds: env, last-result, diagnostics, doc-results, documents.
-  eval-docs: [fn [let base-env@Dict state@[stderr: Any  parsed: [documents: Any]]]
+  eval-docs: [fn [let base-env@Dict state@[stderr: Any  parsed: [documents: Dict]]]
     [test-state: [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-results: Any] [reduce
       [fn [let st@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Any  doc-results: Any] doc]
+        # Extract st fields with explicit types to avoid Indexable-dependent type inference.
+        [st-env:        [@Any  [builtin-dict-get "env"         st]]]
+        [st-last:       [@Any  [builtin-dict-get "last-result" st]]]
+        [st-tc:         [@Any  [builtin-dict-get "tc"          st]]]
+        [st-stderr:     [@Any  [builtin-dict-get "stderr"      st]]]
+        [st-diags:      [@Dict [builtin-dict-get "diagnostics" st]]]
+        [st-doc-index:  [@Any  [builtin-dict-get "doc-index"   st]]]
+        [st-doc-results:[@Any  [builtin-dict-get "doc-results" st]]]
         # Short-circuit: if a previous doc already has errors, skip remaining docs.
-        [match [builtin-eq-int [count-errors st.diagnostics] 0]
+        [match [builtin-eq-int [count-errors st-diags] 0]
           0: st
           1: [call [fn [let]
-            [meta:        [builtin-doc-meta doc st.env]]
-            [uses-result: [@[impls: Dict  stderr: Any] [uses-scope [get-or [] "uses" meta] fundamental-tc st.env st.stderr]]]
+            [meta:        [builtin-doc-meta doc st-env]]
+            [uses-result: [@[impls: Dict  stderr: Any] [uses-scope [get-or [] "uses" meta] fundamental-tc st-env st-stderr]]]
             # Inject %: st.last-result into env for non-first documents.
             # The first document (doc-index == 0) has no upstream %; later documents receive
             # the previous document's result as %, mirroring how prelude.llt threads % through
             # a multi-document pipeline.
-            [doc-env: [merge st.env [merge uses-result.impls
-                         [match [builtin-eq-int st.doc-index 0]
-                           0: [%: st.last-result]
+            [doc-env: [merge st-env [merge uses-result.impls
+                         [match [builtin-eq-int st-doc-index 0]
+                           0: [%: st-last]
                            1: []]]]]
             [name-set:    [env-to-name-set doc-env]]
             [r:           [builtin-resolve doc name-set]]
@@ -610,10 +601,10 @@
               # Resolve errors: accumulate into diagnostics (don't raise — raise is lazy
               # and escapes builtin-try; accumulation lets if-ok short-circuit at the
               # pipeline level).
-              0: [merge st [diagnostics: [append-diags st.diagnostics r.diagnostics]
+              0: [merge st [diagnostics: [append-diags st-diags r.diagnostics]
                              stderr: new-stderr]]
               1: [call [fn [let]
-                   [typed:   [builtin-typecheck-doc r.doc st.tc doc-env].doc]
+                   [typed:   [builtin-typecheck-doc r.doc st-tc doc-env].doc]
                    [lowered: [builtin-lower typed]]
                    # Wrap builtin-eval in builtin-try to capture eval errors as diagnostics.
                    [try-result: [builtin-try [call [fn [] [builtin-eval lowered doc-env]]]]]
@@ -638,27 +629,26 @@
                           [next-env: [merge doc-env [merge validated-result [%: validated-result]]]]
                           [env:         next-env
                            last-result:  validated-result
-                           tc:          st.tc
+                           tc:          st-tc
                            stderr:      new-stderr
-                           doc-index:   [builtin-int-add st.doc-index 1]
-                           diagnostics: st.diagnostics
+                           doc-index:   [builtin-int-add st-doc-index 1]
+                           diagnostics: st-diags
                            # Accumulate per-document results so typecheck-docs can inject %
                            # with the correct value for each document's resolve pass.
-                           doc-results: [merge st.doc-results [$st.doc-index: validated-result]]]
+                           doc-results: [merge st-doc-results [$st-doc-index: validated-result]]]
                            ]]]
+                     # Catch-all: try-result is an error Diagnostic. Accumulate without formatting.
                      ...: [call [fn [let]
-                          [diag: [@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any] try-result]]
-                          [eval-stderr: [call [builtin-dict-get "write" %stderr]
-                                          [builtin-string-concat [format-diagnostic diag] "\n"] new-stderr]]
-                          [merge st [diagnostics: [append-diags st.diagnostics [$try-result]]
-                                     stderr: eval-stderr]]]]]]]]]]]]
-      [env:         base-env
-       last-result: []
-       tc:         fundamental-tc
-       stderr:     state.stderr
-       doc-index:  0
-       diagnostics: []
-       doc-results: []]
+                       [merge st [diagnostics: [append-diags st-diags [$try-result]]
+                                  stderr: new-stderr]]]]]]]]]]]]
+      [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Any  doc-results: Any]
+       [env:         base-env
+        last-result: []
+        tc:         fundamental-tc
+        stderr:     state.stderr
+        doc-index:  0
+        diagnostics: []
+        doc-results: []]]
       state.parsed.documents]]]
     [merge state
       [env:         test-state.env
@@ -678,7 +668,7 @@
   # match either kind. Callers distinguish severity by reading d.level on each entry.
   # Also runs the pipeline stage lint (builtin-lint-pipeline-docs) to emit
   # abandoned-output warnings for pipeline keys not consumed by the next stage.
-  typecheck-docs: [fn [let tc base-env@Dict state@[env: Any  documents: Any  stderr: Any  last-result: Any]]
+  typecheck-docs: [fn [let tc base-env@Dict state@[env: Any  documents: Dict  stderr: Any  last-result: Any]]
     # doc-results from eval-docs: dict of {doc-index → result}. Used to inject % per-document
     # so abandoned-input errors only fire when the CORRECT document ignores its pipeline %.
     [doc-results: [get-or [] "doc-results" state]]
@@ -697,7 +687,7 @@
              [res: [builtin-resolve doc name-set]]
              [typed: [builtin-typecheck-doc res.doc tc resolve-env]]
              # If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
-             [input-warn-diags: [match [builtin-int-gt doc-index 0]
+             [input-warn-diags: [@Dict [match [builtin-int-gt doc-index 0]
                0: []
                1: [match [builtin-has-key? "%" res.unreferenced]
                     0: []
@@ -709,7 +699,7 @@
                           help: []
                           call-stack: []
                           macro-expand: []
-                          blame: []]]]]]
+                          blame: []]]]]]]
              # Collect all resolver diagnostics (res.diagnostics: errors + warnings) AND
              # typecheck diagnostics into a single list for this document.
              # res.diagnostics is the unified bag; callers read d.level to filter by severity.
@@ -830,7 +820,7 @@
   # run-test-file: execute a single file ProgramItem as a corpus test.
   # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
   # Returns result dict including stderr: pipe-result.stderr so the cascade continues.
-  run-test-file: [fn [let p@[path: String  handle: Any] prelude-env@Dict prelude-tc stderr-h]
+  run-test-file: [fn [let p prelude-env@Dict prelude-tc stderr-h]
     [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
@@ -839,7 +829,7 @@
     [expected-error: [extract-section content "error"]]
 
     # Run test through the pipeline. Errors are returned as state.diagnostics (no builtin-try needed).
-    [pipe-result: [run-test-pipeline source p.path prelude-env prelude-tc stderr-h]]
+    [pipe-result: [@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Any] [run-test-pipeline source p.path prelude-env prelude-tc stderr-h]]]
     [pr-diags:    [@Dict pipe-result.diagnostics]]
     [pr-output:   [@String pipe-result.output]]
     [pr-tc-diags: [@Dict pipe-result.tc-diagnostics]]
@@ -916,11 +906,10 @@
   run-test: [fn [let item prelude-env@Dict prelude-tc stderr-h]
     [p:         [match item
                   ProgramItem.File: item.path
-                  ...:                    "<expr>"]]
+                  ...:              "<expr>"]]
     [new-stderr: [call [builtin-dict-get "write" %stderr] [builtin-string-concat "test:    " [builtin-string-concat p "\n"]] stderr-h]]
     [base-result: [match item
-      [case [let payload] [ProgramItem.File payload]
-        [run-test-file payload prelude-env prelude-tc new-stderr]]
+      ProgramItem.File: [run-test-file item prelude-env prelude-tc new-stderr]
       ProgramItem.Expr: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""  stderr: new-stderr]]]
     base-result]
 
@@ -969,18 +958,18 @@
   # Prelude loading pipeline. Each stage short-circuits via if-ok when diagnostics has errors.
   # %prelude is a lazy forward reference to _prelude-env — safe because prelude captures it in
   # closures but never forces it during its own loading (only at user call-time).
-  _prelude-result: [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
+  _prelude-result: [@[diagnostics: Dict  full-env: Dict  tc-ready: Any  stderr: Any] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
     | [if-ok log-step "prelude: loading"]
     | [if-ok load-bytes %libdir]
     | [if-ok log-step "prelude: parsing"]
     | [if-ok parse-source]
     | [if-ok log-step "prelude: evaluating"]
     | [if-ok eval-program
-        [%prelude: _prelude-env  Boolean: Boolean  True: True  False: False]
+        [%prelude: _prelude-env]
         fundamental-tc]
     | [if-ok export]
     | [if-ok set-tc-ready fundamental-tc]
-    | [if-ok log-step "prelude: ready"]]
+    | [if-ok log-step "prelude: ready"]]]
 
   _pr-diagnostics: [@Dict _prelude-result.diagnostics]
   _pr-full-env:    _prelude-result.full-env
@@ -1028,7 +1017,7 @@
                   [builtin-string-concat
                     [match [builtin-has-key? "message" _raw]
                       0: "(unknown — try result has no message field)"
-                      1: [@String [@Diagnostic _raw].message]]
+                      1: [@String [@[message: String] _raw].message]]
                     "\n"]] %stderr]]
         1: 1]]
     [builtin-try [builtin-program-docs _llt-formatter-expanded]]]
@@ -1043,7 +1032,7 @@
             [builtin-int->string [count-errors _pr-diagnostics]]
             " error(s) — cannot run tests\n"
             [reduce
-              [fn [let acc d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any]]
+              [fn [let acc d@[level: String  kind: String  message: String  span: Any  call-stack: Any  notes: Any  help: Any  blame: Any  macro-expand: Any  secondary-spans: Any]]
                 [match [builtin-eq-string d.level "error"]
                   0: acc
                   1: [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]]

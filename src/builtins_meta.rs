@@ -2535,6 +2535,19 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Str("blame".into()),
                 mk(Value::Dict(IndexMap::new())),
             );
+            // Secondary spans (spans[1..]) — e.g., "type declared here" from TypeAssert.
+            // Each entry is {span: ..., label: ...} in insertion order.
+            let mut ss_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            for (j, (span, label)) in diag.spans.iter().skip(1).enumerate() {
+                let mut ss_entry: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                ss_entry.insert(HashableValue::Str("span".into()), mk_span(span));
+                ss_entry.insert(HashableValue::Str("label".into()), mk(string_val(label)));
+                ss_dict.insert(HashableValue::Int(j as i64), mk(Value::Dict(ss_entry)));
+            }
+            w.insert(
+                HashableValue::Str("secondary-spans".into()),
+                mk(Value::Dict(ss_dict)),
+            );
             diagnostics_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
         }
 

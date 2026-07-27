@@ -2350,7 +2350,9 @@ pub(crate) fn builtin_file_open(
         };
 
         // Fourth arg: Unix permission bits (-1 = OS default).
-        let mode_bits = match mode_raw {
+        // Prefixed with `_` so the compiler does not warn on non-unix platforms where
+        // these values are validated but not applied (unix-specific OpenOptionsExt).
+        let _mode_bits = match mode_raw {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -2364,7 +2366,8 @@ pub(crate) fn builtin_file_open(
         };
 
         // Fifth arg: raw open(2) flags (-1 = none).
-        let custom_flags = match flags_raw {
+        // Prefixed with `_` for the same reason as _mode_bits above.
+        let _custom_flags = match flags_raw {
             Value::Int(n) => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -2414,15 +2417,13 @@ pub(crate) fn builtin_file_open(
         #[cfg(unix)]
         {
             use cap_std::fs::OpenOptionsExt;
-            if mode_bits != -1 {
-                opts.mode(mode_bits as u32);
+            if _mode_bits != -1 {
+                opts.mode(_mode_bits as u32);
             }
-            if custom_flags != -1 {
-                opts.custom_flags(custom_flags as i32);
+            if _custom_flags != -1 {
+                opts.custom_flags(_custom_flags as i32);
             }
         }
-        #[cfg(not(unix))]
-        let _ = (mode_bits, custom_flags);
 
         let file = dir.open_with(&path, &opts).map_err(|e| {
             EvalError::user_error(
@@ -2919,8 +2920,8 @@ pub(crate) fn builtin_read_stdin(
 ///
 /// These are the filesystem, capability, and environment builtins that live in the "io"
 /// module. They are separate from the Core-46 set (builtin-file-open, builtin-file-read,
-/// builtin-write-stdout, builtin-write-stderr, builtin-list-dir, builtin-path-dir,
-/// builtin-narrow) which must stay in core_builtins() for loader.llt.
+/// builtin-write-stdout, builtin-write-stderr, builtin-list-dir, builtin-narrow) which
+/// must stay in core_builtins() for loader.llt.
 ///
 /// Consumed exclusively by `builtin_module("io")` in `src/builtins.rs`.
 pub fn io_builtins() -> Vec<crate::value::BuiltinDef> {

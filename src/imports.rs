@@ -65,67 +65,38 @@ pub async fn get_builtin_core_tycon_env() -> crate::type_def::TyConEnv {
 /// Classify a single materialized type-stage value into a `TypeStageEntry`.
 ///
 /// Three cases are handled in precedence order:
-/// 1. TypeNode Variant (any constructor: Int, String, Dict, Union, Arrow, IntLiteral, …) →
-///    `typenode_value_to_type` is tried first (full recursive converter). Returns
-///    `TypeStageEntry::Resolved` on success. For `TypeNode.Dict` when bootstrap closure captures
-///    are unavailable, falls back to a generic open dict. Other TypeNode variants that cannot
-///    be converted return `Ok(None)` immediately.
+/// 1. Variant value → `typenode_value_to_type` attempts conversion to a `Type`.
+///    Returns `TypeStageEntry::Resolved` on success. Structural types like Span and
+///    Diagnostic produce precise record types with named fields because constructor
+///    payload entries use `VarAddr::Parameter` (resolved at force time in the call
+///    frame that holds the constructor arguments).
 /// 2. TypeVar kind sentinel (Operator, Label) → `TypeStageEntry::TypeVar` via `typenode_typevar_kind`
 /// 3. `Value::Function` → `TypeStageEntry::Function` holding the thunk for later parameterized-type calls
 ///
 /// Returns `Ok(Some(entry))` when the value maps to a known TypeStageEntry kind,
-/// `Ok(None)` when the value is a TypeNode that cannot be converted at the current scope depth
-/// (e.g. it references closures only valid in full runtime context), and `Err(_)` when
-/// `typenode_value_to_type` returns a propagated eval error (caller decides whether to panic
-/// or propagate).
+/// `Ok(None)` when the value is a Variant that cannot be converted at the current scope depth,
+/// and `Err(_)` when `typenode_value_to_type` returns a propagated eval error (caller decides
+/// whether to panic or propagate).
 pub(crate) async fn classify_type_stage_entry(
     thunk: &std::sync::Arc<crate::value::Thunk>,
     val: &crate::value::Value,
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
     scope_so_far: &[std::collections::HashMap<String, crate::type_infer::TypeStageEntry>],
 ) -> crate::error::EvalResult<Option<crate::type_infer::TypeStageEntry>> {
-    // For TypeNode Variant values: try typenode_value_to_type FIRST (full recursive converter
-    // that reads payload fields for structural types like Span, Diagnostic, Dict, Union, etc.).
-    // If it returns None for TypeNode.Dict (bootstrap: closure captures unavailable), fall back
-    // to a generic open dict. All other None cases exit immediately with Ok(None).
-    if matches!(val, crate::value::Value::Variant { tycon, .. } if tycon.as_ref() == "TypeNode") {
+    // For Variant values: call typenode_value_to_type (full recursive converter that reads
+    // payload fields for structural types like Span, Diagnostic, Dict, Union, etc.).
+    // typenode_value_to_type returns Ok(None) for non-TypeNode variants, so calling it
+    // unconditionally is correct — no Rust code here needs to know the TypeNode tycon name.
+    if matches!(val, crate::value::Value::Variant { .. }) {
         if let Some(ty) =
             crate::typecheck::typecheck_annot::typenode_value_to_type(val, ctx, scope_so_far)
                 .await?
         {
             return Ok(Some(crate::type_infer::TypeStageEntry::Resolved(ty)));
         }
-        // typenode_value_to_type returned None for a TypeNode.Dict — bootstrap fallback.
-        // TypeNode.Dict payload thunks capture constructor parameters via ClosureCapture.
-        // When forced outside the original call context (bootstrap), the captures are unavailable
-        // → UndefinedVariable → caught by variant_payload_dict → Ok(None). In this specific
-        // bootstrap context, produce a generic open dict (T-1918 tracks the proper fix:
-        // eager payload forcing during type-stage evaluation). This fallback lives here (not in
-        // typenode_leaf_to_type) so the general leaf function remains purely for true leaf types.
-        if matches!(val, crate::value::Value::Variant { tycon, ctor, .. }
-            if tycon.as_ref() == "TypeNode" && ctor.as_ref() == "Dict")
-        {
-            // Bootstrap fallback: TypeNode.Dict payload could not be resolved because the
-            // closure captures are unavailable outside the original call context.  Produce
-            // a generic open dict (Any-valued uniform row) so bootstrap proceeds.
-            // T-1918 tracks the proper fix (eager payload forcing during type-stage eval).
-            // This path should only fire during bootstrap; if it fires during normal
-            // evaluation it indicates a missing capture — log it so it is observable.
-            eprintln!(
-                "[tinct] classify_type_stage_entry: TypeNode.Dict bootstrap fallback — \
-                 closure captures unavailable, using generic open Dict (T-1918)"
-            );
-            return Ok(Some(crate::type_infer::TypeStageEntry::Resolved(
-                crate::type_def::Type::Dict(crate::types::Row {
-                    fields: indexmap::IndexMap::new(),
-                    tail: crate::type_def::RowTail::Uniform {
-                        key: None,
-                        value: Box::new(crate::type_def::Type::Any),
-                    },
-                }),
-            )));
-        }
-        // Other complex TypeNode variants that couldn't be converted — not a type-stage entry.
+        // typenode_value_to_type returned None — this Variant is not representable as a static
+        // Type at this scope depth (e.g., not a TypeNode variant, or references type-stage
+        // functions that haven't been called yet, or opaque types that need parameterization).
         return Ok(None);
     }
     if let Some(kind) = crate::type_normalize::typenode_typevar_kind(val) {
@@ -136,7 +107,7 @@ pub(crate) async fn classify_type_stage_entry(
             std::sync::Arc::clone(thunk),
         )));
     }
-    // Not a TypeNode, TypeVar sentinel, or Function — not a type-stage entry.
+    // Not a recognized Variant, TypeVar sentinel, or Function — not a type-stage entry.
     Ok(None)
 }
 
@@ -248,6 +219,14 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                                     crate::rust_span!(),
                                 ))
                             })?;
+
+                        // scope_so_far is built incrementally: only entries already
+                        // processed are visible when classify_type_stage_entry runs.
+                        // This means type-stage entries that reference other type-stage
+                        // entries (e.g., ElementType referencing FieldType) must be
+                        // declared AFTER their dependencies in builtin_core.llt and
+                        // prelude.llt.  A future reordering of those declarations could
+                        // silently drop entries that can't resolve their references.
                         let scope_so_far = vec![map.clone()];
                         let entry = classify_type_stage_entry(
                             thunk,
@@ -348,18 +327,16 @@ mod tests {
     use super::*;
 
     /// Verify that `Span` and `Diagnostic` appear in the type-stage scope returned by
-    /// `get_builtin_core_type_stage_scope`. These types are declared as complex TypeNode.Dict
-    /// values in `builtin_core.llt` and are registered via the full `typenode_value_to_type`
-    /// path in `classify_type_stage_entry`. If this test fails, the types are imprecisely
-    /// registered as generic open dicts (no named fields) and annotations like `@Span` or
-    /// `@Diagnostic` resolve to an unstructured `Type::Dict` instead of the precise record type.
+    /// `get_builtin_core_type_stage_scope` with precise record types (named fields), not
+    /// generic open dicts.
     ///
-    /// This test also verifies that the entries resolve to structured record types with the
-    /// correct named fields — not a generic open dict. Before the fix for S-992 (T-1904),
-    /// `Span` and `Diagnostic` were imprecisely registered: `typenode_value_to_type` returned
-    /// `Ok(None)` for TypeNode.Dict in bootstrap context, so the bootstrap fallback in
-    /// `classify_type_stage_entry` registered them as generic open dicts rather than precise
-    /// structural records with named fields.
+    /// These types are declared as complex TypeNode.Dict values in `builtin_core.llt`.
+    /// Constructor payload entries use `VarAddr::Parameter` (not `ClosureCapture`), so
+    /// `variant_payload_dict` can materialize payload fields in any context.
+    /// `typenode_value_to_type` produces precise record types with the correct named
+    /// fields from builtin_core.llt:
+    /// - Span: file, start-line, start-col, end-line, end-col
+    /// - Diagnostic: level, kind, message, span, help, notes, secondary-spans, call-stack, macro-expand, blame
     #[tokio::test]
     async fn test_span_and_diagnostic_in_type_stage_scope() {
         use crate::type_def::Type;
@@ -371,12 +348,6 @@ mod tests {
 
         // ── Span ───────────────────────────────────────────────────────────────
         // Span is declared as TypeNode.Dict with fields: file, start-line, start-col, end-line, end-col.
-        // classify_type_stage_entry tries typenode_value_to_type first. During bootstrap the
-        // thunk evaluation may succeed (precise record) or fall back to the generic open dict
-        // branch within classify_type_stage_entry itself (see the TypeNode.Dict inline block,
-        // ~lines 105–116) — both produce Type::Dict(_). The assertion below accepts either
-        // outcome; the doc-env unit test (test_span_and_diagnostic_in_type_stage_scope in the
-        // full pipeline) verifies the precise path fires when doc-env is available.
         let span_entry = scope
             .iter()
             .flatten()
@@ -387,11 +358,40 @@ mod tests {
             "Span must appear in the type-stage scope; got keys: {:?}",
             all_keys
         );
-        assert!(
-            matches!(span_entry.unwrap(), TypeStageEntry::Resolved(Type::Dict(_))),
-            "Span must resolve to TypeStageEntry::Resolved(Type::Dict(_)); got: {:?}",
-            span_entry.unwrap()
-        );
+        match span_entry.unwrap() {
+            TypeStageEntry::Resolved(Type::Dict(row)) => {
+                // Verify that Span has the expected named fields, not a generic open dict.
+                assert!(
+                    row.fields.contains_key("file"),
+                    "Span must have 'file' field; got fields: {:?}",
+                    row.fields.keys().collect::<Vec<_>>()
+                );
+                assert!(
+                    row.fields.contains_key("start-line"),
+                    "Span must have 'start-line' field; got fields: {:?}",
+                    row.fields.keys().collect::<Vec<_>>()
+                );
+                assert!(
+                    row.fields.contains_key("start-col"),
+                    "Span must have 'start-col' field; got fields: {:?}",
+                    row.fields.keys().collect::<Vec<_>>()
+                );
+                assert!(
+                    row.fields.contains_key("end-line"),
+                    "Span must have 'end-line' field; got fields: {:?}",
+                    row.fields.keys().collect::<Vec<_>>()
+                );
+                assert!(
+                    row.fields.contains_key("end-col"),
+                    "Span must have 'end-col' field; got fields: {:?}",
+                    row.fields.keys().collect::<Vec<_>>()
+                );
+            }
+            other => panic!(
+                "Span must resolve to Type::Dict with named fields; got: {:?}",
+                other
+            ),
+        }
 
         // ── Diagnostic ─────────────────────────────────────────────────────────
         let diagnostic_entry = scope
@@ -404,14 +404,35 @@ mod tests {
             "Diagnostic must appear in the type-stage scope; got keys: {:?}",
             all_keys
         );
-        assert!(
-            matches!(
-                diagnostic_entry.unwrap(),
-                TypeStageEntry::Resolved(Type::Dict(_))
+        match diagnostic_entry.unwrap() {
+            TypeStageEntry::Resolved(Type::Dict(row)) => {
+                // Verify that Diagnostic has the expected named fields, not a generic open dict.
+                let expected_fields = [
+                    "level",
+                    "kind",
+                    "message",
+                    "span",
+                    "help",
+                    "notes",
+                    "secondary-spans",
+                    "call-stack",
+                    "macro-expand",
+                    "blame",
+                ];
+                for field in &expected_fields {
+                    assert!(
+                        row.fields.contains_key(*field),
+                        "Diagnostic must have '{}' field; got fields: {:?}",
+                        field,
+                        row.fields.keys().collect::<Vec<_>>()
+                    );
+                }
+            }
+            other => panic!(
+                "Diagnostic must resolve to Type::Dict with named fields; got: {:?}",
+                other
             ),
-            "Diagnostic must resolve to TypeStageEntry::Resolved(Type::Dict(_)); got: {:?}",
-            diagnostic_entry.unwrap()
-        );
+        }
 
         // ── CallFrame ──────────────────────────────────────────────────────────
         let has_callframe = scope.iter().flatten().any(|(k, _)| k == "CallFrame");

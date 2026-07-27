@@ -115,10 +115,10 @@ async fn doc_env(input: &str) -> Result<Arc<RwLock<crate::env::Env>>, Box<dyn st
 // IMPORTANT: this helper loads ONLY stdlib/builtin_core.llt (via get_builtin_core_type_env).
 // It does NOT load the full prelude — Indexable, FieldType, and other prelude type classes
 // are NOT in scope. Tests that need prelude functions must define them inline in the test input.
-// Note: builtin-dict-get has no Indexable constraint, so FieldType does NOT fire for
-// [builtin-dict-get k d] calls even when Indexable is in scope. It returns Any.
-// FD resolution via FieldType fires only when a function carries constraint: [$Indexable c k v]
-// and FieldType is in type_stage_scope (requires the full prelude, not available in unit tests).
+// Note: builtin-dict-get carries constraint: [$Indexable c k v] in its annotation.
+// However, FD resolution via FieldType does NOT fire in these unit tests because the Indexable
+// class itself is defined in the prelude, which doc_env_with_builtins does NOT load.
+// FieldType fires only when the Indexable class is in scope (requires the full prelude).
 async fn doc_env_with_builtins(
     input: &str,
 ) -> Result<Arc<RwLock<crate::env::Env>>, Box<dyn std::error::Error>> {
@@ -2539,9 +2539,9 @@ async fn test_i_case3_dict_pattern_narrowing_is_general() {
 #[tokio::test]
 async fn test_check_get_record_known_field_returns_field_type(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // [builtin-dict-get "a" rec] returns Any — it is a raw primitive with no FD resolution.
-    // builtin-dict-get has no Indexable constraint; FieldType does not fire.
-    // T-1917: wiring Indexable to standalone `get` is needed for static per-field type precision.
+    // [builtin-dict-get "a" rec]: builtin-dict-get carries constraint: [$Indexable c k v],
+    // but the Indexable class is not in scope in unit tests (prelude not loaded).
+    // Without Indexable, FD resolution via FieldType does not fire, so result is Any/Unknown.
     let env = doc_env_with_builtins(
         "[rec: [a: 42]]\n\
              [result: [builtin-dict-get \"a\" rec]]",
@@ -2559,8 +2559,8 @@ async fn test_check_get_record_known_field_returns_field_type(
 #[tokio::test]
 async fn test_builtin_get_string_key_returns_field_type() -> Result<(), Box<dyn std::error::Error>>
 {
-    // [builtin-dict-get "host" cfg] returns Any — raw primitive, no Indexable constraint.
-    // T-1917: wiring Indexable to standalone `get` is needed for static per-field type precision.
+    // [builtin-dict-get "host" cfg]: builtin-dict-get carries constraint: [$Indexable c k v],
+    // but Indexable class is not in scope in unit tests (prelude not loaded) — result is Any/Unknown.
     let env = doc_env_with_builtins(
         "[cfg: [host: \"localhost\"  port: 8080]]\n\
              [result: [builtin-dict-get \"host\" cfg]]",
@@ -2579,7 +2579,7 @@ async fn test_builtin_get_string_key_returns_field_type() -> Result<(), Box<dyn 
 
 #[tokio::test]
 async fn test_cek_detects_unknown_field_access() {
-    // Test that CEK AfterFieldBase emits a diagnostic for Unknown field access.
+    // Test that CEK FieldIndexable emits a diagnostic for Unknown field access.
     // This example produces 2 diagnostics:
     // 1. The field access r.y has type Unknown
     // 2. The function's return type contains Unknown
@@ -2694,20 +2694,20 @@ async fn test_label_annotation_named_form_requires_bare_name() {
 #[tokio::test]
 async fn test_builtin_get_wrapper_with_label_typevar_returns_field_type(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // A wrapper function defined as `[fn [k@Label xs] [builtin-dict-get k xs]]`.
-    // builtin-dict-get has no Indexable constraint → returns Any, not a precise field type.
-    // FieldType does NOT fire here regardless of the Label annotation on k.
-    // T-1917: wire Indexable constraint to standalone `get` for end-to-end FieldType precision.
+    // A wrapper function `[fn [k@Label xs] [builtin-dict-get k xs]]`:
+    // The wrapper's own annotation lacks [$Indexable c k v], so FD resolution does not fire
+    // for the wrapper call (even though builtin-dict-get itself carries the constraint).
+    // Additionally, the Indexable class is not in scope in unit tests (prelude not loaded).
+    // Result type: Any/Unknown.
     //
-    // This test only verifies the wrapper compiles without error — the result type is Any.
+    // This test verifies the wrapper compiles without error.
     let env = doc_env_with_builtins(
         "[cfg: [host: \"localhost\"]]\n\
              [my-get: [fn [let k@Label xs] [builtin-dict-get k xs]]]\n\
              [result: [my-get \"host\" cfg]]",
     )
     .await?;
-    // The result type is Any (builtin-dict-get has no Indexable constraint).
-    // This test guards against the wrapper causing undefined-variable or similar errors.
+    // The wrapper call returns Any/Unknown — no Indexable class in unit test scope.
     let result_scheme = env_get(&env, "result");
     assert!(
         result_scheme.is_some(),
@@ -3874,6 +3874,19 @@ async fn test_cek_type_assert_mismatched_annotation_emits_error() {
         !errors.is_empty(),
         "[@Int \"hello\"]: StringLiteral is not a subtype of Int — AfterTypeAssertInner must emit a type error"
     );
+    // T-1875: AfterTypeAssertInner must attach the annotation span as a secondary label
+    // so the user sees both the mismatch site and the annotation's source.
+    assert!(
+        errors[0].spans.len() >= 2,
+        "[@Int \"hello\"]: error must have at least 2 spans (primary + annotation span); got {} spans: {:?}",
+        errors[0].spans.len(),
+        errors[0].spans.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        errors[0].spans[1].1, "type declared here",
+        "[@Int \"hello\"]: second span label must be \"type declared here\"; got {:?}",
+        errors[0].spans[1].1
+    );
     // The result type is still Int (the annotated type) so that downstream inference
     // can proceed using the declared type rather than the mismatched inner type.
     assert!(
@@ -4678,22 +4691,12 @@ async fn test_typenode_int_literal_roundtrip() {
         "type_to_typenode(IntLiteral(42)) must return Some"
     );
     let variant = val.unwrap();
+    // Verify the payload contains 'n' = Int(42), without inspecting tycon/ctor names.
     match &variant {
-        crate::value::Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } => {
-            assert_eq!(tycon.as_ref(), "TypeNode", "tycon must be TypeNode");
-            assert_eq!(
-                ctor.as_ref(),
-                "IntLiteral",
-                "IntLiteral(42) must produce TypeNode.IntLiteral, not TypeNode.Int or any other ctor"
-            );
+        crate::value::Value::Variant { payload, .. } => {
             let payload_thunk = payload
                 .as_ref()
-                .expect("TypeNode.IntLiteral must have a payload dict with field 'n'");
-            // Materialize the payload and assert the 'n' field is Value::Int(42).
+                .expect("IntLiteral TypeNode must have a payload dict with field 'n'");
             let ctx = crate::eval::EvalContext::new();
             let payload_val = crate::eval::materialize(payload_thunk, None, &ctx)
                 .await
@@ -4717,17 +4720,19 @@ async fn test_typenode_int_literal_roundtrip() {
         }
         other => panic!("expected Value::Variant, got {:?}", other),
     }
-    // Reverse direction: typenode_value_to_type must reconstruct Type::IntLiteral(42).
+    // Roundtrip: typenode_value_to_type must reconstruct Type::IntLiteral(42).
+    // This verifies both that the forward direction produced a correct TypeNode encoding
+    // and that the canonical converter's inverse is correct — without coupling to internal names.
     let ctx = crate::eval::EvalContext::new();
     let roundtripped =
         crate::typecheck::typecheck_annot::typenode_value_to_type(&variant, &ctx, &[])
             .await
             .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeNode.IntLiteral");
+            .expect("typenode_value_to_type must return Some for the IntLiteral TypeNode");
     assert_eq!(
         roundtripped,
         Type::IntLiteral(42),
-        "typenode_value_to_type(TypeNode.IntLiteral{{n:42}}) must round-trip to Type::IntLiteral(42)"
+        "typenode_value_to_type must round-trip type_to_typenode(IntLiteral(42)) back to Type::IntLiteral(42)"
     );
 }
 
@@ -4747,22 +4752,12 @@ async fn test_typenode_string_literal_roundtrip() {
         "type_to_typenode(StringLiteral(\"hello\")) must return Some"
     );
     let variant = val.unwrap();
+    // Verify the payload contains 's' = "hello", without inspecting tycon/ctor names.
     match &variant {
-        crate::value::Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } => {
-            assert_eq!(tycon.as_ref(), "TypeNode", "tycon must be TypeNode");
-            assert_eq!(
-                ctor.as_ref(),
-                "StringLiteral",
-                "StringLiteral(\"hello\") must produce TypeNode.StringLiteral, not TypeNode.String"
-            );
+        crate::value::Value::Variant { payload, .. } => {
             let payload_thunk = payload
                 .as_ref()
-                .expect("TypeNode.StringLiteral must have a payload dict with field 's'");
-            // Materialize the payload and assert the 's' field is Value::String("hello").
+                .expect("StringLiteral TypeNode must have a payload dict with field 's'");
             let ctx = crate::eval::EvalContext::new();
             let payload_val = crate::eval::materialize(payload_thunk, None, &ctx)
                 .await
@@ -4786,17 +4781,18 @@ async fn test_typenode_string_literal_roundtrip() {
         }
         other => panic!("expected Value::Variant, got {:?}", other),
     }
-    // Reverse direction: typenode_value_to_type must reconstruct Type::StringLiteral("hello").
+    // Roundtrip: typenode_value_to_type must reconstruct Type::StringLiteral("hello").
+    // This verifies both directions without coupling to internal TypeNode constructor names.
     let ctx = crate::eval::EvalContext::new();
     let roundtripped =
         crate::typecheck::typecheck_annot::typenode_value_to_type(&variant, &ctx, &[])
             .await
             .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeNode.StringLiteral");
+            .expect("typenode_value_to_type must return Some for the StringLiteral TypeNode");
     assert_eq!(
         roundtripped,
         Type::StringLiteral("hello".to_string()),
-        "typenode_value_to_type(TypeNode.StringLiteral{{s:\"hello\"}}) must round-trip to Type::StringLiteral(\"hello\")"
+        "typenode_value_to_type must round-trip type_to_typenode(StringLiteral(\"hello\")) back to Type::StringLiteral(\"hello\")"
     );
 }
 
@@ -4826,25 +4822,15 @@ async fn test_typenode_dict_type_produces_variant() {
     assert!(val.is_some(), "type_to_typenode(Dict) must return Some");
     let variant = val.unwrap();
 
-    // ── Forward direction: verify the variant structure ────────────────────────
+    // ── Forward direction: verify payload structure without inspecting tycon/ctor names ──────
+    // Check payload contains 'open' = Int(0) and 'fields' dict with correct per-field roundtrips.
+    let ctx = crate::eval::EvalContext::new();
     match &variant {
-        crate::value::Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } => {
-            assert_eq!(tycon.as_ref(), "TypeNode", "tycon must be TypeNode");
-            assert_eq!(
-                ctor.as_ref(),
-                "Dict",
-                "Dict type must produce TypeNode.Dict"
-            );
+        crate::value::Value::Variant { payload, .. } => {
             let payload_thunk = payload
                 .as_ref()
-                .expect("TypeNode.Dict must have a payload dict with 'fields' and 'open' entries");
+                .expect("Dict TypeNode must have a payload dict with 'fields' and 'open' entries");
 
-            // Materialize the payload and verify 'fields' and 'open' entries.
-            let ctx = crate::eval::EvalContext::new();
             let payload_val = crate::eval::materialize(payload_thunk, None, &ctx)
                 .await
                 .expect("payload materialize must succeed");
@@ -4865,7 +4851,8 @@ async fn test_typenode_dict_type_produces_variant() {
                         "closed record (RowTail::Empty) must produce open: Int(0)"
                     );
 
-                    // Check 'fields' dict contains "name" → TypeNode.String and "age" → TypeNode.Int.
+                    // Check 'fields' dict contains "name" and "age" entries that round-trip
+                    // correctly via typenode_value_to_type — without inspecting constructor names.
                     let fields_thunk = dict
                         .get(&crate::value::HashableValue::Str(std::sync::Arc::from(
                             "fields",
@@ -4876,7 +4863,7 @@ async fn test_typenode_dict_type_produces_variant() {
                         .expect("payload 'fields' materialize must succeed");
                     match fields_val {
                         crate::value::Value::Dict(ref fields_dict) => {
-                            // "name" field → TypeNode.String (leaf variant)
+                            // "name" field must round-trip to Type::Str.
                             let name_thunk = fields_dict
                                 .get(&crate::value::HashableValue::Str(std::sync::Arc::from(
                                     "name",
@@ -4885,29 +4872,22 @@ async fn test_typenode_dict_type_produces_variant() {
                             let name_val = crate::eval::materialize(name_thunk, None, &ctx)
                                 .await
                                 .expect("fields 'name' materialize must succeed");
-                            match &name_val {
-                                crate::value::Value::Variant {
-                                    tycon,
-                                    ctor,
-                                    payload,
-                                } => {
-                                    assert_eq!(
-                                        tycon.as_ref(),
-                                        "TypeNode",
-                                        "fields['name'] tycon must be TypeNode"
-                                    );
-                                    assert_eq!(ctor.as_ref(), "String", "fields['name'] must be TypeNode.String (Type::Str maps to leaf 'String')");
-                                    assert!(
-                                        payload.is_none(),
-                                        "TypeNode.String is a leaf — payload must be None"
-                                    );
-                                }
-                                other => {
-                                    panic!("fields['name'] must be Value::Variant, got {:?}", other)
-                                }
-                            }
+                            let name_ty =
+                                crate::typecheck::typecheck_annot::typenode_value_to_type(
+                                    &name_val,
+                                    &ctx,
+                                    &[],
+                                )
+                                .await
+                                .expect("typenode_value_to_type must not error for 'name' field")
+                                .expect("typenode_value_to_type must return Some for 'name' field");
+                            assert_eq!(
+                                name_ty,
+                                Type::Str,
+                                "fields['name'] must round-trip to Type::Str"
+                            );
 
-                            // "age" field → TypeNode.Int (leaf variant)
+                            // "age" field must round-trip to Type::Int.
                             let age_thunk = fields_dict
                                 .get(&crate::value::HashableValue::Str(std::sync::Arc::from(
                                     "age",
@@ -4916,27 +4896,19 @@ async fn test_typenode_dict_type_produces_variant() {
                             let age_val = crate::eval::materialize(age_thunk, None, &ctx)
                                 .await
                                 .expect("fields 'age' materialize must succeed");
-                            match &age_val {
-                                crate::value::Value::Variant {
-                                    tycon,
-                                    ctor,
-                                    payload,
-                                } => {
-                                    assert_eq!(
-                                        tycon.as_ref(),
-                                        "TypeNode",
-                                        "fields['age'] tycon must be TypeNode"
-                                    );
-                                    assert_eq!(ctor.as_ref(), "Int", "fields['age'] must be TypeNode.Int (Type::Int maps to leaf 'Int')");
-                                    assert!(
-                                        payload.is_none(),
-                                        "TypeNode.Int is a leaf — payload must be None"
-                                    );
-                                }
-                                other => {
-                                    panic!("fields['age'] must be Value::Variant, got {:?}", other)
-                                }
-                            }
+                            let age_ty = crate::typecheck::typecheck_annot::typenode_value_to_type(
+                                &age_val,
+                                &ctx,
+                                &[],
+                            )
+                            .await
+                            .expect("typenode_value_to_type must not error for 'age' field")
+                            .expect("typenode_value_to_type must return Some for 'age' field");
+                            assert_eq!(
+                                age_ty,
+                                Type::Int,
+                                "fields['age'] must round-trip to Type::Int"
+                            );
                         }
                         other => panic!("payload 'fields' must be Value::Dict, got {:?}", other),
                     }
@@ -4948,17 +4920,16 @@ async fn test_typenode_dict_type_produces_variant() {
     }
 
     // ── Reverse direction: typenode_value_to_type must reconstruct the original Type::Dict ──
-    let ctx = crate::eval::EvalContext::new();
     let roundtripped =
         crate::typecheck::typecheck_annot::typenode_value_to_type(&variant, &ctx, &[])
             .await
             .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeNode.Dict");
+            .expect("typenode_value_to_type must return Some for the Dict TypeNode");
     assert_eq!(
         roundtripped,
         Type::Dict(row),
-        "typenode_value_to_type(TypeNode.Dict{{fields:{{name:String,age:Int}},open:0}}) \
-         must round-trip to Type::Dict(Row{{name:Str,age:Int,tail:Empty}})"
+        "typenode_value_to_type must round-trip type_to_typenode(Dict{{name:Str,age:Int}}) \
+         back to Type::Dict(Row{{name:Str,age:Int,tail:Empty}})"
     );
 }
 
@@ -5139,10 +5110,10 @@ async fn test_fieldtype_resolver_dict_field_access() -> Result<(), Box<dyn std::
 /// if that deletion accidentally broke name resolution or type checking of `builtin-dict-get`,
 /// this test would fail.
 ///
-/// IMPORTANT: FieldType does NOT fire for `[builtin-dict-get "name" person]` calls.
-/// `builtin-dict-get` is typed `[fn@Any [let k@Any xs@Dict] ...]` — no Indexable constraint.
-/// The result type is `Any` (not `String`). This is correct and expected behavior — the
-/// regression guard only checks that the result is present and non-Unknown.
+/// IMPORTANT: FieldType does NOT fire for `[builtin-dict-get "name" person]` in unit tests.
+/// `builtin-dict-get` carries `constraint: [$Indexable c k v]`, but the Indexable class is
+/// defined in the prelude, which `doc_env_with_builtins` does NOT load. Without the class in
+/// scope, FD resolution does not fire — result type is `Any`. This is expected.
 ///
 /// For the Indexable/FieldType path through the `get` wrapper, see:
 ///   `test_fieldtype_resolver_dict_field_access` — inline Indexable+FieldType seeded in unit test
@@ -5150,9 +5121,9 @@ async fn test_fieldtype_resolver_dict_field_access() -> Result<(), Box<dyn std::
 ///   `tests/corpus/eval/typecheck/warnings/get_call_field_type_mismatch.llt-eval` — corpus proof
 #[tokio::test]
 async fn test_infer_get_call_deletion_no_regression() -> Result<(), Box<dyn std::error::Error>> {
-    // builtin-dict-get has no Indexable constraint → returns Any, not String.
-    // FieldType does NOT fire here. This test is a regression guard for the infer_get_call
-    // deletion (T-1901): verifies dispatch still works for the raw builtin.
+    // builtin-dict-get carries [$Indexable c k v] constraint, but Indexable class is not loaded
+    // in unit tests (prelude absent) → FD does not fire → result is Any. Regression guard for
+    // T-1901 (infer_get_call deletion): verifies dispatch still works for the raw builtin.
     let env = doc_env_with_builtins(
         "[person: [name: \"Alice\"]]\n\
          [result: [builtin-dict-get \"name\" person]]",

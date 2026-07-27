@@ -477,6 +477,28 @@
       TypeNode.Top: TypeNode.Unknown
       ...: TypeNode.Unknown]]
 
+  # ============================================================================
+  # ElementType: type-stage resolver for Indexed FD (T-1921)
+  # ============================================================================
+  #
+  # Given a container TypeNode, returns the element/value type.
+  # Used as the resolver for Indexed's (c) → v functional dependency.
+  # Handles Dict (delegates to FieldType with the dict's own key-type),
+  # Union (distribute), Intersect (distribute), Top (→ Unknown).
+  # Returns TypeNode.Unknown when the element type cannot be determined.
+  ElementType: [fn [let container-type]
+    [match container-type
+      [case [let p] [TypeNode.Dict p]
+        [match [builtin-has-key? "key-type" p]
+          1: [FieldType container-type p.key-type]
+          0: TypeNode.Unknown]]
+      ...: TypeNode.Unknown]]
+
+  # Indexed: element-type typeclass (c → v) for head/first/last/builtin-dict-nth.
+  # Separate from Indexable (c, k → v) which handles get/slice with explicit keys.
+  Indexed: [class [let c v]
+    [determines: [[[c] v]]  resolver: ElementType]]
+
 ]
 
 --- uses: ["core" "io" "math" "meta" "string" "async" "datetime"]
@@ -736,7 +758,9 @@ env-to-name-set: [fn [let env]
   [go: [fn [let n i builder]
     [match [builtin-eq-int i n]
       0: [go n [builtin-int-add i 1]
-               [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
+            [match [builtin-eq-string [builtin-type-of [builtin-dict-get i keys]] "String"]
+              1: [builtin-builder-set [builtin-dict-get i keys] 1 builder]
+              0: builder]]
       ...: [builtin-builder-finish builder]]]]
   [go [builtin-dict-length keys] 0 [builtin-make-builder]]]
 
@@ -750,9 +774,10 @@ env-to-name-set: [fn [let env]
 
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers.
 # Re-exported in dict 2 as: Indexable: .Indexable
-# Note: builtin-dict-get has no Indexable constraint (typed fn@Any [let k@Any xs@Dict]).
-# FieldType fires at Indexable instance dispatch call sites (call_dispatch for typed containers)
-# and via the standalone `get` wrapper which carries constraint: [$Indexable c k v] (T-1917).
+# builtin-dict-get carries constraint: [$Indexable c k v] (annotated in builtin_core.llt).
+# FieldType fires at Indexable instance dispatch call sites (call_dispatch for typed containers),
+# via builtin-dict-get (used by dot-access desugaring in typecheck_cek.rs),
+# and via the standalone `get` wrapper which also carries constraint: [$Indexable c k v].
 Indexable:
   [class [let c k v]
     [determines: [[[c k] v]]  resolver: FieldType]
@@ -3585,7 +3610,7 @@ Example: [cons 1 [cons 2 Seq.End]] => Seq(1, 2)
 Note: Constructs a Seq.Cons cell — purely tinct, no Rust dispatch.
 """]: [fn@[bind: [a]  return: [Seq a]] [let x@a rest@[Seq a]] [Seq.Cons head: x  tail: rest]]
 
-head@[return: a  doc: """
+head@[return: v  doc: """
 First element of a Seq or Dict. Raises on empty.
 
 Example: [head [cons 1 [cons 2 Seq.End]]] => 1
@@ -3593,7 +3618,7 @@ Example: [head [10 20 30]] => 10
 
 Note: For Seq, errors on Seq.End and forces evaluation of the head element only.
 For Dict, returns the value at key 0 and errors if empty.
-"""]: [fn@[bind: [a]  return: a] [let s]
+"""]: [fn@[bind: [v]  return: v  constraint: [$Indexed c v]] [let s]
     [if [seq? s]
       [match s
         [case [let p] [Seq.Cons p] p.head]
@@ -3753,7 +3778,7 @@ Seq path is pure tinct (T-1380): uses concat-seq for lazy Seq concatenation.
       [head args]
       [tail args]]]]
 
-first: [fn@[return: Unknown  doc: """
+first: [fn@[bind: [v]  return: v  constraint: [$Indexed c v]  doc: """
 First element of a collection.
 
 Example: [first [10 20 30]] => 10
@@ -3766,7 +3791,7 @@ Note: Works on Dict (by insertion order), String (first char), or Bytes (first b
     "String": [builtin-str-slice xs 0 1]
     ...:        [dict-first xs]]]
 
-last: [fn@[return: Unknown  doc: """
+last: [fn@[bind: [v]  return: v  constraint: [$Indexed c v]  doc: """
 Last element of a collection.
 
 Example: [last [10 20 30]] => 30

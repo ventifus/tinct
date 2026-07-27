@@ -1,0 +1,9 @@
+# Reverse functional dependency inference
+# This verifies that the prelude Addable class's FD resolver (AddResult) works
+# end-to-end — inferring the return type correctly for Int+Int → Int and Float+Int → Float.
+[
+  r1: [+ 1 2]
+  r2: [+ 1.0 2]
+]
+=== out
+["r1": 3  "r2": 3.0]

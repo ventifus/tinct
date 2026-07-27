@@ -1,7 +1,7 @@
 # builtin_io.llt — I/O, filesystem, and network primitive types.
 # Bodies are Placeholder — valid tinct, errors if forced (builtins are Rust-side).
 # Note: builtin-write-stdout, builtin-write-stderr are in builtin_core.llt (Core-46).
-# builtin-file-open, builtin-file-read, builtin-list-dir, builtin-path-dir, builtin-narrow
+# builtin-file-open, builtin-file-read, builtin-list-dir, builtin-narrow
 # are also in builtin_core.llt (Core-46 — needed by loader.llt with only --- uses: ["core"]).
 # builtin-file-open is declared only in builtin_core.llt; it is NOT redeclared here.
 

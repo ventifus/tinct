@@ -1,0 +1,14 @@
+# B-620: dot-access returns the correct field type for both plain and union-typed values.
+# Accessing .name via dot (desugar to Indexable) and via [get ...] must return the same value.
+# Union-typed param: both arms have "name": String — p.name must return String (not Unknown).
+[
+  person: [name: "Alice"  age: 30]
+  r1: person.name
+  r2: [get "name" person]
+
+  get-name: [fn@String [let p@[or [name: String] [name: String  age: Integer]]] p.name]
+  r3: [get-name [name: "Carol"]]
+  r4: [get-name [name: "Dave"  age: 25]]
+]
+=== out
+["person": ["name": "Alice"  "age": 30]  "r1": "Alice"  "r2": "Alice"  "get-name": [fn [let p] ...]  "r3": "Carol"  "r4": "Dave"]

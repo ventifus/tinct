@@ -911,12 +911,11 @@ async fn improve_functional_dependency_inner(
                 }
             }
         } else {
-            // Class not found in class_env — should not happen
-            return Err(TypeDiagnostic::error(
-                "type-error",
-                format!("unknown class {}", class),
-                span.clone(),
-            ));
+            // Class not found in class_env. During bootstrap (e.g. test-loader.llt
+            // type-checked before prelude loads), classes like Indexable/Indexed may
+            // not exist yet. Skip this constraint rather than emitting an error —
+            // gradual typing: constraints for unknown classes are deferred/ignored.
+            continue;
         };
 
         // Unify each determined position with the result type.

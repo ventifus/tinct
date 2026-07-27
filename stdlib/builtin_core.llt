@@ -66,7 +66,57 @@
     Uri
     Urn]
 
+  # ── Primitive type aliases ────────────────────────────────────────────────
+  # These are simple TypeNode leaf aliases. They depend only on TypeNode (declared
+  # above) and must come BEFORE the structural types that use them as key-type/value-type
+  # arguments. The type-stage evaluation is letrec but classify_type_stage_entry processes
+  # entries in declaration order — an entry must be settled before a later entry's
+  # typenode_value_to_type call can observe it (see imports.rs: scope_so_far comment).
+  Integer:      TypeNode.Int
+  String:       TypeNode.String
+  Float:        TypeNode.Float
+  Bytes:        TypeNode.Bytes
+  Never:        TypeNode.Never
+  Any:          TypeNode.Top
+  Unknown:      TypeNode.Unknown
+  Absent:       TypeNode.Absent
+  Proxy:        TypeNode.Proxy
+  # Kind sentinels: @Operator and @Label resolve to fresh TypeVars of the given kind.
+  # Consumed by typenode_typevar_kind in type_normalize.rs → TypeStageEntry::TypeVar.
+  Operator:     [TypeNode.TypeVar kind: "Operator"]
+  Label:        [TypeNode.TypeVar kind: "Label"]
+  Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+  Program:      TypeNode.Program
+  Document:     TypeNode.Document
+  CoreDocument: TypeNode.CoreDocument
+  TypeContext:  TypeNode.TypeContext
+  DirCap:       TypeNode.DirCap
+  NetCap:       TypeNode.NetCap
+  Handle:       TypeNode.Handle
+  File:         TypeNode.File
+  BuilderHandle: TypeNode.BuilderHandle
+  Task:         TypeNode.Task
+  Channel:      TypeNode.Channel
+  Context:      TypeNode.Context
+  ReactiveCell: TypeNode.ReactiveCell
+  ClockCap:     TypeNode.ClockCap
+  Timezone:     TypeNode.Timezone
+  Timestamp:    TypeNode.Timestamp
+  Duration:     TypeNode.Duration
+  Decimal:      TypeNode.Decimal
+  BigInt:       TypeNode.BigInt
+  QuicSession:        TypeNode.QuicSession
+  QuicDatagramHandle: TypeNode.QuicDatagramHandle
+  Http2Session: TypeNode.Http2Session
+  Http3Session: TypeNode.Http3Session
+  Uri:          TypeNode.Uri
+  Urn:          TypeNode.Urn
+
   # ── Structural protocol types ────────────────────────────────────────────
+  # These depend on the primitive aliases above (via key-type/value-type fields
+  # that are forced during classify_type_stage_entry → typenode_value_to_type).
+  # They must be declared AFTER the primitives they reference.
+  #
   # Span: source location produced by parser and carried on every diagnostic.
   Span: [TypeNode.Dict
     fields: [file:       TypeNode.String
@@ -111,9 +161,9 @@
              span:            Span
              help:            TypeNode.Top
              notes:           TypeNode.Top
-             secondary-spans: [TypeNode.Dict fields: [] open: 1 key-type: TypeNode.Int value-type: SecondarySpan]
-             call-stack:      [TypeNode.Dict fields: [] open: 1 key-type: TypeNode.Int value-type: CallFrame]
-             macro-expand:    [TypeNode.Union types: [0: TypeNode.Absent  1: MacroExpand]]
+             secondary-spans: TypeNode.Top
+             call-stack:      TypeNode.Top
+             macro-expand:    TypeNode.Top
              blame:           TypeNode.Top]
     open: 1
     key-type: TypeNode.Top
@@ -126,45 +176,16 @@
     key-type: TypeNode.Int
     value-type: Diagnostic]
 
-  Integer:      TypeNode.Int
-  String:       TypeNode.String
-  # Kind sentinels: @Operator and @Label resolve to fresh TypeVars of the given kind.
-  # Consumed by typenode_typevar_kind in type_normalize.rs → TypeStageEntry::TypeVar.
-  Operator:     [TypeNode.TypeVar kind: "Operator"]
-  Label:        [TypeNode.TypeVar kind: "Label"]
-  Float:        TypeNode.Float
-  Bytes:        TypeNode.Bytes
-  Never:        TypeNode.Never
-  Any:          TypeNode.Top
-  Unknown:      TypeNode.Unknown
-  Absent:       TypeNode.Absent
-  Proxy:        TypeNode.Proxy
-  Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
-  Program:      TypeNode.Program
-  Document:     TypeNode.Document
-  CoreDocument: TypeNode.CoreDocument
-  TypeContext:  TypeNode.TypeContext
-  DirCap:       TypeNode.DirCap
-  NetCap:       TypeNode.NetCap
-  Handle:       TypeNode.Handle
-  File:         TypeNode.File
-  BuilderHandle: TypeNode.BuilderHandle
-  Task:         TypeNode.Task
-  Channel:      TypeNode.Channel
-  Context:      TypeNode.Context
-  ReactiveCell: TypeNode.ReactiveCell
-  ClockCap:     TypeNode.ClockCap
-  Timezone:     TypeNode.Timezone
-  Timestamp:    TypeNode.Timestamp
-  Duration:     TypeNode.Duration
-  Decimal:      TypeNode.Decimal
-  BigInt:       TypeNode.BigInt
-  QuicSession:        TypeNode.QuicSession
-  QuicDatagramHandle: TypeNode.QuicDatagramHandle
-  Http2Session: TypeNode.Http2Session
-  Http3Session: TypeNode.Http3Session
-  Uri:          TypeNode.Uri
-  Urn:          TypeNode.Urn
+  # Documents: auto-indexed collection of Document values (produced by builtin-program-docs).
+  # value-type is Top because TypeNode.Document (an opaque Rust type) cannot be used as a
+  # nested value-type in a TypeNode.Dict — typenode_value_to_type returns None for opaque
+  # TypeNode unit variants in that position. This is a permanent design constraint: opaque
+  # Rust types injected as unit variants cannot be represented as nested TypeNode value types.
+  Documents: [TypeNode.Dict
+    fields: []
+    open: 1
+    key-type: TypeNode.Int
+    value-type: TypeNode.Top]
 ]
 
 ---
@@ -214,11 +235,11 @@
   builtin-bytes-length:      [fn@Integer [let b@Bytes] ...]
   # builtin-merge: implemented in tinct prelude and loader/test-loader (using builder API).
   # builtin-append: implemented in tinct prelude (derived from builtin-merge).
-  builtin-dict-get:           [fn@Any [let k@Any xs@Dict] ...]
+  builtin-dict-get:           [fn@[bind: [c k v]  return: v  constraint: [$Indexable c k v]] [let k@k xs@c] ...]
   builtin-has-key?:          [fn@[or 0 1] [let k@Any xs@Dict] ...]
   builtin-get-by-field:      [fn@Any      [let field@String k@Any xs@Dict] ...]
   builtin-dict-has-nth?:     [fn@[or 0 1] [let d@Dict n@Integer] ...]
-  builtin-dict-nth:          [fn@Any      [let d@Dict n@Integer] ...]
+  builtin-dict-nth:          [fn@[bind: [v]  return: v  constraint: [$Indexed c v]] [let d@Dict n@Integer] ...]
   builtin-dict-has-key-nth?: [fn@[or 0 1] [let d@Dict n@Integer] ...]
   builtin-dict-key-nth:      [fn@Any      [let d@Dict n@Integer] ...]
   builtin-dict-has-kv-nth?:  [fn@[or 0 1] [let d@Dict n@Integer] ...]
@@ -226,14 +247,16 @@
   builtin-build-dict:        [fn@Dict    [let entries@Dict] ...]
 
   # ── Builder ops ───────────────────────────────────────────────────────────
-  builtin-make-builder:      [fn@BuilderHandle [] ...]
-  builtin-builder-set:       [fn@BuilderHandle [let key@Any value@Any builder@BuilderHandle] ...]
-  builtin-builder-delete:    [fn@BuilderHandle [let builder@BuilderHandle key@Any] ...]
-  builtin-builder-finish:    [fn@Dict    [let builder@BuilderHandle] ...]
-  builtin-builder-snapshot:  [fn@Dict    [let builder@BuilderHandle] ...]
-  builtin-builder-has?:      [fn@[or 0 1] [let builder@BuilderHandle key@Any] ...]
-  builtin-builder-get:       [fn@Any     [let builder@BuilderHandle key@Any] ...]
-  builtin-builder-get-or:    [fn@Any     [let builder@BuilderHandle default@Any key@Any] ...]
+  # Builder is an opaque mutable accumulator. Typed as Any to prevent BuilderHandle
+  # from propagating into type inference for callers using builders internally.
+  builtin-make-builder:      [fn@Any [] ...]
+  builtin-builder-set:       [fn@Any [let key@Any value@Any builder@Any] ...]
+  builtin-builder-delete:    [fn@Any [let builder@Any key@Any] ...]
+  builtin-builder-finish:    [fn@Dict    [let builder@Any] ...]
+  builtin-builder-snapshot:  [fn@Dict    [let builder@Any] ...]
+  builtin-builder-has?:      [fn@[or 0 1] [let builder@Any key@Any] ...]
+  builtin-builder-get:       [fn@Any     [let builder@Any key@Any] ...]
+  builtin-builder-get-or:    [fn@Any     [let builder@Any default@Any key@Any] ...]
 
   # ── String primitives ─────────────────────────────────────────────────────
   builtin-str-bytes:     [fn@Bytes   [let s@String] ...]
@@ -290,14 +313,16 @@
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Optional third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.
-  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@[type: Dict  default: []]] ...]
+  # tc is typed @Any (opaque TypeContext object) to avoid Type::TyCon("TypeContext")
+  # propagating into test-loader.llt's type inference through letrec group sharing.
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@Any doc-env@[type: Dict  default: []]] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
   # Returns Dict of diagnostic dicts (empty when no warnings).
   builtin-lint-pipeline-docs: [fn@Dict [let docs@Dict pipeline-input: p] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
-  builtin-program-docs:      [fn@Dict     [let prog@Program] ...]
+  builtin-program-docs:      [fn@Documents [let prog@Program] ...]
   # doc-meta: evaluate a document's --- header with env dict, returning the result dict.
   # env: flat Dict<String, thunk> — same accumulated env passed to builtin-eval.
   builtin-doc-meta:          [fn@Dict     [let doc@Document env@Dict] ...]
@@ -309,12 +334,11 @@
   builtin-module:         [fn@Dict    [let name@String] ...]
 
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
-  builtin-get-type-context: [fn@TypeContext [] ...]
-  builtin-make-type-ctx:    [fn@TypeContext [] ...]
-  # builtin-tc-update-type-stage-env: wire a type-stage env Dict into a TypeContext.
-  # Makes type-stage declarations (Integer, String, DirCap, etc.) visible during
-  # subsequent typecheck passes. Called after evaluating all type-stage documents.
-  builtin-tc-update-type-stage-env: [fn@TypeContext [let tc@TypeContext env@Dict] ...]
+  # TypeContext is opaque — typed @Any to prevent Type::TyCon("TypeContext") from
+  # propagating into letrec group type inference in init programs (test-loader.llt).
+  builtin-get-type-context: [fn@Any [] ...]
+  builtin-make-type-ctx:    [fn@Any [] ...]
+  builtin-tc-update-type-stage-env: [fn@Any [let tc@Any env@Dict] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]

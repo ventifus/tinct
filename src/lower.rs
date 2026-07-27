@@ -321,23 +321,50 @@ fn lower_expr(
             // Build the getter function Var and the key argument.
             // The resolver writes a VarAddr for builtin-dict-get into Field.resolution.
             // All dot-access desugars to [builtin-dict-get key target] — one correct path.
+            // Try Field.resolution first (set by the resolver for programs that include builtins
+            // in their scope chain — e.g., init programs loaded via run_loader_pipeline).
+            // Fall back to scope_frames lookup for programs processed by builtin-resolve (which
+            // uses a user-visible name-set that does NOT include builtins like builtin-dict-get).
             let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
-                state @ (Some(None) | None) => {
-                    let why = if state.is_none() {
-                        "resolver did not run on this node"
+                _ => {
+                    // Resolution unset or None — look up builtin-dict-get in scope_frames.
+                    // This is the fallback path for documents resolved via builtin-resolve where
+                    // builtins are not in the name-set (e.g., builtin_core.llt type-stage docs).
+                    if let Some(frames) = scope_frames {
+                        let found = frames.iter().enumerate().rev().find_map(|(depth, frame)| {
+                            frame
+                                .get("builtin-dict-get")
+                                .map(|&slot| VarAddr::LetrecGroupMember {
+                                    depth: depth as u32,
+                                    slot,
+                                })
+                        });
+                        match found {
+                            Some(addr) => addr,
+                            None => {
+                                diagnostics.push(LowerDiagnostic {
+                                    kind: LowerDiagnosticKind::Error,
+                                    message: format!(
+                                        "builtin-dict-get: missing resolver coordinates for `.{}` — not in scope_frames",
+                                        field
+                                    ),
+                                    span: arc.span.clone(),
+                                });
+                                return CoreExpr::Placeholder;
+                            }
+                        }
                     } else {
-                        "builtin-dict-get not found in any scope (resolver ran but returned None)"
-                    };
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message: format!(
-                            "builtin-dict-get: missing resolver coordinates for `.{}` — {}",
-                            field, why
-                        ),
-                        span: arc.span.clone(),
-                    });
-                    return CoreExpr::Placeholder;
+                        diagnostics.push(LowerDiagnostic {
+                            kind: LowerDiagnosticKind::Error,
+                            message: format!(
+                                "builtin-dict-get: missing resolver coordinates for `.{}` — resolver did not run on this node",
+                                field
+                            ),
+                            span: arc.span.clone(),
+                        });
+                        return CoreExpr::Placeholder;
+                    }
                 }
             };
 
@@ -1509,7 +1536,10 @@ fn lower_type_alias_to_constructor_dict(
 
             // Build the payload dict: {field0: $field0, field1: $field1, ...}
             // Each entry is a string-keyed CoreEntry pointing to the corresponding param.
-            // level=1 skips the function body's own letrec env to reach the params.
+            // The payload dict is the function body — params are at VarAddr::Parameter(i).
+            // (Previously used debruijn_to_var_addr(1, idx) which produced ClosureCapture(idx),
+            // but the constructor function has no captures — its closure_env is empty.
+            // ClosureCapture(0) would resolve to None at runtime, causing UndefinedVariable.)
             let payload_entries: Vec<Spanned<CoreEntry>> = fields
                 .iter()
                 .enumerate()
@@ -1521,7 +1551,7 @@ fn lower_type_alias_to_constructor_dict(
                     let value = Arc::new(Spanned::new(
                         CoreExpr::Var {
                             name: field_name.clone(),
-                            addr: debruijn_to_var_addr(1, idx as u32),
+                            addr: VarAddr::Parameter(idx as u32),
                             annotation: None,
                         },
                         syn_span.clone(),

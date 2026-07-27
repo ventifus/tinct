@@ -1,0 +1,6 @@
+# Type assertion mismatch produces diagnostic with "type declared here" label
+# The annotation span should be included as a secondary label.
+# T-1875: secondary-spans field is now serialized by builtin-typecheck-doc.
+[@Integer "hello"]
+=== warn
+[UnificationFailure] cannot unify Integer with String

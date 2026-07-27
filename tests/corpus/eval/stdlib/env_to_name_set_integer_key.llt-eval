@@ -1,0 +1,9 @@
+# B-618: env-to-name-set skips non-string keys (e.g., integer 0).
+# An env dict may have auto-indexed (integer) keys from positional entries.
+# env-to-name-set must produce a name-set containing only string keys.
+[
+  env:      [name: "Alice"  count: 42  0: "skip-me"]
+  name-set: [env-to-name-set env]
+]
+=== out
+Dict({"env": Dict({"name": String("Alice"), "count": Int(42), 0: String("skip-me")}), "name-set": Dict({"name": Int(1), "count": Int(1)})})

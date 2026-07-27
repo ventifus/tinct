@@ -499,19 +499,37 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Escaped reference like $Add — this is the class name
                                         let class_name = name;
 
-                                        // Validate the class exists in env and get the ClassDecl
-                                        let class_decl = {
+                                        // Validate the class exists in env and get the ClassDecl.
+                                        // During bootstrap (e.g. test-loader.llt type-checked
+                                        // before prelude loads), classes like Indexable/Indexed
+                                        // may not exist yet. Skip the constraint group rather
+                                        // than erroring — gradual typing: unresolvable constraints
+                                        // in a context without the class definition are ignored.
+                                        let class_decl_opt = {
                                             let env_guard = state.env.read().unwrap();
-                                            env_guard.get_class(class_name).ok_or_else(|| {
-                                                TypeDiagnostic::error(
-                                                    "type-error",
-                                                    format!(
-                                                        "unknown class '{}' in MPTC constraint",
-                                                        class_name
-                                                    ),
-                                                    c_entry.node.value.span.clone(),
-                                                )
-                                            })?
+                                            env_guard.get_class(class_name)
+                                        };
+                                        let class_decl = if let Some(cd) = class_decl_opt {
+                                            cd
+                                        } else {
+                                            // Skip this MPTC group: advance past the class name
+                                            // and any subsequent positional TypeVar entries.
+                                            i += 1;
+                                            while i < constraint_entries.len() {
+                                                let subsequent = &constraint_entries[i];
+                                                if subsequent.node.key.is_some() {
+                                                    break;
+                                                }
+                                                match &subsequent.node.value.expr {
+                                                    SurfaceExpression::VarRef {
+                                                        escaped: true,
+                                                        ..
+                                                    } => break,
+                                                    _ => {}
+                                                }
+                                                i += 1;
+                                            }
+                                            continue;
                                         };
 
                                         // Collect TypeVar names from subsequent positional entries
@@ -2789,10 +2807,15 @@ pub(crate) async fn resolve_type_dict(
                             &row_ref,
                         )
                         .await;
-                        if let Ok(ty) = name_result {
-                            return Ok(ty);
+                        match name_result {
+                            Ok(ty) => return Ok(ty),
+                            // "undefined-type" means the name is not a known type in scope;
+                            // fall through to the NominalVariant check below.
+                            Err(e) if e.kind == "undefined-type" => {}
+                            // Any other error (e.g., row-variable collision, strict-mode
+                            // parameter violation) is a genuine type diagnostic — propagate it.
+                            Err(e) => return Err(e),
                         }
-                        // resolve_type_name failed — fall through to NominalVariant check below.
                     }
                     if crate::eval::is_constructor_name(&tag) && !is_builtin_type {
                         // Case 1: Pure positional — [Constructor] or [Constructor PayloadType]
@@ -3210,38 +3233,14 @@ async fn variant_payload_dict(
         _ => return Ok(None),
     };
     let payload_thunk = payload_id;
-    let payload_val = match crate::eval::materialize(&payload_thunk, None, ctx).await {
-        Ok(v) => v,
-        // TypeNode payload thunks created with named constructor arguments capture their
-        // parameters as ClosureCaptures. When forced outside the original call context
-        // (e.g., during bootstrap), the closure env is absent → UndefinedVariable.
-        // Return Ok(None): the TypeNode payload is not representable as a static Type here.
-        Err(e) if matches!(e.kind, crate::error::ErrorKind::UndefinedVariable { .. }) => {
-            return Ok(None);
-        }
-        Err(e) => return Err(e),
-    };
+    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await?;
     match payload_val {
         Value::Dict(dict) => {
             // Extract each string-keyed field, materializing the field value.
             let mut fields = HashMap::new();
             for (key, thunk) in &dict {
                 if let HashableValue::Str(k) = key {
-                    let v = match crate::eval::materialize(thunk, None, ctx).await {
-                        Ok(v) => v,
-                        // A field thunk that references a ClosureCapture absent in the bootstrap
-                        // context (e.g., TypeNode constructor argument) cannot be materialized.
-                        // Return Ok(None): payload is not representable as a static Type here.
-                        Err(e)
-                            if matches!(
-                                e.kind,
-                                crate::error::ErrorKind::UndefinedVariable { .. }
-                            ) =>
-                        {
-                            return Ok(None);
-                        }
-                        Err(e) => return Err(e),
-                    };
+                    let v = crate::eval::materialize(thunk, None, ctx).await?;
                     fields.insert(k.to_string(), v);
                 }
             }

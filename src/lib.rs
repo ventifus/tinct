@@ -307,6 +307,20 @@ pub async fn run_loader_pipeline(
     // builtin-* names are in scope. Type errors are real errors — if the loader has
     // type errors, we cannot proceed.
     let (builtin_env_base, seed_tycon_env) = crate::imports::build_builtin_core_envs().await;
+    // Prepend builtin_core.llt's type-stage scope to the loader's type-stage scope
+    // so that opaque types (BuilderHandle, TypeContext, DirCap, etc.) declared in
+    // builtin_core.llt's type-stage section are resolvable when typechecking the loader.
+    // Also saved separately for TypeContext pre-initialization (see below).
+    let builtin_core_ts_scope = crate::imports::get_builtin_core_type_stage_scope().await;
+    let type_stage_scope = {
+        let mut combined = builtin_core_ts_scope.clone();
+        combined.extend(type_stage_scope);
+        combined
+    };
+    // Save clones for TypeContext pre-initialization before builtin_env_base and seed_tycon_env
+    // are consumed by the typecheck pass below.
+    let core_env_for_tc = Arc::clone(&builtin_env_base);
+    let core_tycon_for_tc = seed_tycon_env.clone();
     // Chain injected types (from caller) above the builtin env so the type-checker
     // sees %programs, %cwd, etc. without any builtin_core declarations.
     let builtin_env = {
@@ -345,6 +359,22 @@ pub async fn run_loader_pipeline(
             "{init_path}: type errors in init program — cannot proceed"
         ));
     }
+
+    // Pre-initialize the EvalContext TypeContext with the builtin_core type-stage scope so
+    // that [builtin-make-type-ctx] in the init program is a no-op (init_type_context is
+    // idempotent), and [builtin-get-type-context] returns the pre-seeded TypeContext.
+    // This avoids tinct-side letrec cycles: when builtin-tc-update-type-stage-env
+    // materializes type-stage thunks from a letrec, mutual dependencies in the same
+    // letrec group (e.g. Integer → TypeNode → CoreDocument → TypeNode) create false cycles
+    // because the evaluator's InProgress detection fires before siblings are settled.
+    // The Rust-level pre-initialization bypasses this by evaluating builtin_core.llt
+    // in an isolated context with no InProgress thunks from the running init program.
+    eval_ctx_with_frames.init_type_context(TypeContextData {
+        inference_env: core_env_for_tc,
+        tycon_env: core_tycon_for_tc,
+        type_stage_scope: builtin_core_ts_scope,
+        type_diagnostics: Vec::new(),
+    });
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.

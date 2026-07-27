@@ -1,0 +1,9 @@
+# Tests that find-by locates a variant by a constant field value.
+# B-621: constructor_constants populated from [type ...] declarations.
+# DnsRcode has three unit-constructor variants with a constant `rcode` field.
+[
+  DnsRcode: [type [NoError rcode: 0] [NXDomain rcode: 3] [ServFail rcode: 2]]
+  found: [find-by rcode: 0 DnsRcode]
+]
+=== out
+Dict({"DnsRcode": Dict({"NoError": Variant(DnsRcode.NoError, Null), "NXDomain": Variant(DnsRcode.NXDomain, Null), "ServFail": Variant(DnsRcode.ServFail, Null)}), "found": Variant(DnsRcode.NoError, Null)})
