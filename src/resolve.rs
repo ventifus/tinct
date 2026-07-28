@@ -101,6 +101,11 @@ struct SurfaceResolver {
     /// > 0 when inside a context where unresolved VarRefs are not errors
     /// > (annotation, static key, declaration position, etc.).
     suppress_depth: usize,
+    /// The name of the field-access primitive function in the runtime's root group.
+    /// Used by the Field arm to resolve dot-access expressions. Stored here rather than
+    /// hardcoded in the arm so the resolver remains agnostic to the specific name used by
+    /// any given prelude/loader stack. The default matches the standard builtin registration.
+    field_getter_name: Arc<str>,
     /// Names from the env-dict (name-set) that were referenced during this document's walk.
     /// Used to compute unreferenced env names returned by resolve_surface_document_with_env_dict.
     referenced_env_names: std::collections::HashSet<String>,
@@ -153,6 +158,7 @@ impl SurfaceResolver {
             fn_scope_boundaries: Vec::new(),
             fn_capture_lists: Vec::new(),
             accumulated_dict_offset: 0,
+            field_getter_name: Arc::from("builtin-dict-get"),
         }
     }
 
@@ -787,11 +793,14 @@ impl SurfaceResolver {
             } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
-                    // Resolve builtin-dict-get to get its VarAddr at the current scope depth.
-                    // The lowerer reads this VarAddr to locate the builtin-dict-get function.
-                    // If builtin-dict-get is not in scope (resolver not seeded with env), leave
-                    // the OnceLock unset — the lowerer will emit a diagnostic.
-                    if let Some(addr) = self.resolve_name("builtin-dict-get") {
+                    // Resolve the field-access primitive to get its VarAddr at the current
+                    // scope depth. The lowerer reads this VarAddr to locate the function that
+                    // implements dot-access (e.g. `x.field`). The name is taken from
+                    // `self.field_getter_name` so the resolver stays agnostic to the specific
+                    // name used by the active prelude/loader stack. If the name is not in scope
+                    // (resolver not seeded with env), leave the OnceLock unset — the lowerer
+                    // will emit a diagnostic.
+                    if let Some(addr) = self.resolve_name(&self.field_getter_name.clone()) {
                         resolution.set(Some(addr));
                     }
                 } else if let crate::ast::DotKey::Ident(name) = field {
@@ -799,7 +808,7 @@ impl SurfaceResolver {
                     // nearest enclosing letrec dict scope. This prevents `[k: .k ...]`
                     // from creating a circular self-reference.
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
-                    // case uses parent lookup; outer `.b` / `.c` desugar to `builtin-dict-get`.
+                    // case uses parent lookup; outer `.b` / `.c` desugar to field-getter calls.
                     if let Some(coords) = self.resolve_name_parent(name) {
                         resolution.set(Some(coords));
                     } else {
@@ -1411,6 +1420,49 @@ pub fn resolve_surface_document_with_env_dict(
         .collect();
 
     // Exit the seeded scope.
+    resolver.exit_scope();
+
+    let (table, diagnostics) = resolver.finish_with_errors();
+    (table, diagnostics, unreferenced)
+}
+
+/// Like `resolve_surface_document_with_env_dict`, but seeds the resolver with additional
+/// scope frames before the env-dict scope. Each seed frame maps names to their actual
+/// slot positions in the runtime accumulated group (root_group primitives, capabilities,
+/// or other pre-env entries). The names in the seed frames are provided by the caller
+/// and have no intrinsic meaning to the resolver — the resolver treats them as ordinary
+/// scope entries at their given slots.
+///
+/// Used by `builtin-resolve` to include root_group entries in the resolver's scope at
+/// their correct runtime slots, while keeping env-dict names at their own offset
+/// starting at `root_group_len`.
+pub fn resolve_surface_document_with_seed_frames(
+    doc: &crate::ast::SurfaceDocument,
+    seed_frames: &[indexmap::IndexMap<String, u32>],
+    env_names: &[String],
+    root_group_len: u32,
+) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>) {
+    let mut resolver = SurfaceResolver::new();
+
+    for frame in seed_frames {
+        resolver.enter_scope_from_frame(frame);
+    }
+
+    resolver.enter_scope_with_offset(env_names, root_group_len, ScopeKind::Other);
+    resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
+
+    let initial_offset = root_group_len + env_names.len() as u32;
+    resolver.walk_surface_document_with_offset(doc, initial_offset);
+
+    let unreferenced: Vec<String> = env_names
+        .iter()
+        .filter(|n| !resolver.referenced_env_names.contains(*n))
+        .cloned()
+        .collect();
+
+    for _ in seed_frames {
+        resolver.exit_scope();
+    }
     resolver.exit_scope();
 
     let (table, diagnostics) = resolver.finish_with_errors();

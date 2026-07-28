@@ -2035,6 +2035,7 @@ pub(crate) fn builtin_resolve(
             args,
             named,
             call_span,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-resolve", named.as_ref(), call_span.clone())?;
@@ -2077,8 +2078,7 @@ pub(crate) fn builtin_resolve(
         };
 
         // Build the ordered name list from the name-set's string keys (insertion order).
-        // The i-th name gets LetrecGroupMember(i) in the resolver, corresponding to the
-        // i-th env-dict thunk in the env_frame.group of eval_core_document_exprs.
+        // The i-th env-dict name gets LetrecGroupMember(root_group_len + i) in the resolver.
         let mut env_names: Vec<String> = Vec::with_capacity(name_set_dict.len());
         for (k, _v_thunk) in &name_set_dict {
             let name = match k {
@@ -2094,19 +2094,21 @@ pub(crate) fn builtin_resolve(
             env_names.push(name.to_string());
         }
 
-        // Resolve the document in-place using the env-dict protocol.
-        // Env-dict names get LetrecGroupMember(i) addresses so that at runtime
-        // CoreExpr::Var { addr: LetrecGroupMember(i) } resolves to frame.group[i] =
-        // initial_group[i] = the i-th env-dict thunk.
-        // _resolve_table: the full ResolutionTable mapping spans to VarAddrs. Intentionally
-        //   discarded — the evaluator uses inline OnceLock resolutions written directly onto each
-        //   SurfaceNode::VarRef during the resolve walk (see lower.rs: resolution.get()). The
-        //   ResolutionTable is not read by the evaluator.
-        // root_group_len=0: env-dict IS the full scope. eval_core_document_exprs builds
-        // the spine from env-dict entries only (GroupSpine::from_flat), so env-dict name j
-        // maps to LGM(j) — no root_spine offset needed.
+        // Seed the resolver with root_group names at their actual runtime slots.
+        // root_group_resolver_map() returns (name, slot) where slot is the position
+        // in EvalContext.root_group. These names (builtins like builtin-dict-get)
+        // need correct resolution for Field.resolution and other scope lookups.
+        // Env-dict names follow at offset root_group.len() in the accumulated_group.
+        let root_map = ctx.root_group_resolver_map();
+        let root_group_len = ctx.root_group.len() as u32;
+
         let (_resolve_table, resolve_diagnostics, unreferenced_names) =
-            crate::resolve::resolve_surface_document_with_env_dict(&doc_arc, &env_names, 0);
+            crate::resolve::resolve_surface_document_with_seed_frames(
+                &doc_arc,
+                &[root_map],
+                &env_names,
+                root_group_len,
+            );
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2161,7 +2163,8 @@ pub(crate) fn builtin_resolve(
             diagnostics_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
         }
 
-        // Build unreferenced dict: {name: 1} for each env name never referenced.
+        // Build unreferenced dict: {name: 1} for each env-dict name never referenced.
+        // Exclude root_group names — they're not user-visible env-dict entries.
         let mut unreferenced_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for name in &unreferenced_names {
             unreferenced_dict.insert(HashableValue::Str(name.as_str().into()), mk(Value::Int(1)));
@@ -2358,13 +2361,13 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
 /// `builtin-typecheck-doc`: Type-check a single resolved `Value::Document`.
 ///
-/// Takes 2 or 3 args:
+/// Takes exactly 3 args:
 /// - arg0: Value::Document (already resolved)
 /// - arg1: Value::TypeContext
-/// - arg2 (optional): Value::Dict — the doc-env. When present, string-keyed thunks
-///   are extracted and built into a GroupSpine stored in `state.type_stage_eval_group`.
-///   This allows `eval_type_stage_expr` to resolve names from the accumulated
-///   environment instead of evaluating with an empty root scope.
+/// - arg2: Value::Dict — the doc-env. String-keyed thunks are extracted and built into
+///   a GroupSpine stored in `state.type_stage_eval_group` so `eval_type_stage_expr`
+///   resolves type-stage VarRefs from the accumulated environment. Also seeds
+///   `state.scope_frames` for typeclass instance dispatch via `check_constraints_on_var`.
 ///
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
@@ -2379,10 +2382,10 @@ pub(crate) fn builtin_typecheck_doc(
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
-        if args.len() < 2 || args.len() > 3 {
+        if args.len() != 3 {
             return Err(Box::new(EvalError::user_error(
                 format!(
-                    "builtin-typecheck-doc: expected 2 or 3 arguments, got {}",
+                    "builtin-typecheck-doc: expected 3 arguments, got {}",
                     args.len()
                 ),
                 call_span,
@@ -2403,10 +2406,14 @@ pub(crate) fn builtin_typecheck_doc(
             .clone();
         let tc_arc = require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone())?;
 
-        // arg2 (optional): Value::Dict — the doc-env.
+        // arg2: Value::Dict — the doc-env.
         // Extract string-keyed thunks in insertion order and build a GroupSpine so that
         // eval_type_stage_expr can resolve names from the accumulated environment.
-        let doc_env_spine: Option<std::sync::Arc<crate::value::GroupSpine>> = if args.len() == 3 {
+        // Also store the env_val for building scope_frames below.
+        let (doc_env_spine, doc_env_val): (
+            Option<std::sync::Arc<crate::value::GroupSpine>>,
+            Option<Value>,
+        ) = {
             let env_val = args[2]
                 .try_get_value()
                 .expect("pre-materialized by force_count/pos_strictness")
@@ -2423,7 +2430,8 @@ pub(crate) fn builtin_typecheck_doc(
                             }
                         })
                         .collect();
-                    Some(crate::value::GroupSpine::from_flat(thunks))
+                    let spine = Some(crate::value::GroupSpine::from_flat(thunks));
+                    (spine, Some(Value::Dict(dict_map)))
                 }
                 other => {
                     return Err(EvalError::internal(
@@ -2436,8 +2444,6 @@ pub(crate) fn builtin_typecheck_doc(
                     .into());
                 }
             }
-        } else {
-            None
         };
 
         // Extract TypeContext state
@@ -2448,13 +2454,40 @@ pub(crate) fn builtin_typecheck_doc(
             state.env = Arc::clone(&guard.inference_env);
             state.eval_ctx = Some(Arc::clone(&ctx));
 
-            // Populate scope_frames from the EvalContext.
+            // Populate scope_frames from the doc-env dict (arg2).
+            // The doc-env keys include ALL prelude bindings (including mangled instance
+            // names like ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int Int Int⟩⧽) at positions matching
+            // the runtime initial_group layout from builtin-eval (root_group + env-dict).
             // scope_frames is required by check_constraints_on_var (type_unify.rs) to resolve
-            // instance binding mangled names (e.g. ɪɴꜱᴛᴀɴᴄᴇ⧼Writable∷flush⟨StringWriter⟩⧽)
-            // to VarAddrs for call_dispatch. Without scope_frames, typeclass dispatch is silently
-            // skipped and typeclass methods evaluate to class descriptor Dicts at runtime.
-            if let Some(frames) = ctx.scope_frames.as_ref() {
-                state.scope_frames = Some(frames.as_ref().to_vec());
+            // instance binding mangled names to VarAddrs for call_dispatch.
+            if let Some(Value::Dict(ref dict_map)) = doc_env_val {
+                // Build scope frame from doc-env dict's string keys.
+                // Slots match the resolver's assignments: 0..R-1 are root_group,
+                // R..R+N-1 are env-dict entries (from builtin_resolve's all_names).
+                let root_group_len = ctx.root_group.len() as u32;
+                let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+
+                // First add root_group names at slots 0..R-1
+                for (name, slot) in ctx.root_group_resolver_map() {
+                    frame.insert(name, slot);
+                }
+
+                // Then add env-dict names starting at slot R
+                let mut slot = root_group_len;
+                for (k, _) in dict_map {
+                    if let HashableValue::Str(s) = k {
+                        frame.insert(s.to_string(), slot);
+                        slot += 1;
+                    }
+                }
+                state.scope_frames = Some(vec![frame]);
+            } else {
+                return Err(EvalError::internal(
+                    "builtin-typecheck-doc: doc_env_val is not a Dict after arg2 extraction"
+                        .to_string(),
+                    call_span,
+                )
+                .into());
             }
 
             // Install the TypeContextData's accumulated type-stage scope chain.
@@ -3334,11 +3367,9 @@ pub(crate) fn builtin_eval(
         };
 
         // arg1: Value::Dict — env-dict: name → thunk.
-        // Extract thunks in insertion order; these become the initial_group (env-dict entries)
-        // for eval_core_document_exprs. The env-dict IS the full scope — thunk j occupies
-        // slot j directly (no root_group prefix). The env-dict keys must be in the same
-        // insertion order as the name-set passed to builtin-resolve (with root_group_len=0),
-        // which determines the LGM slot assignments.
+        // Extract thunks in insertion order; these follow root_group thunks in initial_group.
+        // The env-dict keys must be in the same insertion order as the name-set passed to
+        // builtin-resolve, which determines the LGM slot assignments (with root_group_len offset).
         let env_val = args[1]
             .try_get_value()
             .expect("pre-materialized by Strictness::Seq")
@@ -3356,18 +3387,18 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // Convert env-dict to initial_group: string-keyed thunks in insertion order (LGM slot order).
-        // Integer-keyed entries are skipped — only string keys are LGM-addressable bindings.
-        let initial_group: Vec<Arc<Thunk>> = env_map
-            .iter()
-            .filter_map(|(k, v)| {
-                if matches!(k, HashableValue::Str(_)) {
-                    Some(Arc::clone(v))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Build initial_group: prepend root_group thunks, then append env-dict thunks.
+        // LGM slots 0..R-1 are root_group entries (builtins + capabilities).
+        // Env-dict entries follow at R..R+N-1, matching the resolver's root_group_len offset
+        // assigned by builtin_resolve.
+        let mut initial_group: Vec<Arc<Thunk>> = ctx.root_group.iter().map(Arc::clone).collect();
+        initial_group.extend(env_map.iter().filter_map(|(k, v)| {
+            if matches!(k, HashableValue::Str(_)) {
+                Some(Arc::clone(v))
+            } else {
+                None
+            }
+        }));
 
         // Evaluate the pre-lowered CoreExpr entries with the env-dict as the initial group.
         // Uses eval_core_document_exprs (not eval_document_exprs_with_env) to avoid calling

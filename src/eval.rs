@@ -5964,4 +5964,89 @@ mod tests {
             "B-598: non-matching case arm must fall through to wildcard; got: {r_val:?}"
         );
     }
+
+    #[tokio::test]
+    async fn test_b637_dot_access_via_root_group() {
+        // B-637: builtin-dict-get must be available via root_group in builtin-resolve/builtin-eval.
+        // Test program uses dot-access: [build: [fn [let x] x.inner]] [result: [build [inner: 42]]]
+        // - dot-access `x.inner` lowers to `[builtin-dict-get "inner" x]`
+        // - builtin-dict-get must be in root_group (not just env-dict) for Field resolution
+        // - Before B-637: Field resolution failed because builtin-dict-get was not in env-dict name-set
+        // - After B-637: builtin-resolve prepends root_group names, builtin-eval prepends root_group thunks
+        let ctx = test_ctx();
+        let file: Arc<str> = Arc::from("<test>");
+        let source = r#"[build: [fn [let x] x.inner]] [result: [build [inner: 42]]]"#;
+
+        // Parse and desugar
+        let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse must succeed");
+        let program = crate::desugar::desugar_program_full(&parsed.program);
+
+        // Resolve with root_group seed frame (as builtin-resolve does after B-637 fix).
+        let root_map = ctx.root_group_resolver_map();
+        let root_group_len = ctx.root_group.len() as u32;
+
+        let doc = &program.documents[0].node;
+        let (_resolve_table, resolve_diagnostics, _unreferenced) =
+            crate::resolve::resolve_surface_document_with_seed_frames(
+                doc,
+                &[root_map.clone()],
+                &[],
+                root_group_len,
+            );
+        assert!(
+            resolve_diagnostics.is_empty(),
+            "resolve must produce no errors; got: {resolve_diagnostics:?}"
+        );
+
+        // Lower each expression item (same as builtin_lower does)
+        let scope_frames_data: Vec<indexmap::IndexMap<String, u32>> = vec![root_map.clone()];
+        let scope_frames_slice: Option<&[indexmap::IndexMap<String, u32>]> =
+            Some(scope_frames_data.as_slice());
+        let mut core_entries: Vec<(
+            String,
+            std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        )> = Vec::new();
+        let mut expr_idx: usize = 0;
+        for item in doc.items.iter() {
+            let node = match item {
+                crate::ast::SurfaceItem::Expr(node) => node,
+                crate::ast::SurfaceItem::Decl(_) => continue,
+            };
+            let (core_spanned, lower_diags) = crate::lower::lower(node, scope_frames_slice);
+            assert!(
+                crate::eval_materialize::lower_errors_to_eval_error(lower_diags).is_none(),
+                "lowering must not produce errors"
+            );
+            core_entries.push((expr_idx.to_string(), std::sync::Arc::new(core_spanned)));
+            expr_idx += 1;
+        }
+
+        // Build initial_group: root_group thunks (B-637 fix in builtin-eval)
+        let initial_group: Vec<Arc<Thunk>> = ctx.root_group.iter().map(Arc::clone).collect();
+
+        // Eval via eval_core_document_exprs
+        let result_thunk = eval_core_document_exprs(&core_entries[..], &ctx, initial_group)
+            .await
+            .expect("eval_core_document_exprs must succeed");
+        let val = materialize(&result_thunk, None, &ctx)
+            .await
+            .expect("materialize must succeed");
+
+        let Value::Dict(ref d) = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+
+        // Check that dot-access worked (B-637)
+        let result = d
+            .get(&HashableValue::Str(Arc::from("result")))
+            .expect("key 'result' must exist");
+        let result_val = super::materialize(result, None, &ctx)
+            .await
+            .expect("result must materialize");
+        assert_eq!(
+            result_val,
+            Value::Int(42),
+            "B-637: dot-access must resolve builtin-dict-get via root_group; got: {result_val:?}"
+        );
+    }
 }

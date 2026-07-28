@@ -312,11 +312,11 @@
   # Returns the exports Dict directly (raises on error — no diagnostics wrapper).
   builtin-eval:           [fn@Dict     [let lowered@CoreDocument env@Dict] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
-  # Optional third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
+  # Required third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.
   # tc is typed @Any (opaque TypeContext object) to avoid Type::TyCon("TypeContext")
   # propagating into test-loader.llt's type inference through letrec group sharing.
-  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@Any doc-env@[type: Dict  default: []]] ...]
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@Any doc-env@Dict] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").

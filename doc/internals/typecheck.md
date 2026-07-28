@@ -157,9 +157,9 @@ The `type_stage_scope` Vec IS the authoritative type-stage environment. There is
 
 **`builtin-typecheck-doc` third argument — doc-env GroupSpine protocol (T-1891):**
 
-`builtin-typecheck-doc` accepts an optional third argument: the doc-env Dict that was used as input to `builtin-eval` when the same document was evaluated. The implementation in `src/builtins_meta.rs` (`builtin_typecheck_doc`) builds a `GroupSpine` from this Dict and stores it in `state.type_stage_eval_group`. This GroupSpine is then used as the EvalFrame root scope inside `eval_type_stage_expr` so that type-stage VarRefs (LGM addresses assigned by `builtin-resolve`) resolve correctly against the accumulated loader environment.
+`builtin-typecheck-doc` requires exactly 3 arguments: the resolved Document, the TypeContext, and the doc-env Dict. The doc-env Dict is the same Dict passed to `builtin-eval` when evaluating the same document. The implementation in `src/builtins_meta.rs` (`builtin_typecheck_doc`) builds a `GroupSpine` from this Dict and stores it in `state.type_stage_eval_group`. This GroupSpine is then used as the EvalFrame root scope inside `eval_type_stage_expr` so that type-stage VarRefs (LGM addresses assigned by `builtin-resolve`) resolve correctly against the accumulated loader environment. It also builds `state.scope_frames` from the doc-env Dict's string keys so that `check_constraints_on_var` can resolve instance binding mangled names for typeclass dispatch.
 
-All call sites in `loader.llt`, `test-loader.llt`, and `prelude.llt` must pass the doc-env Dict as the third argument when calling `builtin-typecheck-doc`. Without this argument, `eval_type_stage_expr` falls back to `GroupSpine::empty()`, and any type-stage annotation that references a name from a previously evaluated document will fail to resolve — producing `Type::Unknown` silently instead of the correct type. The `type_stage_eval_group` field on `InferState` (see the InferState Fields table) holds the GroupSpine for the duration of the type-checking pass.
+All call sites in `loader.llt`, `test-loader.llt`, and `prelude.llt` pass the doc-env Dict as the third argument. The `type_stage_eval_group` field on `InferState` (see the InferState Fields table) holds the GroupSpine for the duration of the type-checking pass.
 
 ### `resolve_type_head` Lookup Order
 
