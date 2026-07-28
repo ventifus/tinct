@@ -266,17 +266,6 @@ impl ClassEnv {
         }
     }
 
-    /// Create a child ClassEnv frame whose parent is `parent`.
-    ///
-    /// Classes declared in the child frame are local and do not affect the parent.
-    /// Lookups walk child → parent chain with inner-wins semantics.
-    pub fn child(parent: std::sync::Arc<ClassEnv>) -> Self {
-        Self {
-            classes: BTreeMap::new(),
-            parent: Some(parent),
-        }
-    }
-
     /// Look up a class declaration by name, walking the parent chain (inner wins).
     pub fn get(&self, name: &str) -> Option<&ClassDecl> {
         if let Some(decl) = self.classes.get(name) {
@@ -288,20 +277,6 @@ impl ClassEnv {
     /// Insert a class declaration into the CURRENT frame.
     pub fn insert(&mut self, class_decl: ClassDecl) {
         self.classes.insert(class_decl.name.clone(), class_decl);
-    }
-
-    /// Iterate all class declarations in this frame only (not parent frames).
-    pub fn iter_classes(&self) -> impl Iterator<Item = &ClassDecl> {
-        self.classes.values()
-    }
-
-    /// Insert a class declaration only if no class with that name is already visible
-    /// (checks the full parent chain before inserting into the current frame).
-    /// Used when seeding from the prelude cache to avoid overwriting user-defined classes.
-    pub fn insert_if_absent(&mut self, class_decl: ClassDecl) {
-        if self.get(&class_decl.name).is_none() {
-            self.classes.insert(class_decl.name.clone(), class_decl);
-        }
     }
 }
 
@@ -350,17 +325,6 @@ impl InstanceEnv {
         }
     }
 
-    /// Create a child InstanceEnv frame whose parent is `parent`.
-    ///
-    /// Instances declared in the child frame are local and do not affect the parent.
-    /// Lookups walk child → parent chain with inner-wins semantics.
-    pub fn child(parent: std::sync::Arc<InstanceEnv>) -> Self {
-        Self {
-            instances: BTreeMap::new(),
-            parent: Some(parent),
-        }
-    }
-
     /// Build the lookup key for an instance declaration.
     ///
     /// For single-parameter classes (`det_positions` is empty), the key is a one-element vec
@@ -403,11 +367,7 @@ impl InstanceEnv {
     /// For single-parameter classes the key is `(class_name, [instance_type_string])`.
     ///
     /// This method does NOT perform structural overlap checking (string-key dedup only).
-    /// For overlap detection at user-facing definition time, callers should call
-    /// `check_structural_overlap` before inserting (see `typecheck.rs` instance registration).
-    /// Built-in and prelude instance registration skips overlap checking intentionally —
-    /// the built-in instances are known-disjoint and overlap detection at prelude-load time
-    /// would require a live InferState.
+    /// Built-in and prelude instance registration is known-disjoint by construction.
     pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
         let key = Self::build_key(&inst);
         if self.instances.contains_key(&key) {
@@ -416,88 +376,6 @@ impl InstanceEnv {
             return Ok(());
         }
         self.instances.insert(key, inst);
-        Ok(())
-    }
-
-    /// Check whether a candidate instance structurally overlaps any already-registered instance
-    /// for the same class.
-    ///
-    /// Two instances overlap when their head types can be unified — i.e., there exists a ground
-    /// type that satisfies both patterns. For example, `[F a]` and `[F Int]` overlap because
-    /// substituting `a = Int` satisfies both. Overlapping instances cause non-deterministic
-    /// resolution: whichever instance is found first "wins", violating coherence.
-    ///
-    /// This is a pure probe: all state mutations from the unification attempt are discarded
-    /// (same save/restore pattern as F1 fix in `lookup_mptc`). The check uses freshened copies
-    /// of both the candidate and existing instance types so that shared type variable names
-    /// do not accidentally unify across distinct instances.
-    ///
-    /// Returns `Ok(())` if no overlap is detected, or `Err(message)` identifying the overlapping
-    /// pair. The caller is responsible for converting the message into a `TypeDiagnostic`.
-    ///
-    /// This method takes `&self` (read-only) and `&mut InferState` (for freshening and probing).
-    /// Callers that do not have a live `InferState` (built-in registration, prelude seeding)
-    /// should skip this check — those instances are known-disjoint by construction.
-    pub async fn check_structural_overlap(
-        &self,
-        candidate: &InstanceDecl,
-        state: &mut InferState,
-    ) -> Result<(), String> {
-        // Walk the parent chain to check for overlap across all frames.
-        // A user instance can overlap with a prelude instance in the parent frame,
-        // which should be detected and reported.
-        let mut current_env: Option<&InstanceEnv> = Some(self);
-        while let Some(env) = current_env {
-            for ((cname, _), existing) in &env.instances {
-                if cname != &candidate.class_name {
-                    continue;
-                }
-
-                // Save ALL fields BEFORE freshening — instantiate_at_level advances
-                // per_origin_counter and extends state.type_vars with fresh entries. Saving before
-                // means both freshening and the unification probe (type_vars/deferred) are rolled
-                // back. per_origin_counter is NOT saved/restored: it advances monotonically.
-                let saved_type_vars = state.type_vars.clone();
-                let saved_deferred = state.deferred_equalities.clone();
-                let saved_bounds = state.bounds.clone();
-
-                // Freshen both instance types independently so that a type variable named
-                // `a` in `[F a]` and a type variable named `a` in another instance map
-                // to distinct fresh variables and do not accidentally unify.
-                let fresh_existing =
-                    instantiate_at_level(&existing.instance_type, state, &rust_span!());
-                let fresh_candidate =
-                    instantiate_at_level(&candidate.instance_type, state, &rust_span!());
-
-                let mut probe_constraints: Vec<Constraint> = Vec::new();
-                let overlaps = Box::pin(unify(
-                    &fresh_existing,
-                    &fresh_candidate,
-                    state,
-                    &mut probe_constraints,
-                    rust_span!(),
-                    0,
-                ))
-                .await
-                .is_ok();
-
-                // Always restore state — this is a pure probe.
-                // per_origin_counter is NOT restored (monotonically advancing).
-                state.type_vars = saved_type_vars;
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
-
-                if overlaps {
-                    return Err(format!(
-                        "overlapping instances for class '{}': new instance '{}' overlaps with existing instance '{}'",
-                        candidate.class_name,
-                        candidate.instance_type,
-                        existing.instance_type,
-                    ));
-                }
-            }
-            current_env = env.parent.as_deref();
-        }
         Ok(())
     }
 
@@ -760,45 +638,6 @@ impl InstanceEnv {
         None
     }
 
-    /// Iterate over all locally registered instance declarations (does not traverse parent chain).
-    pub fn iter_instances(&self) -> impl Iterator<Item = &InstanceDecl> {
-        self.instances.values()
-    }
-
-    /// Return the number of registered instances.
-    pub fn instance_count(&self) -> usize {
-        self.instances.len()
-    }
-
-    /// Look up an instance by class name and TyCon name, walking the parent chain.
-    ///
-    /// This is a fast, InferState-free lookup for the common case where the instance head is
-    /// a bare `TyCon` (e.g., `[instance [Monad Result] ...]` → `instance_type = TyCon("Result")`).
-    /// Returns the innermost matching instance (most local scope wins).
-    ///
-    /// Available for `[do ...]` desugaring to resolve monad instances without a live
-    /// `InferState`, unlike the full unification-based `lookup_mptc`.
-    /// Currently has no external callers — provided for future use by the do-inference path.
-    ///
-    /// Note: only matches instances whose `instance_type` is a bare `Type::TyCon(n)` —
-    /// parameterized instances (e.g., `F[T]`) are not matched by this method.
-    pub fn lookup_scoped(&self, class_name: &str, tycon_name: &str) -> Option<&InstanceDecl> {
-        // Check local frame first — inner scope wins.
-        for ((cname, _), inst) in &self.instances {
-            if cname == class_name {
-                if let Type::TyCon(n) = &inst.instance_type {
-                    if n == tycon_name {
-                        return Some(inst);
-                    }
-                }
-            }
-        }
-        // Walk parent chain if not found in this frame.
-        self.parent
-            .as_ref()
-            .and_then(|p| p.lookup_scoped(class_name, tycon_name))
-    }
-
     /// Resolve an instance for the given class and target type using specificity-based selection.
     ///
     /// Collects ALL instances whose head types unify with the target, ranks them by specificity
@@ -816,7 +655,7 @@ impl InstanceEnv {
     ///
     /// **Two-pass algorithm**:
     /// - Pass 1: probe each candidate with a temporary substitution, collect `(score, inst)` for
-    ///   all matches, always restore state (save/restore pattern identical to `check_structural_overlap`).
+    ///   all matches, always restore state (save/restore probe pattern).
     /// - Pass 2: find minimum score, check for ties, re-run unification for the unique winner
     ///   to build the final resolved `InstanceDecl` with method types applied.
     ///
@@ -1084,14 +923,6 @@ mod tests {
     use crate::type_infer::InferState;
     use std::collections::HashMap;
 
-    async fn check_structural_overlap_sync(
-        env: &InstanceEnv,
-        candidate: &InstanceDecl,
-        state: &mut InferState,
-    ) -> Result<(), String> {
-        env.check_structural_overlap(candidate, state).await
-    }
-
     fn make_tycon_app(name: &str, elem: Type) -> Type {
         Type::App(Box::new(Type::TyCon(name.into())), Box::new(elem))
     }
@@ -1113,122 +944,11 @@ mod tests {
         }
     }
 
-    /// Two disjoint concrete instances (Int vs Str) must NOT be reported as overlapping.
-    #[tokio::test]
-    async fn test_no_overlap_disjoint_concrete() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        let int_inst = make_appendable_instance(Type::Int);
-        let str_inst = make_appendable_instance(Type::Str);
-
-        env.insert(int_inst).unwrap();
-
-        // Str does not overlap with Int — should be Ok
-        assert!(
-            check_structural_overlap_sync(&env, &str_inst, &mut state)
-                .await
-                .is_ok(),
-            "Int and Str instances should not overlap"
-        );
-    }
-
-    /// `[Coll a]` and `[Coll Int]` overlap: substituting a=Int satisfies both.
-    #[tokio::test]
-    async fn test_overlap_coll_a_vs_coll_int() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        let coll_a_inst = make_appendable_instance(make_coll_a());
-        let coll_int_inst = make_appendable_instance(make_coll_int());
-
-        env.insert(coll_a_inst).unwrap();
-
-        let result = check_structural_overlap_sync(&env, &coll_int_inst, &mut state).await;
-        assert!(
-            result.is_err(),
-            "Coll[a] and Coll[Int] should be detected as overlapping instances"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("overlapping instances"),
-            "Error message should mention overlapping instances, got: {msg}"
-        );
-        assert!(
-            msg.contains("Appendable"),
-            "Error message should mention the class name, got: {msg}"
-        );
-    }
-
-    /// `[Coll a]` and `[Coll b]` overlap: both accept any Coll, so they are universally overlapping.
-    #[tokio::test]
-    async fn test_overlap_coll_a_vs_coll_b() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        let coll_a_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::Var("a".to_string(), 0)));
-        let coll_b_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::Var("b".to_string(), 0)));
-
-        env.insert(coll_a_inst).unwrap();
-
-        let result = check_structural_overlap_sync(&env, &coll_b_inst, &mut state).await;
-        assert!(
-            result.is_err(),
-            "Coll[a] and Coll[b] should be detected as overlapping (both accept any Coll)"
-        );
-    }
-
-    /// Checking overlap against an empty registry never reports overlap.
-    #[tokio::test]
-    async fn test_no_overlap_empty_registry() {
-        let mut state = InferState::new();
-        let env = InstanceEnv::new();
-        let inst = make_appendable_instance(make_coll_a());
-        assert!(
-            check_structural_overlap_sync(&env, &inst, &mut state)
-                .await
-                .is_ok(),
-            "Empty registry should never report overlap"
-        );
-    }
-
-    /// check_structural_overlap is side-effect-free: state must not change.
-    #[tokio::test]
-    async fn test_overlap_check_is_side_effect_free() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        env.insert(make_appendable_instance(make_coll_a())).unwrap();
-
-        let type_vars_before = state.type_vars.clone();
-
-        // This will detect overlap and return Err — but type_vars must be restored.
-        // per_origin_counter advances monotonically and is NOT restored (by design).
-        let result = check_structural_overlap_sync(
-            &env,
-            &make_appendable_instance(make_coll_int()),
-            &mut state,
-        )
-        .await;
-        assert!(
-            result.is_err(),
-            "expected overlap detection error but got Ok"
-        );
-
-        assert_eq!(
-            state.type_vars, type_vars_before,
-            "type_vars must be restored after overlap check"
-        );
-    }
-
     /// When both `[Coll Int]` and `[Coll a]` are registered, resolving against `Coll[Int]`
     /// must select `[Coll Int]` (score 0) over `[Coll a]` (score 1) by specificity.
     ///
-    /// Note: We insert directly (bypassing `check_structural_overlap`) to simulate the
-    /// case where both instances are registered (e.g., from different scopes or via
-    /// built-in seeding) — `resolve_instance` must handle this correctly.
+    /// Both instances are inserted directly to test that `resolve_instance` handles
+    /// equally-registered instances correctly.
     #[tokio::test]
     async fn test_resolve_instance_specificity_concrete_wins_over_polymorphic() {
         let mut state = InferState::new();
@@ -1323,43 +1043,6 @@ mod tests {
         assert!(
             resolved.is_some(),
             "should find a matching instance for Coll[Int] via [Coll a]"
-        );
-    }
-
-    /// check_structural_overlap walks the parent chain: an instance in a parent frame
-    /// must be detected as overlapping with a candidate inserted into a child frame.
-    #[tokio::test]
-    async fn test_overlap_check_parent_chain() {
-        let mut state = InferState::new();
-
-        // Parent frame: register Appendable(Int).
-        let mut parent_env = InstanceEnv::new();
-        let int_inst = make_appendable_instance(Type::Int);
-        parent_env.insert(int_inst).unwrap();
-
-        // Child frame: no instances yet, parent contains Appendable(Int).
-        let child_env = InstanceEnv::child(Arc::new(parent_env));
-
-        // Attempting to add another Appendable(Int) to child must detect overlap with parent.
-        let duplicate_int = make_appendable_instance(Type::Int);
-        let result = check_structural_overlap_sync(&child_env, &duplicate_int, &mut state).await;
-        assert!(
-            result.is_err(),
-            "Appendable(Int) in child should overlap with Appendable(Int) in parent frame"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("overlapping instances"),
-            "Error message should mention overlapping instances, got: {msg}"
-        );
-
-        // A disjoint instance (Appendable(Str)) must NOT be reported as overlapping.
-        let str_inst = make_appendable_instance(Type::Str);
-        assert!(
-            check_structural_overlap_sync(&child_env, &str_inst, &mut state)
-                .await
-                .is_ok(),
-            "Appendable(Str) should not overlap with Appendable(Int) in parent frame"
         );
     }
 

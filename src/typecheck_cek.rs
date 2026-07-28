@@ -32,30 +32,6 @@ use crate::types::{
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
 
-// ===== Helper functions =====
-
-/// Extract binding variable names from a `[let name1 name2 ...]` node.
-/// Excludes `_` (wildcard) from the result — `_` is not a binding.
-fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
-    match &let_bindings.expr {
-        SurfaceExpression::LetDecl { bindings } => bindings
-            .iter()
-            .filter_map(|b| {
-                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                    if name == "_" {
-                        None // wildcard, not a binding
-                    } else {
-                        Some(name.clone())
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
 // ===== Action enum =====
 
 /// Action returned by `infer_step` and `apply_cont`.
@@ -125,6 +101,9 @@ pub(crate) enum TypeCheckCont {
         rest: Option<Box<(String, Type)>>,
         required_count: usize,
         node_span: Span,
+        /// Env frame containing the function's parameter bindings (extras).
+        /// Used to detect unreferenced parameters (lost-binding warnings).
+        param_env: Arc<RwLock<Env>>,
     },
 
     /// Inferred the function expression in a call — start processing arguments.
@@ -174,6 +153,10 @@ pub(crate) enum TypeCheckCont {
         scrutinee_ty: Type,
         remaining_scrutinee: Type,
         span: Span,
+        /// Env frame containing the case arm's let-binding extras, if this was a case arm.
+        /// `Some(env)` for arms with `let_bindings`, `None` for keyed arms.
+        /// Used to detect unreferenced case arm bindings (lost-binding warnings).
+        arm_body_env: Option<Arc<RwLock<Env>>>,
     },
 
     /// Pass 0 (key resolution) complete — run full multi-pass dict inference (T-1644).
@@ -266,6 +249,17 @@ pub(crate) enum TypeCheckCont {
         env: Arc<RwLock<Env>>,
         /// `state.level` at push time — restored after evaluation.
         enclosing_level: u32,
+    },
+
+    /// All Dict intermediate bodies in a Sequential processed — emit lost-binding warnings
+    /// for unreferenced bindings in each intermediate env frame.
+    ///
+    /// Pushed by the `Sequential` arm after all Dict intermediates are processed, just
+    /// before evaluating the final expression. The handler fires after the final expression
+    /// is inferred, iterates each collected intermediate env frame, and emits a
+    /// `lost-binding` warning for every extras entry that was never referenced.
+    AfterSequentialFinal {
+        intermediate_envs: Vec<Arc<RwLock<Env>>>,
     },
 
     /// Inferred the inner expression of a TypeAssert — validate against expected type.
@@ -542,10 +536,12 @@ async fn infer_step(
                 return TypeCheckAction::Eval(Arc::clone(&exprs[0]), Arc::clone(env));
             }
 
-            // Process all intermediate bodies (all but last) inline, extending env after each
+            // Process all intermediate bodies (all but last) inline, extending env after each.
+            // Collect each Dict intermediate's env frame for lost-binding detection.
             let mut current_env = Arc::clone(env);
             let intermediates = &exprs[0..exprs.len() - 1];
             let last = &exprs[exprs.len() - 1];
+            let mut intermediate_envs: Vec<Arc<RwLock<Env>>> = Vec::new();
 
             for (i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
@@ -560,6 +556,8 @@ async fn infer_step(
                         new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
                     }
                     current_env = Arc::new(RwLock::new(new_env_inner));
+                    // Collect this env frame for lost-binding detection.
+                    intermediate_envs.push(Arc::clone(&current_env));
                 } else {
                     // Non-Dict intermediate: push continuation, return Eval — no recursion.
                     // The SequentialNonDictIntermediate handler resumes after evaluation,
@@ -580,7 +578,8 @@ async fn infer_step(
                 }
             }
 
-            // All intermediates were Dict — return Eval for the last expression
+            // All intermediates were Dict — push AfterSequentialFinal then eval the last expression.
+            stack.push(TypeCheckCont::AfterSequentialFinal { intermediate_envs });
             TypeCheckAction::Eval(Arc::clone(last), current_env)
         }
 
@@ -770,6 +769,7 @@ async fn apply_cont(
             rest,
             required_count,
             node_span,
+            param_env,
         } => {
             state.level = saved_level;
             state.expected_return = saved_expected_return;
@@ -905,6 +905,27 @@ async fn apply_cont(
 
             // Record the function type with the Fn node's span for LSP hover.
             record_type_map(type_map, &node_span, &fn_type);
+
+            // Lost-binding detection: emit warnings for unreferenced function parameters.
+            {
+                let env_guard = param_env.read().unwrap();
+                for (name, slot) in &env_guard.extras {
+                    if !slot.referenced {
+                        if let Some(span) = slot
+                            .scheme
+                            .as_ref()
+                            .and_then(|s| s.definition_span.as_ref())
+                        {
+                            errors.push(TypeDiagnostic::warn(
+                                "lost-binding",
+                                format!("function parameter '{}' is never referenced", name),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+
             TypeCheckAction::Done(fn_type)
         }
 
@@ -1022,6 +1043,12 @@ async fn apply_cont(
                 }
                 Some((arm_env, next_remaining_scrutinee)) => {
                     let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].to_vec();
+                    // arm_body_env tracks the env frame with let-bindings for lost-binding detection.
+                    let arm_body_env = if arms[0].let_bindings.is_some() {
+                        Some(Arc::clone(&arm_env))
+                    } else {
+                        None
+                    };
                     stack.push(TypeCheckCont::MatchArm {
                         remaining_arms,
                         env,
@@ -1029,6 +1056,7 @@ async fn apply_cont(
                         scrutinee_ty,
                         remaining_scrutinee: next_remaining_scrutinee,
                         span,
+                        arm_body_env,
                     });
                     TypeCheckAction::Eval(Arc::clone(arms[0].body_expr()), arm_env)
                 }
@@ -1043,7 +1071,29 @@ async fn apply_cont(
             scrutinee_ty,
             remaining_scrutinee,
             span,
+            arm_body_env,
         } => {
+            // Lost-binding detection: emit warnings for unreferenced case arm bindings
+            // from the arm whose body was just evaluated.
+            if let Some(arm_env_frame) = arm_body_env {
+                let env_guard = arm_env_frame.read().unwrap();
+                for (name, slot) in &env_guard.extras {
+                    if !slot.referenced {
+                        if let Some(span) = slot
+                            .scheme
+                            .as_ref()
+                            .and_then(|s| s.definition_span.as_ref())
+                        {
+                            errors.push(TypeDiagnostic::warn(
+                                "lost-binding",
+                                format!("variable '{}' is never referenced", name),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+
             accumulated_types.push(child_ty);
 
             if remaining_arms.is_empty() {
@@ -1074,6 +1124,12 @@ async fn apply_cont(
                     }
                     Some((arm_env, next_remaining_scrutinee)) => {
                         let next_remaining: Vec<SurfaceMatchArm> = remaining_arms[1..].to_vec();
+                        // arm_body_env tracks the env frame with let-bindings for lost-binding detection.
+                        let next_arm_body_env = if remaining_arms[0].let_bindings.is_some() {
+                            Some(Arc::clone(&arm_env))
+                        } else {
+                            None
+                        };
                         stack.push(TypeCheckCont::MatchArm {
                             remaining_arms: next_remaining,
                             env,
@@ -1081,6 +1137,7 @@ async fn apply_cont(
                             scrutinee_ty,
                             remaining_scrutinee: next_remaining_scrutinee,
                             span,
+                            arm_body_env: next_arm_body_env,
                         });
                         TypeCheckAction::Eval(Arc::clone(remaining_arms[0].body_expr()), arm_env)
                     }
@@ -1234,6 +1291,34 @@ async fn apply_cont(
 
         // ===== UnquoteSplice =====
         TypeCheckCont::UnquoteSplice => TypeCheckAction::Done(Type::Unknown),
+
+        // ===== AfterSequentialFinal =====
+        //
+        // Fires after the final expression in a Sequential whose intermediates were all Dict.
+        // Iterates each collected intermediate env frame and emits a `lost-binding` warning
+        // for every extras entry that has a definition_span (user binding) but was never
+        // referenced during type checking of the sequential body.
+        TypeCheckCont::AfterSequentialFinal { intermediate_envs } => {
+            for env_frame in &intermediate_envs {
+                let env_guard = env_frame.read().unwrap();
+                for (name, slot) in &env_guard.extras {
+                    if !slot.referenced {
+                        if let Some(span) = slot
+                            .scheme
+                            .as_ref()
+                            .and_then(|s| s.definition_span.as_ref())
+                        {
+                            errors.push(TypeDiagnostic::warn(
+                                "lost-binding",
+                                format!("variable '{}' is never referenced", name),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+            TypeCheckAction::Done(child_ty)
+        }
 
         // ===== DictPassZero =====
         //
@@ -1904,6 +1989,7 @@ async fn apply_cont(
                                                                 doc: None,
                                                                 inner_schemes: None,
                                                                 param_narrowings: Vec::new(),
+                                                                definition_span: None,
                                                             };
 
                                                         dict_env
@@ -2564,16 +2650,25 @@ async fn infer_var_ref(
         };
         let slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
         if slot_scheme.is_some() {
+            // Slot-based builtins: no marking — these have no definition_span.
             slot_scheme
         } else {
             // Slot lookup failed — fall through to extras (narrowing, dispatch, name-only)
-            env.read().unwrap().get_extras_scheme(name)
+            let extras_scheme = env.read().unwrap().get_extras_scheme(name);
+            if extras_scheme.is_some() {
+                env.write().unwrap().mark_extras_referenced(name);
+            }
+            extras_scheme
         }
     } else {
         // No resolver address — check extras only (narrowing overrides, class dispatch).
         // Every user-visible name must have a resolver address; if this fires for a
         // name that should be resolved, it is a bug in the resolver pass.
-        env.read().unwrap().get_extras_scheme(name)
+        let extras_scheme = env.read().unwrap().get_extras_scheme(name);
+        if extras_scheme.is_some() {
+            env.write().unwrap().mark_extras_referenced(name);
+        }
+        extras_scheme
     };
 
     if let Some(scheme) = scheme {
@@ -3879,8 +3974,22 @@ async fn infer_fn_push_cont(
             } else {
                 None
             });
-        fn_env_inner
-            .insert_scheme_named_only(p.node.name.clone(), TypeScheme::mono(param_ty.clone()));
+        // Only track definition_span for lost-binding detection when the body is not a
+        // Placeholder (`...`). Placeholder bodies indicate Rust-implemented builtins whose
+        // parameters are interface declarations, not tinct-level bindings that can be unused.
+        let param_definition_span =
+            if matches!(body.expr, crate::ast::SurfaceExpression::Placeholder(..)) {
+                None
+            } else {
+                Some(p.span.clone())
+            };
+        fn_env_inner.insert_scheme_named_only(
+            p.node.name.clone(),
+            TypeScheme {
+                definition_span: param_definition_span,
+                ..TypeScheme::mono(param_ty.clone())
+            },
+        );
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
             if p.node.annotation.is_some() {
@@ -3921,6 +4030,8 @@ async fn infer_fn_push_cont(
     }
 
     let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
+    // Clone for param_env before fn_env_arc is moved into the Eval action.
+    let param_env = Arc::clone(&fn_env_arc);
 
     // required_count = number of fixed (non-variadic) params
     let required_count = param_types.len();
@@ -3938,6 +4049,7 @@ async fn infer_fn_push_cont(
         rest,
         required_count,
         node_span: node.span.clone(),
+        param_env,
     });
 
     // Evaluate body iteratively via the CEK loop.
@@ -4198,14 +4310,37 @@ fn build_case_arm_env(
     state: &mut InferState,
     node: &Arc<SurfaceNode>,
 ) -> Arc<RwLock<Env>> {
-    let binding_names = extract_case_arm_binding_names(let_bindings);
-    if binding_names.is_empty() {
+    // Extract binding names with their individual spans for lost-binding diagnostics.
+    // Each binding node's span points at the binding name in `[let v w ...]`.
+    let bindings_with_spans: Vec<(String, Span)> = match &let_bindings.expr {
+        SurfaceExpression::LetDecl { bindings } => bindings
+            .iter()
+            .filter_map(|b| {
+                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
+                    if name == "_" {
+                        None // wildcard, not a binding
+                    } else {
+                        Some((name.clone(), b.span.clone()))
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if bindings_with_spans.is_empty() {
         Arc::clone(env)
     } else {
         let mut child_inner = Env::with_parent(Arc::clone(env));
-        for name in binding_names {
-            child_inner
-                .insert_scheme_named_only(name, TypeScheme::mono(state.fresh_type_var(&node.span)));
+        for (name, binding_span) in bindings_with_spans {
+            child_inner.insert_scheme_named_only(
+                name,
+                TypeScheme {
+                    definition_span: Some(binding_span),
+                    ..TypeScheme::mono(state.fresh_type_var(&node.span))
+                },
+            );
         }
         Arc::new(RwLock::new(child_inner))
     }
@@ -5536,6 +5671,7 @@ pub(crate) async fn run_typecheck_dict(
                                                     doc: None,
                                                     inner_schemes: None,
                                                     param_narrowings: Vec::new(),
+                                                    definition_span: None,
                                                 };
 
                                                 // Insert into dict_env — class method names are

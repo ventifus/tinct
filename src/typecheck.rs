@@ -42,28 +42,7 @@ use typecheck_narrow::{
 /// re-running inference.
 pub type TypeMap = HashMap<(u32, u32, u32, u32), Type>;
 
-/// Map from variable/parameter name to its documentation string.
-/// Populated during type checking by extracting `doc:` properties from annotations.
-pub type DocMap = HashMap<String, String>;
-
 // MatchArmData (old Expr-based) removed — replaced by SurfaceMatchArmData.
-
-/// Re-export SchemeMap from types for LSP consumers.
-pub use crate::types::SchemeMap;
-
-/// Return value of [`typecheck_surface_program_with_env`].
-///
-/// Groups the seven values that were previously returned as a tuple, eliminating the
-/// need for `#[allow(clippy::type_complexity)]` on the function's return position.
-pub struct TypecheckProgramResult {
-    pub diagnostics: Vec<TypeDiagnostic>,
-    pub type_map: TypeMap,
-    pub doc_map: DocMap,
-    pub scheme_map: SchemeMap,
-    pub state: InferState,
-    pub env: Arc<RwLock<Env>>,
-    pub annotation_table: TypeAnnotationTable,
-}
 
 /// Grouped surface data for a `[class ...]` declaration.
 ///
@@ -80,179 +59,38 @@ pub(crate) struct ClassDeclSurface<'a> {
     pub span: Span,
 }
 
-/// Type-check a SurfaceProgram and return a TypeAnnotationTable.
+/// Type-check a `SurfaceProgram` — minimal bootstrap entry point.
 ///
-/// This is the runtime-v2 entry point for type checking used by the eval pipeline.
-/// The SurfaceProgram is unchanged (immutable); all type annotations are captured
-/// in the returned table keyed by NodeId.
+/// Iterates over `program.documents`, calling [`process_document`] for each with the
+/// accumulated env, and collects all diagnostics. Cross-document env threading is handled
+/// here because the bootstrap path has no init program to own that logic.
 ///
-/// For the public API that returns a `TypeMap` (span-keyed, compatible with the
-/// LSP and import-resolution paths), use [`typecheck_surface_program`] instead.
+/// This is the only Rust-level typecheck entry point. Three bootstrap callers need it:
+/// - `imports::build_builtin_core_envs_inner` — typecheck builtin_core.llt
+/// - `lib::run_loader_pipeline` — typecheck the init program (loader.llt)
+/// - `formatter::format_source` — typecheck the formatter script
 ///
-/// # Algorithm
-///
-/// 1. For each SurfaceDocument, walk items (expressions + declarations)
-/// 2. Run type inference via `typecheck_cek::run_typecheck` (CEK machine)
-/// 3. Capture inferred types in TypeAnnotationTable keyed by NodeId
-///
-/// The type environment is threaded across documents:
-/// % bindings, %name bindings, dict-scoped let-generalization.
+/// All other type-checking goes through the init program via `builtin-typecheck-doc`.
 ///
 /// # Returns
 ///
-/// Returns `(errors, table, tycon_env)` where:
-/// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
-/// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
-/// - `tycon_env`: TyConEnv accumulated during inference (type constructor definitions)
-pub async fn typecheck_surface_program_annotation_table(
+/// `(diagnostics, final_env, tycon_env)` where:
+/// - `diagnostics`: All type errors and quality warnings encountered during inference.
+/// - `final_env`: Env containing schemes from the last document, exported for callers
+///   that need to inspect the resulting type environment.
+/// - `tycon_env`: TyConEnv accumulated during inference (type constructor definitions).
+pub async fn typecheck_program_bootstrap(
     program: &SurfaceProgram,
-) -> (
-    Vec<TypeDiagnostic>,
-    TypeAnnotationTable,
-    crate::type_def::TyConEnv,
-) {
-    // Obtain the type-stage scope by evaluating builtin_core.llt's type-stage section.
-    // This is the single authoritative source for the type-stage scope — no Rust code
-    // hardcodes tinct-side type names (Axiom 1: Prelude speaks the Rust protocol).
-    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
-    typecheck_surface_program_annotation_table_with_env(
-        program,
-        Arc::new(RwLock::new(Env::new())),
-        None,
-        std::collections::HashMap::new(),
-        type_stage_scope,
-    )
-    .await
-}
-
-/// Type-check a `SurfaceProgram` starting from a pre-seeded type environment.
-///
-/// Identical to [`typecheck_surface_program_annotation_table`] but accepts an initial
-/// `TypeEnv` and an optional `EvalContext`. When `eval_ctx` is provided, the type
-/// normalizer can evaluate TypeStageApp nodes (e.g. `Integer → TypeNode.Int → Type::Int`)
-/// using the runtime evaluator, enabling the type-stage for the init program's type-check.
-pub async fn typecheck_surface_program_annotation_table_with_env(
-    program: &SurfaceProgram,
-    initial_env: Arc<RwLock<Env>>,
+    parent_env: Arc<RwLock<Env>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     seed_tycon_env: crate::type_def::TyConEnv,
     type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
 ) -> (
     Vec<TypeDiagnostic>,
-    TypeAnnotationTable,
+    Arc<RwLock<Env>>,
     crate::type_def::TyConEnv,
 ) {
     let mut errors = Vec::new();
-    let mut table = TypeAnnotationTable::new();
-    let mut env: Arc<RwLock<Env>> = initial_env;
-    let mut state = InferState::new();
-    state.eval_ctx = eval_ctx;
-    state.tycon_env = seed_tycon_env;
-    // Install the caller-supplied type-stage scope chain.
-    // Unknown is expected to be in the chain (seeded by builtin_core.llt's type-stage
-    // section). If the chain is empty and no Unknown is present, @Unknown annotations
-    // will produce "undefined type" errors — this is correct for bootstrap/test contexts.
-    state.type_stage_scope = type_stage_scope;
-    // Compute and store the resolution table for slot-indexed VarRef lookup.
-    // No runtime env at the type-checker path; pass empty initial_frames for bootstrap mode.
-    let (resolve_table, frames) = crate::resolve::resolve_surface_program(program, &[]);
-    state.resolution_table = std::sync::Arc::new(resolve_table);
-    state.resolver_frames = frames;
-
-    for doc_spanned in &program.documents {
-        let doc = &doc_spanned.node;
-
-        let (new_env, _, mut doc_errors) =
-            process_document(doc, &env, &mut state, &mut table, &mut None).await;
-        env = new_env;
-        // Collect all errors (type errors + advisory) without blocking propagation.
-        errors.append(&mut doc_errors);
-    }
-    // Include state-level diagnostics (e.g. unknown-type warnings from unification).
-    errors.append(&mut state.diagnostics);
-
-    (errors, table, state.tycon_env)
-}
-
-/// Type-check a `SurfaceProgram` with a given initial type environment.
-///
-/// This is the native-Surface implementation — it delegates to
-/// [`typecheck_surface_program_with_env`] which walks `program.documents` directly via
-/// [`process_document`] without any conversion through the old `File` AST.
-/// The span-keyed [`TypeMap`] in the return tuple is always empty; callers that need
-/// per-expression type information should use the [`TypeAnnotationTable`] returned by
-/// [`typecheck_surface_program_with_env`] instead.
-///
-/// # Returns
-///
-/// `(diagnostics, type_map, doc_map, scheme_map)`
-///
-/// The returned [`TypeMap`] is span-keyed and built from the `TypeAnnotationTable` produced
-/// during inference (populated per-node by `process_document`). Only top-level
-/// expression nodes are inserted in the table; inner sub-expressions are included via the
-/// recursive `collect_type_map_from_node` walk.
-pub async fn typecheck_surface_program(
-    program: &SurfaceProgram,
-    parent_env: Arc<RwLock<Env>>,
-) -> (Vec<TypeDiagnostic>, TypeMap, DocMap, SchemeMap) {
-    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
-    let result = typecheck_surface_program_with_env(
-        program,
-        parent_env,
-        true,
-        std::collections::HashMap::new(),
-        None,
-        Some(type_stage_scope),
-    )
-    .await;
-    // type_map is now populated during inference (enable_hover_map=true path).
-    (
-        result.diagnostics,
-        result.type_map,
-        result.doc_map,
-        result.scheme_map,
-    )
-}
-
-/// Type-check a `SurfaceProgram` with full control over scheme-map generation,
-/// returning all intermediate state including a [`TypeAnnotationTable`] for the evaluator's
-/// lowering pass.
-///
-/// This is the native-Surface implementation — it walks `program.documents` directly
-/// via [`process_document`] without any conversion through the old `File` AST.
-/// The [`TypeAnnotationTable`] is populated directly during inference (keyed by `NodeId`
-/// of the original `Arc<SurfaceNode>`) — no span-based correlation is needed.
-///
-/// # Parameters
-///
-/// - `program`: The surface AST to type-check.
-/// - `parent_env`: Initial type environment. All classes and instances visible to this
-///   program must already be in `parent_env`'s chain (populated by prior type-checking runs
-///   via `TypeContext`).
-/// - `enable_hover_map`: When `true`, populates the [`SchemeMap`] for LSP hover.
-/// - `seed_tycon_env`: Pre-populated type constructor definitions. Propagates opaque types
-///   (DirCap, File, ClockCap, Handle, etc.) declared in `builtin_core.llt` to subsequent
-///   module type-checks without requiring re-declaration.
-/// - `eval_ctx`: Optional `EvalContext` for type-stage scope-chain lookup.
-///
-/// # Returns
-///
-/// `(diagnostics, type_map, doc_map, scheme_map, infer_state, final_env, annotation_table)`
-///
-/// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
-/// needs span-keyed types, use [`typecheck_surface_program`] instead.
-pub async fn typecheck_surface_program_with_env(
-    program: &SurfaceProgram,
-    parent_env: Arc<RwLock<Env>>,
-    enable_hover_map: bool,
-    seed_tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
-    eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
-    type_stage_scope_override: Option<
-        Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
-    >,
-) -> TypecheckProgramResult {
-    let mut errors = Vec::new();
-    let mut diagnostics = Vec::new();
     // Create a child Env scope for this type-checking session: reads walk through
     // to the parent (finding prelude classes/instances), writes stay in the child.
     let child_env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&parent_env))));
@@ -264,9 +102,7 @@ pub async fn typecheck_surface_program_with_env(
     // This function must NOT call get_builtin_core_type_stage_scope() internally —
     // build_builtin_core_envs_inner() calls this function, so calling it here would
     // create circular recursion.
-    if let Some(ts_scope) = type_stage_scope_override {
-        state.type_stage_scope = ts_scope;
-    }
+    state.type_stage_scope = type_stage_scope;
     // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
     // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt
     // to subsequent module type-checks (builtin_io.llt, builtin_async.llt, ...) so that
@@ -292,70 +128,24 @@ pub async fn typecheck_surface_program_with_env(
     state.resolution_table = Arc::new(resolve_table);
     state.resolver_frames = frames;
 
-    if enable_hover_map {
-        state.scheme_map = Some(SchemeMap::new());
-    }
-
     let mut annotation_table = TypeAnnotationTable::new();
-    // type_map_inner accumulates span→type for all sub-expressions (for LSP hover).
-    // Populated when enable_hover_map is true (i.e., LSP path), empty otherwise.
-    let mut type_map_inner = TypeMap::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-
-        let mut type_map_ref: Option<&mut TypeMap> = if enable_hover_map {
-            Some(&mut type_map_inner)
-        } else {
-            None
-        };
-
-        let (new_env, _, mut doc_errors) = process_document(
-            doc,
-            &env,
-            &mut state,
-            &mut annotation_table,
-            &mut type_map_ref,
-        )
-        .await;
+        let (new_env, _, mut doc_errors) =
+            process_document(doc, &env, &mut state, &mut annotation_table, &mut None).await;
         env = new_env;
-        // Collect all errors (type errors + advisory) without blocking env propagation.
         errors.append(&mut doc_errors);
     }
 
-    // Extract scheme_map from state (populated during VarRef inference).
-    let scheme_map = state.scheme_map.take().unwrap_or_default();
+    // Include state-level diagnostics (e.g. unknown-type warnings from unification).
+    errors.append(&mut state.diagnostics);
 
-    // Merge errors and diagnostics from state (e.g., T013 ambiguous constraints).
-    // All type errors are now TypeDiagnostic (T-1724).
-    diagnostics.append(&mut errors);
-    diagnostics.append(&mut state.diagnostics);
-
-    // Extract doc strings from the Surface AST (equivalent to extract_doc_strings on File AST).
-    // Only needed when enable_hover_map is true (i.e., LSP path — doc_map is for hover).
-    let doc_map = if enable_hover_map {
-        let mut doc_map = DocMap::new();
-        extract_doc_strings_surface(program, &mut doc_map);
-        doc_map
-    } else {
-        DocMap::new()
-    };
-
-    // Merge the document-level Env scheme bindings back into the child Env.
-    // This ensures that variables declared in this program are visible to callers
-    // that hold the returned Arc<RwLock<Env>> (e.g., subsequent builtin-typecheck-doc calls).
+    // Merge the document-level Env scheme bindings back into the child Env so callers
+    // holding the returned Arc<RwLock<Env>> see all new bindings.
     merge_env_schemes_into_env(&env, &child_env, &mut state);
-    // child_env is state.env — classes/instances were written to it via the merge.
     state.invalidate_env_caches();
 
-    TypecheckProgramResult {
-        diagnostics,
-        type_map: type_map_inner,
-        doc_map,
-        scheme_map,
-        state,
-        env: child_env,
-        annotation_table,
-    }
+    (errors, child_env, state.tycon_env)
 }
 
 /// Merge ALL scheme bindings from an `Arc<RwLock<Env>>` chain into a target `Arc<RwLock<Env>>`.
@@ -618,127 +408,6 @@ pub(crate) async fn process_document(
         }
     }
     (Arc::new(RwLock::new(result_env_inner)), result_ty, errors)
-}
-
-/// Extract documentation strings from a SurfaceProgram.
-///
-/// Walks the Surface AST looking for `doc:` properties in `@[...]` annotations on
-/// function parameters and return annotations.
-fn extract_doc_strings_surface(program: &SurfaceProgram, doc_map: &mut DocMap) {
-    for doc_spanned in &program.documents {
-        for item in &doc_spanned.node.items {
-            if let SurfaceItem::Expr(node) = item {
-                extract_doc_from_surface_node(node, doc_map, None);
-            }
-        }
-    }
-}
-
-/// Recursively extract doc strings from a SurfaceNode.
-fn extract_doc_from_surface_node(
-    node: &std::sync::Arc<crate::ast::SurfaceNode>,
-    doc_map: &mut DocMap,
-    binding_name: Option<&str>,
-) {
-    use crate::ast::SurfaceExpression;
-    match &node.expr {
-        SurfaceExpression::Fn {
-            params,
-            body,
-            return_ann,
-            ..
-        } => {
-            // Extract doc from return annotation (fn@[doc: "..."])
-            if let Some(ann) = return_ann {
-                if let Some(doc_node) = ann.node.get_property("doc") {
-                    if let SurfaceExpression::StringLiteral {
-                        content: doc_string,
-                        ..
-                    } = &doc_node.expr
-                    {
-                        if let Some(name) = binding_name {
-                            doc_map.insert(name.to_string(), doc_string.clone());
-                        }
-                    }
-                }
-            }
-            // Extract doc from each parameter annotation
-            for param_spanned in params {
-                if let Some(ref ann) = param_spanned.node.annotation {
-                    if let Some(doc_node) = ann.node.get_property("doc") {
-                        if let SurfaceExpression::StringLiteral {
-                            content: doc_string,
-                            ..
-                        } = &doc_node.expr
-                        {
-                            doc_map.insert(param_spanned.node.name.clone(), doc_string.clone());
-                        }
-                    }
-                }
-            }
-            extract_doc_from_surface_node(body, doc_map, None);
-        }
-        SurfaceExpression::Dict(entries) => {
-            for entry in entries {
-                let key_name: Option<String> =
-                    entry.node.key.as_ref().and_then(|k| match &k.expr {
-                        SurfaceExpression::VarRef {
-                            name,
-                            annotation: Some(ann),
-                            ..
-                        } => {
-                            if let Some(doc_node) = ann.node.get_property("doc") {
-                                if let SurfaceExpression::StringLiteral {
-                                    content: doc_string,
-                                    ..
-                                } = &doc_node.expr
-                                {
-                                    doc_map.insert(name.clone(), doc_string.clone());
-                                }
-                            }
-                            Some(name.clone())
-                        }
-                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                        SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
-                        _ => None,
-                    });
-                extract_doc_from_surface_node(&entry.node.value, doc_map, key_name.as_deref());
-            }
-        }
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            extract_doc_from_surface_node(func, doc_map, None);
-            for a in args {
-                extract_doc_from_surface_node(a, doc_map, None);
-            }
-            for na in named_args {
-                extract_doc_from_surface_node(&na.node.value, doc_map, None);
-            }
-        }
-        SurfaceExpression::TypeAssert { expr, .. } => {
-            extract_doc_from_surface_node(expr, doc_map, None);
-        }
-        SurfaceExpression::Field {
-            expr: Some(target), ..
-        } => {
-            extract_doc_from_surface_node(target, doc_map, None);
-        }
-        SurfaceExpression::Field { expr: None, .. } => {}
-        SurfaceExpression::Pipe { lhs, rhs, .. } => {
-            extract_doc_from_surface_node(lhs, doc_map, None);
-            extract_doc_from_surface_node(rhs, doc_map, None);
-        }
-        SurfaceExpression::Sequential(nodes) => {
-            for n in nodes {
-                extract_doc_from_surface_node(n, doc_map, None);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Pre-register type aliases in `target_env` before Pass 1 inference.

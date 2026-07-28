@@ -1294,58 +1294,6 @@ impl TypeVarBounds {
             self.upper.push(ty);
         }
     }
-
-    /// Compact bounds to a concrete type if possible.
-    ///
-    /// Returns `Some(T)` if the bounds determine a unique type for alpha:
-    /// - Single lower = single upper = same type T → T
-    /// - Single lower, no upper → T (alpha >= T, principal choice is T)
-    /// - No lower, single upper → T (alpha <= T, principal choice is T)
-    /// - Empty bounds → `None` (alpha is unconstrained, remains polymorphic)
-    /// - Multiple bounds → `None` (alpha remains polymorphic with union/intersection bounds)
-    ///
-    /// Returns `None` when bounds are inconsistent (`join(lower) ≰ meet(upper)`); the
-    /// caller in `generalize_with_doc` is responsible for emitting a T022_INCONSISTENT_BOUNDS
-    /// diagnostic in that case.
-    ///
-    /// When returning `None` with non-empty bounds, the caller should leave alpha free
-    /// in the TypeScheme. The bounds information is used only during constraint solving,
-    /// not stored in TypeScheme.
-    pub fn compact(&self, tycon_env: Option<&TyConEnv>) -> Option<Type> {
-        match (self.lower.len(), self.upper.len()) {
-            (0, 0) => None,                        // Unconstrained
-            (1, 0) => Some(self.lower[0].clone()), // Single lower bound
-            (0, 1) => Some(self.upper[0].clone()), // Single upper bound
-            (1, 1) => {
-                // If lower == upper, or lower <: upper, use lower
-                if self.lower[0] == self.upper[0] {
-                    Some(self.lower[0].clone())
-                } else {
-                    // Check if lower <: upper (consistent bounds)
-                    let mut sigma = HashSet::new();
-                    if Type::is_subtype_bas(&self.lower[0], &self.upper[0], tycon_env, &mut sigma) {
-                        // Bounds are consistent; use lower bound (most specific principal type)
-                        Some(self.lower[0].clone())
-                    } else {
-                        None // Inconsistent bounds — leave free
-                    }
-                }
-            }
-            _ => {
-                // Multiple bounds: try to compute the join (union of lower bounds)
-                // and meet (intersection of upper bounds), then check compatibility
-                if !self.lower.is_empty() && self.upper.is_empty() {
-                    // Multiple lower bounds → their union
-                    Some(Type::normalize_union(self.lower.clone()))
-                } else if self.lower.is_empty() && !self.upper.is_empty() {
-                    // Multiple upper bounds → their intersection
-                    Some(Type::normalize_intersection(self.upper.clone()))
-                } else {
-                    None // Both non-empty — complex case, leave free
-                }
-            }
-        }
-    }
 }
 
 impl Default for TypeVarBounds {
@@ -1883,75 +1831,11 @@ mod tests {
     // --- TypeVarBounds tests ---
 
     #[test]
-    fn test_bounds_empty_unconstrained() {
-        let bounds = TypeVarBounds::new();
-        assert!(bounds.compact(None).is_none());
-    }
-
-    #[test]
-    fn test_bounds_single_lower() {
-        let mut bounds = TypeVarBounds::new();
-        bounds.add_lower(Type::Int);
-        assert_eq!(bounds.compact(None), Some(Type::Int));
-    }
-
-    #[test]
-    fn test_bounds_single_upper() {
-        let mut bounds = TypeVarBounds::new();
-        bounds.add_upper(Type::Int);
-        assert_eq!(bounds.compact(None), Some(Type::Int));
-    }
-
-    #[test]
-    fn test_bounds_matching_lower_upper() {
-        let mut bounds = TypeVarBounds::new();
-        bounds.add_lower(Type::Int);
-        bounds.add_upper(Type::Int);
-        assert_eq!(bounds.compact(None), Some(Type::Int));
-    }
-
-    #[test]
     fn test_bounds_dedup() {
         let mut bounds = TypeVarBounds::new();
         bounds.add_lower(Type::Int);
         bounds.add_lower(Type::Int); // duplicate
         assert_eq!(bounds.lower.len(), 1);
-    }
-
-    // --- S-883 TEST-1: compact() and flatten_rdnf_to_type() unit tests ---
-
-    /// compact() with inconsistent bounds (lower=Int, upper=Str) returns None.
-    ///
-    /// Int ≰ Str, so the bounds are unsatisfiable. compact() returns None and the
-    /// caller (generalize_with_doc) is responsible for emitting T022_INCONSISTENT_BOUNDS.
-    #[test]
-    fn test_compact_inconsistent_bounds() {
-        let mut bounds = TypeVarBounds::new();
-        bounds.add_lower(Type::Int);
-        bounds.add_upper(Type::Str);
-        // Int ≰ Str: inconsistent bounds → None
-        assert_eq!(
-            bounds.compact(None),
-            None,
-            "compact() must return None for inconsistent bounds (Int ≰ Str)"
-        );
-    }
-
-    /// compact() with lower=IntLiteral(42), upper=Int returns Some(IntLiteral(42)).
-    ///
-    /// IntLiteral(42) <: Int, so the bounds are consistent. compact() returns the lower bound
-    /// (most specific principal type) per the MLstruct rule.
-    #[test]
-    fn test_compact_lower_subtype_upper() {
-        let mut bounds = TypeVarBounds::new();
-        bounds.add_lower(Type::IntLiteral(42));
-        bounds.add_upper(Type::Int);
-        // IntLiteral(42) <: Int: consistent → Some(IntLiteral(42)) (lower bound, most specific)
-        assert_eq!(
-            bounds.compact(None),
-            Some(Type::IntLiteral(42)),
-            "compact() must return lower bound (IntLiteral(42)) when lower <: upper"
-        );
     }
 
     /// flatten_rdnf_to_type on an empty RDNF produces Type::Never.

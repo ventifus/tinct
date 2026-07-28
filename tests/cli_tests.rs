@@ -488,7 +488,7 @@ fn eval_error_undefined_var() {
 #[test]
 fn eval_strict_warning_exits_1() {
     // A program that produces a type warning should exit 1 with --strict
-    // Use a lost-binding warning: intermediate binding never referenced in final expression
+    // Use a lost-binding warning (emitted by the type checker): intermediate binding never referenced in final expression
     let (path, _dir) = write_temp_llt(
         "eval_strict_warning",
         "[call [fn [let a b] [b: [+ b 2]] [if a 1 0]] 1 2]",

@@ -70,8 +70,15 @@ pub async fn format_source_tinct_with_dir(
     }
 
     // Typecheck the desugared formatter (writes inline type annotations).
-    let (tc_diags, _annotation_table, _tycon_env) =
-        typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
+    let (tc_diags, _formatter_env, _tycon_env) = typecheck::typecheck_program_bootstrap(
+        &formatter_program,
+        std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
+    )
+    .await;
     let tc_errors: Vec<_> = tc_diags
         .iter()
         .filter(|d| d.level == DiagnosticLevel::Err)

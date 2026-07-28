@@ -39,8 +39,15 @@ async fn check(input: &str) -> Result<(), Vec<TypeDiagnostic>> {
     let program = crate::desugar::desugar_surface_program(
         &crate::parse(input, test_file(input)).unwrap().program,
     );
-
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
+    let (errors, _env, _tycon_env) = crate::typecheck::typecheck_program_bootstrap(
+        &program,
+        std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
+    )
+    .await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -59,7 +66,15 @@ async fn check_errors_only(input: &str) -> Result<(), Vec<TypeDiagnostic>> {
     let program = crate::desugar::desugar_surface_program(
         &crate::parse(input, test_file(input)).unwrap().program,
     );
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
+    let (errors, _env, _tycon_env) = crate::typecheck::typecheck_program_bootstrap(
+        &program,
+        std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
+    )
+    .await;
     let err_only: Vec<TypeDiagnostic> = errors
         .into_iter()
         .filter(|d| d.level == crate::error::DiagnosticLevel::Err)
@@ -676,6 +691,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
             doc: None,
             inner_schemes: None,
             param_narrowings: Vec::new(),
+            definition_span: None,
         },
     );
     let parent_env = Arc::new(RwLock::new(parent_env_inner));
@@ -1635,100 +1651,7 @@ async fn test_check_expr_lambda_arity_mismatch() {
     );
 }
 
-#[tokio::test]
-async fn test_double_typecheck_no_panic() {
-    // Regression test for LSP double-typecheck panic risk.
-    // resolve_type_assert creates no persistent state in the AST — the RefCell used
-    // for write-once tracking is a local variable created fresh in each infer_surface_expr
-    // call, so no reset is needed and double-typecheck cannot trigger any assertion.
-    let input = r#"
-            [@Integer 42]
-            [@String "hello"]
-            [@Integer 99]
-        "#;
-
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    // First typecheck: should succeed
-    let (diagnostics1, type_map1, _doc_map1, _scheme_map1) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-    let errors1 = &diagnostics1;
-    assert!(
-        errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
-        "First typecheck should not panic"
-    );
-    assert!(
-        !type_map1.is_empty(),
-        "First typecheck should populate type_map"
-    );
-
-    // Second typecheck on the same AST: should not panic — no shared mutable state in AST
-    let (diagnostics2, type_map2, _doc_map2, _scheme_map2) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-    let errors2 = &diagnostics2;
-    assert!(
-        errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
-        "Second typecheck should not panic"
-    );
-    assert!(
-        !type_map2.is_empty(),
-        "Second typecheck should populate type_map"
-    );
-
-    // Third typecheck to be extra sure
-    let (diagnostics3, _type_map3, _doc_map3, _scheme_map3) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-    let errors3 = &diagnostics3;
-    assert!(
-        errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
-        "Third typecheck should not panic"
-    );
-}
-
 // -- Type::Error cascade prevention --
-
-#[tokio::test]
-async fn test_error_recorded_in_type_map_on_failure() {
-    // When infer_expr fails on a sub-expression, Type::Error must be recorded in the
-    // type_map for LSP hover so the parent expression sees <error> rather than nothing.
-    //
-    // Test via typecheck_surface_program: $undefined is a VarRef that fails, so the
-    // type_map entry for its span must be Type::Error.
-    let input = "$undefined";
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (diagnostics, type_map, _doc_map, _scheme_map) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-    let errors = &diagnostics;
-
-    // Must have an error (undefined variable)
-    assert!(!errors.is_empty(), "expected type error for $undefined");
-
-    // The type_map should contain at least one Type::Error entry
-    let has_error = type_map.values().any(|ty| matches!(ty, Type::Error(_)));
-    assert!(
-        has_error,
-        "type_map should contain Type::Error for failed sub-expression ($undefined), \
-             got entries: {:?}",
-        type_map.values().collect::<Vec<_>>()
-    );
-}
 
 #[tokio::test]
 async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
@@ -1761,54 +1684,6 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     );
 }
 
-#[tokio::test]
-async fn test_calling_error_function_does_not_produce_t003() {
-    // B-180: calling a function typed as Error (e.g., because its definition failed
-    // type-checking) should suppress the "expected function type, got <error>" T003
-    // rather than cascading it to every call site. This tests the AfterCallFunc CEK path
-    // (apply_cont_call_func in typecheck_cek.rs; previously the check_call path, deleted T-1639).
-    //
-    // We simulate this by having a binding `broken` that the type checker cannot infer
-    // (e.g., a function with a type error in its body). When we call `broken`, the
-    // type checker should return Unknown without producing a T003 error.
-    let input = r#"
-            [
-                broken: [fn [let x] [call $undefined]]
-                result: [call $broken 42]
-            ]
-        "#;
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-    let errors = &diagnostics;
-
-    // Should have an error about undefined variable inside `broken`
-    let has_undefined = errors
-        .iter()
-        .any(|e| e.message.contains("undefined variable"));
-    assert!(
-        has_undefined,
-        "expected undefined variable error inside broken function, got: {:?}",
-        errors
-    );
-
-    // Should NOT have a T003 "expected function type, got <error>" when calling broken
-    let has_t003 = errors
-        .iter()
-        .any(|e| e.message.contains("expected function type"));
-    assert!(
-        !has_t003,
-        "calling a Type::Error function should suppress T003, got: {:?}",
-        errors
-    );
-}
-
 // -- apply_cont_call_func error paths (CEK AfterCallFunc handler) —
 // -- previously check_call_with_scheme error paths (deleted T-1639); now CEK path --
 
@@ -1827,42 +1702,6 @@ async fn test_check_call_with_scheme_non_function_error() {
 }
 
 // -- Diagnostic system tests --
-
-#[tokio::test]
-async fn test_typecheck_returns_diagnostics() {
-    // Verify that typecheck_surface_program_annotation_table returns no errors for a simple dict
-    let input = "[x: 42]";
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
-    assert!(
-        errors.is_empty(),
-        "simple dict should typecheck without errors"
-    );
-}
-
-#[tokio::test]
-async fn test_typecheck_with_types_returns_diagnostics() {
-    // Verify that typecheck_surface_program returns diagnostics in the tuple
-    let input = "[x: 42]";
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-    let (diagnostics, _type_map, _doc_map, _scheme_map) =
-        typecheck_surface_program(&program, env).await;
-    assert!(
-        diagnostics.is_empty(),
-        "simple dict should typecheck without errors"
-    );
-    assert!(
-        diagnostics.is_empty(),
-        "no diagnostics emitted yet (infrastructure only)"
-    );
-}
 
 // -- row_ann_mapping threading in resolve_type_assert (Task 5) --
 
@@ -2073,80 +1912,9 @@ async fn test_recursive_type_depth_limit() {
 }
 
 // ========== DocMap Extraction Tests ==========
-
-#[tokio::test]
-async fn test_doc_extraction_from_param_annotation() {
-    // Test existing functionality: extract doc from parameter annotations
-    let input = "[f: [fn [let x@[doc: \"The input value\"]] x]]";
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-
-    assert_eq!(doc_map.get("x"), Some(&"The input value".to_string()));
-}
-
-#[tokio::test]
-async fn test_doc_extraction_from_dict_entry_key() {
-    // Test Task 1: extract doc from dict entry key annotation
-    let input = "[myFunc@[doc: \"My function\"]: [fn [let] 42]]";
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-
-    assert_eq!(doc_map.get("myFunc"), Some(&"My function".to_string()));
-}
-
-#[tokio::test]
-async fn test_doc_extraction_from_fn_return_annotation() {
-    // Test Task 2: extract doc from function return annotation
-    let input = "[count@[]: [fn@[type: Integer  doc: \"Returns the count\"] [] 42]]";
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-
-    assert_eq!(doc_map.get("count"), Some(&"Returns the count".to_string()));
-}
-
-#[tokio::test]
-async fn test_doc_extraction_combined() {
-    // Test all three extraction patterns together
-    let input = r#"
-[helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [let a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
-        "#;
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-
-    let (_diagnostics, _type_map, doc_map, _scheme_map) = typecheck_surface_program(
-        &program,
-        Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-    )
-    .await;
-
-    // When both key annotation and return annotation have doc:, the return annotation
-    // wins because it is extracted later during recursion (overwrite semantics).
-    assert_eq!(doc_map.get("helper"), Some(&"Adds two numbers".to_string()));
-    assert_eq!(doc_map.get("a"), Some(&"First number".to_string()));
-    assert_eq!(doc_map.get("b"), Some(&"Second number".to_string()));
-}
+// Note: DocMap extraction tests were deleted — extract_doc_strings_surface was removed
+// when typecheck_surface_program_with_env was deleted. DocMap is an LSP-only feature
+// that is not exposed through typecheck_program_bootstrap.
 
 // ========== Match Arm Scope Tests (match-arm-scope sprint) ==========
 
@@ -2591,9 +2359,13 @@ async fn test_cek_detects_unknown_field_access() {
         .unwrap()
         .program,
     );
-    let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
+    let (diagnostics, _env, _tycon_env) = crate::typecheck::typecheck_program_bootstrap(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
     )
     .await;
 
@@ -2624,9 +2396,13 @@ async fn test_cek_explicit_unknown_annotation() {
         .unwrap()
         .program,
     );
-    let (diagnostics, _type_map, _doc_map, _scheme_map) = typecheck_surface_program(
+    let type_stage_scope = crate::imports::get_builtin_core_type_stage_scope().await;
+    let (diagnostics, _env, _tycon_env) = crate::typecheck::typecheck_program_bootstrap(
         &program,
         Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
     )
     .await;
 

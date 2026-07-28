@@ -636,7 +636,7 @@ pub fn generalize_with_doc(
                 &subst_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
-                span,
+                span.clone(),
                 &mut state.t013_emitted,
             );
         }
@@ -649,6 +649,7 @@ pub fn generalize_with_doc(
             doc,
             inner_schemes: None,
             param_narrowings: Vec::new(),
+            definition_span: Some(span),
         };
     }
 
@@ -680,7 +681,7 @@ pub fn generalize_with_doc(
                 &subst_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
-                span,
+                span.clone(),
                 &mut state.t013_emitted,
             );
         }
@@ -694,6 +695,7 @@ pub fn generalize_with_doc(
             doc,
             inner_schemes: None,
             param_narrowings: Vec::new(),
+            definition_span: Some(span),
         }
     } else {
         // Filter constraints: keep only those on generalized variables
@@ -960,6 +962,7 @@ pub fn generalize_with_doc(
             doc,
             inner_schemes: None,
             param_narrowings: Vec::new(),
+            definition_span: Some(span),
         }
     }
 }
@@ -1398,6 +1401,7 @@ mod help_suggestion_tests {
             doc: None,
             inner_schemes: None,
             param_narrowings: Vec::new(),
+            definition_span: None,
         };
 
         let instantiated = instantiate_scheme(

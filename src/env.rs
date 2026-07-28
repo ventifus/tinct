@@ -25,6 +25,10 @@ use crate::types::TypeScheme;
 #[derive(Debug, Clone)]
 pub struct EnvSlot {
     pub scheme: Option<TypeScheme>,
+    /// Whether this binding has been referenced during type checking.
+    /// Set to `true` by `mark_extras_referenced` when a VarRef resolves to this slot.
+    /// Used by lost-binding warnings to detect unreferenced intermediate dict bindings.
+    pub referenced: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +103,9 @@ impl Env {
                     doc: None,
                     inner_schemes: None,
                     param_narrowings: Vec::new(),
+                    definition_span: None,
                 }),
+                referenced: false,
             },
         );
     }
@@ -202,8 +208,13 @@ impl Env {
             return; // already present
         }
         let pos = self.slots.len();
-        self.slots
-            .push(Some((name.clone(), EnvSlot { scheme: None })));
+        self.slots.push(Some((
+            name.clone(),
+            EnvSlot {
+                scheme: None,
+                referenced: false,
+            },
+        )));
         self.slot_index.insert(name, pos);
     }
 
@@ -231,6 +242,7 @@ impl Env {
             name,
             EnvSlot {
                 scheme: Some(scheme),
+                referenced: false,
             },
         ));
     }
@@ -252,6 +264,7 @@ impl Env {
                 name,
                 EnvSlot {
                     scheme: Some(scheme),
+                    referenced: false,
                 },
             );
         }
@@ -323,6 +336,31 @@ impl Env {
             current = env.parent.as_ref().map(Arc::clone);
         }
         None
+    }
+
+    /// Mark an extras entry as referenced, walking the parent chain.
+    ///
+    /// This method mirrors `get_extras_scheme` but mutates the `referenced` flag instead of
+    /// returning a TypeScheme. Called by VarRef inference when a variable resolves to an
+    /// extras entry, enabling lost-binding warnings to detect unreferenced intermediate dict
+    /// bindings.
+    ///
+    /// Stops at the first frame where the name is found (no fallthrough to deeper frames).
+    pub fn mark_extras_referenced(&mut self, name: &str) {
+        if let Some(slot) = self.extras.get_mut(name) {
+            slot.referenced = true;
+            return;
+        }
+        // Walk parent chain
+        let mut current = self.parent.clone();
+        while let Some(parent_ref) = current {
+            let mut parent_guard = parent_ref.write().unwrap();
+            if let Some(slot) = parent_guard.extras.get_mut(name) {
+                slot.referenced = true;
+                return;
+            }
+            current = parent_guard.parent.clone();
+        }
     }
 
     /// Slot-indexed scheme lookup: walk `level` parent frames (0 = current),

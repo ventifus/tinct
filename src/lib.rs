@@ -106,7 +106,10 @@ pub use eval::{
 pub use builtins::build_core_env;
 
 /// Bootstrap type environment from builtin_core.llt.
-pub use imports::{build_builtin_core_envs, get_builtin_core_tycon_env, get_builtin_core_type_env};
+pub use imports::{
+    build_builtin_core_envs, get_builtin_core_tycon_env, get_builtin_core_type_env,
+    get_builtin_core_type_stage_scope,
+};
 
 /// Error types with source spans and stack traces.
 pub use error::{
@@ -333,8 +336,8 @@ pub async fn run_loader_pipeline(
         }
         Arc::new(std::sync::RwLock::new(wrapper))
     };
-    let (loader_diagnostics, _loader_annotation_table, loader_tycon_env) =
-        typecheck::typecheck_surface_program_annotation_table_with_env(
+    let (loader_diagnostics, _loader_env, loader_tycon_env) =
+        typecheck::typecheck_program_bootstrap(
             &loader_program,
             builtin_env,
             Some(Arc::clone(&eval_ctx_with_frames)),
@@ -414,8 +417,15 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let env_arc = imports::get_builtin_core_type_env().await;
-    let (diagnostics, _type_map, _doc_map, _scheme_map) =
-        typecheck::typecheck_surface_program(&program, env_arc).await;
+    let type_stage_scope = imports::get_builtin_core_type_stage_scope().await;
+    let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
+        &program,
+        env_arc,
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
+    )
+    .await;
     if diagnostics.is_empty() {
         Ok(())
     } else {
@@ -439,9 +449,16 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     // Type check the surface program.
-    let env_arc2 = imports::get_builtin_core_type_env().await;
-    let (diagnostics, _type_map, _doc_map, _scheme_map) =
-        typecheck::typecheck_surface_program(&program, env_arc2).await;
+    let env_arc = imports::get_builtin_core_type_env().await;
+    let type_stage_scope = imports::get_builtin_core_type_stage_scope().await;
+    let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
+        &program,
+        env_arc,
+        None,
+        std::collections::HashMap::new(),
+        type_stage_scope,
+    )
+    .await;
     if !crate::error::has_type_errors(&diagnostics) {
         Ok(())
     } else {
@@ -1249,8 +1266,14 @@ mod tests {
         );
         // T-1576: test path uses bootstrap mode (no arena yet).
         let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
-        let (_type_errors, _inferred, _tycon_env) =
-            typecheck::typecheck_surface_program_annotation_table(&program).await;
+        let (_type_errors, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
+            &program,
+            std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+            None,
+            std::collections::HashMap::new(),
+            Vec::new(),
+        )
+        .await;
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.

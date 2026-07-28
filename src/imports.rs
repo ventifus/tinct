@@ -11,7 +11,7 @@
 use std::sync::{Arc, RwLock};
 
 use crate::env::Env;
-use crate::typecheck::typecheck_surface_program_with_env;
+use crate::typecheck::typecheck_program_bootstrap;
 
 /// Parse and type-check `stdlib/builtin_core.llt`, returning the resulting
 /// `(Arc<RwLock<Env>>, TyConEnv)` pair so that callers receive both the type
@@ -257,8 +257,8 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // Collect opaque TyCon names from the type-stage scope before passing it to typecheck.
     // Each TypeStageEntry::Resolved(Type::TyCon(name)) in the type-stage scope represents
     // an opaque builtin type that needs a TyConDef so value_matches_type can dispatch on it.
-    // We scan here (before the move into typecheck_surface_program_with_env) and register
-    // the TyConDefs after typecheck returns with the mutably-accessible `state`.
+    // We scan here (before the move into typecheck_program_bootstrap) and register
+    // the TyConDefs after typecheck returns with the returned tycon_env.
     let opaque_tycon_names: Vec<String> = type_stage_scope
         .iter()
         .flat_map(|scope_map| scope_map.iter())
@@ -275,22 +275,18 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         .collect();
 
     // Typecheck with builtins env as parent.
-    // enable_hover_map=false (no LSP hover needed for bootstrap).
     // Clone type_stage_scope so it can be returned to callers that need it
     // (e.g. get_builtin_core_type_stage_scope, which seeds type-checker entry points
     // that do not have their own type-stage scope available).
     let type_stage_scope_for_return = type_stage_scope.clone();
-    let tc_result = typecheck_surface_program_with_env(
+    let (_tc_errors, final_env, mut tycon_env) = typecheck_program_bootstrap(
         &program,
         parent_env,
-        false,                            // enable_hover_map
-        std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
         None,                             // eval_ctx: no EvalContext at bootstrap
-        Some(type_stage_scope),           // type_stage_scope from evaluating type-stage docs
+        std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
+        type_stage_scope,
     )
     .await;
-    let final_env = tc_result.env;
-    let mut state = tc_result.state;
 
     // Auto-register TyConDefs for opaque builtin types derived from the type-stage scope.
     // These types are declared as TypeNode leaf constructors in the type-stage (not as
@@ -299,27 +295,24 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // or_insert_with: if a [type X] declaration already registered an entry, keep it.
     use crate::type_def::TyConDef;
     for discriminant in opaque_tycon_names {
-        state
-            .tycon_env
-            .entry(discriminant.clone())
-            .or_insert_with(|| {
-                std::sync::Arc::new(TyConDef {
-                    params: vec![],
-                    body: crate::types::Type::Unknown,
-                    constraints: vec![],
-                    variance: vec![],
-                    constructors: vec![],
-                    builtin_type: Some(discriminant.clone()),
-                    annotation: None,
-                    field_annotations: indexmap::IndexMap::new(),
-                    constructor_constants: indexmap::IndexMap::new(),
-                    definition_span: None,
-                })
-            });
+        tycon_env.entry(discriminant.clone()).or_insert_with(|| {
+            std::sync::Arc::new(TyConDef {
+                params: vec![],
+                body: crate::types::Type::Unknown,
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: Some(discriminant.clone()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+                definition_span: None,
+            })
+        });
     }
 
     // `final_env` is the child Env containing parent bindings plus new type declarations.
-    Ok((final_env, state.tycon_env, type_stage_scope_for_return))
+    Ok((final_env, tycon_env, type_stage_scope_for_return))
 }
 
 #[cfg(test)]
