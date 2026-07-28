@@ -809,7 +809,7 @@
              1: fmt-result.last-result.cells]]
            [merge test-result [output: .output
                                 stderr: fmt-result.stderr
-                                diagnostics: [append-diags test-result.diagnostics fmt-result.diagnostics]]]]]]
+                                diagnostics: [append-diags test-result.diagnostics fmt-result.diagnostics]]]]]]]
 
   # path-has-component: true if path contains "/component/" as a path segment.
   path-has-component: [fn [let path component]
