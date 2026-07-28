@@ -75,6 +75,10 @@
   # Boolean declared here so dict 1 helpers can use Boolean.True/False.
   Boolean: [type True False]
 
+  # StringWriter declared here so Dict 2 fn annotations can reference StringWriter.Writer.
+  # Mirrors the prelude.llt declaration so annotations in Dict 2 work without prelude loaded.
+  StringWriter: [type Writer: [cells: String]]
+
   # reduce and join defined here using core builtins only.
   # Dict 1 helpers need these but prelude is not yet loaded.
   reduce: [fn@[bind: [a b]  return: a] [let f@[Fn@a [a b]] init@a xs@Dict]
@@ -793,8 +797,7 @@
     [match [builtin-eq-int [count-errors test-result.diagnostics] 0]
       0: [merge test-result [output: ""]]
       1: [call [fn [let]
-           [make-sw:  [builtin-dict-get "make-string-writer" prelude-env]]
-           [sw:       [call make-sw]]
+           [sw: [StringWriter.Writer cells: ""]]
            [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw]]]
            [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr]
              | [if-ok load-bytes %libdir]

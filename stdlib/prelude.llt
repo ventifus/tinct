@@ -3958,8 +3958,8 @@ Note: Wraps a function as a proxy. Field access calls the handler. Used for capa
 # Created via [StringWriter.Writer cells: ""] or make-string-writer.
 StringWriter: [type Writer: [cells: String]]
 
-make-string-writer@[doc: "Create an empty StringWriter for accumulating string output."]:
-  [fn [] [StringWriter.Writer cells: ""]]
+make-string-writer@[return: StringWriter.Writer  doc: "Create an empty StringWriter for accumulating string output."]:
+  [fn@[return: StringWriter.Writer] [let] [StringWriter.Writer cells: ""]]
 
 # Writable instance for StringWriter.Writer — purely functional accumulation.
 [instance File.Writable
