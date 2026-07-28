@@ -666,7 +666,7 @@
       [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Any  doc-results: Any]
        [env:         base-env
         last-result: []
-        tc:         core-tc
+        tc:         [get-or core-tc "tc" state]
         stderr:     state.stderr
         doc-index:  0
         diagnostics: []
@@ -799,7 +799,7 @@
       1: [call [fn [let]
            [sw: [StringWriter.Writer cells: ""]]
            [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw]]]
-           [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr]
+           [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr  tc: prelude-tc]
              | [if-ok load-bytes %libdir]
              | [if-ok log-step "  formatting"]
              | [if-ok parse-source]
