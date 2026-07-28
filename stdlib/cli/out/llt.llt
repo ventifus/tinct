@@ -1,12 +1,14 @@
-# LLT display format output formatter.
-# Single document, no nested closures, no field access.
+# LLT display format output formatter — dependency-chain contract.
+#
+# Converts each value to its LLT representation string: e.g. 42, "hello", [0: 1  ...], etc.
+# Uses the llt-repr builtin which traverses and formats the value, materializing nested thunks on demand.
+#
+# Chain: flush(written) depends on written which depends on llt-repr(%), creating
+# a dependency chain that forces everything when materialize() is called on loader's final thunk.
 
 --- uses: ["async"]
-[result: [if [seq? %]
-  [reduce
-    [fn [let acc x] [StringWriter.Writer cells: [str acc.cells [llt-repr x] "\n"]]]
-    [StringWriter.Writer cells: ""]
-    %]
-  [StringWriter.Writer cells: [str [llt-repr %] "\n"]]]]
+[written: [if [seq? %]
+  [reduce [fn [let h x] [write [str [llt-repr x] "\n"] h]] %stdout %]
+  [write [str [llt-repr %] "\n"] %stdout]]]
 
-result
+[flush written]
