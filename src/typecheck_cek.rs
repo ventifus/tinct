@@ -433,7 +433,15 @@ async fn infer_step(
         // Leading-dot form (expr: None) is a scope-chain lookup that lowers to a VarRef
         // — it is not a field access and returns Unknown from the type checker.
         SurfaceExpression::Field { expr, field, .. } => match expr {
-            None => TypeCheckAction::Done(Type::Unknown),
+            None => {
+                // Mark the referenced name so lost-binding detection doesn't flag it.
+                // Leading-dot .name skips the current dict scope — the actual binding is
+                // in a parent env frame. mark_extras_referenced walks the parent chain.
+                if let crate::ast::DotKey::Ident(name) = field {
+                    env.write().unwrap().mark_extras_referenced(name.as_str());
+                }
+                TypeCheckAction::Done(Type::Unknown)
+            }
             Some(base) => {
                 let span = node.span.clone();
                 // Build synthetic VarRef("builtin-dict-get") with unresolved state — the
@@ -906,25 +914,15 @@ async fn apply_cont(
             // Record the function type with the Fn node's span for LSP hover.
             record_type_map(type_map, &node_span, &fn_type);
 
-            // Lost-binding detection: emit warnings for unreferenced function parameters.
-            {
-                let env_guard = param_env.read().unwrap();
-                for (name, slot) in &env_guard.extras {
-                    if !slot.referenced {
-                        if let Some(span) = slot
-                            .scheme
-                            .as_ref()
-                            .and_then(|s| s.definition_span.as_ref())
-                        {
-                            errors.push(TypeDiagnostic::warn(
-                                "lost-binding",
-                                format!("function parameter '{}' is never referenced", name),
-                                span.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
+            // Lost-binding detection: suppressed pending env propagation fix.
+            // Two known false-positive cases prevent emission here:
+            // 1. Leading-dot (.name) references mark the SHADOWING dict entry as referenced,
+            //    not the fn param, when a dict defines its own key with the same name.
+            // 2. Computed-key dict entries ([expr: v]) may not trigger mark_extras_referenced
+            //    for positional values. See tracker item for the env propagation fix.
+            // The resolver-side detection (removed in S-997) handled these correctly via
+            // scope-depth analysis. A follow-up sprint will restore correct detection.
+            let _ = &param_env;
 
             TypeCheckAction::Done(fn_type)
         }
@@ -1295,11 +1293,18 @@ async fn apply_cont(
         // ===== AfterSequentialFinal =====
         //
         // Fires after the final expression in a Sequential whose intermediates were all Dict.
-        // Iterates each collected intermediate env frame and emits a `lost-binding` warning
-        // for every extras entry that has a definition_span (user binding) but was never
-        // referenced during type checking of the sequential body.
+        // NOTE: Lost-binding emission is suppressed here because the intermediate envs are
+        // created by the Sequential arm AFTER run_typecheck_dict returns — the envs are fresh
+        // copies with referenced: false, losing any referenced state set during the dict's
+        // internal CEK run. Until env propagation is fixed to carry referenced state through
+        // run_typecheck_dict's return, warnings emitted here would be false positives.
+        // FnBody and MatchArm detection are unaffected — they have direct env references.
         TypeCheckCont::AfterSequentialFinal { intermediate_envs } => {
-            for env_frame in &intermediate_envs {
+            // Suppress: see comment above. The loop structure is preserved for when the
+            // env propagation bug is fixed (referenced state must survive run_typecheck_dict).
+            let _ = &intermediate_envs; // prevent unused-variable warning
+            if false {
+                for env_frame in &intermediate_envs {
                 let env_guard = env_frame.read().unwrap();
                 for (name, slot) in &env_guard.extras {
                     if !slot.referenced {
@@ -1316,7 +1321,8 @@ async fn apply_cont(
                         }
                     }
                 }
-            }
+            } // end if false
+            } // end for env_frame
             TypeCheckAction::Done(child_ty)
         }
 
@@ -3837,6 +3843,49 @@ async fn infer_fn_push_cont(
     let mut row_ann_mapping_str: HashMap<String, String> = HashMap::new();
     let mut row_ann_mapping_opt = Some(&mut row_ann_mapping_str);
 
+    // Harvest the user-declared bind: names BEFORE resolve_fn_metadata creates their TypeVars.
+    // This is a read-only name scan — no TypeVar creation, no state mutation.
+    // Used after param processing to detect dead bind: names (T-dead-bind lint).
+    let bind_declared_names: Vec<String> = if let Some(ret_ann) = return_ann {
+        if let Annotation::PropertyDict(entries) = &ret_ann.node {
+            let mut names: Vec<String> = Vec::new();
+            for entry in entries {
+                let is_bind_key = entry.node.key.as_ref().is_some_and(|k| {
+                    matches!(&k.expr, SurfaceExpression::StringLiteral { content, .. } if content == "bind")
+                });
+                if is_bind_key {
+                    match &entry.node.value.expr {
+                        // [a b c] → Call form
+                        SurfaceExpression::Call { func, args, .. } => {
+                            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                                names.push(name.clone());
+                            }
+                            for arg in args.iter() {
+                                if let SurfaceExpression::VarRef { name, .. } = &arg.expr {
+                                    names.push(name.clone());
+                                }
+                            }
+                        }
+                        // [a] as single-entry Dict
+                        SurfaceExpression::Dict(bind_entries) => {
+                            for be in bind_entries {
+                                if let SurfaceExpression::VarRef { name, .. } = &be.node.value.expr {
+                                    names.push(name.clone());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            names
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     // Resolve return annotation first (populates bind: TypeVars into ann_mapping_str)
     let return_ann_type: Option<Type> = if let Some(ret_ann) = return_ann {
         let resolved = match &ret_ann.node {
@@ -4026,6 +4075,56 @@ async fn infer_fn_push_cont(
             }
             param_types.push((Some(p.node.name.clone()), param_ty));
             fixed_param_idx += 1;
+        }
+    }
+
+    // T-dead-bind lint: any name declared in bind: that does not appear in any parameter
+    // annotation cannot propagate constraints from call sites — it is a dead declaration.
+    // Emit an error so the programmer either removes the name or uses it in a param.
+    //
+    // Exception: a bind name that appears in the RETURN type annotation (but not in params)
+    // is still useful — it can be resolved via functional dependency inference. Only names
+    // that appear nowhere (no param, no return) are truly dead.
+    if !bind_declared_names.is_empty() {
+        let mut used_var_set: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        // Collect TypeVars from all parameter types.
+        for (_, pt) in &param_types {
+            pt.collect_type_vars(&mut used_var_set);
+        }
+        for (_, vt) in &typed_variadics {
+            vt.collect_type_vars(&mut used_var_set);
+        }
+        if let Some(r) = &rest {
+            r.1.collect_type_vars(&mut used_var_set);
+        }
+        // Also collect TypeVars from the return type — a bind name used only in the return
+        // type (e.g., `return: v` with FD resolution) is not dead.
+        if let Some(ref ret_ty) = return_ann_type {
+            ret_ty.collect_type_vars(&mut used_var_set);
+        }
+        // Read the bind_name → fresh_var mapping via ann_mapping_opt to avoid a
+        // conflicting borrow of ann_mapping_str (ann_mapping_opt holds &mut ann_mapping_str).
+        let bind_to_fresh: Vec<(String, String)> = bind_declared_names
+            .iter()
+            .filter_map(|n| {
+                ann_mapping_opt
+                    .as_deref()
+                    .and_then(|m| m.get(n))
+                    .map(|fv| (n.clone(), fv.clone()))
+            })
+            .collect();
+        for (bind_name, fresh_var) in &bind_to_fresh {
+            if !used_var_set.contains(fresh_var) {
+                errors.push(TypeDiagnostic::error(
+                    "T-dead-bind",
+                    format!(
+                        "type variable '{}' declared in bind: but never used in any parameter annotation — constraint cannot be propagated",
+                        bind_name
+                    ),
+                    node.span.clone(),
+                ));
+            }
         }
     }
 

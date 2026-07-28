@@ -306,10 +306,11 @@
 
   emit-diagnostics: [fn [let diagnostics]
     # Use builtin-try per diagnostic so a formatting failure doesn't suppress remaining errors.
+    # >> forces the write before returning _ so the side effect is not a dormant thunk.
     [reduce
       [fn [let _ d]
-        [builtin-try [builtin-write-stderr [format-diagnostic d] %stderr]]
-        _]
+        [>> [builtin-try [builtin-write-stderr [format-diagnostic d] %stderr]]
+            _]]
       []
       diagnostics]]
 
@@ -327,14 +328,15 @@
     [handle:        [builtin-file-open cap path ["read"] -1 -1]]
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
-    # Stop on parse errors. Emit first (data dependency via builtin-int-add), then raise.
+    # Stop on parse errors. Emit first (data dependency via emit-diagnostics), then raise.
+    # >> in the desugared binding forces the check before desugar proceeds, preventing dormancy.
     [n-parse:       [builtin-dict-length parse-result.diagnostics]]
     [_pe:           [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
-    [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
-      0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
-      ...: []]
     # Desugar the parsed program (expands $_ lambda, pipe, etc.)
-    [desugared:     [builtin-desugar parse-result.program]]
+    [desugared:     [>> [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
+                          0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
+                          ...: []]
+                        [builtin-desugar parse-result.program]]]
     [docs:          [builtin-program-docs desugared]]
     # Seed env from extras dict (e.g., %prelude for prelude.llt).
     # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
@@ -349,10 +351,11 @@
       [res:      [builtin-resolve doc name-set]]
       [n-re:     [builtin-dict-length res.diagnostics]]
       [_re:      [builtin-dict-length [emit-diagnostics res.diagnostics]]]
-      [match [builtin-eq-int [builtin-int-add n-re _re] 0]
-        0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
-        ...: []]
-      [typed:   [builtin-typecheck-doc res.doc acc.tc doc-env]]
+      # >> forces the resolve-error check before typecheck proceeds, preventing dormancy.
+      [typed:   [>> [match [builtin-eq-int [builtin-int-add n-re _re] 0]
+                      0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
+                      ...: []]
+                    [builtin-typecheck-doc res.doc acc.tc doc-env]]]
       [lowered: [builtin-lower typed.doc]]
       [exports: [builtin-eval lowered doc-env]]
       [doc-name: [get-or "" "name" meta]]
@@ -450,11 +453,12 @@
                 macro-expand: []
                 blame: []]]]]]
     [_iw: [builtin-dict-length [emit-diagnostics input-warn-diags]]]
-    [match [builtin-eq-int [builtin-int-add [builtin-int-add n-re _re] _iw] 0]
-      0: [builtin-raise "resolve error(s)"]
-      ...: []]
-    # Type-check the document.
-    [typed: [builtin-typecheck-doc doc-resolved.doc tc full-env]]
+    # Type-check the document. >> forces the resolve-error check first to prevent dormancy:
+    # the standalone match would be a dormant thunk since typed never referenced its auto-key.
+    [typed: [>> [match [builtin-eq-int [builtin-int-add [builtin-int-add n-re _re] _iw] 0]
+                  0: [builtin-raise "resolve error(s)"]
+                  ...: []]
+                [builtin-typecheck-doc doc-resolved.doc tc full-env]]]
     # Lower to CoreDocument, then evaluate with env-dict protocol.
     [lowered: [builtin-lower typed.doc]]
     # builtin-eval returns exports Dict directly; raises on error — no try/match needed.

@@ -5005,3 +5005,54 @@ async fn test_get_wrapper_indexable_constraint() -> Result<(), Box<dyn std::erro
     );
     Ok(())
 }
+
+// ===== T-dead-bind lint (B-632) =====
+
+#[tokio::test]
+async fn test_b632_dead_bind_name_not_in_any_param_emits_error() {
+    // bind: [a] declares TypeVar `a`, but no parameter is annotated @a.
+    // The bind name `a` is also not in the return annotation.
+    // → T-dead-bind error.
+    let errors = check_err("[f: [fn@[bind: [a]  return: Integer] [let x] $x]]").await;
+    assert!(
+        errors.iter().any(|e| e.kind == "T-dead-bind"),
+        "expected T-dead-bind error for bind name not used in any param, got: {errors:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_b632_bind_name_in_param_annotation_no_error() {
+    // bind: [a] with param x@a — `a` is used in a parameter annotation.
+    // No T-dead-bind error should be emitted.
+    let result = check_errors_only("[f: [fn@[bind: [a]  return: a] [let x@a] $x]]").await;
+    assert!(
+        result.is_ok(),
+        "expected no T-dead-bind error when bind name is used in a param annotation, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_b632_bind_name_in_return_only_no_error() {
+    // bind: [a] with `return: a` but no param annotated @a.
+    // `a` appears in the return type → not truly dead (FD can resolve it).
+    // No T-dead-bind error should be emitted.
+    let result = check_errors_only("[f: [fn@[bind: [a]  return: a] [let x] $x]]").await;
+    assert!(
+        result.is_ok(),
+        "expected no T-dead-bind error when bind name is used only in return annotation, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_b632_multiple_bind_names_partial_use_emits_error() {
+    // bind: [a b] but only @a used in params. `b` is dead.
+    let errors = check_err("[f: [fn@[bind: [a b]  return: Integer] [let x@a] $x]]").await;
+    assert!(
+        errors.iter().any(|e| e.kind == "T-dead-bind" && e.message.contains("'b'")),
+        "expected T-dead-bind error for unused bind name 'b', got: {errors:?}"
+    );
+    assert!(
+        !errors.iter().any(|e| e.kind == "T-dead-bind" && e.message.contains("'a'")),
+        "should NOT have T-dead-bind error for used bind name 'a', got: {errors:?}"
+    );
+}

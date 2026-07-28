@@ -2440,7 +2440,30 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             // expression was not followed by a colon — it is a positional
                             // entry in the match call, not part of any arm. Discard it.
                             // Match arms take exactly one body expression per arm.
+                            // After discarding, fall through to construct and push the match
+                            // node — previously this arm exited without pushing, silently
+                            // dropping the entire match expression (B-628).
                             pending_pattern_expr.take();
+                            if arms.is_empty() {
+                                close_bracket_recover!(ParseError {
+                                    message: "match form requires at least one pattern: body pair"
+                                        .to_string(),
+                                    span: Some(span.clone()),
+                                    help: None,
+                                });
+                            } else if let Some(scrutinee) = scrutinee {
+                                let spanned_match = mk(
+                                    SurfaceExpression::Match { scrutinee, arms },
+                                    dict_span(span_start),
+                                );
+                                if let Err(push_err) = push_value(
+                                    &mut stack,
+                                    &mut current_document_items,
+                                    spanned_match,
+                                ) {
+                                    close_bracket_recover!(push_err);
+                                }
+                            }
                         } else if pending_pattern.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "match pattern must be followed by a body expression"
@@ -9836,6 +9859,62 @@ mod tests {
         assert!(
             matches!(ann, Annotation::Simple(ref s) if s == "Integer"),
             "expected Annotation::Simple(\"Integer\") for @Integer, got {ann:?}"
+        );
+    }
+
+    /// B-628: fn as call argument with match body and trailing extra expression.
+    ///
+    /// `[call [fn [let x] [match x 0: [a: 1] [b: 2]]] arg]` previously produced
+    /// "fn requires body expression" because the Match close-bracket discarded
+    /// pending_pattern_expr ([b: 2]) but never pushed the match node to the Fn body.
+    /// After the fix the match is correctly pushed as the fn's body expression.
+    #[test]
+    fn test_b628_fn_in_call_arg_with_match_and_trailing_expr() {
+        let src = "[call [fn [let x] [match x 0: [a: 1] [b: 2]]] arg]";
+        let output = parse(src, test_file(src)).expect("parse should succeed (B-628)");
+        assert!(
+            output.diagnostics.is_empty(),
+            "expected no parse diagnostics, got: {:?}",
+            output.diagnostics
+        );
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected one top-level item");
+        // The result is a Call expression: func=call, args=[fn_expr, arg_expr]
+        match &items[0].expr {
+            SurfaceExpression::Call { func, args, .. } => {
+                // func is `call` VarRef
+                assert!(
+                    matches!(&func.expr, SurfaceExpression::VarRef { name, .. } if name == "call"),
+                    "expected call as func, got {:?}",
+                    func.expr
+                );
+                // Two positional args: fn expression and `arg`
+                assert_eq!(args.len(), 2, "expected 2 args: fn and arg, got: {args:?}");
+                let fn_node = &args[0];
+                // The first arg must be a Fn whose body is a Match with 1 arm.
+                assert!(
+                    matches!(&fn_node.expr, SurfaceExpression::Fn { body, .. }
+                        if matches!(&body.expr, SurfaceExpression::Match { arms, .. } if arms.len() == 1)),
+                    "expected fn with match body (1 arm), got {:?}",
+                    fn_node.expr
+                );
+            }
+            other => panic!("expected Call at top level, got {other:?}"),
+        }
+    }
+
+    /// B-628 regression: a trailing expression inside match that IS the only content
+    /// (no completed arms) should still produce an error.
+    #[test]
+    fn test_b628_match_no_arms_trailing_expr_is_error() {
+        // [match x [b: 2]] — no `0:` arm; [b: 2] is not an arm body.
+        // The match still has no arms → "match form requires at least one pattern: body pair".
+        let src = "[match x [b: 2]]";
+        let output = parse(src, test_file(src)).expect("parse should not hard-fail");
+        // Diagnostics should include the arms-empty error.
+        assert!(
+            !output.diagnostics.is_empty(),
+            "expected diagnostics for match with no arms and trailing expr"
         );
     }
 }

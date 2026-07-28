@@ -488,11 +488,29 @@
   # Records the exported bindings from the last document's result into state.
   # Adds: full-env — the final accumulated env with all exports merged in.
   # Callers use state.full-env wherever they previously used state.full-scope-id.
+  #
+  # % is stripped from full-env to prevent it leaking into test document scopes.
+  # eval-program's step merges [%: exports] into env for inter-document threading,
+  # but that % must not appear in the prelude-env used as the test scope — it would
+  # point to the last prelude doc's result, causing abandoned-input warnings.
+  # Since tinct has no dict-delete builtin, we rebuild env using a key-scan loop.
   export: [fn [let state@[last-result: Any  env: Any]]
     [exported: [match [builtin-eq-string [builtin-type-of state.last-result] "Dict"]
       0: []
       1: state.last-result]]
-    [merge state [full-env: [merge state.env exported]]]]
+    # Rebuild env excluding % to prevent it leaking into test document scopes.
+    [keys: [builtin-keys state.env]]
+    [n:    [builtin-dict-length keys]]
+    [clean-env: [call [fn []
+      [loop: [fn [let i b]
+        [match [builtin-int-gte i n]
+          0: [k: [builtin-dict-get i keys]]
+             [match [builtin-eq-string k "%"]
+               1: [loop [builtin-int-add i 1] b]
+               0: [loop [builtin-int-add i 1] [builtin-builder-set k [builtin-dict-get k state.env] b]]]
+          1: [builtin-builder-finish b]]]]
+      [loop 0 [builtin-make-builder]]]]]
+    [merge state [full-env: [merge clean-env exported]]]]
 
   # ── Stage: set-tc-ready ───────────────────────────────────────────────────────
   # Wire tc-ready without re-typechecking. eval-program already called
