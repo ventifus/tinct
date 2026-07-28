@@ -1,14 +1,21 @@
-# LLT display format output formatter — dependency-chain contract.
+# LLT display format output formatter — concurrent drain/force/flush contract.
 #
 # Converts each value to its LLT representation string: e.g. 42, "hello", [0: 1  ...], etc.
-# Uses the llt-repr builtin which traverses and formats the value, materializing nested thunks on demand.
-#
-# Chain: flush(written) depends on written which depends on llt-repr(%), creating
-# a dependency chain that forces everything when materialize() is called on loader's final thunk.
+# Mirrors stream.llt's concurrent contract:
+# 1. Drain %emit-channel concurrently so emitted values are written before flushing.
+# 2. Force %: write the return value (or each Seq element).
+# 3. Await drain to consume any emits triggered during forcing.
+# 4. Flush %stdout.
 
 --- uses: ["async"]
-[written: [if [seq? %]
+[drain: [task [select [context]
+  [seq [ch: %emit-channel  handler: [fn [let v] [write [str [llt-repr v] "\n"] %stdout]]] []]
+  identity]]]
+
+[_: [if [seq? %]
   [reduce [fn [let h x] [write [str [llt-repr x] "\n"] h]] %stdout %]
   [write [str [llt-repr %] "\n"] %stdout]]]
 
-[flush written]
+[_: [await drain]]
+
+[flush %stdout]
