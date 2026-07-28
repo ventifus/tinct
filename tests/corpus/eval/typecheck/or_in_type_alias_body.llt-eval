@@ -6,4 +6,4 @@
   v: [@MyUnion 42]
 ]
 === out
-Dict({"MyUnion": Dict({}), "v": Int(42)})
+["MyUnion": []  "v": 42]

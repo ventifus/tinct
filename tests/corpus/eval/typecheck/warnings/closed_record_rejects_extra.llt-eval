@@ -4,4 +4,4 @@
 # The [@Any ...] wrapper makes the type Unknown, which is consistent with the annotation.
 [@[name: String] [@Any [name: "hello"  extra: "world"]]]
 === out
-Dict({"name": String("hello"), "extra": String("world")})
+["name": "hello"  "extra": "world"]

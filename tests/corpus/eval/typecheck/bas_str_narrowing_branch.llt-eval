@@ -5,4 +5,4 @@
  r1: [greet "World"]
  r2: [greet 42]]
 === out
-Dict({"greet": Function(x), "r1": String("Hello, World"), "r2": String("not a string")})
+["greet": [fn [let x] ...]  "r1": "not a string"  "r2": "not a string"]

@@ -1,4 +1,4 @@
 # TypeAlias evaluates to empty dict at runtime
 [type [Foo@String]]
 === out
-Dict({})
+[]

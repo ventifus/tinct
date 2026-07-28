@@ -2,7 +2,7 @@
 # Fixed params must precede all variadic params (lowerer assigns slots in declaration order).
 [f: [fn [let ...rest x] x]]
 === out
-Dict({"f": Function(rest, x)})
+["f": [fn [let rest x] ...]]
 
 === warn
 fixed parameter `x` declared after variadic parameter — fixed params must precede all variadic params

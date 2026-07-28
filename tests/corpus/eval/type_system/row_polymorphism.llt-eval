@@ -3,4 +3,4 @@
 # A dict with required field "name" plus extra field "extra" passes the assertion.
 [@[name: String  ...] [name: "hello"  extra: 42]]
 === out
-Dict({"name": String("hello"), "extra": Int(42)})
+["name": "hello"  "extra": 42]

@@ -4,4 +4,4 @@
 # fn/class/type forms are handled directly by the parser; no include required.
 [result: [[fn [let x y] [+ x y]] 3 4]]
 === out
-Dict({"result": Dict({0: Function(x, y), 1: Int(3), 2: Int(4)})})
+["result": [[fn [let x y] ...]  3  4]]

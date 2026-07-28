@@ -2,4 +2,4 @@
 # [@[name: String ...]] has a rest marker (open tail), so extra fields are allowed.
 [@[name: String  ...] [name: "hello"  extra: "world"  count: 42]]
 === out
-Dict({"name": String("hello"), "extra": String("world"), "count": Int(42)})
+["name": "hello"  "extra": "world"  "count": 42]

@@ -10,4 +10,4 @@
   ]
 ]
 === out
-Dict({"ID": Dict({}), "outer": Int(42), "nested": Dict({"ID": Dict({}), "inner": String("text")})})
+["ID": ["Integer": ID.Integer]  "outer": 42  "nested": ["ID": ["String": ID.String]  "inner": "text"]]

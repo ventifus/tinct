@@ -7,4 +7,4 @@
   result: [id 99]
 ]
 === out
-Dict({"Identity": Dict({}), "id": Function(v), "result": Int(99)})
+["Identity": ["Fn": Identity.Fn]  "id": [fn [let v] ...]  "result": 99]

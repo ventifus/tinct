@@ -6,4 +6,4 @@
  r1: [f [x: 42]]
  r2: [f [y: "hello"]]]
 === out
-Dict({"f": Function(r), "r1": Dict({"x": Int(42)}), "r2": Dict({"y": String("hello")})})
+["f": [fn [let r] ...]  "r1": ["x": 42]  "r2": ["y": "hello"]]

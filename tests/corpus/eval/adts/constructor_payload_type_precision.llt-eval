@@ -21,4 +21,4 @@
   result: 42
 ]
 === out
-Dict({"Result2": Dict({"MyOk": Function(n), "MyErr": Function(msg)}), "unwrap-ok": Function(r), "result": Int(42)})
+["Result2": ["MyOk": [fn [let n] ...]  "MyErr": [fn [let msg] ...]]  "unwrap-ok": [fn [let r] ...]  "result": 42]

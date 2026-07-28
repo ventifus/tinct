@@ -3,7 +3,7 @@
 # The function is never called so eval succeeds; type checker catches the mismatch.
 [f: [fn [let x@String] [+ x 1]]]
 === out
-Dict({"f": Function(x)})
+["f": [fn [let x] ...]]
 
 === warn
 [TypeError] no instance for Addable String Int

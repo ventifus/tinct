@@ -4,4 +4,4 @@
 [Coord: [type [x: Integer  y: Integer]]]
 [p: [@Coord [x: 1  y: 2]]]
 === out
-Dict({"p": Dict({"x": Int(1), "y": Int(2)})})
+["p": ["x": 1  "y": 2]]

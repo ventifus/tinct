@@ -5,4 +5,4 @@
 [apply: [fn [let f@[type: [Fn@Number [Int]] default: [fn [let _] 0]]] [f 1]]
  result: [apply [fn [let _] 2]]]
 === out
-Dict({"apply": Function(f), "result": Int(2)})
+["apply": [fn [let f] ...]  "result": 2]

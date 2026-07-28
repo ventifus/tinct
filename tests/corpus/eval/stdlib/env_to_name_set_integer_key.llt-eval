@@ -6,4 +6,4 @@
   name-set: [env-to-name-set env]
 ]
 === out
-Dict({"env": Dict({"name": String("Alice"), "count": Int(42), 0: String("skip-me")}), "name-set": Dict({"name": Int(1), "count": Int(1)})})
+["env": ["name": "Alice"  "count": 42  "skip-me"]  "name-set": ["name": 1  "count": 1]]

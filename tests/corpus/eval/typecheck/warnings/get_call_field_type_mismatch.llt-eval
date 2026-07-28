@@ -16,7 +16,7 @@
   bad@Integer: [get "name" person]
 ]
 === out
-Dict({"person": Dict({"name": String("Alice"), "age": Int(30)}), "name": String("Alice"), "bad": String("Alice")})
+["person": ["name": "Alice"  "age": 30]  "name": "Alice"  "bad": "Alice"]
 
 === warn
 cannot unify Integer with "Alice"

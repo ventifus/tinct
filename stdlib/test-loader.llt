@@ -790,26 +790,15 @@
       | [if-ok log-step "  typechecking"]
       | [if-ok typecheck-docs tc scope]]]
     # Run cli/out/llt.llt as the output formatter (second pipeline stage).
-    # Only runs when the test program succeeded (no eval errors).
-    # %stdout is a StringWriter.Writer (prelude's functional string capture);
-    # llt.llt writes llt-repr(%) to it. The flushed writer is last-result;
-    # .cells contains the formatted output string.
+    # Format the test result using inline llt-repr (avoids eval-docs frame sync issues
+    # that prevent loading cli/out/llt.llt as a separate document in this context).
+    # Uses only core builtins — test-loader.llt type-checker has core-only env.
     [match [builtin-eq-int [count-errors test-result.diagnostics] 0]
       0: [merge test-result [output: ""]]
       1: [call [fn [let]
-           [sw: [StringWriter.Writer cells: ""]]
-           [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw]]]
-           [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr  tc: prelude-tc]
-             | [if-ok load-bytes %libdir]
-             | [if-ok log-step "  formatting"]
-             | [if-ok parse-source]
-             | [if-ok eval-docs fmt-scope]]]
-           [output: [match [builtin-eq-int [count-errors fmt-result.diagnostics] 0]
-             0: ""
-             1: fmt-result.last-result.cells]]
-           [merge test-result [output: .output
-                                stderr: fmt-result.stderr
-                                diagnostics: [append-diags test-result.diagnostics fmt-result.diagnostics]]]]]]]
+           [last: test-result.last-result]
+           [output: [builtin-string-concat [builtin-llt-repr last] "\n"]]
+           [merge test-result [output: .output]]]]]]
 
   # path-has-component: true if path contains "/component/" as a path segment.
   path-has-component: [fn [let path component]

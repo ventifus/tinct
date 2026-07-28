@@ -1,4 +1,4 @@
 # fn@[or Int Null] union return type annotation using type-stage `or` function.
 [f: [fn@[or Int Null] [] 42]]
 === out
-Dict({"f": Function()})
+["f": [fn [let ] ...]]

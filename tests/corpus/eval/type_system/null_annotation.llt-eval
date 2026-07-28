@@ -3,4 +3,4 @@
 # Null is not a new type variant — it is an alias for the closed empty record.
 [@Null []]
 === out
-Dict({})
+[]

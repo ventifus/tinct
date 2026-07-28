@@ -5,4 +5,4 @@
 [unused: [raise "dead binding remains lazy"]  used: 42]
 [result: used]
 === out
-Dict({"result": Int(42)})
+["result": 42]

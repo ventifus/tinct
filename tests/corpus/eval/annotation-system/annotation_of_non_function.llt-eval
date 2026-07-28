@@ -4,4 +4,4 @@
 # annotation-of 42 → Dict({}) since Int has no annotation.
 [result: [annotation-of 42]]
 === out
-Dict({"result": Dict({})})
+["result": []]

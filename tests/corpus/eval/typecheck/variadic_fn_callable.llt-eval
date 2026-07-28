@@ -5,4 +5,4 @@
 [f: [fn [let ...xs] xs]
  result: [f 10 20 30]]
 === out
-Dict({"f": Function(xs), "result": Dict({Int(0): Int(10), Int(1): Int(20), Int(2): Int(30)})})
+["f": [fn [let xs] ...]  "result": [10  20  30]]

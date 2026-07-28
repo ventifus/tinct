@@ -6,4 +6,4 @@
   current: "ok"
 ]
 === out
-Dict({"Status": Dict({}), "current": String("ok")})
+["Status": []  "current": "ok"]

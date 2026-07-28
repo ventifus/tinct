@@ -4,4 +4,4 @@
 # the default is NOT used. The full dict including the extra field is returned.
 [@[type: [x: Int]  default: [x: 5]] [x: 1  y: 2]]
 === out
-Dict({"x": Int(1), "y": Int(2)})
+["x": 1  "y": 2]

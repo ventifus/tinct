@@ -5,4 +5,4 @@
   result: [make-entry k 42]
 ]
 === out
-Dict({"make-entry": Function(k, v), "k": String("hello"), "result": Dict({"hello": Int(42)})})
+["make-entry": [fn [let k v] ...]  "k": "hello"  "result": ["hello": 42]]

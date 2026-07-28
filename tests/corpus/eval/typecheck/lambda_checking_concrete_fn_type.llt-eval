@@ -8,4 +8,4 @@
   result: [f 55]
 ]
 === out
-Dict({"IntFn": Dict({}), "f": Function(x), "result": Int(55)})
+["IntFn": ["Fn": IntFn.Fn  "Integer": IntFn.Integer]  "f": [fn [let x] ...]  "result": 55]

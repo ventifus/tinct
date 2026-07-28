@@ -7,4 +7,4 @@
   p: [@Point [x: 3  y: 4]]
 ]
 === out
-Dict({"Point": Dict({}), "p": Dict({"x": Int(3), "y": Int(4)})})
+["Point": []  "p": ["x": 3  "y": 4]]

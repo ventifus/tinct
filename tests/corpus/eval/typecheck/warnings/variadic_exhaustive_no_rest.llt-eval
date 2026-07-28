@@ -3,7 +3,7 @@
 # Functions with only typed buckets intentionally restrict arg types.
 [f: [fn [let ...strings@String ...nums@Int] [head strings]]]
 === out
-Dict({"f": Function(strings, nums)})
+["f": [fn [let strings nums] ...]]
 
 === warn
 non-exhaustive variadic type dispatch: typed buckets cover [or Integer String] but no fallback (...rest) handles other types — add ...rest for a wildcard bucket

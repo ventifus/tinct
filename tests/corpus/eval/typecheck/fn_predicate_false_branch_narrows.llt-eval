@@ -25,4 +25,4 @@
   r2: [apply-or-default 42 0]
 ]
 === out
-Dict({"x": Int(42), "result1": String("not-function"), "s": String("hello"), "result2": String("not-function"), "apply-or-default": Function(f, default-val), "r1": Int(99), "r2": Int(0)})
+["x": 42  "result1": "not-function"  "s": "hello"  "result2": "not-function"  "apply-or-default": [fn [let f default-val] ...]  "r1": 0  "r2": 0]

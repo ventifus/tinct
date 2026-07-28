@@ -14,4 +14,4 @@
   result: 42
 ]
 === out
-Dict({"IdRecord": Dict({}), "result": Int(42)})
+["IdRecord": []  "result": 42]

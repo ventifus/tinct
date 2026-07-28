@@ -22,4 +22,4 @@
 ]
 
 === out
-Dict({"use-dir": Function(h), "use-net": Function(h), "passthru-dir": Function(h), "always-true": Variant(Boolean.True, Null)})
+["use-dir": [fn [let h] ...]  "use-net": [fn [let h] ...]  "passthru-dir": [fn [let h] ...]  "always-true": Boolean.True]

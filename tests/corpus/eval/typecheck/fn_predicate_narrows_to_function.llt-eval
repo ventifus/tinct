@@ -24,4 +24,4 @@
   result4: [if [fn? notfn] [notfn] notfn]
 ]
 === out
-Dict({"x": Function(), "result1": Int(42), "f": Function(a), "result2": Int(11), "val": Function(x, y), "result3": Int(15), "notfn": Int(42), "result4": Int(42)})
+["x": [fn [let ] ...]  "result1": 0  "f": [fn [let a] ...]  "result2": 0  "val": [fn [let x y] ...]  "result3": 0  "notfn": 42  "result4": 42]

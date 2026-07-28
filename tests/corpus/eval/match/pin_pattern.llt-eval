@@ -8,4 +8,4 @@
 ]
 
 === out
-Dict({"x": Int(42), "r1": String("matched"), "r2": String("no")})
+["x": 42  "r1": "matched"  "r2": "no"]

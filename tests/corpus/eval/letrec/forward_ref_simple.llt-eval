@@ -1,4 +1,4 @@
 # Letrec semantics: forward reference allowed
 [a: b  b: 42]
 === out
-Dict({"a": Int(42), "b": Int(42)})
+["a": 42  "b": 42]

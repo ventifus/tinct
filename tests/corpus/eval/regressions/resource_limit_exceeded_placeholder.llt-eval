@@ -17,4 +17,4 @@
 # Create a small dict (does NOT trigger E043)
 [large: [a: 1  b: 2  c: 3]]
 === out
-Dict({"large": Dict({"a": Int(1), "b": Int(2), "c": Int(3)})})
+["large": ["a": 1  "b": 2  "c": 3]]

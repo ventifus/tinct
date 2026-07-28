@@ -4,4 +4,4 @@
   r: [match [x: 1  y: 99]  $d: "matched"  ...: "no"]
 ]
 === out
-Dict({"d": Dict({"x": Int(1), "y": Int(2)}), "r": String("no")})
+["d": ["x": 1  "y": 2]  "r": "no"]

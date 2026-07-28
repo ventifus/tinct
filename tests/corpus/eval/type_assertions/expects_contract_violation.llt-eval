@@ -5,4 +5,4 @@
 --- expects: @[x: Int]
 [x: "hello"]
 === out
-Dict({"x": String("hello")})
+["x": "hello"]

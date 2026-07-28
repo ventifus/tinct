@@ -7,4 +7,4 @@
   t: [@Thing [type: "widget"  id: 1]]
 ]
 === out
-Dict({"Thing": Dict({}), "t": Dict({"type": String("widget"), "id": Int(1)})})
+["Thing": []  "t": ["type": "widget"  "id": 1]]

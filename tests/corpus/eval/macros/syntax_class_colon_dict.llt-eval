@@ -2,4 +2,4 @@
 # The colon-ahead guard should prevent special form recognition.
 [syntax-class: "test"]
 === out
-Dict({"syntax-class": String("test")})
+["syntax-class": "test"]

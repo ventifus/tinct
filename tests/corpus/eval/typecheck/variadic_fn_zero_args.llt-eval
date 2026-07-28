@@ -4,4 +4,4 @@
 [f: [fn [let ...xs] xs]
  result: [f]]
 === out
-Dict({"f": Function(xs), "result": Dict({})})
+["f": [fn [let xs] ...]  "result": []]

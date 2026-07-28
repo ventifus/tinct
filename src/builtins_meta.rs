@@ -2448,6 +2448,15 @@ pub(crate) fn builtin_typecheck_doc(
             state.env = Arc::clone(&guard.inference_env);
             state.eval_ctx = Some(Arc::clone(&ctx));
 
+            // Populate scope_frames from the EvalContext.
+            // scope_frames is required by check_constraints_on_var (type_unify.rs) to resolve
+            // instance binding mangled names (e.g. ɪɴꜱᴛᴀɴᴄᴇ⧼Writable∷flush⟨StringWriter⟩⧽)
+            // to VarAddrs for call_dispatch. Without scope_frames, typeclass dispatch is silently
+            // skipped and typeclass methods evaluate to class descriptor Dicts at runtime.
+            if let Some(frames) = ctx.scope_frames.as_ref() {
+                state.scope_frames = Some(frames.as_ref().to_vec());
+            }
+
             // Install the TypeContextData's accumulated type-stage scope chain.
             // Ensure an innermost frame exists for declarations discovered during this typecheck.
             state.type_stage_scope = guard.type_stage_scope.clone();

@@ -4,4 +4,4 @@
 # cascade-infect the enclosing expression's inferred type.
 [result: [if True 42 [raise "unreachable"]]]
 === out
-Dict({"result": Int(42)})
+["result": 42]

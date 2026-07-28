@@ -7,4 +7,4 @@
   result: [add 3 4]
 ]
 === out
-Dict({"Addable": Dict({}), "add": Function(a, b), "result": Int(3)})
+["Addable": ["Fn": Addable.Fn  "Integer": Addable.Integer]  "add": [fn [let a b] ...]  "result": 3]

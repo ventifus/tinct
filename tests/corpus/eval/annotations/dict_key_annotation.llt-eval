@@ -2,4 +2,4 @@
 # The annotation dict is evaluated and the value is wrapped
 [Pi@[doc: "mathematical constant"  precision: 5]: 3.14159]
 === out
-Dict({"Pi": Float(3.14159)})
+["Pi": 3.14159]

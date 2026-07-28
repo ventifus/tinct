@@ -14,4 +14,4 @@
 ]
 
 === out
-Dict({"call": Dict({0: String("a")}), "literal": Dict({0: Dict({0: Int(42)})}), "ref": Dict({0: Dict({"x": Int(99)})})})
+["call": ["a"]  "literal": [[42]]  "ref": [["x": 99]]]

@@ -7,4 +7,4 @@
   v2: [to-int-or-str 1]
 ]
 === out
-Dict({"to-int-or-str": Function(n), "v1": Int(0), "v2": String("nonzero")})
+["to-int-or-str": [fn [let n] ...]  "v1": "nonzero"  "v2": "nonzero"]

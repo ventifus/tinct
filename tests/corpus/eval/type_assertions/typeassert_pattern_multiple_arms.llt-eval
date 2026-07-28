@@ -8,4 +8,4 @@
   test-float:  [match 3.14     Integer: "int"     String: "string"  ...: "other"]
 ]
 === out
-Dict({"test-int": String("other"), "test-string": String("other"), "test-float": String("other")})
+["test-int": "other"  "test-string": "other"  "test-float": "other"]

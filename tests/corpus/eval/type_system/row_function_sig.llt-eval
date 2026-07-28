@@ -1,4 +1,4 @@
 # Row polymorphism - rest in function signatures
 [id: [fn@[name: String ...] [let r@[name: String ...]] r]  result: [call $id [name: "Carol"  age: 25]]]
 === out
-Dict({"id": Function(r), "result": Dict({"name": String("Carol"), "age": Int(25)})})
+["id": [fn [let r] ...]  "result": ["name": "Carol"  "age": 25]]

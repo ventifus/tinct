@@ -2,7 +2,7 @@
 # Define function with Int return annotation but String param - type checker catches mismatch
 [f: [fn@Integer [let x@String] x]]
 === out
-Dict({"f": Function(x)})
+["f": [fn [let x] ...]]
 
 === warn
 [UnificationFailure] cannot unify Integer with String

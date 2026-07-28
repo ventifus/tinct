@@ -9,4 +9,4 @@
   result: 42
 ]
 === out
-Dict({"process": Function(m), "result": Int(42)})
+["process": [fn [let m] ...]  "result": 42]

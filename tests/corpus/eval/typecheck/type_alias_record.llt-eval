@@ -6,4 +6,4 @@
   p: [@Person [name: "Alice"  age: 30]]
 ]
 === out
-Dict({"Person": Dict({}), "p": Dict({"name": String("Alice"), "age": Int(30)})})
+["Person": []  "p": ["name": "Alice"  "age": 30]]

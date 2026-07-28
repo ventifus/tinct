@@ -5,4 +5,4 @@
 ---
 [key: "x"  result: [get $key %]]
 === out
-Dict({"key": String("x"), "result": Int(1)})
+["key": "x"  "result": 1]

@@ -8,4 +8,4 @@
   result: [f 123]
 ]
 === out
-Dict({"Mapper": Dict({}), "f": Function(_), "result": String("result")})
+["Mapper": ["Fn": Mapper.Fn]  "f": [fn [let _] ...]  "result": "result"]

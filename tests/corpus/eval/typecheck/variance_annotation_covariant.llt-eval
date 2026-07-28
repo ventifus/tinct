@@ -9,4 +9,4 @@
   result: 42
 ]
 === out
-Dict({"Wrapper": Dict({}), "result": Int(42)})
+["Wrapper": []  "result": 42]

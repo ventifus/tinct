@@ -4,4 +4,4 @@
 # Verifies that the annotation resolves without error and eval produces the correct output.
 [x@[[without Int]]: "hello"]
 === out
-Dict({"x": String("hello")})
+["x": "hello"]

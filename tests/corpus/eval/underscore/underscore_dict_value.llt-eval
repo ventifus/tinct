@@ -1,4 +1,4 @@
 # $_ in dict value wraps the dict - pass through identity to get function, then call it
 [call [identity [result: _]] 42]
 === out
-Dict({"result": Int(42)})
+["result": 42]

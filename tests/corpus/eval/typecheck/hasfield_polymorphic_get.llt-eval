@@ -4,4 +4,4 @@
 [get_name: [fn [let dict] [get "name" dict]]
  result: [get_name [name: "Alice"]]]
 === out
-Dict({"get_name": Function(dict), "result": String("Alice")})
+["get_name": [fn [let dict] ...]  "result": "Alice"]

@@ -8,4 +8,4 @@
   on-string:      [null? "hello"]
 ]
 === out
-Dict({"on-empty-dict": Variant(Boolean.True, Null), "on-non-empty": Variant(Boolean.False, Null), "on-int": Variant(Boolean.False, Null), "on-string": Variant(Boolean.False, Null)})
+["on-empty-dict": Boolean.False  "on-non-empty": Boolean.False  "on-int": Boolean.False  "on-string": Boolean.False]

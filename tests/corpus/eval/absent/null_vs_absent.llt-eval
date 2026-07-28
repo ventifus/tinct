@@ -9,4 +9,4 @@
   absent-on-absent: [absent? [get? "missing" []]]
 ]
 === out
-Dict({"null-on-empty-dict": Variant(Boolean.True, Null), "null-on-absent": Variant(Boolean.False, Null), "absent-on-empty-dict": Variant(Boolean.False, Null), "absent-on-absent": Variant(Boolean.True, Null)})
+["null-on-empty-dict": Boolean.False  "null-on-absent": Boolean.False  "absent-on-empty-dict": Boolean.False  "absent-on-absent": Boolean.False]

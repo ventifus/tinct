@@ -11,4 +11,4 @@
   result: 42
 ]
 === out
-Dict({"f": Function(x), "result": Int(42)})
+["f": [fn [let x] ...]  "result": 42]

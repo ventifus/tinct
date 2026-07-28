@@ -3,4 +3,4 @@
 # This test verifies that the recursion check allows annotated functions.
 [f: [fn@Integer [let x@Integer] 42]]
 === out
-Dict({"f": Function(x)})
+["f": [fn [let x] ...]]

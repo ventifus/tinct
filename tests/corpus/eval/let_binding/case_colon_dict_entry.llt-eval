@@ -1,4 +1,4 @@
 # Verify [case: x] as a dict entry (colon-ahead) is treated as a string key, not a keyword
 [case: "hello"  other: "world"]
 === out
-Dict({"case": String("hello"), "other": String("world")})
+["case": "hello"  "other": "world"]

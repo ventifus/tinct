@@ -4,4 +4,4 @@
 [x: 1  y: 2]
 --- %unused
 === out
-Dict({"x": Int(1), "y": Int(2)})
+["x": 1  "y": 2]

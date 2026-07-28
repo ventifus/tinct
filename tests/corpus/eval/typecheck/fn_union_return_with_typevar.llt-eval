@@ -2,4 +2,4 @@
 # `a` is a TypeVar, `Null` is the empty record type.
 [f: [fn@[or a Null] [] []]]
 === out
-Dict({"f": Function()})
+["f": [fn [let ] ...]]

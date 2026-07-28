@@ -3,4 +3,4 @@
 # Wrap in explicit function to provide $_ as bound variable
 [call [fn [let _] [$_: 42]] "result"]
 === out
-Dict({"result": Int(42)})
+["result": 42]

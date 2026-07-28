@@ -4,4 +4,4 @@
  server: [port: 8080  host: "localhost"]
  result: [get_port server]]
 === out
-Dict({"get_port": Function(config), "server": Dict({"port": Int(8080), "host": String("localhost")}), "result": Int(8080)})
+["get_port": [fn [let config] ...]  "server": ["port": 8080  "host": "localhost"]  "result": 8080]

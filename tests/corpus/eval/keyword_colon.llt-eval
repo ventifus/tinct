@@ -2,4 +2,4 @@
 # "call:" is a dict key, not a call expression
 [call: 42]
 === out
-Dict({"call": Int(42)})
+["call": 42]

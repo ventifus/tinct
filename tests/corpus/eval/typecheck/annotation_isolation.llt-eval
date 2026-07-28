@@ -5,4 +5,4 @@
  g: [fn [let y@a] y]
  result: [f 42]]
 === out
-Dict({"f": Function(x), "g": Function(y), "result": Int(42)})
+["f": [fn [let x] ...]  "g": [fn [let y] ...]  "result": 42]

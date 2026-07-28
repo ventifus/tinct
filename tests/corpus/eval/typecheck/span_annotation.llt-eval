@@ -4,4 +4,4 @@
 # Span is an open dict with required fields: file, start-line, start-col, end-line, end-col.
 [@Span [file: "foo.llt"  start-line: 1  start-col: 1  end-line: 1  end-col: 5]]
 === out
-Dict({"file": String("foo.llt"), "start-line": Int(1), "start-col": Int(1), "end-line": Int(1), "end-col": Int(5)})
+["file": "foo.llt"  "start-line": 1  "start-col": 1  "end-line": 1  "end-col": 5]

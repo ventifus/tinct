@@ -4,4 +4,4 @@
 [f: [fn [let r@[name: String ...]] [merge r [id: 1]]]
  result: [f [name: "alice"  age: 30]]]
 === out
-Dict({"f": Function(r), "result": Dict({"name": String("alice"), "age": Int(30), "id": Int(1)})})
+["f": [fn [let r] ...]  "result": ["name": "alice"  "age": 30  "id": 1]]

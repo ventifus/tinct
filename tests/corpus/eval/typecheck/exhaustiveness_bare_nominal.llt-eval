@@ -14,4 +14,4 @@
   result: 42
 ]
 === out
-Dict({"Tag": Dict({"MyTag": Function(value)}), "extract": Function(s), "result": Int(42)})
+["Tag": ["MyTag": [fn [let value] ...]]  "extract": [fn [let s] ...]  "result": 42]

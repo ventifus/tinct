@@ -3,4 +3,4 @@
 # Pass 1 pre-binds f as Type::Function; recursive calls return the pre-bound ret TypeVar.
 [f: [fn [let x] [$f $x]]]
 === out
-Dict({"f": Function(x)})
+["f": [fn [let x] ...]]

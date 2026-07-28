@@ -8,4 +8,4 @@
   result: 42
 ]
 === out
-Dict({"Box": Dict({}), "result": Int(42)})
+["Box": []  "result": 42]

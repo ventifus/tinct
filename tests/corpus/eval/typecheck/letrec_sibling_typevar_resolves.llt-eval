@@ -4,4 +4,4 @@
 # The absence of === warn asserts that no spurious type warnings are emitted.
 [a: "hello"  b: [length a]]
 === out
-Dict({"a": String("hello"), "b": Int(5)})
+["a": "hello"  "b": 5]

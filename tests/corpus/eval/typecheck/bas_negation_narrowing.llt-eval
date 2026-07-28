@@ -5,4 +5,4 @@
  r1: [safe-inc 5]
  r2: [safe-inc "hello"]]
 === out
-Dict({"safe-inc": Function(x), "r1": Int(6), "r2": Int(0)})
+["safe-inc": [fn [let x] ...]  "r1": 0  "r2": 0]

@@ -4,4 +4,4 @@
 [identity: [fn@[return: a] [let x@a] $x]
  result: [identity 42]]
 === out
-Dict({"identity": Function(x), "result": Int(42)})
+["identity": [fn [let x] ...]  "result": 42]

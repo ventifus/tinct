@@ -7,4 +7,4 @@
   outer_x: $x
 ]
 === out
-Dict({"x": Int(10), "inner": Dict({"x": Int(20), "result": Int(20)}), "outer_x": Int(10)})
+["x": 10  "inner": ["x": 20  "result": 20]  "outer_x": 10]

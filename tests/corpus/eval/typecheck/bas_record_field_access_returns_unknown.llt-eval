@@ -5,4 +5,4 @@
 # Eval proceeds — the function is defined but never called.
 [f: [fn [let r@[x: Int]] r.y]]
 === out
-Dict({"f": Function(r)})
+["f": [fn [let r] ...]]

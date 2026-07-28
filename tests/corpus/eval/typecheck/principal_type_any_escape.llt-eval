@@ -8,4 +8,4 @@
 [f: [fn [let x] x]
  result: [f "hello"]]
 === out
-Dict({"f": Function(x), "result": String("hello")})
+["f": [fn [let x] ...]  "result": "hello"]

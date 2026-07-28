@@ -11,4 +11,4 @@
   a@Integer: [get "age" person]
 ]
 === out
-Dict({"person": Dict({"name": String("Alice"), "age": Int(30)}), "n": String("Alice"), "a": Int(30)})
+["person": ["name": "Alice"  "age": 30]  "n": "Alice"  "a": 30]
