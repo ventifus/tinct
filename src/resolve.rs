@@ -1661,7 +1661,7 @@ fn collect_var_accesses_node(
 ///    ɪ-prefixed binding names (`ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽`) in the outer dict.
 ///    We register those same names so the resolver can find instance methods directly
 ///    when they are referenced from within the same letrec scope.
-fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
+pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     // Pass 1: Collect all explicitly-named keys from non-ClassDecl entries.
     // This lets us avoid injecting a class method name that shadows an explicit
     // user binding (e.g. `=: [fn [let x y] false]` in the same dict).

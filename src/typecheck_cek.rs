@@ -1488,16 +1488,16 @@ async fn apply_cont(
 
             // Inject synthetic innermost scope frame into state.scope_frames (mirrors
             // run_typecheck_dict behavior for B-477 user-defined typeclass instance dispatch).
+            // Uses surface_dict_static_keys to compute canonical slot positions (matching the
+            // resolver and runtime GroupSpine layout) so instance binding mangled names are
+            // included at the correct slots for call_dispatch resolution.
             let pushed_synthetic_frame = if state.scope_frames.is_some() {
-                let synthetic: indexmap::IndexMap<String, u32> = {
-                    let env_guard = dict_env.read().unwrap();
-                    env_guard
-                        .slots
-                        .iter()
+                let synthetic: indexmap::IndexMap<String, u32> =
+                    crate::resolve::surface_dict_static_keys(&entries)
+                        .into_iter()
                         .enumerate()
-                        .filter_map(|(i, e)| e.as_ref().map(|(name, _)| (name.clone(), i as u32)))
-                        .collect()
-                };
+                        .map(|(i, name)| (name, i as u32))
+                        .collect();
                 if let Some(ref mut frames) = state.scope_frames {
                     frames.push(synthetic);
                     true
@@ -5253,29 +5253,24 @@ pub(crate) async fn run_typecheck_dict(
 
     // Inject a synthetic innermost scope frame into state.scope_frames for this dict.
     //
-    // When the user declares an [instance ...] in this dict, Pass 1 above pre-inserts the
-    // ɪ-prefixed mangled binding name into dict_env.slots with a fresh TypeVar placeholder.
-    // During Pass 3, check_constraints_on_var fires when the TypeVar resolves, and calls
-    // resolve_name_in_frames to convert the mangled name to a (level, slot) pair, then
-    // calls call_dispatch.set(debruijn_to_var_addr(level, slot)).  Without this synthetic
-    // frame, resolve_name_in_frames only
-    // searches the parent runtime scope chain (outer evaluated scopes) and misses the current
-    // dict's instance bindings — because the user's document has not been evaluated yet.
+    // The frame maps each static name (including instance binding mangled names) to its
+    // slot index matching surface_dict_static_keys. During Pass 3, check_constraints_on_var
+    // fires when a TypeVar resolves, calls resolve_name_in_frames to find the mangled
+    // instance binding name, and sets call_dispatch so the lowerer rewrites the VarRef to
+    // the correct runtime slot. Without this frame (or with an incomplete frame), dispatch
+    // is silently skipped and typeclass methods evaluate to class descriptor Dicts at runtime.
     //
-    // Fix: snapshot dict_env.slots after Pass 1 into a new innermost frame (appended to
-    // frames, since frames[n-1] is innermost and level=0).  This frame mirrors what the
-    // lowerer will generate at runtime via surface_dict_static_keys.  We pop this synthetic
-    // frame at the end of run_typecheck_dict to avoid frame leakage to parent scopes.
+    // We use surface_dict_static_keys (which the resolver and evaluator also use) to compute
+    // the canonical slot positions, so the type checker's slot numbers match the runtime
+    // GroupSpine layout exactly.  We pop the synthetic frame after run_typecheck_dict to
+    // avoid frame leakage to parent scopes.
     let pushed_synthetic_frame = if state.scope_frames.is_some() {
-        let synthetic: indexmap::IndexMap<String, u32> = {
-            let env_guard = dict_env.read().unwrap();
-            env_guard
-                .slots
-                .iter()
+        let synthetic: indexmap::IndexMap<String, u32> =
+            crate::resolve::surface_dict_static_keys(entries)
+                .into_iter()
                 .enumerate()
-                .filter_map(|(i, entry)| entry.as_ref().map(|(name, _)| (name.clone(), i as u32)))
-                .collect()
-        };
+                .map(|(i, name)| (name, i as u32))
+                .collect();
         if let Some(ref mut frames) = state.scope_frames {
             frames.push(synthetic);
             true
