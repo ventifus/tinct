@@ -229,9 +229,13 @@ fn merge_env_schemes_into_env(
 
 /// Type-check a single [`SurfaceDocument`] using the CEK machine.
 ///
-/// Replaces [`typecheck_surface_document`]. Processes all document items in source order
-/// (Decls interleaved with Exprs, no pre-pass hoisting). Each intermediate item extends the
-/// env for subsequent items. The last item's schemes are threaded into the result env.
+/// Routes all document items through the CEK's Sequential arm via `run_typecheck` — the single
+/// canonical path for sequential expression evaluation. For single-item documents, the node
+/// is evaluated directly (no Sequential wrapper).
+///
+/// After `run_typecheck`, ctor_schemes (ADT constructor TypeSchemes) are recovered from the
+/// diff of `state.tycon_env` against a pre-run snapshot: `dict_finish` (the DictPassZero
+/// terminal path) discards ctor_schemes, so we reconstruct them here for result_env.
 ///
 /// # Returns
 ///
@@ -276,98 +280,40 @@ pub(crate) async fn process_document(
         );
     }
 
-    let mut errors = Vec::new();
-    let mut current_env = Arc::clone(parent_env);
     let enclosing_level = state.level;
+    let last_span = nodes.last().unwrap().span.clone();
 
-    // Process all intermediate items (all but the last) by extending the env.
-    // This is the same logic as infer_step::Sequential: dict bodies → run_typecheck_dict
-    // (preserving let-polymorphism and ctor_schemes); non-dict bodies → run_typecheck.
-    let intermediates = &nodes[..nodes.len() - 1];
-    for intermediate in intermediates {
-        if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-            let (_, schemes, _referenced, mut errs) =
-                typecheck_cek::run_typecheck_dict(entries, &current_env, state, type_map).await;
-            errors.append(&mut errs);
-            for (nid, ty) in state.type_annotation_table.drain() {
-                table.insert(nid, ty);
-            }
-            let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
-            for (name, scheme) in &schemes {
-                new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
-            }
-            current_env = Arc::new(RwLock::new(new_env_inner));
-        } else {
-            // Non-dict (including Decl nodes): run_typecheck at incremented level.
-            state.level += 1;
-            let ty = typecheck_cek::run_typecheck(
-                intermediate,
-                &current_env,
-                state,
-                &mut errors,
-                type_map,
-                &mut Vec::new(),
-            )
-            .await;
-            state.level = enclosing_level;
-            for (nid, ty) in state.type_annotation_table.drain() {
-                table.insert(nid, ty);
-            }
-            match &ty {
-                Type::Dict(Row { fields, .. }) => {
-                    let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
-                    for (name, field_ty) in fields {
-                        let scheme = generalize(enclosing_level, field_ty, state);
-                        new_env_inner.insert_scheme_named_only(name.clone(), scheme);
-                    }
-                    current_env = Arc::new(RwLock::new(new_env_inner));
-                }
-                Type::Unknown | Type::Any => {}
-                _ => errors.push(TypeDiagnostic::error(
-                    "type-error",
-                    format!("expected record type, got {}", ty),
-                    intermediate.span.clone(),
-                )),
-            }
-        }
-    }
+    // Snapshot tycon_env keys before the run.
+    // ctor_schemes for ADT types declared in the last Dict expression are dropped by
+    // dict_finish (DictPassZero terminal path). We reconstruct them by diffing tycon_env
+    // against this snapshot: new zero-arity TyCon entries represent types declared here.
+    let tycon_keys_before: std::collections::HashSet<String> =
+        state.tycon_env.keys().cloned().collect();
 
-    // Process the last expression, preserving ctor_schemes for cross-document scoping.
-    // Dict last expressions must call run_typecheck_dict directly — AfterDictPassZero
-    // discards the ctor_schemes (North/South/etc.) that are essential for result_env.
-    let last_node = Arc::clone(nodes.last().unwrap());
-    let mut last_dict_schemes: Option<indexmap::IndexMap<String, crate::types::TypeScheme>> = None;
-    let mut last_record_type: Option<(Type, u32)> = None;
-
-    let result_ty = if let SurfaceExpression::Dict(entries) = &last_node.expr {
-        let (dict_ty, schemes, _referenced, mut dict_errs) =
-            typecheck_cek::run_typecheck_dict(entries, &current_env, state, type_map).await;
-        errors.append(&mut dict_errs);
-        for (nid, ty) in state.type_annotation_table.drain() {
-            table.insert(nid, ty);
-        }
-        last_dict_schemes = Some(schemes);
-        dict_ty
+    // Route all document nodes through the CEK machine's Sequential arm — the single
+    // canonical path for sequential expression evaluation. For single-item documents,
+    // use the node directly (no Sequential wrapper needed).
+    let doc_node = if nodes.len() == 1 {
+        Arc::clone(&nodes[0])
     } else {
-        state.level += 1;
-        let ty = typecheck_cek::run_typecheck(
-            &last_node,
-            &current_env,
-            state,
-            &mut errors,
-            type_map,
-            &mut Vec::new(),
-        )
-        .await;
-        state.level = enclosing_level;
-        for (nid, ty) in state.type_annotation_table.drain() {
-            table.insert(nid, ty);
-        }
-        if matches!(&ty, Type::Dict(_)) {
-            last_record_type = Some((ty.clone(), enclosing_level));
-        }
-        ty
+        let span = nodes[0].span.clone();
+        Arc::new(SurfaceNode::new(SurfaceExpression::Sequential(nodes), span))
     };
+
+    let mut errors = Vec::new();
+    let result_ty = typecheck_cek::run_typecheck(
+        &doc_node,
+        parent_env,
+        state,
+        &mut errors,
+        type_map,
+        &mut Vec::new(),
+    )
+    .await;
+
+    for (nid, ty) in state.type_annotation_table.drain() {
+        table.insert(nid, ty);
+    }
 
     // Check that the last expression's type is a Dict subtype.
     //
@@ -378,7 +324,7 @@ pub(crate) async fn process_document(
     // Type::Dict(_):        ok — any dict (open, closed, uniform-tail) satisfies the constraint.
     // Type::Unknown:        ok — gradual escape hatch; cannot rule out a dict statically.
     // Type::Any:            ok — top type; cannot rule out a dict.
-    // Type::Var(_, _):  ok — inference variable; deferred to the constraint solver.
+    // Type::Var(_, _):      ok — inference variable; deferred to the constraint solver.
     //                            is_subtype returns true for TypeVars (conservative approximation).
     // Type::Error(_):       ok — cascade sentinel; an upstream error already reported.
     // Everything else:      the type is known to be a non-dict → error.
@@ -390,23 +336,58 @@ pub(crate) async fn process_document(
                 "document last expression must be a record type, got {}",
                 result_ty
             ),
-            last_node.span.clone(),
+            last_span,
         )),
     }
 
     // Build result_env with parent=parent_env (flat env chain invariant).
+    // process_document invariant: result_env is always parented to parent_env, not to the
+    // internal intermediate envs created by the CEK's Sequential arm.
     let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
-    if let Some(schemes) = last_dict_schemes {
-        for (name, scheme) in schemes {
-            result_env_inner.insert_scheme_named_only(name, scheme);
-        }
-    }
-    if let Some((Type::Dict(Row { fields, .. }), enc_level)) = last_record_type {
+
+    // Extract schemes from the last expression's result type.
+    // The last Dict goes through DictPassZero → dict_finish which produces mono field types
+    // (not generalized). Generalize at enclosing_level — dict_finish restores state.level
+    // to enclosing_level before returning, so TypeVars at level > enclosing_level are the
+    // ones created during this document's inference and are safe to generalize.
+    //
+    // Note: TypeAlias entries (e.g., `Direction: [type North South]`) are skipped by
+    // DictSccMember (is_alias = true → continue) and are NOT in result_ty.fields. They
+    // are handled separately below via the tycon_env diff.
+    if let Type::Dict(Row { ref fields, .. }) = result_ty {
         for (name, field_ty) in fields {
-            let scheme = generalize(enc_level, &field_ty, state);
-            result_env_inner.insert_scheme_named_only(name, scheme);
+            let scheme = generalize(enclosing_level, field_ty, state);
+            result_env_inner.insert_scheme_named_only(name.clone(), scheme);
         }
     }
+
+    // Reconstruct schemes for zero-arity ADT types declared in this document.
+    // run_typecheck (DictPassZero path) does not return these in result_ty: TypeAlias entries
+    // are skipped in DictSccMember and not included in field_types/resolved_field_types.
+    // dict_finish drops ctor_schemes. We recover both by diffing state.tycon_env against the
+    // pre-run snapshot, matching what run_typecheck_dict's schemes IndexMap would have returned:
+    //   1. The type name itself (e.g., "Direction") → adt_value_type(body) — the constructor dict
+    //   2. Each constructor name (e.g., "North", "South") → the NominalVariant type
+    for (name, def) in &state.tycon_env {
+        if !tycon_keys_before.contains(name) && def.params.is_empty() {
+            let value_ty = typecheck_cek::adt_value_type(&def.body);
+            // Insert the type name itself with the constructor dict type.
+            result_env_inner.insert_scheme_named_only(
+                name.clone(),
+                crate::types::TypeScheme::mono(value_ty.clone()),
+            );
+            // Insert each constructor name with its variant type.
+            if let Type::Dict(ref row) = value_ty {
+                for (ctor_name, ctor_ty) in &row.fields {
+                    result_env_inner.insert_scheme_named_only(
+                        ctor_name.clone(),
+                        crate::types::TypeScheme::mono(ctor_ty.clone()),
+                    );
+                }
+            }
+        }
+    }
+
     (Arc::new(RwLock::new(result_env_inner)), result_ty, errors)
 }
 

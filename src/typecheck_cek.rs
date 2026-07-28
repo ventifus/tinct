@@ -1314,24 +1314,24 @@ async fn apply_cont(
         TypeCheckCont::AfterSequentialFinal { intermediate_envs } => {
             let _ = &intermediate_envs;
             if false {
-            for env_frame in &intermediate_envs {
-                let env_guard = env_frame.read().unwrap();
-                for (name, slot) in &env_guard.extras {
-                    if !slot.referenced {
-                        if let Some(span) = slot
-                            .scheme
-                            .as_ref()
-                            .and_then(|s| s.definition_span.as_ref())
-                        {
-                            errors.push(TypeDiagnostic::warn(
-                                "lost-binding",
-                                format!("variable '{}' is never referenced", name),
-                                span.clone(),
-                            ));
+                for env_frame in &intermediate_envs {
+                    let env_guard = env_frame.read().unwrap();
+                    for (name, slot) in &env_guard.extras {
+                        if !slot.referenced {
+                            if let Some(span) = slot
+                                .scheme
+                                .as_ref()
+                                .and_then(|s| s.definition_span.as_ref())
+                            {
+                                errors.push(TypeDiagnostic::warn(
+                                    "lost-binding",
+                                    format!("variable '{}' is never referenced", name),
+                                    span.clone(),
+                                ));
+                            }
                         }
                     }
                 }
-            }
             } // end if false
             TypeCheckAction::Done(child_ty)
         }
@@ -2172,14 +2172,10 @@ async fn apply_cont(
 
                     let (value_ty, nested_schemes_opt) =
                         if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                            let (ty, schemes, _referenced, mut nested_errs) =
-                                Box::pin(run_typecheck_dict(
-                                    nested_entries,
-                                    &scc_env,
-                                    state,
-                                    type_map,
-                                ))
-                                .await;
+                            let (ty, schemes, _referenced, mut nested_errs) = Box::pin(
+                                run_typecheck_dict(nested_entries, &scc_env, state, type_map),
+                            )
+                            .await;
                             cont_errors.append(&mut nested_errs);
                             (Ok(ty), Some(schemes))
                         } else {
@@ -3880,7 +3876,8 @@ async fn infer_fn_push_cont(
                         // [a] as single-entry Dict
                         SurfaceExpression::Dict(bind_entries) => {
                             for be in bind_entries {
-                                if let SurfaceExpression::VarRef { name, .. } = &be.node.value.expr {
+                                if let SurfaceExpression::VarRef { name, .. } = &be.node.value.expr
+                                {
                                     names.push(name.clone());
                                 }
                             }
@@ -4097,8 +4094,7 @@ async fn infer_fn_push_cont(
     // is still useful — it can be resolved via functional dependency inference. Only names
     // that appear nowhere (no param, no return) are truly dead.
     if !bind_declared_names.is_empty() {
-        let mut used_var_set: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut used_var_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         // Collect TypeVars from all parameter types.
         for (_, pt) in &param_types {
             pt.collect_type_vars(&mut used_var_set);
@@ -4439,21 +4435,22 @@ fn build_case_arm_env(
             .collect(),
         _ => Vec::new(),
     };
-    if bindings_with_spans.is_empty() {
-        Arc::clone(env)
-    } else {
-        let mut child_inner = Env::with_parent(Arc::clone(env));
-        for (name, binding_span) in bindings_with_spans {
-            child_inner.insert_scheme_named_only(
-                name,
-                TypeScheme {
-                    definition_span: Some(binding_span),
-                    ..TypeScheme::mono(state.fresh_type_var(&node.span))
-                },
-            );
-        }
-        Arc::new(RwLock::new(child_inner))
+    // Always create a fresh child frame. This ensures arm_env_frame.extras contains ONLY
+    // the arm's own let-bindings, not inherited names from the parent chain. The MatchArm
+    // lost-binding handler iterates arm_env_frame.extras directly — if we return Arc::clone(env)
+    // when there are no bindings, the handler would incorrectly check all parent extras
+    // (e.g., all builtins from get_builtin_core_type_env()) and emit false-positive warnings.
+    let mut child_inner = Env::with_parent(Arc::clone(env));
+    for (name, binding_span) in bindings_with_spans {
+        child_inner.insert_scheme_named_only(
+            name,
+            TypeScheme {
+                definition_span: Some(binding_span),
+                ..TypeScheme::mono(state.fresh_type_var(&node.span))
+            },
+        );
     }
+    Arc::new(RwLock::new(child_inner))
 }
 
 // ===== Inline helper: TypeAssert mismatch computation =====
@@ -5886,14 +5883,10 @@ pub(crate) async fn run_typecheck_dict(
                 // For nested Dict values, call run_typecheck_dict directly to capture schemes.
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                        let (ty, schemes, _referenced, mut nested_errs) =
-                            Box::pin(run_typecheck_dict(
-                                nested_entries,
-                                &scc_env,
-                                state,
-                                type_map,
-                            ))
-                            .await;
+                        let (ty, schemes, _referenced, mut nested_errs) = Box::pin(
+                            run_typecheck_dict(nested_entries, &scc_env, state, type_map),
+                        )
+                        .await;
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {

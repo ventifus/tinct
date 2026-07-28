@@ -9879,25 +9879,20 @@ mod tests {
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected one top-level item");
-        // The result is a Call expression: func=call, args=[fn_expr, arg_expr]
+        // `[call fn_expr arg]` uses the `call` keyword — `call` is consumed by the parser
+        // and the first positional becomes `func`. So the result is:
+        //   Call { func: Fn { body: Match { ... } }, args: [VarRef("arg")] }
         match &items[0].expr {
             SurfaceExpression::Call { func, args, .. } => {
-                // func is `call` VarRef
+                // func is the inline Fn expression (call keyword consumed)
                 assert!(
-                    matches!(&func.expr, SurfaceExpression::VarRef { name, .. } if name == "call"),
-                    "expected call as func, got {:?}",
+                    matches!(&func.expr, SurfaceExpression::Fn { body, .. }
+                        if matches!(&body.expr, SurfaceExpression::Match { arms, .. } if arms.len() == 1)),
+                    "expected fn with match body (1 arm) as call func, got {:?}",
                     func.expr
                 );
-                // Two positional args: fn expression and `arg`
-                assert_eq!(args.len(), 2, "expected 2 args: fn and arg, got: {args:?}");
-                let fn_node = &args[0];
-                // The first arg must be a Fn whose body is a Match with 1 arm.
-                assert!(
-                    matches!(&fn_node.expr, SurfaceExpression::Fn { body, .. }
-                        if matches!(&body.expr, SurfaceExpression::Match { arms, .. } if arms.len() == 1)),
-                    "expected fn with match body (1 arm), got {:?}",
-                    fn_node.expr
-                );
+                // One positional arg: `arg`
+                assert_eq!(args.len(), 1, "expected 1 arg: `arg`, got: {args:?}");
             }
             other => panic!("expected Call at top level, got {other:?}"),
         }
