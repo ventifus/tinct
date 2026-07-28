@@ -1835,7 +1835,12 @@ pub(crate) fn match_pattern<'a>(
                         // a runtime type check rather than a value equality check.
                         // This bridges the current TypeNode system to the future bind-primitive
                         // protocol (see doc/whatif/matchable-patterns.md).
-                        if let Value::Variant { tycon, ctor, payload: None } = &pinned_val {
+                        if let Value::Variant {
+                            tycon,
+                            ctor,
+                            payload: None,
+                        } = &pinned_val
+                        {
                             if tycon.as_ref() == "TypeNode" {
                                 return Ok(match_typenode_pattern(ctor.as_ref(), &value));
                             }

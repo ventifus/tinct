@@ -221,49 +221,10 @@ enum Commands {
         /// File to hash.
         file: String,
     },
-    /// Describe the input contract of an LLT file.
-    ///
-    /// Extracts `%@Type` annotations and schema dicts, printing a human-readable
-    /// summary of the expected input shape.
-    Describe {
-        /// Input LLT file to describe.
-        file: String,
-    },
     /// Show a detailed explanation for an error code (e.g. E001).
     Explain {
         /// Error code to explain (e.g. E001, E010, E070).
         code: String,
-    },
-    /// Type-check an LLT file without evaluating.
-    ///
-    /// Runs parse → desugar → typecheck pipeline.
-    /// Exits with code 1 if any type errors or warnings are found.
-    /// Exits with code 0 on clean file.
-    Lint {
-        /// File to lint
-        file: String,
-
-        /// Disable all filesystem access (default for lint).
-        /// Use --cap-fs to allow specific directories for include resolution.
-        #[arg(long, default_value_t = true)]
-        no_fs: bool,
-
-        /// Inject a named DirCap into the root environment (may be repeated).
-        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap. MODE is required.
-        /// MODE is one or more of: r (read), w (write), l (list), s (stat).
-        /// Example: docs=/tmp/mydocs:rl injects %docs with read+list access.
-        #[arg(long, value_name = "NAME=PATH:MODE")]
-        cap_fs: Vec<String>,
-
-        /// Inject a named NetCap into the root environment (may be repeated).
-        /// Format: NAME=ENTRY — binds %NAME to a NetCap.
-        /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
-        #[arg(long, value_name = "NAME=ENTRY")]
-        cap_net: Vec<String>,
-
-        /// Type errors are fatal (exit 1). Without --strict, type warnings are advisory.
-        #[arg(long)]
-        strict: bool,
     },
     /// Extract and evaluate tinct code blocks embedded in a Markdown file.
     ///
@@ -316,8 +277,6 @@ enum Commands {
 enum LiterateMode {
     /// Extract tinct code blocks and print as a ---‑separated pipeline source.
     Tangle,
-    /// Extract blocks, type-check without evaluating.
-    Lint,
     /// Extract blocks, evaluate as a pipeline, print the result.
     Eval,
     /// Extract blocks, evaluate each cumulatively, annotate the markdown with results.
@@ -403,15 +362,7 @@ async fn async_main() -> i32 {
             strict,
             file,
         } => run_fmt(&file, check, in_place, &output, strict).await,
-        Commands::Describe { file } => run_describe(&file).await,
         Commands::Explain { code } => run_explain(&code),
-        Commands::Lint {
-            file,
-            no_fs,
-            cap_fs,
-            cap_net,
-            strict,
-        } => run_lint(&file, no_fs, strict, &cap_fs, &cap_net).await,
         Commands::Literate {
             mode,
             file,
@@ -2319,8 +2270,15 @@ async fn run_fmt(
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
         let env_arc = tinct::get_builtin_core_type_env().await;
-        let (diagnostics, _type_map, _doc_map, _scheme_map) =
-            tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
+        let type_stage_scope = tinct::get_builtin_core_type_stage_scope().await;
+        let (diagnostics, _env, _tycon_env) = tinct::typecheck::typecheck_program_bootstrap(
+            &program,
+            env_arc,
+            None,
+            std::collections::HashMap::new(),
+            type_stage_scope,
+        )
+        .await;
 
         // Filter error-level diagnostics
         let type_errors: Vec<_> = diagnostics
@@ -2427,74 +2385,6 @@ async fn run_fmt(
     Ok(())
 }
 
-/// Type-check a file without evaluating.
-/// Exit 0 on clean, exit 1 on any warnings or errors.
-// AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
-async fn run_lint(
-    file_path: &str,
-    _no_fs: bool,
-    strict: bool,
-    // cap_fs is accepted by the CLI for consistency but not injected into the
-    // lint environment. Lint does not evaluate code, so DirCap injection is
-    // unnecessary. --no-fs is the default for lint.
-    _cap_fs: &[String],
-    _cap_net: &[String],
-) -> Result<(), String> {
-    let (sf_path, source) = read_source(file_path)?;
-
-    // Parse the file
-    let output = parse(&source, Arc::clone(&sf_path))
-        .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
-
-    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-    let program = tinct::desugar::desugar_program_full(&output.program);
-    let env_arc = tinct::get_builtin_core_type_env().await;
-    let (diagnostics, _type_map, _doc_map, _scheme_map) =
-        tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
-
-    // Collect all errors and warnings
-    let mut all_messages = Vec::new();
-
-    // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
-    // then treat Err-level diagnostics as fatal. Mirrors run_eval and run_fmt behavior.
-    let mut has_fatal_diag = false;
-    for d in &diagnostics {
-        let effective = if strict {
-            use tinct::DiagnosticLevel;
-            let bumped = d.bump_level();
-            if bumped.level == DiagnosticLevel::Err {
-                has_fatal_diag = true;
-            }
-            bumped
-        } else {
-            d.clone()
-        };
-        all_messages.push(format_type_diagnostic(&effective, &source, file_path));
-    }
-
-    // Type errors always fatal; diagnostics (warnings) fatal only with --strict (at Err level)
-    let error_count = diagnostics
-        .iter()
-        .filter(|d| d.level == tinct::DiagnosticLevel::Err)
-        .count();
-    let fatal_count = if strict {
-        error_count + if has_fatal_diag { 1 } else { 0 }
-    } else {
-        error_count
-    };
-
-    if !all_messages.is_empty() {
-        eprintln!("{}", all_messages.join("\n"));
-    }
-
-    if fatal_count > 0 {
-        return Err(format!("lint failed with {} issue(s)", fatal_count));
-    }
-
-    // Clean — exit 0 (no output on success)
-    Ok(())
-}
-
 // format_type_diagnostic is now pub in tinct::format_type_diagnostic (src/lib.rs).
 
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
@@ -2563,10 +2453,6 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
                 // Nothing to print — output empty string (no trailing newline).
                 return Ok(());
             }
-            LiterateMode::Lint => {
-                // Nothing to lint — clean exit.
-                return Ok(());
-            }
             LiterateMode::Weave => {
                 // No blocks to weave — print markdown unchanged.
                 print!("{markdown}");
@@ -2582,11 +2468,6 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
             Ok(())
         }
 
-        LiterateMode::Lint => {
-            let tangled = literate::tangle(blocks);
-            run_literate_lint(&tangled, config).await
-        }
-
         LiterateMode::Eval => {
             let tangled = literate::tangle(blocks);
             run_literate_eval(&tangled, config).await
@@ -2594,79 +2475,6 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
 
         LiterateMode::Weave => run_literate_weave(&markdown, &blocks, config).await,
     }
-}
-
-/// Lint mode: type-check tangled tinct source without evaluating.
-///
-/// Extracts code blocks from Markdown, tangles them into a single pipeline source,
-/// parses and type-checks the result, then reports type errors and warnings to stderr.
-///
-/// Exit codes:
-/// - 0 if no errors (warnings allowed without --strict)
-/// - 1 if type errors found, or if warnings found with --strict
-///
-/// The base directory is derived from the Markdown file's parent directory.
-/// AMBIENT-OK: CLI literate-lint opening markdown file directory for include resolution.
-async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result<(), String> {
-    let markdown_path = config.file_path;
-    let strict = config.strict;
-
-    // Parse the tangled source.
-    let tangle_file: Arc<str> = Arc::from(markdown_path.to_string().as_str());
-    let output = parse(tangled, tangle_file).map_err(|e| {
-        if strict {
-            tinct::format_parse_error(&e, tangled, markdown_path)
-        } else {
-            format!("parse error in tangled tinct source: {e}")
-        }
-    })?;
-
-    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-    let program = tinct::desugar::desugar_program_full(&output.program);
-    let env_arc = tinct::get_builtin_core_type_env().await;
-    let (diagnostics, _type_map, _doc_map, _scheme_map) =
-        tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
-
-    // Collect all errors and warnings
-    let mut all_messages = Vec::new();
-
-    // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
-    // then treat Err-level diagnostics as fatal. Mirrors run_eval and run_fmt behavior.
-    let mut has_fatal_diag = false;
-    for d in &diagnostics {
-        let effective = if strict {
-            let bumped = d.bump_level();
-            if bumped.level == tinct::DiagnosticLevel::Err {
-                has_fatal_diag = true;
-            }
-            bumped
-        } else {
-            d.clone()
-        };
-        all_messages.push(format_type_diagnostic(&effective, tangled, markdown_path));
-    }
-
-    // Type errors always fatal; diagnostics (warnings) fatal only with --strict (at Err level)
-    let error_count = diagnostics
-        .iter()
-        .filter(|d| d.level == tinct::DiagnosticLevel::Err)
-        .count();
-    let fatal_count = if strict {
-        error_count + if has_fatal_diag { 1 } else { 0 }
-    } else {
-        error_count
-    };
-
-    if !all_messages.is_empty() {
-        eprintln!("{}", all_messages.join("\n"));
-    }
-
-    if fatal_count > 0 {
-        return Err(format!("lint failed with {} issue(s)", fatal_count));
-    }
-
-    // Clean — exit 0 (no output on success)
-    Ok(())
 }
 
 /// Eval mode: tangle literate blocks and evaluate as a pipeline.
@@ -2840,231 +2648,6 @@ async fn run_literate_weave(
     }
 
     Ok(())
-}
-
-/// Schema keys recognized by the `describe` subcommand heuristic.
-/// A dict is considered a "schema dict" if any of its values is a dict containing
-/// at least one of these keys. This mirrors the constraint keys supported by `$validate`.
-const SCHEMA_KEYS: &[&str] = &[
-    "type",
-    "min",
-    "max",
-    "min-length",
-    "max-length",
-    "pattern",
-    "required",
-    "items",
-    "fields",
-    "enum",
-];
-
-/// Collects the human-readable contract information for one document section.
-struct ContractSection {
-    section_idx: usize,
-    type_name: Option<String>,
-    fields: Vec<(String, String)>, // (field_name, constraint_description)
-    schema: Vec<(String, String)>, // (field_name, constraint_description)
-    docs: Vec<(String, String)>,   // (binding_name, doc_string)
-}
-
-/// Describe the input contract of an LLT file.
-///
-/// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
-/// and detects schema dicts by heuristic. Outputs a human-readable summary.
-// AMBIENT-OK: CLI describe — opens file parent dir for type-checking
-async fn run_describe(file_path: &str) -> Result<(), String> {
-    let (sf_path, source) = read_source(file_path)?;
-    let output = parse(&source, Arc::clone(&sf_path)).map_err(|e| format!("{e}"))?;
-
-    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
-    let program = tinct::desugar::desugar_program_full(&output.program);
-    // Type check to get DocMap (for doc strings).
-    let env_arc = tinct::get_builtin_core_type_env().await;
-    let (_diagnostics, _type_map, doc_map, _scheme_map) =
-        tinct::typecheck::typecheck_surface_program(&program, env_arc).await;
-
-    // Collect contract information from each document section.
-    let mut contracts: Vec<ContractSection> = Vec::new();
-    let mut has_any_contract = false;
-
-    for (doc_idx, doc) in program.documents.iter().enumerate() {
-        let type_name: Option<String> = None;
-        let fields: Vec<(String, String)> = Vec::new();
-
-        // expects: header field moved to raw dict after S-926 — re-implement via builtin-doc-meta.
-
-        // Detect schema dicts in the document expressions
-        let schema = detect_schema_dict(&doc.node);
-        if !schema.is_empty() {
-            has_any_contract = true;
-        }
-
-        // Include doc strings from DocMap for top-level bindings
-        let docs = extract_doc_strings_from_doc(&doc.node, &doc_map);
-        if !docs.is_empty() {
-            has_any_contract = true;
-        }
-
-        let has_content =
-            type_name.is_some() || !fields.is_empty() || !schema.is_empty() || !docs.is_empty();
-        if has_content {
-            contracts.push(ContractSection {
-                section_idx: doc_idx,
-                type_name,
-                fields,
-                schema,
-                docs,
-            });
-        }
-    }
-
-    if !has_any_contract {
-        println!("no input contract");
-        return Ok(());
-    }
-
-    // Human-readable output: one line per field, with doc strings
-    for contract in &contracts {
-        if contracts.len() > 1 {
-            println!("--- section {} ---", contract.section_idx);
-        }
-        if let Some(ref name) = contract.type_name {
-            println!("  expects: @{}", name);
-        }
-        for (name, constraint) in &contract.fields {
-            if let Some((_, doc_str)) = contract.docs.iter().find(|(k, _)| k == name) {
-                println!("  {}: {} — {}", name, constraint, doc_str);
-            } else {
-                println!("  {}: {}", name, constraint);
-            }
-        }
-        for (name, constraint) in &contract.schema {
-            if let Some((_, doc_str)) = contract.docs.iter().find(|(k, _)| k == name) {
-                println!("  {}: {} — {}", name, constraint, doc_str);
-            } else {
-                println!("  {}: {}", name, constraint);
-            }
-        }
-        // Show doc strings for bindings not in fields/schema
-        let field_names: std::collections::HashSet<&str> =
-            contract.fields.iter().map(|(k, _)| k.as_str()).collect();
-        let schema_names: std::collections::HashSet<&str> =
-            contract.schema.iter().map(|(k, _)| k.as_str()).collect();
-        for (name, doc_str) in &contract.docs {
-            if !field_names.contains(name.as_str()) && !schema_names.contains(name.as_str()) {
-                println!("  {} — {}", name, doc_str);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Extract doc strings from a document's top-level bindings.
-/// Scans dict expressions in the document for entries that have doc strings in the DocMap.
-fn extract_doc_strings_from_doc(
-    doc: &tinct::ast::SurfaceDocument,
-    doc_map: &std::collections::HashMap<String, String>,
-) -> Vec<(String, String)> {
-    let mut result: Vec<(String, String)> = Vec::new();
-
-    for expr in doc.expressions() {
-        if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
-            for entry in entries {
-                if let Some(ref key_node) = entry.node.key {
-                    // Extract the binding name from the key expression
-                    // Keys can be:
-                    // - SurfaceExpression::StringLiteral (string literal key)
-                    // - SurfaceExpression::VarRef with annotation (annotated binding like name@[...])
-                    // - SurfaceExpression::VarRef (bare identifier key)
-                    // Both plain and annotated VarRef use the name field.
-                    let name_opt = match &key_node.expr {
-                        tinct::ast::SurfaceExpression::StringLiteral { content: s, .. } => {
-                            Some(s.as_str())
-                        }
-                        tinct::ast::SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
-                        _ => None,
-                    };
-
-                    if let Some(name) = name_opt {
-                        if let Some(doc_str) = doc_map.get(name) {
-                            result.push((name.to_string(), doc_str.clone()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Detect schema dicts in a document's expressions.
-///
-/// A dict is a schema dict if any of its values is itself a dict containing
-/// at least one recognized schema key (type, min, max, min-length, max-length,
-/// pattern, required, items, fields, enum).
-fn detect_schema_dict(doc: &tinct::ast::SurfaceDocument) -> Vec<(String, String)> {
-    let mut result: Vec<(String, String)> = Vec::new();
-    for expr in doc.expressions() {
-        if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
-            for entry in entries {
-                if let Some(ref key_node) = entry.node.key {
-                    if let tinct::ast::SurfaceExpression::StringLiteral {
-                        content: ref field_name,
-                        ..
-                    } = key_node.expr
-                    {
-                        // Check if the value is a dict with schema keys
-                        if let Some(constraint_str) = extract_schema_info(&entry.node.value.expr) {
-                            result.push((field_name.clone(), constraint_str));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    result
-}
-
-/// If `expr` is a dict containing at least one recognized schema key, return
-/// a human-readable constraint string. Otherwise return None.
-fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<String> {
-    if let tinct::ast::SurfaceExpression::Dict(entries) = expr {
-        let mut parts: Vec<String> = Vec::new();
-        let mut has_schema_key = false;
-        for entry in entries {
-            if let Some(ref key_node) = entry.node.key {
-                if let tinct::ast::SurfaceExpression::StringLiteral {
-                    content: ref key_name,
-                    ..
-                } = key_node.expr
-                {
-                    if SCHEMA_KEYS.contains(&key_name.as_str()) {
-                        has_schema_key = true;
-                        let val_str = describe_surface_annotation_value(&entry.node.value.expr);
-                        parts.push(format!("{key_name}: {val_str}"));
-                    }
-                }
-            }
-        }
-        if has_schema_key {
-            return Some(parts.join(", "));
-        }
-    }
-    None
-}
-
-/// Turn a surface annotation value expression into a human-readable string.
-fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> String {
-    match expr {
-        tinct::ast::SurfaceExpression::StringLiteral { content: s, .. } => s.clone(),
-        tinct::ast::SurfaceExpression::Int(n) => n.to_string(),
-        tinct::ast::SurfaceExpression::U64(n) => n.to_string(),
-        tinct::ast::SurfaceExpression::Float(f) => f.to_string(),
-        tinct::ast::SurfaceExpression::VarRef { name, .. } => name.clone(),
-        _ => "(complex)".to_string(),
-    }
 }
 
 /// Print a detailed explanation for the given error code string (e.g. "E001").
