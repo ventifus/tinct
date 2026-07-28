@@ -1073,7 +1073,7 @@ Example: [> 5 3] => True
 Example: [> 3 5] => False
 
 Note: Derived by swapping arguments of <.
-"""] [let x y] [< y x]]
+"""] [let x@a y@a] [< y x]]
 
 <=: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
 Less than or equal.
@@ -1083,7 +1083,7 @@ Example: [<= 5 5] => True
 Example: [<= 5 3] => False
 
 Note: Derived as negation of >.
-"""] [let x y] [not [< y x]]]
+"""] [let x@a y@a] [not [< y x]]]
 
 >=: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
 Greater than or equal.
@@ -1093,7 +1093,7 @@ Example: [>= 5 5] => True
 Example: [>= 3 5] => False
 
 Note: Derived as negation of <.
-"""] [let x y] [not [< x y]]]
+"""] [let x@a y@a] [not [< x y]]]
 
 # ============================================================================
 # Arithmetic
@@ -1494,8 +1494,8 @@ conj@[doc: "Append element to end of list"]: [fn@[bind: [a]  return: Dict] [let 
 # cmp is a less-than function: [cmp a b] returns True if a should come before b.
 # sort-asc: delegates to sort-by with < as comparator (O(n log n) mergesort).
 # Callers: sort, sorted.
-sort-asc: [fn [let xs@Dict]
-  [sort-by [fn [let a b] [< a b]] xs]]
+sort-asc: [fn@[bind: [a]  return: Dict  constraint: [a: Comparable]] [let xs@Dict]
+  [sort-by [fn@Boolean [let x@a y@a] [< x y]] xs]]
 
 # Example: [sort-by [fn [let a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
 # Inherently materializing: must compare values to determine order.
@@ -1877,8 +1877,8 @@ Example: [min ["c" "a" "b"]] => "a"
 Note: Errors on empty collection (no sensible default for polymorphic min).
 """] [let xs@Dict]
     [reduce
-        [fn [let a b] [match [builtin-lt a b] 0: b ...: a]]
-        [dict-first [@Dict xs]]
+        [fn@a [let acc@a cur@a] [if [< cur acc] cur acc]]
+        [@a [dict-first [@Dict xs]]]
         [@Dict [tail [@Dict xs]]]]]
 
 max: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: """
@@ -1890,8 +1890,8 @@ Example: [max ["c" "a" "b"]] => "c"
 Note: Errors on empty collection (no sensible default for polymorphic max).
 """] [let xs@Dict]
     [reduce
-        [fn [let a b] [match [builtin-lt a b] 0: a ...: b]]
-        [dict-first [@Dict xs]]
+        [fn@a [let acc@a cur@a] [if [< acc cur] acc cur]]
+        [@a [dict-first [@Dict xs]]]
         [@Dict [tail [@Dict xs]]]]]
 
 # Count elements satisfying pred.
@@ -3618,7 +3618,7 @@ Example: [head [10 20 30]] => 10
 
 Note: For Seq, errors on Seq.End and forces evaluation of the head element only.
 For Dict, returns the value at key 0 and errors if empty.
-"""]: [fn@[bind: [v]  return: v  constraint: [$Indexed c v]] [let s]
+"""]: [fn@[bind: [v]  return: v  constraint: [$Indexed c v]] [let s@c]
     [if [seq? s]
       [match s
         [case [let p] [Seq.Cons p] p.head]
@@ -3786,7 +3786,7 @@ Example: [first "hello"] => "h"
 Example: [first (str-bytes "A")] => 65
 
 Note: Works on Dict (by insertion order), String (first char), or Bytes (first byte as Int).
-"""] [let xs]
+"""] [let xs@c]
   [match [builtin-type-of xs]
     "String": [builtin-str-slice xs 0 1]
     ...:        [dict-first xs]]]
@@ -3799,7 +3799,7 @@ Example: [last "hello"] => "o"
 Example: [last (str-bytes "Z")] => 90
 
 Note: Works on Dict (by insertion order), String (last char), or Bytes (last byte as Int).
-"""] [let xs]
+"""] [let xs@c]
   [match [builtin-type-of xs]
     "String": [builtin-str-slice xs [builtin-int-sub [builtin-str-length xs] 1] [builtin-str-length xs]]
     ...:        [dict-last xs]]]
