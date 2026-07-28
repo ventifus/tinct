@@ -286,7 +286,7 @@ pub(crate) async fn process_document(
     let intermediates = &nodes[..nodes.len() - 1];
     for intermediate in intermediates {
         if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-            let (_, schemes, mut errs) =
+            let (_, schemes, _referenced, mut errs) =
                 typecheck_cek::run_typecheck_dict(entries, &current_env, state, type_map).await;
             errors.append(&mut errs);
             for (nid, ty) in state.type_annotation_table.drain() {
@@ -340,7 +340,7 @@ pub(crate) async fn process_document(
     let mut last_record_type: Option<(Type, u32)> = None;
 
     let result_ty = if let SurfaceExpression::Dict(entries) = &last_node.expr {
-        let (dict_ty, schemes, mut dict_errs) =
+        let (dict_ty, schemes, _referenced, mut dict_errs) =
             typecheck_cek::run_typecheck_dict(entries, &current_env, state, type_map).await;
         errors.append(&mut dict_errs);
         for (nid, ty) in state.type_annotation_table.drain() {

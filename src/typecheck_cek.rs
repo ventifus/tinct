@@ -554,14 +554,22 @@ async fn infer_step(
             for (i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-                    let (_, schemes, mut dict_errs) =
+                    let (_, schemes, referenced, mut dict_errs) =
                         run_typecheck_dict(entries, &current_env, state, type_map).await;
                     errors.append(&mut dict_errs);
 
-                    // Extend env with schemes (preserving let-polymorphism)
+                    // Extend env with schemes (preserving let-polymorphism).
+                    // Propagate referenced state from the sub-run: run_typecheck_dict creates
+                    // fresh EnvSlots via insert_scheme_named_only, losing the `referenced` flag
+                    // set during its internal CEK run. Re-apply from the returned set (B-633).
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
                         new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
+                        if referenced.contains(name.as_str()) {
+                            if let Some(slot) = new_env_inner.extras.get_mut(name.as_str()) {
+                                slot.referenced = true;
+                            }
+                        }
                     }
                     current_env = Arc::new(RwLock::new(new_env_inner));
                     // Collect this env frame for lost-binding detection.
@@ -914,14 +922,12 @@ async fn apply_cont(
             // Record the function type with the Fn node's span for LSP hover.
             record_type_map(type_map, &node_span, &fn_type);
 
-            // Lost-binding detection: suppressed pending env propagation fix.
-            // Two known false-positive cases prevent emission here:
-            // 1. Leading-dot (.name) references mark the SHADOWING dict entry as referenced,
-            //    not the fn param, when a dict defines its own key with the same name.
-            // 2. Computed-key dict entries ([expr: v]) may not trigger mark_extras_referenced
-            //    for positional values. See tracker item for the env propagation fix.
-            // The resolver-side detection (removed in S-997) handled these correctly via
-            // scope-depth analysis. A follow-up sprint will restore correct detection.
+            // Lost-binding detection for function parameters.
+            // Suppressed: remaining false positives cause cascading type errors.
+            // B-633 env propagation is correct. Edge cases still pending:
+            // - leading-dot .name shadowed by dict key with same name
+            // - computed-key dict values ([expr: v]) don't trigger mark_extras_referenced
+            // - IIFE fn closures: fn body references captured via closure, not direct ref
             let _ = &param_env;
 
             TypeCheckAction::Done(fn_type)
@@ -1176,12 +1182,17 @@ async fn apply_cont(
             // Process remaining intermediates iteratively (Dict inline, non-Dict via continuation).
             for (i, intermediate) in remaining_intermediates.iter().enumerate() {
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-                    let (_, schemes, mut dict_errs) =
+                    let (_, schemes, referenced, mut dict_errs) =
                         run_typecheck_dict(entries, &current_env, state, type_map).await;
                     errors.append(&mut dict_errs);
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
                         new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
+                        if referenced.contains(name.as_str()) {
+                            if let Some(slot) = new_env_inner.extras.get_mut(name.as_str()) {
+                                slot.referenced = true;
+                            }
+                        }
                     }
                     current_env = Arc::new(RwLock::new(new_env_inner));
                 } else {
@@ -1293,18 +1304,17 @@ async fn apply_cont(
         // ===== AfterSequentialFinal =====
         //
         // Fires after the final expression in a Sequential whose intermediates were all Dict.
-        // NOTE: Lost-binding emission is suppressed here because the intermediate envs are
-        // created by the Sequential arm AFTER run_typecheck_dict returns — the envs are fresh
-        // copies with referenced: false, losing any referenced state set during the dict's
-        // internal CEK run. Until env propagation is fixed to carry referenced state through
-        // run_typecheck_dict's return, warnings emitted here would be false positives.
-        // FnBody and MatchArm detection are unaffected — they have direct env references.
+        // B-633 fix: env propagation from run_typecheck_dict is now correct (referenced state
+        // is propagated via HashSet<String>). However, remaining false positives exist for:
+        // - IIFE fn closures (fn body references captured via closure, not direct ref)
+        // - leading-dot .name shadowed by dict key with same name
+        // These still produce spurious warnings that cascade into type errors.
+        // Warning emission suppressed until those cases are resolved.
+        // The propagation machinery is correct; only emission is suppressed.
         TypeCheckCont::AfterSequentialFinal { intermediate_envs } => {
-            // Suppress: see comment above. The loop structure is preserved for when the
-            // env propagation bug is fixed (referenced state must survive run_typecheck_dict).
-            let _ = &intermediate_envs; // prevent unused-variable warning
+            let _ = &intermediate_envs;
             if false {
-                for env_frame in &intermediate_envs {
+            for env_frame in &intermediate_envs {
                 let env_guard = env_frame.read().unwrap();
                 for (name, slot) in &env_guard.extras {
                     if !slot.referenced {
@@ -1321,8 +1331,8 @@ async fn apply_cont(
                         }
                     }
                 }
+            }
             } // end if false
-            } // end for env_frame
             TypeCheckAction::Done(child_ty)
         }
 
@@ -2162,13 +2172,14 @@ async fn apply_cont(
 
                     let (value_ty, nested_schemes_opt) =
                         if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                            let (ty, schemes, mut nested_errs) = Box::pin(run_typecheck_dict(
-                                nested_entries,
-                                &scc_env,
-                                state,
-                                type_map,
-                            ))
-                            .await;
+                            let (ty, schemes, _referenced, mut nested_errs) =
+                                Box::pin(run_typecheck_dict(
+                                    nested_entries,
+                                    &scc_env,
+                                    state,
+                                    type_map,
+                                ))
+                                .await;
                             cont_errors.append(&mut nested_errs);
                             (Ok(ty), Some(schemes))
                         } else {
@@ -5074,11 +5085,14 @@ fn dict_finish(
 /// Performs the multi-pass dict inference algorithm using `run_typecheck` for entry inference,
 /// eliminating the recursive call chain of the old `infer_dict`.
 ///
-/// Returns `(record_type, schemes, errors)` where:
+/// Returns `(record_type, schemes, referenced, errors)` where:
 /// - `record_type` is the inferred `Type::Dict(...)` for the dict literal
 /// - `schemes` is an `IndexMap<String, TypeScheme>` of per-entry generalized schemes (needed
 ///   by `process_document` for cross-document scoping and by `Sequential` for
 ///   let-polymorphism across multi-body function steps)
+/// - `referenced` is a `HashSet<String>` of names that were actually referenced during the
+///   internal CEK run (collected from dict_env.extras). Callers that propagate schemes into a
+///   fresh env frame must also propagate this set to avoid lost-binding false positives.
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
@@ -5101,6 +5115,7 @@ pub(crate) async fn run_typecheck_dict(
 ) -> (
     Type,
     indexmap::IndexMap<String, TypeScheme>,
+    std::collections::HashSet<String>,
     Vec<TypeDiagnostic>,
 ) {
     // Level management: save enclosing level, increment for dict body
@@ -5871,13 +5886,14 @@ pub(crate) async fn run_typecheck_dict(
                 // For nested Dict values, call run_typecheck_dict directly to capture schemes.
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                        let (ty, schemes, mut nested_errs) = Box::pin(run_typecheck_dict(
-                            nested_entries,
-                            &scc_env,
-                            state,
-                            type_map,
-                        ))
-                        .await;
+                        let (ty, schemes, _referenced, mut nested_errs) =
+                            Box::pin(run_typecheck_dict(
+                                nested_entries,
+                                &scc_env,
+                                state,
+                                type_map,
+                            ))
+                            .await;
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {
@@ -6407,7 +6423,26 @@ pub(crate) async fn run_typecheck_dict(
         }
     }
 
-    (record_type, schemes, errors)
+    // Collect referenced names from the internal dict env before returning.
+    // The Sequential arm creates fresh EnvSlots when building new_env_inner, losing the
+    // `referenced` flag set during our internal CEK run. Return the set so callers can
+    // propagate it to avoid lost-binding false positives (B-633).
+    let referenced: std::collections::HashSet<String> = {
+        let dict_env_guard = dict_env.read().unwrap();
+        dict_env_guard
+            .extras
+            .iter()
+            .filter_map(|(name, slot)| {
+                if slot.referenced {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    (record_type, schemes, referenced, errors)
 }
 
 #[cfg(test)]
