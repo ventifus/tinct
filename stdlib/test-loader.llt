@@ -778,12 +778,16 @@
     [tc: [match [pragma-no-prelude? state]
                  Boolean.False: prelude-tc
                  Boolean.True:  core-tc]]
+    # Create an emit channel for the test program. The test program sends emitted
+    # values here via [emit v]; the formatter drains it via recv-all.
+    [emit-ch: [builtin-channel]]
     [scope: [merge env
-                  [%cwd:    .%cwd
-                   %libdir: .%libdir
-                   %stdout: out
-                   %stderr: .%stderr
-                   %args:   .%args]]]
+                  [%cwd:          .%cwd
+                   %libdir:       .%libdir
+                   %stdout:       out
+                   %stderr:       .%stderr
+                   %args:         .%args
+                   %emit-channel: emit-ch]]]
     [test-result: [$state
       | [if-ok log-step "  evaluating"]
       | [if-ok eval-docs scope]
@@ -798,7 +802,7 @@
       0: [merge test-result [output: ""]]
       1: [call [fn [let]
            [sw: [StringWriter.Writer cells: ""]]
-           [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw]]]
+           [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw  %emit-channel: emit-ch]]]
            [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr  tc: prelude-tc]
              | [if-ok load-bytes %libdir]
              | [if-ok log-step "  formatting"]
