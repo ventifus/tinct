@@ -536,7 +536,7 @@
 # in scope via the parent environment chain.
 #
 #   Stable builtin-* aliases (used internally; pre-injected into bootstrap env):
-#     builtin-lt  builtin-eq-int  builtin-eq-string  builtin-int-add  builtin-mul  builtin-div
+#     builtin-lt  builtin-eq-int  builtin-eq-string  builtin-int-add  builtin-div
 #     builtin-dict-get  map  reduce
 #     builtin-filter  builtin-take  builtin-drop
 #     builtin-concat  builtin-join
@@ -1866,7 +1866,7 @@ Example: [product [2 3 4]] => 24
 Example: [product []] => 1
 
 Note: Returns 1 for empty collections. Inherently materializing: must reduce all elements.
-"""] [let xs@[Seq Number]] [reduce [fn [let a b] [builtin-mul a b]] 1 xs]]
+"""] [let xs@[Seq Number]] [reduce [fn [let a b] [* a b]] 1 xs]]
 
 min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: """
 Minimum element.

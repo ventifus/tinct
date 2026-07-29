@@ -118,9 +118,9 @@
 
   # null?: test if value is [] (empty dict). Same definition as loader.llt Dict 1.
   null?: [fn [let x]
-    [match [builtin-eq-string [builtin-type-of x] "Dict"]
-      0: 0
-      1: [builtin-eq-int [builtin-dict-length x] 0]]]
+    [match x
+      Dict: [builtin-eq-int [builtin-dict-length x] 0]
+      ...:  0]]
 
 
   # get-or: safe dict access with default value
@@ -144,9 +144,7 @@
     [loop: [fn [let i builder]
       [match [builtin-eq-int i n]
         0: [loop [builtin-int-add i 1]
-             [match [builtin-eq-string [builtin-type-of [builtin-dict-get i keys]] "String"]
-               1: [builtin-builder-set [builtin-dict-get i keys] 1 builder]
-               0: builder]]
+                 [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
         1: [builtin-builder-finish builder]]]]
     [loop 0 [builtin-make-builder]]]
 
@@ -499,9 +497,7 @@
   # point to the last prelude doc's result, causing abandoned-input warnings.
   # Since tinct has no dict-delete builtin, we rebuild env using a key-scan loop.
   export: [fn [let state@[last-result: Any  env: Any]]
-    [exported: [match [builtin-eq-string [builtin-type-of state.last-result] "Dict"]
-      0: []
-      1: state.last-result]]
+    [exported: state.last-result]
     # Rebuild env excluding % to prevent it leaking into test document scopes.
     [keys: [builtin-keys state.env]]
     [n:    [builtin-dict-length keys]]

@@ -90,10 +90,11 @@ pub fn fmt_dict(
 
         // Format value — retrieve the materialized value and recursively serialize.
         // ctx is passed to to_tinct below; it is required for Function serialization.
-        let value = thunk
-            .try_get_value()
-            .cloned()
-            .ok_or("dict value not materialized")?;
+        let value = match thunk.peek_result() {
+            Some(Ok(v)) => v.clone(),
+            Some(Err(e)) => return Err(format!("dict value evaluation error: {}", e)),
+            None => return Err("dict value not materialized".to_string()),
+        };
         out.push(' ');
         // ctx is passed to to_tinct; only required if value is a Function.
         out.push_str(&value.to_tinct(ctx)?);
@@ -118,10 +119,11 @@ pub fn fmt_variant(
         }
         Some(thunk) => {
             // Unary constructor — [Tag payload]
-            let value = thunk
-                .try_get_value()
-                .cloned()
-                .ok_or("variant payload not materialized")?;
+            let value = match thunk.peek_result() {
+                Some(Ok(v)) => v.clone(),
+                Some(Err(e)) => return Err(format!("variant payload evaluation error: {}", e)),
+                None => return Err("variant payload not materialized".to_string()),
+            };
             Ok(format!("[{} {}]", tag, value.to_tinct(ctx)?))
         }
     }

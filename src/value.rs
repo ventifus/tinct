@@ -1947,7 +1947,13 @@ impl Thunk {
             result: tokio::sync::OnceCell::new(),
             notify: std::sync::OnceLock::new(),
         };
-        let _ = inner.result.set(Ok(value));
+        // OnceCell::set returns Err(value) if already set — impossible here because
+        // ThunkInner was just created above with a fresh OnceCell.
+        if inner.result.set(Ok(value)).is_err() {
+            // This branch is statically unreachable: the OnceCell was just constructed
+            // and no other thread can hold a reference to `inner` yet.
+            panic!("value thunk cell freshly created: set cannot fail");
+        }
         Self { inner, span }
     }
 
@@ -2106,7 +2112,21 @@ impl Thunk {
     /// level (MAX_CONTINUATION_STACK in eval_materialize.rs) before any thunk is
     /// settled, which is the correct enforcement point.
     pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
-        let _ = self.inner.result.set(result);
+        // OnceCell::set returns Err(value) if already set — designed concurrent write pattern.
+        // Multiple async tasks may race to settle the same thunk (e.g. racing evaluators on
+        // a shared thunk). The first settle wins; the losing settle's result is intentionally
+        // discarded. This is correct: all racing evaluators produce the same value for a pure
+        // thunk — the result is deterministic by referential transparency. The Err payload
+        // (the rejected result) is not an application error; it is the concurrent-duplicate
+        // that OnceCell prevents from overwriting the winner.
+        match self.inner.result.set(result) {
+            Ok(()) => {}
+            Err(_duplicate) => {
+                // Concurrent duplicate: a racing task already settled this thunk.
+                // The first settler wins by OnceCell semantics; this outcome is discarded
+                // by design — all racing evaluators produce the same value for a pure thunk.
+            }
+        }
         {
             let mut guard = self.inner.unevaluated.lock().unwrap();
             guard.1 = None;
@@ -2254,40 +2274,26 @@ impl Thunk {
     /// - `Some(Ok(&value))` — thunk settled successfully; value is available
     /// - `Some(Err(&arc_error))` — thunk settled with an evaluation error
     ///
-    /// Use this when the caller needs to distinguish "not yet settled" from
-    /// "settled with error". For callers that only need the value and have
-    /// already handled the error case upstream, `try_get_value()` is the
-    /// convenience wrapper.
+    /// Use this when the caller needs to distinguish all three states.
     pub fn peek_result(&self) -> Option<Result<&Value, &Arc<EvalError>>> {
         self.inner.result.get().map(|r| r.as_ref())
     }
 
-    /// Borrow the materialized value without cloning.
+    /// Get the materialized value, propagating any evaluation error.
     ///
-    /// Returns `None` if the thunk is not yet settled, or if it settled with
-    /// an error. Use `peek_result()` to distinguish these two cases.
+    /// For use at call sites where the thunk is guaranteed to be settled
+    /// (pre-materialized by `pos_strictness` or `force_count`).
     ///
-    /// All callers of this function must operate under one of the following
-    /// invariants:
-    ///
-    /// 1. The thunk was created via `Thunk::value(...)` and can never be in an error state.
-    /// 2. The thunk was already successfully materialized (via `materialize()` returning
-    ///    `Ok(...)`) before `try_get_value()` is called, so any error state was already
-    ///    handled at the `materialize()` call site.
-    ///
-    /// Callers that cannot guarantee one of these invariants must use `try_get_error()` in
-    /// conjunction with this function, or call `materialize()` directly. Introducing a
-    /// case where a settled-with-error thunk is passed here without prior error handling
-    /// is an axiom violation (Never suppress errors).
-    ///
-    /// Returns `None` if the thunk is not yet settled or settled with an error.
-    /// Use `peek_result()` to distinguish these two `None` cases.
-    /// Callers using this method explicitly choose not to discriminate — they only
-    /// care whether a value is available, not why one is absent.
-    pub fn try_get_value(&self) -> Option<&Value> {
-        match self.peek_result()? {
-            Ok(v) => Some(v),
-            Err(_) => None,
+    /// - `Ok(&value)` — thunk settled successfully
+    /// - `Err(Box<EvalError>)` — thunk settled with an evaluation error (propagated)
+    /// - Panics if the thunk is not yet settled (invariant violation)
+    pub fn require_value(&self) -> crate::error::EvalResult<&Value> {
+        match self.peek_result() {
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(Box::new((**e).clone())),
+            None => {
+                panic!("require_value called on unsettled thunk — expected pre-materialized thunk")
+            }
         }
     }
 
@@ -2414,7 +2420,11 @@ mod tests {
         );
 
         assert_eq!(
-            thunk.try_get_value(),
+            match thunk.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -2434,7 +2444,11 @@ mod tests {
         }));
 
         assert_eq!(
-            thunk.try_get_value(),
+            match thunk.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 1,
                 type_val: unknown_type_val()
@@ -2474,7 +2488,11 @@ mod tests {
         }));
 
         assert_eq!(
-            thunk.try_get_value(),
+            match thunk.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 1,
                 type_val: unknown_type_val()
@@ -2532,7 +2550,11 @@ mod tests {
 
         // Thunk should still be Ok(42).
         assert_eq!(
-            thunk.try_get_value(),
+            match thunk.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -2612,7 +2634,7 @@ mod tests {
     }
 
     #[test]
-    fn test_try_get_value_convenience() {
+    fn test_peek_result_materialized() {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::value(
             Value::Int {
@@ -2623,13 +2645,35 @@ mod tests {
         );
 
         assert_eq!(
-            thunk.try_get_value(),
+            match thunk.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
             }),
-            "Expected Some(&Int(42))"
+            "Expected Some(Ok(&Int(42)))"
         );
+    }
+
+    #[test]
+    fn test_peek_result_settled_with_error_not_hidden() {
+        // Verify that peek_result exposes the error — not None.
+        let span = test_span(1, 1, 1, 10);
+        let thunk = Thunk::placeholder(span.clone());
+        let error = Arc::new(crate::error::EvalError::internal(
+            "settle error".to_string(),
+            span,
+        ));
+        thunk.settle(Err(Arc::clone(&error)));
+
+        // peek_result must return Some(Err(...)) — not None.
+        match thunk.peek_result() {
+            Some(Err(e)) => assert_eq!(Arc::as_ptr(e), Arc::as_ptr(&error)),
+            other => panic!("expected Some(Err(...)), got {:?}", other),
+        }
     }
 
     #[test]

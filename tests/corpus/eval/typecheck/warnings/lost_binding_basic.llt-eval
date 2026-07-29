@@ -1,4 +1,4 @@
-# T-1740: intermediate binding 'b' is introduced by a body dict but never referenced
+# Intermediate binding 'b' is introduced by a body dict but never referenced
 # from the final expression — the lost-binding warning fires.
 # The intermediate dict [b: [+ b 2]] creates a new binding 'b' that shadows the param 'b'.
 # The final expression [if a 1 0] uses 'a' but not the intermediate 'b', so it is lost.

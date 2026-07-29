@@ -3792,31 +3792,37 @@ pub(crate) async fn typenode_value_to_type(
                 let mut prefix: Option<String> = None;
                 let mut all_match = true;
                 for (_key, thunk) in entries {
-                    if let Some(val) = thunk.try_get_value().cloned() {
-                        match val {
-                            Value::Variant { ref ctor, .. } => {
-                                let tycon_name =
-                                    crate::value::tycon_name_from_ctor(ctor.as_ref()).to_string();
-                                match &prefix {
-                                    None => prefix = Some(tycon_name),
-                                    Some(existing) if existing.as_str() == tycon_name.as_str() => {}
-                                    _ => {
-                                        all_match = false;
-                                        break;
+                    match thunk.peek_result() {
+                        Some(Ok(val)) => {
+                            match val {
+                                Value::Variant { ref ctor, .. } => {
+                                    let tycon_name =
+                                        crate::value::tycon_name_from_ctor(ctor.as_ref())
+                                            .to_string();
+                                    match &prefix {
+                                        None => prefix = Some(tycon_name),
+                                        Some(existing)
+                                            if existing.as_str() == tycon_name.as_str() => {}
+                                        _ => {
+                                            all_match = false;
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                            // Function entries (payload constructors) — still count as the same ADT
-                            Value::Function { .. } | Value::Builtin { .. } => {}
-                            _ => {
-                                all_match = false;
-                                break;
+                                // Function entries (payload constructors) — still count as the same ADT
+                                Value::Function { .. } | Value::Builtin { .. } => {}
+                                _ => {
+                                    all_match = false;
+                                    break;
+                                }
                             }
                         }
-                    } else {
-                        // Thunk not yet materialized — can't determine
-                        all_match = false;
-                        break;
+                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                        None => {
+                            // Thunk not yet materialized — can't determine
+                            all_match = false;
+                            break;
+                        }
                     }
                 }
                 if all_match {

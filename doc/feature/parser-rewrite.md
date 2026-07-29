@@ -159,7 +159,7 @@ orchestrates three steps.
    converts the `SurfaceProgram` AST to a tinct `Value::Dict` representation.
    This conversion is driven by `AstToDictOpts`, which carries:
    - `source: Option<&str>` — the original input string, passed directly from
-     the `format_source_tinct_with_dir` call site (not from `ParseOutput`). Used by
+     the `format_source_tinct` call site (not from `ParseOutput`). Used by
      `surface_convert.rs` to distinguish bare-word dict keys from quoted string
      keys by inspecting the character at each key's span offset.
    - `comments: Option<CommentMaps>` — borrows `ParseOutput.leading_comments`,

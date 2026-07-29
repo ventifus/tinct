@@ -1198,6 +1198,10 @@ impl Type {
             | (Type::FloatLiteral(_), Type::IntLiteral(_)) => true,
             // FloatLiteral is a subtype of Float, so FloatLiteral vs Int is disjoint
             (Type::FloatLiteral(_), Type::Int) | (Type::Int, Type::FloatLiteral(_)) => true,
+            // Different literal values of the same type are disjoint
+            (Type::IntLiteral(v1), Type::IntLiteral(v2)) => v1 != v2,
+            (Type::FloatLiteral(v1), Type::FloatLiteral(v2)) => v1.to_bits() != v2.to_bits(),
+            (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 != s2,
 
             // Different primitives are disjoint
             (Type::Int | Type::IntLiteral(_), Type::Str | Type::StringLiteral(_)) => true,
@@ -2849,7 +2853,7 @@ mod tests {
     use super::*;
 
     // ============================================================================
-    // T-999: Kind::Arrow unit tests (type-system-health-s841-followup sprint)
+    // Kind::Arrow unit tests
     // ============================================================================
 
     #[test]
@@ -2956,7 +2960,7 @@ mod tests {
     }
 
     // ============================================================================
-    // B-435: is_subtype cross-variable mu tests
+    // is_subtype cross-variable mu tests
     // ============================================================================
 
     #[test]
@@ -2998,12 +3002,12 @@ mod tests {
     }
 
     // ============================================================================
-    // B-454: is_consistent_subtype variadic-flag mismatch tests
+    // is_consistent_subtype variadic-flag mismatch tests
     // ============================================================================
 
     #[test]
     fn test_is_consistent_subtype_variadic_not_csubtype_of_nonvariadic_same_arity() {
-        // B-454: fn(Int)... ~<: fn(Int) must be false.
+        // fn(Int)... ~<: fn(Int) must be false.
         // A variadic function accepts extra arguments; a non-variadic does not. With the same
         // declared param count (1 here), the flag difference must reject consistent subtyping.
         // Without the sub_v == sup_v guard this would spuriously return true.
@@ -3089,7 +3093,7 @@ mod tests {
 
     #[test]
     fn test_is_consistent_subtype_variadic_flag_mismatch_with_unknown_params() {
-        // B-454: Unknown params must not rescue a variadic-flag mismatch.
+        // Unknown params must not rescue a variadic-flag mismatch.
         // fn(?)... ~<: fn(?) should still be false: Unknown in the param makes the param
         // positions consistent, but the call-convention difference (variadic vs fixed) is
         // structural and must not be erased by gradual types.
@@ -3113,7 +3117,7 @@ mod tests {
         );
     }
 
-    // B-451: is_consistent_subtype Recursive arm tests
+    // is_consistent_subtype Recursive arm tests
     #[test]
     fn test_is_consistent_subtype_recursive_unfolds() {
         // µa.{x: Int} ~<: {x: Int} should hold — unfolding produces {x: Int} which matches.
@@ -3281,7 +3285,7 @@ mod tests {
         ));
     }
 
-    /// B-446: TypeVar guard in is_subtype_bas returns true unconditionally for ANY TypeVar.
+    /// TypeVar guard in is_subtype_bas returns true unconditionally for ANY TypeVar.
     ///
     /// This test documents the exact approximation semantics:
     ///
@@ -3322,7 +3326,7 @@ mod tests {
         //   The TypeVar guard defers this to the constraint solver.
         assert!(
             Type::is_subtype(&Type::Var("a".into(), 0), &Type::Never, None),
-            "TypeVar(a) <: Never is true per the approximation guard (see B-446)"
+            "TypeVar(a) <: Never is true per the AGT approximation guard — TypeVar defers to the constraint solver rather than returning false"
         );
         // Never sub, TypeVar sup: S-NEVER fires first (sub=Never) → true.
         assert!(

@@ -217,10 +217,10 @@ async fn doc_tycon_env(
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    let (_result_env, _ty, errors) =
+    let (_result_env, _ty, diags) =
         process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
-    if !errors.is_empty() {
-        panic!("doc_tycon_env: typecheck error: {:?}", errors);
+    if !diags.is_empty() {
+        panic!("doc_tycon_env: typecheck error: {:?}", diags);
     }
     state.tycon_env
 }
@@ -238,9 +238,9 @@ async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
     let mut state = InferState::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        let (new_env, _, errors) = process_document(doc, &env, &mut state, &mut None).await;
-        if !errors.is_empty() {
-            panic!("file_env: typecheck error: {:?}", errors);
+        let (new_env, _, diags) = process_document(doc, &env, &mut state, &mut None).await;
+        if !diags.is_empty() {
+            panic!("file_env: typecheck error: {:?}", diags);
         }
         env = new_env;
     }
@@ -919,7 +919,9 @@ async fn test_type_expr_auto_indexed_entries() {
 async fn test_annotation_type_value_int_literal() {
     // After T-1885, integer literals in type position resolve to IntLiteral.
     // @[type: 42] means the parameter x has type IntLiteral(42) — a precise singleton type.
-    let result = check_errors_only("[f: [fn [let x@[type: 42]] $x]]").await;
+    // check(): x is annotated @[type: 42] (resolves to IntLiteral(42)), x is used ($x) —
+    // no unannotated params, no unused params, no explicit @Unknown → no advisory diagnostics.
+    let result = check("[f: [fn [let x@[type: 42]] $x]]").await;
     assert!(
         result.is_ok(),
         "@[type: 42] should resolve to IntLiteral(42) after T-1885, got errors: {result:?}"
@@ -1384,7 +1386,9 @@ async fn test_annotation_int_literal_in_record_type_is_valid() {
     // Integer literals in type position now resolve to Type::IntLiteral (T-1885).
     // [inner: 42] in a type annotation means a record type with field inner: IntLiteral(42).
     // This is valid: IntLiteral(42) <: Int, so any call passing {inner: 42} satisfies the type.
-    let result = check_errors_only("[f: [fn [let p@[type: [outer: [inner: 42]]]] $p]]").await;
+    // check(): p is annotated @[type: [outer: [inner: 42]]] (record type), p is used ($p) —
+    // no unannotated params, no unused params, no explicit @Unknown → no advisory diagnostics.
+    let result = check("[f: [fn [let p@[type: [outer: [inner: 42]]]] $p]]").await;
     assert!(
         result.is_ok(),
         "integer literal in record type field should be valid after T-1885, got errors: {result:?}"
@@ -1832,7 +1836,7 @@ async fn test_narrowing_type_map_hover() {
 async fn test_exhaustive_match_string_literal_variants() {
     // String literal variants: "ok" | "err" | "pending"
     // Match against a string literal with exhaustive arms — no annotation needed.
-    let result = check_errors_only(
+    let result = check(
         "[result: [match \"ok\"\n\
                  \"ok\":      \"is-ok\"\n\
                  \"err\":     \"is-err\"\n\
@@ -1969,7 +1973,8 @@ async fn test_mutual_recursion_without_annotation_ok() {
 async fn test_variadic_recursive_fn_without_annotation() {
     // Variadic recursive function should type-check without return annotation.
     // The unannotated variadic param is pre-bound as a bare TypeVar (rest bucket).
-    let result = check("[f: [fn [let ...xs] [f 1 2 3]]]").await;
+    // check_errors_only: accepts Warn "lost-binding" for xs (body doesn't reference $xs).
+    let result = check_errors_only("[f: [fn [let ...xs] [f 1 2 3]]]").await;
     assert!(
         result.is_ok(),
         "variadic recursive fn without annotation should type-check: {:?}",
@@ -2001,7 +2006,8 @@ async fn test_multi_variadic_unannotated_rest_typecheck() {
     // Function with fixed param + unannotated rest should type-check without error.
     // Named type annotations (String, Int) require the full prelude type env;
     // use unannotated params since check() uses a minimal env.
-    let result = check("[f: [fn [let x ...rest] rest]]").await;
+    // check_errors_only: accepts Warn "lost-binding" for x (body only uses rest).
+    let result = check_errors_only("[f: [fn [let x ...rest] rest]]").await;
     assert!(
         result.is_ok(),
         "fixed + unannotated rest should type-check: {:?}",
@@ -2529,10 +2535,13 @@ async fn test_case_arm_plain_binding_gets_scrutinee_type() {
 async fn test_case_arm_typed_binding_intersects_scrutinee() {
     // T-1151: 2-arg [case [let n@Integer] body] now requires 3 positional args.
     // The new 3-arg form is [case [let bindings] pattern body].
-    // The 2-arg form triggers parser recovery (Error node → Unknown); check() succeeds.
+    // The 2-arg form triggers parser recovery (Error node → Unknown); check_errors_only succeeds.
     // Use unannotated params — Integer is a prelude type not available in check()'s empty env.
+    // check_errors_only: accepts Warn "lost-binding" for x (body doesn't reference $x).
     assert!(
-        check("[f: [fn [let x] [case [let n] n]]]").await.is_ok(),
+        check_errors_only("[f: [fn [let x] [case [let n] n]]]")
+            .await
+            .is_ok(),
         "2-arg case with binding should produce a parser Error node (typechecks to Unknown)"
     );
 }
@@ -5036,7 +5045,9 @@ async fn test_b632_dead_bind_name_not_in_any_param_emits_error() {
 async fn test_b632_bind_name_in_param_annotation_no_error() {
     // bind: [a] with param x@a — `a` is used in a parameter annotation.
     // No T-dead-bind error should be emitted.
-    let result = check_errors_only("[f: [fn@[bind: [a]  return: a] [let x@a] $x]]").await;
+    // check(): x is annotated @a (TypeVar), x is used ($x), `a` appears in both param
+    // annotation and return type → no T-dead-bind, no unused param, no advisory diagnostics.
+    let result = check("[f: [fn@[bind: [a]  return: a] [let x@a] $x]]").await;
     assert!(
         result.is_ok(),
         "expected no T-dead-bind error when bind name is used in a param annotation, got: {result:?}"
@@ -5048,7 +5059,10 @@ async fn test_b632_bind_name_in_return_only_no_error() {
     // bind: [a] with `return: a` but no param annotated @a.
     // `a` appears in the return type → not truly dead (FD can resolve it).
     // No T-dead-bind error should be emitted.
-    let result = check_errors_only("[f: [fn@[bind: [a]  return: a] [let x] $x]]").await;
+    // check(): x has no type annotation but IS used ($x); `a` appears only in the return
+    // annotation; no T-dead-bind (a is in return type), no unused param (x is used) →
+    // no error-level or advisory diagnostics expected.
+    let result = check("[f: [fn@[bind: [a]  return: a] [let x] $x]]").await;
     assert!(
         result.is_ok(),
         "expected no T-dead-bind error when bind name is used only in return annotation, got: {result:?}"

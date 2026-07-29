@@ -36,7 +36,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::ast::{self, SurfaceExpression, SurfaceNode};
+use crate::ast::{SurfaceExpression, SurfaceNode};
 use crate::types::{TyConEnv, Type};
 
 // ---------------------------------------------------------------------------
@@ -357,7 +357,7 @@ impl ConstructorSignature {
 
 /// Convert an AST pattern (SurfaceNode) to an internal `CoveragePattern`.
 ///
-/// T-1750: Patterns are now Arc<SurfaceNode>. This function maps SurfaceExpression variants
+/// Patterns are now Arc<SurfaceNode>. This function maps SurfaceExpression variants
 /// to CoveragePattern. Coverage-relevant forms:
 /// - VarRef (resolved pin) → non-exhaustive Constructor (does not contribute to exhaustiveness)
 /// - VarRef (unresolvable) → Wildcard (conservative; error already emitted by resolver)
@@ -505,19 +505,14 @@ pub fn ast_pattern_to_coverage(
 
         // TypeAssert pattern — extract resolved type from inline TypeAnnotation
         SurfaceExpression::TypeAssert {
-            annotation,
             expr,
             resolved_type,
+            ..
         } => {
-            let ty_opt = resolved_type.get().cloned();
-            let resolved = ty_opt.unwrap_or_else(|| {
-                // Fallback: resolve annotation name to type
-                if let ast::Annotation::Simple(name) = &annotation.node {
-                    crate::lower::annotation_name_to_type(name)
-                } else {
-                    crate::type_def::Type::Unknown
-                }
-            });
+            let resolved = resolved_type
+                .get()
+                .cloned()
+                .unwrap_or(crate::type_def::Type::Unknown);
 
             let inner_sub = vec![ast_pattern_to_coverage(expr, tycon_env)];
 
@@ -1406,7 +1401,7 @@ mod tests {
         assert_eq!(result.uncovered.len(), 1);
     }
 
-    // AST pattern conversion tests deleted (T-1750) — Pattern enum deleted, patterns are now SurfaceNode.
+    // AST pattern conversion tests deleted — Pattern enum deleted, patterns are now SurfaceNode.
 
     // ===== Constructor signature from Type::Union tests =====
 

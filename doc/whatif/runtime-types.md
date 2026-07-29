@@ -165,6 +165,66 @@ InferenceContext: [type [
 
 `TypeValue.Var` carries identity only (`name: String`). The `levels` field in `InferenceContext` is the mutable side — TypeVar level lowering mutates the context, not the TypeValue. Since `Arc<Value>` is immutable, level must not live in TypeValue.
 
+---
+
+## Dead Code Analysis — Integrated Liveness
+
+Lost-binding warnings ("variable 'x' is never referenced") require knowing which bindings transitively contribute to the program's output. This is a standard liveness analysis over a use-def graph.
+
+**Why a separate dep_graph is wrong.** The prior implementation maintained a parallel `dep_graph: Vec<HashSet<String>>` in the `AfterSequentialFinal` CEK continuation — a per-dict, cross-dict-only approximation of binding dependencies. Both coarsenesses produced wrong results:
+
+- **False positives** (warns when it shouldn't): intra-dict edges are absent. `run-test` (Dict 2) referencing `run-test-file` (Dict 2) — both in the same intermediate dict — is not captured. When `run-test` is live, `run-test-file` is not made live, producing a spurious warning.
+- **False negatives** (misses warnings): per-dict granularity means that if dead binding `a` and live binding `b` share the same intermediate dict, all names from earlier dicts that either referenced become live — including those referenced only by the dead `a`.
+
+The dep_graph is also a shadow of information the type checker already computes: every VarRef resolution marks `slot.referenced`. The use-def graph is implicit in that mark sequence.
+
+**The correct integration: record edges at VarRef time.**
+
+The type-check pass maintains two fields in `InferState` (the local per-pass state, not the persistent `InferenceContext`):
+
+```rust
+current_binding: Option<String>,               // which dict entry is currently being inferred
+use_def:         HashMap<String, HashSet<String>>,  // use_def[name] = names name's expression referenced
+```
+
+In `run_typecheck_dict`, each entry's inference is bracketed:
+
+```rust
+state.current_binding = Some(entry_name.clone());
+// ... type-check entry value ...
+state.current_binding = None;
+```
+
+At the VarRef resolution site — alongside the existing `referenced` mark — the edge is recorded for free:
+
+```rust
+if let Some(ref binder) = state.current_binding {
+    if binder.as_str() != name {
+        state.use_def.entry(binder.clone()).or_default().insert(name.to_string());
+    }
+}
+```
+
+`AfterSequentialFinal` then performs a BFS on `use_def`, replacing the backward fixpoint entirely:
+
+```
+live  ← names the final expression directly referenced
+queue ← live
+while queue not empty:
+    name ← dequeue
+    for dep in use_def[name]:
+        if dep ∉ live: live ← live ∪ {dep}; enqueue dep
+warn: bindings with definition_span not in live
+```
+
+**Precision.** Per-binding edges capture intra-dict references correctly — they are recorded at VarRef time regardless of which dict both names share. BFS propagates liveness transitively and per-binding: if `run-test` is live, `run-test-file` becomes live through `use_def["run-test"]`. Dead binding `a` referencing `x` does not drag `x` into the live set unless `a` itself is reachable from the final expression.
+
+**Scoping.** `current_binding` and `use_def` are scoped to the current Sequential. They are reset at the start of each Sequential and the accumulated `use_def` is consumed by `AfterSequentialFinal`. They do not persist across incremental passes and are not part of `InferenceContext`.
+
+**Fit with the runtime-types design.** `use_def` tracks names, not types. The edge-recording at VarRef sites is orthogonal to whether types are `Type` enums or `Arc<Value>`. VarRef resolution happens in both worlds; the `current_binding` context rides alongside without interfering. No new type-theoretic machinery is required.
+
+---
+
 ## Type Assertions and Conversions
 
 `[@T x]` is a type CHECK, not a conversion. Two cases:
@@ -448,12 +508,22 @@ enum TypeAssertCheck {
 
 **Current:** `InferState` with `type_vars: HashMap<String, TypeVarEntry>`, `Substitution` with `type_map: RefCell<HashMap<String, Type>>`.
 
-**Proposed:** `InferenceContext`:
+**Proposed:** `InferenceContext` (persistent, shared across incremental passes):
 ```rust
 struct InferenceContext {
-    levels: HashMap<String, u32>,          // TypeVar name → creation level
-    subst: HashMap<String, Arc<Value>>,    // TypeVar name → TypeValue binding (monotonic)
+    levels:    HashMap<String, u32>,       // TypeVar name → creation level
+    subst:     HashMap<String, Arc<Value>>, // TypeVar name → TypeValue binding (monotonic)
     instances: InstanceRegistry,           // class × TypeValue → instance dict
+}
+```
+
+`InferState` (local per-pass wrapper around `InferenceContext`) gains two fields for dead code analysis (see §Dead Code Analysis):
+```rust
+struct InferState {
+    ctx:             InferenceContext,
+    current_binding: Option<String>,               // which dict entry is currently being inferred
+    use_def:         HashMap<String, HashSet<String>>, // per-binding use-def graph for liveness BFS
+    // ... diagnostics, level, etc.
 }
 ```
 

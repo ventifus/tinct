@@ -136,8 +136,8 @@ result.get()?   unevaluated state?    Observed via
 ──────────────────────────────────────────────────────────────
 None            Some(state)           is_settled() → false
 None            None (claimed)        try_claim() → None (InProgress)
-Some(Ok(v))     (irrelevant)          try_get_value() → Some(&v), is_materialized() → true
-Some(Err(e))    (irrelevant)          try_get_error() → Some(&e), is_settled() → true
+Some(Ok(v))     (irrelevant)          peek_result() → Some(Ok(&v)), require_value() → Ok(&v), is_materialized() → true
+Some(Err(e))    (irrelevant)          peek_result() → Some(Err(&e)), try_get_error() → Some(&e), is_settled() → true
 ```
 
 **State transitions:**
@@ -151,7 +151,7 @@ Unevaluated ──try_claim()──► InProgress ──settle(Ok)──► Mate
 
 **Cycle detection:** `force_step` checks `thunk.inner.result.get()` first; if the result is not set, it inspects the mutex. If `evaluating_task == current_task_id`, it is a genuine cycle: the `CircularDependency` error is immediately settled into the thunk (so subsequent accesses see `Failed`) and returned. The `TASK_EVAL_STACK` task-local provides the cycle path for the error message.
 
-**Memoization:** `thunk.settle(result)` writes to the `OnceCell` and notifies waiters. All subsequent `try_get_value()` / `try_get_error()` / `is_settled()` calls see the terminal result directly — no re-evaluation.
+**Memoization:** `thunk.settle(result)` writes to the `OnceCell` and notifies waiters. All subsequent `peek_result()` / `require_value()` / `try_get_error()` / `is_settled()` calls see the terminal result directly — no re-evaluation.
 
 ### UnevaluatedState Variants
 

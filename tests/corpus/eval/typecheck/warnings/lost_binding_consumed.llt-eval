@@ -1,4 +1,4 @@
-# T-1740: intermediate binding 'b2' is referenced from the final expression — no warning.
+# Intermediate binding 'b2' is referenced from the final expression — no warning.
 # b2 = [+ b 2] = 4; final [+ b2 a] = [+ 4 1] = 5.
 [call [fn [let a b] [b2: [+ b 2]] [+ b2 a]] 1 2]
 === out

@@ -73,6 +73,14 @@
   # entries in declaration order — an entry must be settled before a later entry's
   # typenode_value_to_type call can observe it (see imports.rs: scope_so_far comment).
   Integer:      TypeNode.Int
+  # NativeInt/NativeUInt/Float64: low-level Rust variant aliases.
+  # These resolve to the same types as Integer/Float — NativeInt and NativeUInt alias
+  # TypeNode.Int, and Float64 aliases TypeNode.Float. This allows @NativeInt, @NativeUInt,
+  # and @Float64 annotations in builtin_core.llt to typecheck correctly against the
+  # Integer and Float types in user programs.
+  NativeInt:    TypeNode.Int
+  NativeUInt:   TypeNode.Int
+  Float64:      TypeNode.Float
   String:       TypeNode.String
   Float:        TypeNode.Float
   Bytes:        TypeNode.Bytes

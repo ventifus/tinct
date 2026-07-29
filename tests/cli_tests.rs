@@ -5,13 +5,6 @@
 //! The binary requires the `cli` feature, so we gate the entire file.
 
 #![cfg(feature = "cli")]
-// Test infrastructure uses std::fs — no cap_std available in test harness.
-#![allow(
-    clippy::disallowed_methods,
-    clippy::useless_format,
-    clippy::approx_constant,
-    clippy::expect_fun_call
-)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,7 +38,9 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).ok();
+        if let Err(e) = fs::remove_dir_all(&self.path) {
+            eprintln!("TempDir cleanup failed for {:?}: {e}", self.path);
+        }
     }
 }
 
@@ -652,7 +647,9 @@ fn eval_stdin_json_injection() {
         .and_then(|mut child| {
             use std::io::Write;
             if let Some(ref mut stdin) = child.stdin {
-                stdin.write_all(b"{\"name\": \"Alice\"}").ok();
+                stdin
+                    .write_all(b"{\"name\": \"Alice\"}")
+                    .expect("failed to write to stdin");
             }
             // Close stdin so the child doesn't block
             drop(child.stdin.take());
@@ -2604,7 +2601,7 @@ fn write_atomic_basic() {
     // Verify no temp files left behind
     let entries: Vec<_> = fs::read_dir(dir.path())
         .expect("failed to read dir")
-        .filter_map(|e| e.ok())
+        .map(|e| e.expect("failed to read dir entry"))
         .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp."))
         .collect();
     assert_eq!(entries.len(), 0, "temp files should be cleaned up");
@@ -3565,17 +3562,25 @@ fn expr_flag_chained() {
 #[test]
 fn input_flag_json() {
     // Skip if stdlib/cli/in/json.llt doesn't exist (created by another agent)
-    let _libdir = match std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
-        .filter(|p| p.is_dir())
-    {
-        Some(path) if path.join("cli").join("in").join("json.llt").exists() => path,
-        _ => {
-            eprintln!("Skipping input_flag_json: stdlib/cli/in/json.llt not found");
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Skipping input_flag_json: current_exe() failed: {e}");
             return;
         }
     };
+    let stdlib_path = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|r| r.join("stdlib"));
+    match stdlib_path.filter(|p| p.join("cli").join("in").join("json.llt").exists()) {
+        Some(_) => {}
+        None => {
+            eprintln!("Skipping input_flag_json: stdlib/cli/in/json.llt not found");
+            return;
+        }
+    }
 
     // `tinct eval -i json -e '%.x' <<< '{"x":42}'` → 42 (explicit input formatter)
     use std::io::Write;
@@ -4026,22 +4031,28 @@ fn eval_format_json_pretty() {
 #[test]
 fn input_output_expr_pipeline() {
     // Skip if formatters don't exist (created by another agent)
-    let _libdir = match std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
-        .filter(|p| p.is_dir())
-    {
-        Some(path)
-            if path.join("cli").join("in").join("json.llt").exists()
-                && path.join("cli").join("out").join("raw.llt").exists() =>
-        {
-            path
-        }
-        _ => {
-            eprintln!("Skipping input_output_expr_pipeline: formatters not found");
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Skipping input_output_expr_pipeline: current_exe() failed: {e}");
             return;
         }
     };
+    let stdlib_path = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|r| r.join("stdlib"));
+    match stdlib_path.filter(|p| {
+        p.join("cli").join("in").join("json.llt").exists()
+            && p.join("cli").join("out").join("raw.llt").exists()
+    }) {
+        Some(_) => {}
+        None => {
+            eprintln!("Skipping input_output_expr_pipeline: formatters not found");
+            return;
+        }
+    }
 
     // Full pipeline: -i json -e expr -o raw
     use std::io::Write;

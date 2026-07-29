@@ -175,10 +175,7 @@ pub(crate) fn expect_one_arg(
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
-    Ok(args[0]
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone())
+    Ok(args[0].require_value()?.clone())
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -575,7 +572,8 @@ mod tests {
     };
     use crate::builtins_math::{
         builtin_div_float, builtin_eq_float, builtin_eq_int, builtin_eq_string, builtin_float_add,
-        builtin_float_sub, builtin_int_add, builtin_int_sub, builtin_lt, builtin_mul,
+        builtin_float_lt, builtin_float_mul, builtin_float_sub, builtin_int_add, builtin_int_mul,
+        builtin_int_sub, builtin_lt, builtin_str_lt,
     };
     use crate::builtins_meta::{builtin_apply, builtin_raise, builtin_try, builtin_type_of};
     use crate::builtins_string::{builtin_replace, builtin_trim};
@@ -2696,10 +2694,7 @@ mod tests {
             {
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableValue::Int {
-                        n: 0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(0),
                     thunk(Value::Int {
                         n: 42,
                         type_val: crate::value::unknown_type_val(),
@@ -2736,20 +2731,14 @@ mod tests {
             {
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableValue::Int {
-                        n: 0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(0),
                     thunk(Value::Int {
                         n: 10,
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );
                 m.insert(
-                    HashableValue::Int {
-                        n: 1,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(1),
                     thunk(Value::Int {
                         n: 20,
                         type_val: crate::value::unknown_type_val(),
@@ -2786,20 +2775,14 @@ mod tests {
             {
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableValue::Int {
-                        n: 0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(0),
                     thunk(Value::Int {
                         n: 10,
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );
                 m.insert(
-                    HashableValue::Int {
-                        n: 1,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(1),
                     thunk(Value::Int {
                         n: 20,
                         type_val: crate::value::unknown_type_val(),
@@ -2869,20 +2852,14 @@ mod tests {
             {
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableValue::Int {
-                        n: 0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(0),
                     thunk(Value::Int {
                         n: 3,
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );
                 m.insert(
-                    HashableValue::Int {
-                        n: 1,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(1),
                     thunk(Value::Int {
                         n: 4,
                         type_val: crate::value::unknown_type_val(),
@@ -2918,10 +2895,7 @@ mod tests {
             {
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableValue::Int {
-                        n: 0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(0),
                     thunk(Value::Int {
                         n: 1,
                         type_val: crate::value::unknown_type_val(),
@@ -2960,10 +2934,7 @@ mod tests {
             {
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableValue::Int {
-                        n: 0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
+                    HashableValue::Int(0),
                     thunk(Value::Int {
                         n: 1,
                         type_val: crate::value::unknown_type_val(),
@@ -3287,27 +3258,9 @@ mod tests {
     async fn keys_int_keyed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("a")),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("b")),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 2,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("c")),
-        );
+        map.insert(HashableValue::Int(0), thunk(string_val("a")));
+        map.insert(HashableValue::Int(1), thunk(string_val("b")));
+        map.insert(HashableValue::Int(2), thunk(string_val("c")));
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -3324,16 +3277,7 @@ mod tests {
             } => {
                 assert_eq!(keys_map.len(), 3);
                 for i in 0..3 {
-                    let val = mat_id(
-                        Arc::clone(
-                            &keys_map[&HashableValue::Int {
-                                n: i,
-                                type_val: crate::value::unknown_type_val(),
-                            }],
-                        ),
-                        &ctx,
-                    )
-                    .await;
+                    let val = mat_id(Arc::clone(&keys_map[&HashableValue::Int(i)]), &ctx).await;
                     assert_eq!(
                         val,
                         Value::Int {
@@ -3377,27 +3321,9 @@ mod tests {
                 entries: keys_map, ..
             } => {
                 assert_eq!(keys_map.len(), 2);
-                let k0 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 0,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
+                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
                 assert_eq!(k0, string_val("name"));
-                let k1 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 1,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
+                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
                 assert_eq!(k1, string_val("age"));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -3408,24 +3334,12 @@ mod tests {
     async fn keys_mixed_key_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("first")),
-        );
+        map.insert(HashableValue::Int(0), thunk(string_val("first")));
         map.insert(
             HashableValue::Str("label".into()),
             thunk(string_val("second")),
         );
-        map.insert(
-            HashableValue::Int {
-                n: 5,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("third")),
-        );
+        map.insert(HashableValue::Int(5), thunk(string_val("third")));
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -3441,16 +3355,7 @@ mod tests {
                 entries: keys_map, ..
             } => {
                 assert_eq!(keys_map.len(), 3);
-                let k0 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 0,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
+                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
                 assert_eq!(
                     k0,
                     Value::Int {
@@ -3458,27 +3363,9 @@ mod tests {
                         type_val: crate::value::unknown_type_val()
                     }
                 );
-                let k1 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 1,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
+                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
                 assert_eq!(k1, string_val("label"));
-                let k2 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 2,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
+                let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
                 assert_eq!(
                     k2,
                     Value::Int {
@@ -3530,36 +3417,9 @@ mod tests {
             Value::Dict {
                 entries: keys_map, ..
             } => {
-                let k0 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 0,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
-                let k1 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 1,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
-                let k2 = mat_id(
-                    Arc::clone(
-                        &keys_map[&HashableValue::Int {
-                            n: 2,
-                            type_val: crate::value::unknown_type_val(),
-                        }],
-                    ),
-                    &ctx,
-                )
-                .await;
+                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
+                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
+                let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
                 assert_eq!(k0, string_val("z"));
                 assert_eq!(k1, string_val("a"));
                 assert_eq!(k2, string_val("m"));
@@ -3636,20 +3496,8 @@ mod tests {
     async fn length_int_keyed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("x")),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("y")),
-        );
+        map.insert(HashableValue::Int(0), thunk(string_val("x")));
+        map.insert(HashableValue::Int(1), thunk(string_val("y")));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: vec![dict],
@@ -4541,7 +4389,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_rejects_named_args() {
+    async fn int_mul_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
         named.insert(
@@ -4554,7 +4402,7 @@ mod tests {
                 &ctx,
             ),
         );
-        let err = run(builtin_mul(BuiltinArgs {
+        let err = run(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -5415,9 +5263,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_int_int() {
+    async fn int_mul_int_int() {
         let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
+        let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -5450,79 +5298,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_int_float() {
+    async fn float_mul_float_float() {
         let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 4,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 10.0,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn mul_float_int() {
-        let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 4,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 10.0,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn mul_float_float() {
-        let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
+        let r = mat(builtin_float_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Float {
@@ -5555,9 +5333,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_by_zero() {
+    async fn int_mul_by_zero() {
         let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
+        let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -5590,9 +5368,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_negative() {
+    async fn int_mul_negative() {
         let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
+        let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -5625,9 +5403,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_by_negative_one() {
+    async fn int_mul_by_negative_one() {
         let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
+        let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -5660,9 +5438,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_overflow_error() {
+    async fn int_mul_overflow_error() {
         let ctx = test_ctx();
-        let err = run(builtin_mul(BuiltinArgs {
+        let err = run(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -5763,9 +5541,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mul_float_overflow_to_infinity_is_error() {
+    async fn float_mul_overflow_to_infinity_is_error() {
         let ctx = test_ctx();
-        let err = run(builtin_mul(BuiltinArgs {
+        let err = run(builtin_float_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Float {
@@ -6502,9 +6280,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_float_float() {
+    async fn float_lt_float_float() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let r = mat(builtin_float_lt(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Float {
@@ -6537,9 +6315,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_string_lexicographic() {
+    async fn str_lt_lexicographic() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let r = mat(builtin_str_lt(BuiltinArgs {
             args: vec![
                 alloc(string_val("apple"), &ctx),
                 alloc(string_val("banana"), &ctx),
@@ -6560,9 +6338,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_string_lexicographic_reverse() {
+    async fn str_lt_lexicographic_reverse() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let r = mat(builtin_str_lt(BuiltinArgs {
             args: vec![
                 alloc(string_val("banana"), &ctx),
                 alloc(string_val("apple"), &ctx),
@@ -6583,9 +6361,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_string_equal_is_false() {
+    async fn str_lt_equal_is_false() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let r = mat(builtin_str_lt(BuiltinArgs {
             args: vec![
                 alloc(string_val("same"), &ctx),
                 alloc(string_val("same"), &ctx),
@@ -6606,9 +6384,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_string_prefix() {
+    async fn str_lt_prefix() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let r = mat(builtin_str_lt(BuiltinArgs {
             args: vec![
                 alloc(string_val("ab"), &ctx),
                 alloc(string_val("abc"), &ctx),
@@ -6628,10 +6406,12 @@ mod tests {
         );
     }
 
+    /// builtin-lt with Int and Float is now a type error — cross-type comparison
+    /// belongs in typeclass instances, not in the primitive.
     #[tokio::test]
-    async fn lt_cross_type_int_float() {
+    async fn lt_cross_type_int_float_is_error() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let e = run(builtin_lt(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Int {
@@ -6653,20 +6433,20 @@ mod tests {
             ctx,
             caller_env_id: None,
         }))
-        .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val()
-            }
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Int vs Float in builtin-lt, got: {}",
+            e.kind
         );
     }
 
+    /// builtin-lt with Float and Int is now a type error.
     #[tokio::test]
-    async fn lt_cross_type_float_int() {
+    async fn lt_cross_type_float_int_is_error() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let e = run(builtin_lt(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Float {
@@ -6688,48 +6468,12 @@ mod tests {
             ctx,
             caller_env_id: None,
         }))
-        .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn lt_cross_type_equal_values() {
-        let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 5.0,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val()
-            }
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Float vs Int in builtin-lt, got: {}",
+            e.kind
         );
     }
 
@@ -6754,7 +6498,11 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(e.kind.to_string().contains("expected"), "got: {}", e.kind);
+        assert!(
+            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Int vs String in builtin-lt, got: {}",
+            e.kind
+        );
     }
 
     #[tokio::test]
@@ -6992,9 +6740,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_nan_float() {
+    async fn float_lt_nan_float() {
         let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
+        let r = mat(builtin_float_lt(BuiltinArgs {
             args: vec![
                 alloc(
                     Value::Float {
@@ -7320,10 +7068,7 @@ mod tests {
         );
         let mut ys_map = IndexMap::new();
         ys_map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(0),
             thunk(Value::Int {
                 n: 1,
                 type_val: crate::value::unknown_type_val(),
@@ -7346,17 +7091,7 @@ mod tests {
             } => {
                 assert_eq!(map.len(), 1);
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 0,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
                         type_val: crate::value::unknown_type_val()
@@ -7373,20 +7108,14 @@ mod tests {
         let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
         xs_map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(0),
             thunk(Value::Int {
                 n: 1,
                 type_val: crate::value::unknown_type_val(),
             }),
         );
         xs_map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(1),
             thunk(Value::Int {
                 n: 2,
                 type_val: crate::value::unknown_type_val(),
@@ -7416,34 +7145,14 @@ mod tests {
             } => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 0,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 1,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 2,
                         type_val: crate::value::unknown_type_val()
@@ -7460,20 +7169,14 @@ mod tests {
         let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
         xs_map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(0),
             thunk(Value::Int {
                 n: 1,
                 type_val: crate::value::unknown_type_val(),
             }),
         );
         xs_map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(1),
             thunk(Value::Int {
                 n: 2,
                 type_val: crate::value::unknown_type_val(),
@@ -7483,20 +7186,14 @@ mod tests {
 
         let mut ys_map = IndexMap::new();
         ys_map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(0),
             thunk(Value::Int {
                 n: 3,
                 type_val: crate::value::unknown_type_val(),
             }),
         );
         ys_map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(1),
             thunk(Value::Int {
                 n: 4,
                 type_val: crate::value::unknown_type_val(),
@@ -7519,68 +7216,28 @@ mod tests {
             } => {
                 assert_eq!(map.len(), 4);
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 0,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 1,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 2,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 2,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 3,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 3,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 4,
                         type_val: crate::value::unknown_type_val()
@@ -7679,68 +7336,28 @@ mod tests {
                 assert_eq!(map.len(), 4);
                 // All values should be reindexed with integer keys 0, 1, 2, 3
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 0,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 1,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 2,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 2,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 3,
                         type_val: crate::value::unknown_type_val()
                     }
                 );
                 assert_eq!(
-                    mat_id(
-                        Arc::clone(
-                            map.get(&HashableValue::Int {
-                                n: 3,
-                                type_val: crate::value::unknown_type_val()
-                            })
-                            .unwrap()
-                        ),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 4,
                         type_val: crate::value::unknown_type_val()
@@ -7764,10 +7381,7 @@ mod tests {
         ); // empty dict
         let mut ys_map = IndexMap::new();
         ys_map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
+            HashableValue::Int(0),
             thunk(Value::Int {
                 n: 99,
                 type_val: crate::value::unknown_type_val(),
@@ -7791,16 +7405,7 @@ mod tests {
             Value::Dict { entries: ref m, .. } => {
                 assert_eq!(m.len(), 1);
                 assert_eq!(
-                    mat_id(
-                        m.get(&HashableValue::Int {
-                            n: 0,
-                            type_val: crate::value::unknown_type_val()
-                        })
-                        .unwrap()
-                        .clone(),
-                        &ctx
-                    )
-                    .await,
+                    mat_id(m.get(&HashableValue::Int(0)).unwrap().clone(), &ctx).await,
                     Value::Int {
                         n: 99,
                         type_val: crate::value::unknown_type_val()
@@ -8173,27 +7778,9 @@ mod tests {
     async fn builtin_get_int_key_auto_indexed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("first")),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("second")),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 2,
-                type_val: crate::value::unknown_type_val(),
-            },
-            thunk(string_val("third")),
-        );
+        map.insert(HashableValue::Int(0), thunk(string_val("first")));
+        map.insert(HashableValue::Int(1), thunk(string_val("second")));
+        map.insert(HashableValue::Int(2), thunk(string_val("third")));
         let result = mat(builtin_get(BuiltinArgs {
             args: vec![
                 alloc(
@@ -8308,34 +7895,10 @@ mod tests {
         let ctx = test_ctx();
         // Build a dict with 4 bomb-value entries.
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Int {
-                n: 0,
-                type_val: crate::value::unknown_type_val(),
-            },
-            make_undef_thunk(&ctx),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 1,
-                type_val: crate::value::unknown_type_val(),
-            },
-            make_undef_thunk(&ctx),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 2,
-                type_val: crate::value::unknown_type_val(),
-            },
-            make_undef_thunk(&ctx),
-        );
-        map.insert(
-            HashableValue::Int {
-                n: 3,
-                type_val: crate::value::unknown_type_val(),
-            },
-            make_undef_thunk(&ctx),
-        );
+        map.insert(HashableValue::Int(0), make_undef_thunk(&ctx));
+        map.insert(HashableValue::Int(1), make_undef_thunk(&ctx));
+        map.insert(HashableValue::Int(2), make_undef_thunk(&ctx));
+        map.insert(HashableValue::Int(3), make_undef_thunk(&ctx));
         let dict = thunk_dict(map, &ctx);
 
         // builtin_length should succeed: it only counts entries, not values.

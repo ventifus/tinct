@@ -1,0 +1,9 @@
+# Tests the product function: multiply all elements with identity 1.
+# Integer product, float product, and empty collection (returns identity element).
+[
+  int-product:   [product [1 2 3 4]]
+  float-product: [product [2.0 3.0]]
+  empty-product: [product []]
+]
+=== out
+["int-product": 24  "float-product": 6.0  "empty-product": 1]

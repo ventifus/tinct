@@ -261,7 +261,7 @@ async fn run(initial: Action, _ctx: &Arc<EvalContext>) -> EvalResult<Value> {
 
 **Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed). The continuation stack is bounded by `MAX_CONTINUATION_STACK = 8192` frames; exceeding this produces a `ResourceLimitExceeded` error.
 
-**Relationship to thunk state:** `BuiltinCall` and `FnCall` in `UnevaluatedState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`). They represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to a simpler form because builtin function pointers have no AST representation. The five `UnevaluatedState` variants (`AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) are the stable design. Thunk state is observed through borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
+**Relationship to thunk state:** `BuiltinCall` and `FnCall` in `UnevaluatedState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`). They represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to a simpler form because builtin function pointers have no AST representation. The five `UnevaluatedState` variants (`AstField`, `CoreExpr`, `BuiltinCall`, `FnCall`, `Guarded`) are the stable design. Thunk state is observed through borrow-based accessors (`peek_result()`, `require_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
 
 ### EvalContext — Evaluation Infrastructure Context
 
@@ -371,7 +371,9 @@ enum UnevaluatedState {
 }
 
 // Thunk state is observed through borrow-based accessors on OnceCell:
-//   try_get_value() -> Option<&Value>       — Some(&v) iff result is Ok (zero-clone borrow)
+//   peek_result() -> Option<Result<&Value, &Arc<EvalError>>>
+//                                           — None=unsettled; Some(Ok(&v))=Materialized; Some(Err(&e))=Failed
+//   require_value() -> EvalResult<&Value>   — Ok(&v) iff Materialized; propagates Err; panics if unsettled
 //   try_get_error() -> Option<&Arc<EvalError>> — Some(&e) iff result is Err (zero-clone borrow)
 //   is_materialized() -> bool               — true iff result is Some(Ok(_))
 //   is_settled() -> bool                    — true iff result is set (Ok or Err)

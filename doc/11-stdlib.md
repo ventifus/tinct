@@ -226,7 +226,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 | Group | Stable alias | Primary name | Rationale |
 |-------|-------------|--------------|-----------|
-| Arithmetic | `builtin-add`, `builtin-int-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). `builtin-int-sub` is the stable alias for integer subtraction. |
+| Arithmetic | `builtin-add`, `builtin-int-sub`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). `builtin-int-sub` is the stable alias for integer subtraction. `*` is resolved via `Multipliable` typeclass dispatch to monomorphic primitives — it has no single stable alias. |
 | Comparison | `builtin-lt`, `builtin-eq`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Cross-type Int/Float coercion at host level. All five comparison operators have stable `builtin-*` aliases. |
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
@@ -252,7 +252,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `=` | `[fn [a b] [builtin-eq a b]]` | Shadowable; calls stable alias `builtin-eq` |
 | `+` | `[fn [a b] [builtin-add a b]]` | Shadowable; calls `builtin-add` |
 | `-` | `Subtractable` typeclass dispatch | Resolved via `Subtractable` class instances to `builtin-int-sub` / `builtin-float-sub` |
-| `*` | `[fn [a b] [builtin-mul a b]]` | Shadowable; calls `builtin-mul` |
+| `*` | `Multipliable` typeclass dispatch | Resolved via `Multipliable` class instances to `builtin-int-mul` / `builtin-float-mul` |
 | `/` | `[fn [a b] [builtin-div a b]]` | Shadowable; calls `builtin-div` |
 | `if` | `[fn [c t e] [builtin-if c t e]]` | Shadowable; calls `builtin-if` |
 | `filter` | `[fn [pred xs] [builtin-filter pred xs]]` | Shadowable; calls `builtin-filter` |
@@ -310,7 +310,7 @@ Core env: builtin_module("core") (builtin-lt, builtin-add, eval, raise, load, bl
                     └── User predicates and programs
 ```
 
-The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-int-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-dict-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `load`) are used directly by name.
+The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-int-sub`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-dict-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `load`) are used directly by name.
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 

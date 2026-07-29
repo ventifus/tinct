@@ -55,13 +55,13 @@ Settled with a value. Cached forever via `OnceCell`. All readers receive the cac
 **`Failed(Arc<EvalError>)`** *(terminal)* — `result = Some(Err(e))`.
 Settled with an error. Cached forever. All readers receive this error.
 
-`Materialized` and `Failed` are distinguished from `InProgress` (placeholder) by whether `result.get()` returns `Some`. The borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) check `result` first (no lock needed for OnceCell); the mutex is only acquired when result is empty.
+`Materialized` and `Failed` are distinguished from `InProgress` (placeholder) by whether `result.get()` returns `Some`. The borrow-based accessors (`peek_result()`, `require_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) check `result` first (no lock needed for OnceCell); the mutex is only acquired when result is empty.
 
 ### Invariants
 
 1. **Monotonicity**: `Materialized` and `Failed` are terminal — no transitions exit them.
 2. **Single ownership**: `try_claim()` is the sole path into `InProgress`. The mutex ensures at most one caller wins.
-3. **Notification ordering**: `settle()` writes `result` via `OnceCell::set()` first, then clears `evaluating_task`, then fires `notify_waiters()`. This ordering is critical: `try_get_value()` and `is_settled()` check `result.get()` without the mutex, so once `result` is set, readers see a terminal state even if `evaluating_task` has not yet been cleared.
+3. **Notification ordering**: `settle()` writes `result` via `OnceCell::set()` first, then clears `evaluating_task`, then fires `notify_waiters()`. This ordering is critical: `peek_result()` and `is_settled()` check `result.get()` without the mutex, so once `result` is set, readers see a terminal state even if `evaluating_task` has not yet been cleared.
 4. **Evaluate-at-most-once**: the winner of `try_claim()` MUST settle the thunk. `ThunkPanicGuard` enforces this even on task panic.
 5. **`reset()` is not error recovery**: the backward transition `InProgress → Unevaluated` is used only for CEK machine re-dispatch (e.g., `FnCall` resolves to a builtin requiring arg pre-materialization). Sound in the single-threaded `LocalSet`; never use for error recovery.
 
@@ -237,14 +237,21 @@ Thunk state is observed through borrow-based accessors that read the `OnceCell` 
 ### Borrow-based accessors
 
 ```rust
-pub fn try_get_value(&self) -> Option<&Value>           // Some(&v) iff Materialized (zero-clone borrow)
+pub fn peek_result(&self) -> Option<Result<&Value, &Arc<EvalError>>>
+    // None = unsettled; Some(Ok(&v)) = Materialized; Some(Err(&e)) = Failed (zero-clone borrow)
+pub fn require_value(&self) -> EvalResult<&Value>
+    // Ok(&v) = Materialized; Err(e) = Failed (propagates error); panics if unsettled (invariant violation)
 pub fn try_get_error(&self) -> Option<&Arc<EvalError>>  // Some(&e) iff Failed (zero-clone borrow)
 pub fn is_materialized(&self) -> bool                   // true iff result is Some(Ok(_)); checks OnceCell::get() directly
 pub fn is_settled(&self) -> bool                        // true iff result is set (Ok or Err)
 pub fn definition_span(&self) -> Span                   // the span field
 ```
 
-`try_get_value()` and `try_get_error()` return borrows into the `OnceCell` — no `Value` clone, no `Arc` clone. `is_materialized()` checks `OnceCell::get()` directly for `Some(Ok(_))`. `is_settled()` returns `true` if the result is set to either `Ok` or `Err`.
+`peek_result()` is the three-state inspector: it returns `None` when the thunk is unsettled, `Some(Ok(&v))` when materialized, and `Some(Err(&e))` when failed. Use it when the caller needs to distinguish all three states (e.g., evaluator loops, debug output).
+
+`require_value()` is the two-state accessor for call sites where the thunk is expected to already be settled (e.g., after `materialize()` returns, or in builtins that receive pre-materialized args). It propagates errors via `EvalResult` and panics on an unsettled thunk — that panic signals an invariant violation, not a recoverable condition.
+
+Both return borrows into the `OnceCell` — no `Value` clone, no `Arc` clone. `is_materialized()` checks `OnceCell::get()` directly for `Some(Ok(_))`. `is_settled()` returns `true` if the result is set to either `Ok` or `Err`.
 
 ### Direct field access for evaluator internals
 
@@ -290,7 +297,7 @@ The caller that wins `try_claim()` MUST settle the thunk. `ThunkPanicGuard` enfo
 ### `settle(result: Result<Value, Arc<EvalError>>)`
 
 Transitions `InProgress → Materialized` or `InProgress → Failed`. Order:
-1. `OnceCell::set(result)` — makes the terminal state visible to `try_get_value()` / `is_settled()` immediately.
+1. `OnceCell::set(result)` — makes the terminal state visible to `peek_result()` / `require_value()` / `is_settled()` immediately.
 2. Lock mutex, clear `evaluating_task` to `None`.
 3. `notify_waiters()` — unblocks tasks awaiting `settled()`.
 
@@ -449,7 +456,7 @@ The dispatch table (state deduced from `thunk.inner.result.get()` and `try_claim
 - calls `thunk.settle(r.map(Ok).unwrap_or_else(Err))` — writes to `OnceCell`
 - returns `Continue(r)`
 
-All other `Arc<Thunk>` handles to the same thunk see the cached result immediately on their next `try_get_value()` or `is_settled()` call.
+All other `Arc<Thunk>` handles to the same thunk see the cached result immediately on their next `peek_result()`, `require_value()`, or `is_settled()` call.
 
 ### BuiltinForceArg and Strictness
 
@@ -614,11 +621,11 @@ Intermediate expressions in a document scope chain (all but the last) are eagerl
 
 `src/value.rs` includes unit tests for:
 - `Thunk::core_expr` → `is_settled()` returns `false`
-- `Thunk::value` → `try_get_value()` returns `Some`, `is_materialized()` returns `true`
-- `settle(Ok(...))` → `try_get_value()` returns `Some`, `is_settled()` returns `true`
-- `settle(Err(...))` → `try_get_error()` returns `Some`, `is_settled()` returns `true`
+- `Thunk::value` → `peek_result()` returns `Some(Ok(&v))`, `require_value()` returns `Ok(&v)`, `is_materialized()` returns `true`
+- `settle(Ok(...))` → `peek_result()` returns `Some(Ok(&v))`, `is_settled()` returns `true`
+- `settle(Err(...))` → `peek_result()` returns `Some(Err(&e))`, `try_get_error()` returns `Some`, `is_settled()` returns `true`
 - `settle` is idempotent (second call is silent no-op)
 - `try_claim()` succeeds on Unevaluated, transitions to `InProgress`
 - `try_claim()` returns `None` on already-InProgress
 - `reset()` restores `Unevaluated` from `InProgress`
-- `try_get_value()` and `try_get_error()` borrow-based accessors
+- `peek_result()`, `require_value()`, and `try_get_error()` borrow-based accessors

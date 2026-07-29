@@ -44,8 +44,8 @@ use crate::builtins_dict::{
     builtin_build_dict, builtin_builder_delete, builtin_builder_finish, builtin_builder_get,
     builtin_builder_get_or, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
     builtin_dict_has_key_nth, builtin_dict_has_kv_nth, builtin_dict_has_nth, builtin_dict_key_nth,
-    builtin_dict_kv_nth, builtin_dict_nth, builtin_get, builtin_get_by_field, builtin_has_key,
-    builtin_keys, builtin_length, builtin_make_builder,
+    builtin_dict_kv_nth, builtin_dict_merge, builtin_dict_nth, builtin_get, builtin_get_by_field,
+    builtin_has_key, builtin_keys, builtin_length, builtin_make_builder,
 };
 // String implementations — Core-46 only.
 use crate::builtins_string::{
@@ -276,6 +276,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Spine],
             1,
             ["entries"]
+        ),
+        builtin!(
+            "builtin-dict-merge",
+            builtin_dict_merge,
+            [Strictness::Spine, Strictness::Spine],
+            2,
+            ["a", "b"]
         ),
         // ── Builder ops ──────────────────────────────────────────────────────────────
         builtin!("builtin-make-builder", builtin_make_builder),

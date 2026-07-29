@@ -33,6 +33,26 @@ use crate::value::{EvalFrame, HashableValue, Thunk, Value};
 // Document pipeline evaluation
 // ============================================================================
 
+/// Global repr_registry shared by all root EvalContexts.
+///
+/// `repr:` declarations are emitted by builtin_core.llt — a global, immutable library.
+/// Registration is monotonic (types are only added, never removed), so a global OnceLock
+/// holding the single shared registry is the correct pattern.
+///
+/// `new_empty()` and `new_with_options()` both read from this OnceLock (initializing it on
+/// first call), so independently-created contexts always share the same registry Arc.
+static GLOBAL_REPR_REGISTRY: std::sync::OnceLock<
+    Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
+> = std::sync::OnceLock::new();
+
+/// Global is_predicates shared by all root EvalContexts.
+///
+/// Same sharing model as `GLOBAL_REPR_REGISTRY`: monotonic, global, immutable-source
+/// (builtin_core.llt), so all independently-created root contexts must share one Arc.
+static GLOBAL_IS_PREDICATES: std::sync::OnceLock<
+    Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
+> = std::sync::OnceLock::new();
+
 thread_local! {
     /// Cached empty dict thunk used as the default `%` when no stdin is provided.
     /// Avoids allocating a fresh `Arc<Thunk>` on every `eval_surface_file` call for empty programs.
@@ -643,9 +663,22 @@ impl EvalContext {
     /// - Bootstrap contexts (run_loader_pipeline, where loader.llt is being evaluated)
     /// - Re-entrant macro expansion (depth > 0 in expand.rs)
     /// - Test helpers that create contexts without a prelude env
+    ///
+    /// `repr_registry` and `is_predicates` are both initialized from the global OnceLocks
+    /// (`GLOBAL_REPR_REGISTRY` / `GLOBAL_IS_PREDICATES`) so that all independently-created
+    /// root contexts share the same registry Arc. Registrations made by one context
+    /// (e.g. during builtin_core.llt evaluation) are immediately visible in all others.
     pub fn new_empty() -> Arc<Self> {
         let root_group = Self::build_root_group_builtins();
         let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
+        let repr_registry = Arc::clone(
+            GLOBAL_REPR_REGISTRY
+                .get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new()))),
+        );
+        let is_predicates = Arc::clone(
+            GLOBAL_IS_PREDICATES
+                .get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new()))),
+        );
         Arc::new(Self {
             config: Arc::new(EvalConfig {
                 require_integrity: false,
@@ -670,8 +703,8 @@ impl EvalContext {
                 entries: indexmap::IndexMap::new(),
                 type_val: crate::value::unknown_type_val(),
             }),
-            repr_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            is_predicates: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            repr_registry,
+            is_predicates,
         })
     }
 
@@ -681,6 +714,14 @@ impl EvalContext {
     ) -> Arc<Self> {
         let root_group = Self::build_root_group_builtins();
         let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
+        let repr_registry = Arc::clone(
+            GLOBAL_REPR_REGISTRY
+                .get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new()))),
+        );
+        let is_predicates = Arc::clone(
+            GLOBAL_IS_PREDICATES
+                .get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new()))),
+        );
         Arc::new(Self {
             config: Arc::new(EvalConfig {
                 require_integrity,
@@ -705,8 +746,8 @@ impl EvalContext {
                 entries: indexmap::IndexMap::new(),
                 type_val: crate::value::unknown_type_val(),
             }),
-            repr_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            is_predicates: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            repr_registry,
+            is_predicates,
         })
     }
 
@@ -955,13 +996,16 @@ impl EvalContext {
             .filter_map(|(slot, thunk)| {
                 // Builtin thunks carry name in their Value.
                 // Capability thunks carry name in their span.
-                let name = if let Some(val) = thunk.try_get_value() {
-                    match val {
+                // peek_result() distinguishes: settled-Ok (inspect value), settled-Err
+                // (propagate name from span — error will surface at evaluation), not-settled
+                // (propagate name from span).  Builtin and capability thunks in root_group
+                // are always Thunk::value(...) so they can never carry errors in practice.
+                let name = match thunk.peek_result() {
+                    Some(Ok(val)) => match val {
                         Value::Builtin { def, .. } => Some(def.name.to_string()),
                         _ => thunk.definition_span().name.as_ref().map(|n| n.to_string()),
-                    }
-                } else {
-                    thunk.definition_span().name.as_ref().map(|n| n.to_string())
+                    },
+                    _ => thunk.definition_span().name.as_ref().map(|n| n.to_string()),
                 };
                 name.map(|n| (n, slot as u32))
             })
@@ -3709,7 +3753,7 @@ mod tests {
 
         // Check that the thunk is now in Materialized state
         assert_eq!(
-            pending.try_get_value(),
+            pending.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -5537,7 +5581,7 @@ mod tests {
 
         // After successful validation, thunk must be in Materialized state (memoized).
         assert_eq!(
-            guarded.try_get_value(),
+            guarded.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -5561,7 +5605,7 @@ mod tests {
 
         // State is still Materialized (not changed by second access).
         assert_eq!(
-            guarded.try_get_value(),
+            guarded.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -5845,7 +5889,7 @@ mod tests {
     /// Setup: create a PendingBuiltin thunk for `builtin_keys` (force_count=1) with
     /// an *unevaluated* dict-expr thunk as args[0]. The unevaluated thunk evaluates
     /// to an empty dict. If the bypass path were to call `builtin_keys` without first
-    /// materializing args[0], `try_get_value().expect(...)` inside `builtin_keys`
+    /// materializing args[0], `require_value()` inside `builtin_keys`
     /// would panic.
     #[tokio::test]
     async fn pending_builtin_bypass_path_pre_materializes_args() {
@@ -5889,7 +5933,7 @@ mod tests {
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is
-        // missing, this panics at `try_get_value().expect(...)` inside `builtin_keys`.
+        // missing, this panics inside `builtin_keys` at the `require_value()` call.
         let result = materialize(&outer, None, &ctx).await;
         assert!(
             result.is_ok(),
@@ -5916,7 +5960,7 @@ mod tests {
     /// Setup: create a PendingCall thunk where the func thunk resolves to `Value::Builtin(keys_def)`
     /// and args[0] is an unevaluated dict thunk. If force_count pre-materialization is
     /// missing in the PendingCall→Builtin path, `builtin_keys` panics at
-    /// `try_get_value().expect(...)`.
+    /// `require_value()`.
     #[tokio::test]
     async fn pending_call_builtin_bypass_path_pre_materializes_args() {
         let ctx = test_ctx();
@@ -6548,5 +6592,88 @@ mod tests {
             },
             "B-637: dot-access must resolve builtin-dict-get via root_group; got: {result_val:?}"
         );
+    }
+
+    /// T-2057: independently-created root EvalContexts must share the same repr_registry
+    /// and is_predicates Arcs so that repr: registrations from one context are visible
+    /// in all others (including test contexts, bootstrap contexts, and re-entrant macro
+    /// expansion contexts).
+    #[test]
+    fn test_global_registry_shared_across_new_empty_contexts() {
+        let ctx_a = EvalContext::new_empty();
+        let ctx_b = EvalContext::new_empty();
+
+        assert!(
+            Arc::ptr_eq(&ctx_a.repr_registry, &ctx_b.repr_registry),
+            "T-2057: repr_registry must be the same Arc across independently-created \
+             new_empty() contexts — got distinct Arcs"
+        );
+        assert!(
+            Arc::ptr_eq(&ctx_a.is_predicates, &ctx_b.is_predicates),
+            "T-2057: is_predicates must be the same Arc across independently-created \
+             new_empty() contexts — got distinct Arcs"
+        );
+    }
+
+    /// T-2057: new_with_options contexts must also share the same global registries,
+    /// and must be pointer-equal to new_empty contexts (all root constructors use the same OnceLocks).
+    #[test]
+    fn test_global_registry_shared_across_constructor_variants() {
+        let ctx_empty = EvalContext::new_empty();
+        let ctx_opts = EvalContext::new_with_options(false, None);
+
+        assert!(
+            Arc::ptr_eq(&ctx_empty.repr_registry, &ctx_opts.repr_registry),
+            "T-2057: repr_registry must be pointer-equal between new_empty() and \
+             new_with_options() contexts"
+        );
+        assert!(
+            Arc::ptr_eq(&ctx_empty.is_predicates, &ctx_opts.is_predicates),
+            "T-2057: is_predicates must be pointer-equal between new_empty() and \
+             new_with_options() contexts"
+        );
+    }
+
+    /// T-2057: functional registry sharing — a registration made through one context's
+    /// repr_registry is immediately visible through a second independently-created context.
+    /// This validates that pointer equality translates into actual cross-context visibility,
+    /// not just that the Arcs are identical.
+    #[test]
+    fn test_global_registry_registration_visible_across_contexts() {
+        let ctx_a = EvalContext::new_empty();
+        let ctx_b = EvalContext::new_empty();
+
+        // Register a sentinel value in ctx_a's repr_registry using a unique key.
+        // The key is chosen to avoid collisions with any real repr strings registered
+        // by the prelude (all real keys follow the "Value::Typename" pattern).
+        let sentinel_key = "Value::TestSentinel_T2057".to_string();
+        let sentinel_val = Arc::new(string_val("T-2057-functional-check"));
+        ctx_a
+            .repr_registry
+            .lock()
+            .unwrap()
+            .insert(sentinel_key.clone(), Arc::clone(&sentinel_val));
+
+        // Retrieve through ctx_b — must see the value registered via ctx_a.
+        let retrieved = ctx_b
+            .repr_registry
+            .lock()
+            .unwrap()
+            .get(&sentinel_key)
+            .cloned();
+
+        assert!(
+            retrieved.is_some(),
+            "T-2057: registration in ctx_a's repr_registry must be visible in ctx_b \
+             (they must share the same underlying HashMap)"
+        );
+        assert_eq!(
+            retrieved.unwrap(),
+            sentinel_val,
+            "T-2057: retrieved value must equal the registered sentinel"
+        );
+
+        // Clean up the sentinel to avoid polluting the global registry for other tests.
+        ctx_a.repr_registry.lock().unwrap().remove(&sentinel_key);
     }
 }

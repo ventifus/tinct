@@ -117,14 +117,8 @@ pub(crate) fn builtin_bytes_find(
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let haystack_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let needle_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let haystack_val = thunk0.require_value()?.clone();
+        let needle_val = thunk1.require_value()?.clone();
 
         let haystack = match haystack_val.as_bytes() {
             Some(bytes) => bytes,
@@ -298,14 +292,8 @@ pub(crate) fn builtin_bytes_concat(
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let val1 = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
-        let val2 = thunk1
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let val1 = thunk0.require_value()?.clone();
+        let val2 = thunk1.require_value()?.clone();
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
@@ -386,14 +374,8 @@ pub(crate) fn builtin_bytes_equal(
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let val1 = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let val2 = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let val1 = thunk0.require_value()?.clone();
+        let val2 = thunk1.require_value()?.clone();
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
@@ -476,14 +458,8 @@ pub(crate) fn builtin_ct_equal(
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let val1 = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let val2 = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let val1 = thunk0.require_value()?.clone();
+        let val2 = thunk1.require_value()?.clone();
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
@@ -581,14 +557,8 @@ pub(crate) fn builtin_encode(
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let fmt_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
-        let num_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let fmt_val = thunk0.require_value()?.clone();
+        let num_val = thunk1.require_value()?.clone();
 
         // Extract the Int discriminant from the format argument.
         // The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
@@ -724,14 +694,8 @@ pub(crate) fn builtin_bytes_get(
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let i_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
-        let b_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let i_val = thunk0.require_value()?.clone();
+        let b_val = thunk1.require_value()?.clone();
 
         let i = match i_val {
             Value::Int { n, .. } => n,
@@ -824,10 +788,7 @@ pub(crate) fn builtin_bytes_to_int(
         }
 
         let thunk0 = Arc::clone(&args[0]);
-        let b_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let b_val = thunk0.require_value()?.clone();
 
         let bytes = match b_val.as_bytes() {
             Some(b) => b,
@@ -911,18 +872,9 @@ pub(crate) fn builtin_bytes_slice(
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let b_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
-        let start_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
-        let len_val = thunk2
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let b_val = thunk0.require_value()?.clone();
+        let start_val = thunk1.require_value()?.clone();
+        let len_val = thunk2.require_value()?.clone();
 
         let (source, base_start, base_end) = match &b_val {
             Value::Bytes {

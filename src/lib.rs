@@ -149,7 +149,7 @@ pub fn format_type_diagnostic(diag: &TypeDiagnostic, source: &str, file_name: &s
 }
 
 /// Formatter: canonical source reformatter.
-pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
+pub use formatter::format_source_tinct;
 
 /// Unified evaluation and type-checker environment.
 pub use env::Env;

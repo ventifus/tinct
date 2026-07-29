@@ -1319,60 +1319,64 @@ pub(crate) fn builtin_par(
 pub(crate) fn builtin_signal_channel(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-        ..
-    } = ctx_arg;
     Box::pin(async move {
-        let signals_thunk = take_one_thunk(
-            "signal-channel",
-            &args,
-            named.as_ref(),
-            call_span.clone(),
-            &ctx,
-        )?;
-        let signals_val = materialize(&signals_thunk, Some(&call_span), &ctx).await?;
-
-        // Collect signal names from an integer-keyed Dict of Signal variants.
-        let sig_dict = match signals_val {
-            Value::Dict { entries: d, .. } => d,
-            other => {
-                return Err(EvalError::type_mismatch(
-                    "Dict of Signal",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-        let mut sig_names: Vec<String> = Vec::new();
-        for (_idx, head_thunk) in &sig_dict {
-            let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
-            let name = match &head_val {
-                Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
-                _ => {
-                    return Err(
-                        EvalError::type_mismatch("Signal", head_val.type_name(), call_span).into(),
-                    )
-                }
-            };
-            sig_names.push(name);
-        }
-
-        if sig_names.is_empty() {
-            return Err(EvalError::user_error(
-                "signal-channel: requires at least one signal".to_string(),
-                call_span,
-            )
-            .into());
-        }
-
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
+
+            let BuiltinArgs {
+                args,
+                named,
+                call_span,
+                ctx,
+                ..
+            } = ctx_arg;
+            let signals_thunk = take_one_thunk(
+                "signal-channel",
+                &args,
+                named.as_ref(),
+                call_span.clone(),
+                &ctx,
+            )?;
+            let signals_val = materialize(&signals_thunk, Some(&call_span), &ctx).await?;
+
+            // Collect signal names from an integer-keyed Dict of Signal variants.
+            let sig_dict = match signals_val {
+                Value::Dict { entries: d, .. } => d,
+                other => {
+                    return Err(EvalError::type_mismatch(
+                        "Dict of Signal",
+                        other.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            };
+
+            let mut sig_names: Vec<String> = Vec::new();
+            for (_idx, head_thunk) in &sig_dict {
+                let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
+                let name = match &head_val {
+                    Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
+                    _ => {
+                        return Err(EvalError::type_mismatch(
+                            "Signal",
+                            head_val.type_name(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                };
+                sig_names.push(name);
+            }
+
+            if sig_names.is_empty() {
+                return Err(EvalError::user_error(
+                    "signal-channel: requires at least one signal".to_string(),
+                    call_span,
+                )
+                .into());
+            }
 
             let capacity = sig_names.len();
             let (tx, rx) = tokio::sync::mpsc::channel::<Value>(capacity);
@@ -1454,7 +1458,7 @@ pub(crate) fn builtin_signal_channel(
 
         #[cfg(not(unix))]
         {
-            let _ = sig_names;
+            let BuiltinArgs { call_span, .. } = ctx_arg;
             Err(EvalError::user_error(
                 "signal-channel is only supported on Unix platforms".to_string(),
                 call_span,
@@ -1472,8 +1476,6 @@ pub(crate) fn builtin_signal_channel(
 /// tick time in nanoseconds since Unix epoch) on each tick. The channel has capacity 1; if the
 /// receiver is slow, ticks are dropped (non-blocking `try_send`) so that a slow consumer never
 /// builds up an unbounded backlog.
-///
-/// Backward compatibility: also accepts a bare Int (treated as milliseconds).
 pub(crate) fn builtin_timer_channel(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -1494,10 +1496,7 @@ pub(crate) fn builtin_timer_channel(
         )?;
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
-        let clock_val = clock_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let clock_val = clock_thunk.require_value()?.clone();
         let clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap { inner, .. } => inner.as_ref().clone(),
             _ => {
@@ -1522,18 +1521,9 @@ pub(crate) fn builtin_timer_channel(
                 )
                 .into())
             }
-            // Backward compatibility: accept bare Int as milliseconds
-            Value::Int { n, .. } if n >= 1 => n as u64,
-            Value::Int { n, .. } => {
-                return Err(EvalError::user_error(
-                    format!("timer-channel: interval must be ≥ 1 ms, got {n}"),
-                    call_span,
-                )
-                .into())
-            }
             _ => {
                 return Err(EvalError::type_mismatch(
-                    "Duration or Int",
+                    "Duration",
                     interval_val.type_name(),
                     call_span,
                 )
@@ -1989,10 +1979,7 @@ pub(crate) fn builtin_with_timeout(
         )?;
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
-        let clock_val = clock_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let clock_val = clock_thunk.require_value()?.clone();
         if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
@@ -2024,22 +2011,10 @@ pub(crate) fn builtin_with_timeout(
                 )
                 .into())
             }
-            // Backward compatibility: accept bare Int as milliseconds
-            Value::Int { n, .. } if n >= 0 => n as u64,
-            Value::Int { n, .. } => {
-                return Err(EvalError::user_error(
-                    format!("with-timeout: duration must be ≥ 0 ms, got {n}"),
-                    call_span,
-                )
-                .into())
-            }
             _ => {
-                return Err(EvalError::type_mismatch(
-                    "Duration or Int",
-                    ms_val.type_name(),
-                    call_span,
+                return Err(
+                    EvalError::type_mismatch("Duration", ms_val.type_name(), call_span).into(),
                 )
-                .into())
             }
         };
 
@@ -2099,10 +2074,7 @@ pub(crate) fn builtin_with_deadline(
         )?;
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
-        let clock_val = clock_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let clock_val = clock_thunk.require_value()?.clone();
         if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
@@ -2524,14 +2496,8 @@ pub(crate) fn builtin_with_context(
             call_span.clone(),
             &ctx,
         )?;
-        let context_val = context_thunk
-            .try_get_value()
-            .cloned()
-            // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
-            .ok_or_else(|| EvalError::internal(
-                "with-context: context argument not pre-materialized (force_count=1 invariant violated)".to_string(),
-                call_span.clone(),
-            ))?;
+        // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
+        let context_val = context_thunk.require_value()?.clone();
 
         let new_cancel = match context_val {
             Value::Context { token, .. } => token,

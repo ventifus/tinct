@@ -1,19 +1,37 @@
 // Source code pretty-printer. This module reformats LLT source for human reading.
 //
-// `tinct fmt` calls `format_source_tinct_with_dir`, which evaluates a tinct-hosted
+// `tinct fmt` calls `format_source_tinct`, which evaluates a tinct-hosted
 // formatter script (`stdlib/cli/fmt/pretty.llt`) with the parsed AST dict as `%`.
 // The Rust `Formatter` struct was deleted — it was only ever used by the now-removed
 // `format_source` function that was dead code from `tinct fmt`'s perspective.
+
+/// The variable name that formatter scripts use to receive the parsed AST dict.
+///
+/// Formatter scripts access the parsed AST of the input source as `input-ast`.
+/// This name is injected into the formatter script's evaluation environment via
+/// `resolve_surface_document_with_seed_frames`. The formatter script must bind its
+/// AST input to this name — any custom formatter script must use `input-ast` as
+/// the variable that receives the AST dict value passed by the Rust host.
+///
+/// See also: `doc/16b-rust-tinct-protocol.md §7` (Protocol Entry Points).
+pub const FORMATTER_INPUT_VAR: &str = "input-ast";
+
 /// Format source using the tinct-hosted formatter script.
 ///
+/// `input` is the source text to format.
 /// `script_source` is the already-read content of the formatter script (e.g. pretty.llt).
-/// `script_name` is the name of the script file (used for compact-mode detection and
-/// error messages). The caller is responsible for reading the script file using appropriate
+/// `script_name` is the name of the script file used in error messages.
+/// `use_compact` selects between the minimal AST (`true`) and the full AST with source
+/// and comment information (`false`). Pass `false` for normal formatting; pass `true`
+/// only when the formatter script is known not to use comments or source positions.
+///
+/// The caller is responsible for reading the script file using appropriate
 /// capability-safe or bootstrap-phase filesystem access.
-pub async fn format_source_tinct_with_dir(
+pub async fn format_source_tinct(
     input: &str,
     script_source: &str,
     script_name: &str,
+    use_compact: bool,
 ) -> Result<String, String> {
     use crate::desugar;
     use crate::error::DiagnosticLevel;
@@ -23,12 +41,6 @@ pub async fn format_source_tinct_with_dir(
     use crate::typecheck;
     use crate::value::Value;
     use std::sync::Arc;
-
-    // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
-    let compact = std::path::Path::new(script_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        == Some("compact");
 
     // Parse the input source (no env/ctx needed yet).
     let file: Arc<str> = Arc::from("<formatter>");
@@ -43,16 +55,20 @@ pub async fn format_source_tinct_with_dir(
 
     let ctx = EvalContext::new_empty();
 
-    // Resolve the formatter program using the env-dict protocol.
-    // "input-ast" is the formatter's own input variable name (not the loader's % convention).
-    // The env-dict protocol assigns input-ast to LGM(root_group_len + 0), which is the slot
-    // where eval_surface_file_with_input injects the AST thunk.
+    // Resolve the formatter program, seeding the resolver with root_group so that
+    // builtins (including builtin-dict-get, used for dot-access) are in scope at their
+    // correct runtime slots. FORMATTER_INPUT_VAR ("input-ast") is the formatter's own
+    // input variable name (not the loader's % convention). It is appended after the seed
+    // frames, so Field.resolution is always populated by the resolver — the lowerer never
+    // needs to fall back to a scope_frames search.
     let root_group_len = ctx.root_group.len() as u32;
+    let root_frame = ctx.root_group_resolver_map();
     let mut resolve_diags: Vec<crate::error::TypeDiagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
-        let (_table, diags, _unresolved) = resolve::resolve_surface_document_with_env_dict(
+        let (_table, diags, _unresolved) = resolve::resolve_surface_document_with_seed_frames(
             &doc_spanned.node,
-            &["input-ast".to_string()],
+            &[root_frame.clone()],
+            &[FORMATTER_INPUT_VAR.to_string()],
             root_group_len,
         );
         resolve_diags.extend(diags);
@@ -93,7 +109,7 @@ pub async fn format_source_tinct_with_dir(
 
     // Convert input AST to dict using the now-stable ctx.
     use crate::surface_convert::{surface_program_to_dict, AstToDictOpts, CommentMaps};
-    let opts = if compact {
+    let opts = if use_compact {
         AstToDictOpts::default()
     } else {
         AstToDictOpts {
@@ -143,24 +159,4 @@ pub async fn format_source_tinct_with_dir(
             ))
         }
     }
-}
-
-/// Format source using the tinct-hosted formatter script at `script_path`.
-///
-/// The script receives the AST dict as `%` and must return a bare `String` on success.
-/// To signal failure the script should call `raise`, which propagates as an EvalError.
-/// Any non-String return value is a protocol error.
-///
-/// `script_source` is the already-read content of the formatter script.
-/// `script_name` is the name of the script file (e.g. `pretty.llt`). Scripts named
-/// `compact` receive a minimal AST (no source, no comments); all others receive the
-/// full AST (with source info and comments for comment preservation).
-///
-/// Alias for `format_source_tinct_with_dir`.
-pub async fn format_source_tinct(
-    input: &str,
-    script_source: &str,
-    script_name: &str,
-) -> Result<String, String> {
-    format_source_tinct_with_dir(input, script_source, script_name).await
 }

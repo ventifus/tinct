@@ -39,11 +39,7 @@ pub fn builtin_parse_timestamp(
             ));
         };
 
-        let s_val = s_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let s_val = s_thunk.clone().require_value()?.clone();
         let s = s_val
             .as_str()
             .ok_or_else(|| dt_err("parse-timestamp requires a String", call_span.clone()))?;
@@ -79,11 +75,7 @@ pub fn builtin_format_timestamp(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -114,11 +106,7 @@ pub fn builtin_timestamp_to_unix(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -154,11 +142,7 @@ pub fn builtin_unix_to_timestamp(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let seconds = match &n_val {
             Value::Int { n, .. } => *n,
             _ => return Err(dt_err("unix->timestamp requires an Int", call_span.clone())),
@@ -195,11 +179,7 @@ pub fn builtin_now(
             return Err(dt_err("now requires 1 argument", call_span.clone()));
         };
 
-        let cap_val = cap_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let cap_val = cap_thunk.clone().require_value()?.clone();
         let clock_cap = match &cap_val {
             Value::ClockCap { inner, .. } => inner,
             _ => return Err(dt_err("now requires a ClockCap", call_span.clone())),
@@ -237,11 +217,7 @@ pub fn builtin_fixed_clock(
             return Err(dt_err("fixed-clock requires 1 argument", call_span.clone()));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -277,16 +253,8 @@ pub fn builtin_timestamp_add(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let d_val = d_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
+        let d_val = d_thunk.clone().require_value()?.clone();
 
         let t_nanos = match &t_val {
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
@@ -342,16 +310,8 @@ pub fn builtin_timestamp_diff(
             ));
         };
 
-        let t1_val = t1_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let t2_val = t2_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let t1_val = t1_thunk.clone().require_value()?.clone();
+        let t2_val = t2_thunk.clone().require_value()?.clone();
 
         let t1_nanos = match &t1_val {
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
@@ -400,16 +360,8 @@ pub fn builtin_timestamp_lt(
             ));
         };
 
-        let t1_val = t1_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let t2_val = t2_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let t1_val = t1_thunk.clone().require_value()?.clone();
+        let t2_val = t2_thunk.clone().require_value()?.clone();
 
         let t1 = match &t1_val {
             Value::Timestamp { ts, .. } => ts.clone(),
@@ -454,16 +406,8 @@ pub fn builtin_timestamp_gt(
             ));
         };
 
-        let t1_val = t1_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let t2_val = t2_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let t1_val = t1_thunk.clone().require_value()?.clone();
+        let t2_val = t2_thunk.clone().require_value()?.clone();
 
         let t1 = match &t1_val {
             Value::Timestamp { ts, .. } => ts.clone(),
@@ -508,16 +452,8 @@ pub fn builtin_timestamp_eq(
             ));
         };
 
-        let t1_val = t1_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let t2_val = t2_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let t1_val = t1_thunk.clone().require_value()?.clone();
+        let t2_val = t2_thunk.clone().require_value()?.clone();
 
         let t1 = match &t1_val {
             Value::Timestamp { ts, .. } => ts.clone(),
@@ -562,11 +498,7 @@ pub fn builtin_timestamp_year(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -603,11 +535,7 @@ pub fn builtin_timestamp_month(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -644,11 +572,7 @@ pub fn builtin_timestamp_day(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -685,11 +609,7 @@ pub fn builtin_timestamp_hour(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -726,11 +646,7 @@ pub fn builtin_timestamp_minute(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -767,11 +683,7 @@ pub fn builtin_timestamp_second(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -808,11 +720,7 @@ pub fn builtin_timestamp_parts(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
@@ -910,11 +818,7 @@ pub fn builtin_duration_nanos(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let nanos = match &n_val {
             Value::Int { n, .. } => *n,
             _ => return Err(dt_err("duration-nanos requires an Int", call_span.clone())),
@@ -947,11 +851,7 @@ pub fn builtin_timestamp_nanos(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let nanos = match &n_val {
             Value::Int { n, .. } => *n,
             _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
@@ -987,11 +887,7 @@ pub fn builtin_duration_seconds(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let seconds = match &n_val {
             Value::Int { n, .. } => *n,
             _ => {
@@ -1029,11 +925,7 @@ pub fn builtin_duration_minutes(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let minutes = match &n_val {
             Value::Int { n, .. } => *n,
             _ => {
@@ -1072,11 +964,7 @@ pub fn builtin_duration_hours(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let hours = match &n_val {
             Value::Int { n, .. } => *n,
             _ => return Err(dt_err("duration-hours requires an Int", call_span.clone())),
@@ -1110,11 +998,7 @@ pub fn builtin_duration_days(
             ));
         };
 
-        let n_val = n_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let n_val = n_thunk.clone().require_value()?.clone();
         let days = match &n_val {
             Value::Int { n, .. } => *n,
             _ => return Err(dt_err("duration-days requires an Int", call_span.clone())),
@@ -1148,11 +1032,7 @@ pub fn builtin_duration_to_seconds(
             ));
         };
 
-        let d_val = d_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let d_val = d_thunk.clone().require_value()?.clone();
         let nanos = match &d_val {
             Value::Duration { nanos: n, .. } => *n,
             _ => {
@@ -1188,11 +1068,7 @@ pub fn builtin_duration_to_nanos(
             ));
         };
 
-        let d_val = d_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let d_val = d_thunk.clone().require_value()?.clone();
         let nanos = match &d_val {
             Value::Duration { nanos: n, .. } => *n,
             _ => {
@@ -1223,16 +1099,8 @@ pub fn builtin_load_tz(
             return Err(dt_err("load-tz requires 2 arguments", call_span.clone()));
         };
 
-        let dir_val = dir_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let name_val = name_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let dir_val = dir_thunk.clone().require_value()?.clone();
+        let name_val = name_thunk.clone().require_value()?.clone();
 
         let dir = match &dir_val {
             Value::DirCap { dir, .. } => dir,
@@ -1301,16 +1169,8 @@ pub fn builtin_timestamp_in_tz(
             ));
         };
 
-        let t_val = t_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
-        let tz_val = tz_thunk
-            .clone()
-            .try_get_value()
-            .expect("pre-materialized by force_count=2")
-            .clone();
+        let t_val = t_thunk.clone().require_value()?.clone();
+        let tz_val = tz_thunk.clone().require_value()?.clone();
 
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
@@ -1436,34 +1296,13 @@ pub fn builtin_local_to_timestamp(
             ));
         }
 
-        let year_val = Arc::clone(&args.args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let month_val = Arc::clone(&args.args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let day_val = Arc::clone(&args.args[2])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let hour_val = Arc::clone(&args.args[3])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let minute_val = Arc::clone(&args.args[4])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let second_val = Arc::clone(&args.args[5])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let tz_val = Arc::clone(&args.args[6])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let year_val = Arc::clone(&args.args[0]).require_value()?.clone();
+        let month_val = Arc::clone(&args.args[1]).require_value()?.clone();
+        let day_val = Arc::clone(&args.args[2]).require_value()?.clone();
+        let hour_val = Arc::clone(&args.args[3]).require_value()?.clone();
+        let minute_val = Arc::clone(&args.args[4]).require_value()?.clone();
+        let second_val = Arc::clone(&args.args[5]).require_value()?.clone();
+        let tz_val = Arc::clone(&args.args[6]).require_value()?.clone();
 
         let year = match &year_val {
             Value::Int { n, .. } => *n as i16,

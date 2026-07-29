@@ -101,8 +101,10 @@ pub(crate) enum TypeCheckCont {
         rest: Option<Box<(String, Type)>>,
         required_count: usize,
         node_span: Span,
-        /// Env frame containing the function's parameter bindings (extras).
-        /// Used to detect unreferenced parameters (lost-binding warnings).
+        /// Env frame containing the function's parameter extras, used for lost-binding
+        /// detection. After the body is evaluated, unreferenced params (those with
+        /// `definition_span.is_some()` and `referenced == false`) emit a `lost-binding`
+        /// warning. Builtins set `definition_span = None` to suppress warnings.
         param_env: Arc<RwLock<Env>>,
     },
 
@@ -159,7 +161,7 @@ pub(crate) enum TypeCheckCont {
         arm_body_env: Option<Arc<RwLock<Env>>>,
     },
 
-    /// Pass 0 (key resolution) complete — run full multi-pass dict inference (T-1644).
+    /// Pass 0 (key resolution) complete — run full multi-pass dict inference.
     ///
     /// Pushed by the `Dict` arm of `infer_step`. The handler calls `run_typecheck_dict`
     /// with all fields needed for the full Passes 1–4 dict inference algorithm.
@@ -249,6 +251,12 @@ pub(crate) enum TypeCheckCont {
         env: Arc<RwLock<Env>>,
         /// `state.level` at push time — restored after evaluation.
         enclosing_level: u32,
+        /// Dict intermediate env frames accumulated before the non-Dict intermediate
+        /// was encountered. Carried through so that AfterSequentialFinal can emit
+        /// lost-binding warnings for all Dict intermediate bindings in the sequential.
+        accumulated_intermediate_envs: Vec<Arc<RwLock<Env>>>,
+        /// Cross-dict dependency sets accumulated so far (parallel to accumulated_intermediate_envs).
+        accumulated_dep_graph: Vec<std::collections::HashSet<String>>,
     },
 
     /// All Dict intermediate bodies in a Sequential processed — emit lost-binding warnings
@@ -256,10 +264,35 @@ pub(crate) enum TypeCheckCont {
     ///
     /// Pushed by the `Sequential` arm after all Dict intermediates are processed, just
     /// before evaluating the final expression. The handler fires after the final expression
-    /// is inferred, iterates each collected intermediate env frame, and emits a
-    /// `lost-binding` warning for every extras entry that was never referenced.
+    /// is inferred and performs transitive reachability analysis before emitting warnings.
+    ///
+    /// ## Transitive reachability analysis
+    ///
+    /// A binding is "live" if it is reachable from the final expression via the dependency
+    /// graph. The analysis is backward from the final expression:
+    /// 1. `pre_final_refs[i]` = names in frame i with `referenced = true` BEFORE the final
+    ///    expression was evaluated (i.e., marks from inter-dict processing only).
+    /// 2. After final expression evaluation, names newly marked in any frame are "directly live."
+    /// 3. `dep_graph[i]` = names from earlier frames that dict i's processing newly marked
+    ///    (i.e., cross-dict dependencies for all bindings in that dict, collectively).
+    /// 4. Backward fixpoint: if any binding in dict N is live, all names in dep_graph[N]
+    ///    are also live (they were required to compute some live binding's value).
+    /// 5. Any binding NOT in the live set at fixpoint → emit lost-binding warning.
+    ///
+    /// Note: dep_graph is per-dict (not per-binding), so it is sound but may miss warnings
+    /// when multiple bindings in one dict have heterogeneous reachability. This is a known
+    /// conservative approximation — false negatives only, no false positives.
+    ///
+    /// Only Dict intermediates are tracked — non-Dict intermediates use schemes without
+    /// user-visible definition spans and are not eligible for lost-binding warnings.
     AfterSequentialFinal {
         intermediate_envs: Vec<Arc<RwLock<Env>>>,
+        /// Per-dict dependency sets: dep_graph[i] = names from earlier intermediate frames
+        /// that were newly marked (referenced = true) during dict i's type-checking.
+        dep_graph: Vec<std::collections::HashSet<String>>,
+        /// Snapshot of each frame's referenced-name set taken just before the final
+        /// expression was evaluated. Used to isolate which marks came from the final expr.
+        pre_final_refs: Vec<std::collections::HashSet<String>>,
     },
 
     /// Inferred the inner expression of a TypeAssert — validate against expected type.
@@ -550,13 +583,50 @@ async fn infer_step(
             let intermediates = &exprs[0..exprs.len() - 1];
             let last = &exprs[exprs.len() - 1];
             let mut intermediate_envs: Vec<Arc<RwLock<Env>>> = Vec::new();
-
+            // dep_graph[i] = names from EARLIER intermediate frames that dict i newly marked
+            // as referenced during its type-checking (cross-dict dependency edges).
+            let mut dep_graph: Vec<std::collections::HashSet<String>> = Vec::new();
             for (i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
+                    // Snapshot the referenced state of all previously-collected intermediate
+                    // frames BEFORE processing this dict. References that appear AFTER this
+                    // snapshot are cross-dict dependencies (this dict referencing earlier dicts).
+                    let pre_refs: Vec<std::collections::HashSet<String>> = intermediate_envs
+                        .iter()
+                        .map(|frame| {
+                            let guard = frame.read().unwrap();
+                            guard
+                                .extras
+                                .iter()
+                                .filter_map(|(name, slot)| {
+                                    if slot.referenced {
+                                        Some(name.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        })
+                        .collect();
+
                     let (_, schemes, referenced, mut dict_errs) =
                         run_typecheck_dict(entries, &current_env, state, type_map).await;
                     errors.append(&mut dict_errs);
+
+                    // Compute cross-dict dependencies: names in earlier frames newly marked
+                    // by this dict's processing.
+                    let mut dict_deps: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for (frame_idx, frame) in intermediate_envs.iter().enumerate() {
+                        let guard = frame.read().unwrap();
+                        for (name, slot) in &guard.extras {
+                            if slot.referenced && !pre_refs[frame_idx].contains(name.as_str()) {
+                                dict_deps.insert(name.clone());
+                            }
+                        }
+                    }
+                    dep_graph.push(dict_deps);
 
                     // Extend env with schemes (preserving let-polymorphism).
                     // Propagate referenced state from the sub-run: run_typecheck_dict creates
@@ -573,7 +643,9 @@ async fn infer_step(
                         }
                     }
                     current_env = Arc::new(RwLock::new(new_env_inner));
-                    // Collect this env frame for lost-binding detection.
+                    // Track the intermediate env frame for lost-binding detection.
+                    // The frame is captured AFTER inserting schemes so the handler
+                    // iterates the correct extras entries.
                     intermediate_envs.push(Arc::clone(&current_env));
                 } else {
                     // Non-Dict intermediate: push continuation, return Eval — no recursion.
@@ -590,13 +662,37 @@ async fn infer_step(
                         last: Arc::clone(last),
                         env: Arc::clone(&current_env),
                         enclosing_level: enc_level,
+                        accumulated_intermediate_envs: intermediate_envs,
+                        accumulated_dep_graph: dep_graph,
                     });
                     return TypeCheckAction::Eval(Arc::clone(intermediate), current_env);
                 }
             }
 
-            // All intermediates were Dict — push AfterSequentialFinal then eval the last expression.
-            stack.push(TypeCheckCont::AfterSequentialFinal { intermediate_envs });
+            // All intermediates were Dict — collect pre-final snapshot, push AfterSequentialFinal,
+            // then evaluate the last expression.
+            let pre_final_refs: Vec<std::collections::HashSet<String>> = intermediate_envs
+                .iter()
+                .map(|frame| {
+                    let guard = frame.read().unwrap();
+                    guard
+                        .extras
+                        .iter()
+                        .filter_map(|(name, slot)| {
+                            if slot.referenced {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            stack.push(TypeCheckCont::AfterSequentialFinal {
+                intermediate_envs,
+                dep_graph,
+                pre_final_refs,
+            });
             TypeCheckAction::Eval(Arc::clone(last), current_env)
         }
 
@@ -649,7 +745,7 @@ async fn infer_step(
         //
         // Full multi-pass dict inference (Passes 0–4) is performed by run_typecheck_dict in
         // the DictPassZero handler. Push the continuation and return Done(Unknown) immediately
-        // to trigger apply_cont — there is no child node to evaluate at this point (T-1644).
+        // to trigger apply_cont — there is no child node to evaluate at this point.
         SurfaceExpression::Dict(entries) => {
             stack.push(TypeCheckCont::DictPassZero {
                 entries: entries.to_vec(),
@@ -669,7 +765,7 @@ async fn infer_step(
             TypeCheckAction::Eval(Arc::clone(scrutinee), Arc::clone(env))
         }
 
-        // ===== Decl — call declaration helpers directly (T-1641) =====
+        // ===== Decl — call declaration helpers directly =====
         SurfaceExpression::Decl(decl_box) => {
             // Call infer_class_decl_from_surface and infer_instance_decl_from_surface directly
             // now that they are pub(crate). TypeAlias declarations in expression position have
@@ -842,7 +938,7 @@ async fn apply_cont(
                         }
                     }
 
-                    // T-1709: Emit diagnostic for explicit @Unknown return annotation
+                    // Emit diagnostic for explicit @Unknown return annotation
                     if matches!(&declared_ret, Type::Unknown) {
                         state.diagnostics.push(TypeDiagnostic::info(
                             "explicit-unknown",
@@ -851,7 +947,7 @@ async fn apply_cont(
                         ));
                     }
 
-                    // T-1710: Emit diagnostic for overbroad return annotation
+                    // Emit diagnostic for overbroad return annotation
                     {
                         let body_resolved = state.subst.apply(&child_ty);
                         if !matches!(body_resolved, Type::Unknown | Type::Any | Type::Var(..))
@@ -923,13 +1019,28 @@ async fn apply_cont(
             // Record the function type with the Fn node's span for LSP hover.
             record_type_map(type_map, &node_span, &fn_type);
 
-            // Lost-binding detection for function parameters.
-            // Warning emission is suppressed here because three false-positive cases
-            // cause spurious lost-binding warnings that cascade into type errors:
-            // - leading-dot .name shadowed by dict key with same name
-            // - computed-key dict values ([expr: v]) don't trigger mark_extras_referenced
-            // - IIFE fn closures: fn body references captured via closure, not direct ref
-            let _ = &param_env;
+            // FnBody lost-binding warning emission.
+            // param_env.extras holds parameter schemes inserted by infer_fn_push_cont.
+            // When a parameter has definition_span but referenced == false, a warning is
+            // emitted. Builtins set definition_span = None to exclude their params.
+            {
+                let param_guard = param_env.read().unwrap();
+                for (name, slot) in &param_guard.extras {
+                    if !slot.referenced {
+                        if let Some(span) = slot
+                            .scheme
+                            .as_ref()
+                            .and_then(|s| s.definition_span.as_ref())
+                        {
+                            state.diagnostics.push(TypeDiagnostic::warn(
+                                "lost-binding",
+                                format!("function parameter '{}' is never referenced", name),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
 
             TypeCheckAction::Done(fn_type)
         }
@@ -1089,7 +1200,7 @@ async fn apply_cont(
                             .as_ref()
                             .and_then(|s| s.definition_span.as_ref())
                         {
-                            errors.push(TypeDiagnostic::warn(
+                            state.diagnostics.push(TypeDiagnostic::warn(
                                 "lost-binding",
                                 format!("variable '{}' is never referenced", name),
                                 span.clone(),
@@ -1157,6 +1268,8 @@ async fn apply_cont(
             last,
             env,
             enclosing_level,
+            mut accumulated_intermediate_envs,
+            mut accumulated_dep_graph,
         } => {
             // Restore level (was incremented before pushing this continuation).
             state.level = enclosing_level;
@@ -1171,6 +1284,8 @@ async fn apply_cont(
                         new_env_inner.insert_scheme_named_only(name.clone(), scheme);
                     }
                     current_env = Arc::new(RwLock::new(new_env_inner));
+                    // Non-Dict intermediates use generalize (no user span) so their schemes
+                    // lack definition_span — do NOT track for lost-binding warnings.
                 }
                 Type::Unknown | Type::Any => {}
                 _ => errors.push(TypeDiagnostic::error(
@@ -1183,9 +1298,38 @@ async fn apply_cont(
             // Process remaining intermediates iteratively (Dict inline, non-Dict via continuation).
             for (i, intermediate) in remaining_intermediates.iter().enumerate() {
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
+                    // Snapshot earlier frames for cross-dict dep computation.
+                    let pre_refs_snap: Vec<std::collections::HashSet<String>> =
+                        accumulated_intermediate_envs
+                            .iter()
+                            .map(|frame| {
+                                let g = frame.read().unwrap();
+                                g.extras
+                                    .iter()
+                                    .filter_map(
+                                        |(n, s)| if s.referenced { Some(n.clone()) } else { None },
+                                    )
+                                    .collect()
+                            })
+                            .collect();
+
                     let (_, schemes, referenced, mut dict_errs) =
                         run_typecheck_dict(entries, &current_env, state, type_map).await;
                     errors.append(&mut dict_errs);
+
+                    // Cross-dict dep: names in earlier frames newly marked by this dict.
+                    let mut dict_deps_set: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for (fi, frame) in accumulated_intermediate_envs.iter().enumerate() {
+                        let g = frame.read().unwrap();
+                        for (name, slot) in &g.extras {
+                            if slot.referenced && !pre_refs_snap[fi].contains(name.as_str()) {
+                                dict_deps_set.insert(name.clone());
+                            }
+                        }
+                    }
+                    accumulated_dep_graph.push(dict_deps_set);
+
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
                         new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
@@ -1196,6 +1340,8 @@ async fn apply_cont(
                         }
                     }
                     current_env = Arc::new(RwLock::new(new_env_inner));
+                    // Dict intermediates have proper user spans — track for lost-binding warnings.
+                    accumulated_intermediate_envs.push(Arc::clone(&current_env));
                 } else {
                     // Another non-Dict intermediate — push new continuation, return Eval.
                     let enc_level = state.level;
@@ -1209,12 +1355,37 @@ async fn apply_cont(
                         last: Arc::clone(&last),
                         env: Arc::clone(&current_env),
                         enclosing_level: enc_level,
+                        accumulated_intermediate_envs,
+                        accumulated_dep_graph,
                     });
                     return TypeCheckAction::Eval(Arc::clone(intermediate), current_env);
                 }
             }
 
-            // All remaining intermediates processed — evaluate the last expression.
+            // All remaining intermediates processed — collect pre-final snapshot for
+            // transitive reachability, push AfterSequentialFinal, evaluate last expression.
+            let pre_final_snap: Vec<std::collections::HashSet<String>> =
+                accumulated_intermediate_envs
+                    .iter()
+                    .map(|frame| {
+                        let g = frame.read().unwrap();
+                        g.extras
+                            .iter()
+                            .filter_map(|(name, slot)| {
+                                if slot.referenced {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect();
+            stack.push(TypeCheckCont::AfterSequentialFinal {
+                intermediate_envs: accumulated_intermediate_envs,
+                dep_graph: accumulated_dep_graph,
+                pre_final_refs: pre_final_snap,
+            });
             TypeCheckAction::Eval(last, current_env)
         }
 
@@ -1231,7 +1402,7 @@ async fn apply_cont(
             let expected_resolved = state.subst.apply(&expected);
             let actual_resolved = state.subst.apply(&actual);
 
-            // T-1708: Emit diagnostic for explicit @Unknown annotation
+            // Emit diagnostic for explicit @Unknown annotation
             if expected_resolved == Type::Unknown {
                 state.diagnostics.push(TypeDiagnostic::info(
                     "explicit-unknown",
@@ -1305,34 +1476,82 @@ async fn apply_cont(
         // ===== AfterSequentialFinal =====
         //
         // Fires after the final expression in a Sequential whose intermediates were all Dict.
-        // Env propagation from run_typecheck_dict is correct (referenced state is
-        // propagated via HashSet<String>). Warning emission is suppressed because two
-        // false-positive cases produce spurious warnings that cascade into type errors:
-        // - IIFE fn closures (fn body references captured via closure, not direct ref)
-        // - leading-dot .name shadowed by dict key with same name
-        // The propagation machinery is correct; only emission is suppressed.
-        TypeCheckCont::AfterSequentialFinal { intermediate_envs } => {
-            let _ = &intermediate_envs;
-            if false {
-                for env_frame in &intermediate_envs {
-                    let env_guard = env_frame.read().unwrap();
-                    for (name, slot) in &env_guard.extras {
-                        if !slot.referenced {
-                            if let Some(span) = slot
-                                .scheme
-                                .as_ref()
-                                .and_then(|s| s.definition_span.as_ref())
-                            {
-                                errors.push(TypeDiagnostic::warn(
-                                    "lost-binding",
-                                    format!("variable '{}' is never referenced", name),
-                                    span.clone(),
-                                ));
+        // Performs transitive reachability analysis to emit lost-binding warnings.
+        //
+        // Algorithm:
+        // 1. Compute `directly_live` = names that the final expression newly marked referenced
+        //    (by comparing current referenced state against pre_final_refs snapshot).
+        // 2. Backward fixpoint: for each dict N (last to first), if any of dict N's bindings
+        //    are live, add dep_graph[N] (names from earlier dicts that dict N depended on)
+        //    to the live set. Repeat until stable.
+        // 3. Emit a warning for every intermediate binding NOT in the live set that has a
+        //    user-visible definition_span.
+        //
+        // dep_graph[i] = names from earlier intermediate frames newly marked by dict i's
+        // type-checking — a per-dict approximation of cross-dict dependency edges.
+        TypeCheckCont::AfterSequentialFinal {
+            intermediate_envs,
+            dep_graph,
+            pre_final_refs,
+        } => {
+            // Step 1: collect directly-live names (marked by final expression).
+            let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for (frame_idx, env_frame) in intermediate_envs.iter().enumerate() {
+                let env_guard = env_frame.read().unwrap();
+                for (name, slot) in &env_guard.extras {
+                    let was_pre = pre_final_refs
+                        .get(frame_idx)
+                        .map_or(false, |s| s.contains(name.as_str()));
+                    if slot.referenced && !was_pre {
+                        live.insert(name.clone());
+                    }
+                }
+            }
+
+            // Step 2: backward fixpoint propagation.
+            // For each dict N (from last to first): if any name in dict N is live,
+            // add dep_graph[N] to live. Repeat until no change.
+            let mut changed = true;
+            while changed {
+                changed = false;
+                // Iterate dicts from highest index to lowest (backwards).
+                for dict_idx in (0..intermediate_envs.len()).rev() {
+                    // Check if any binding in dict dict_idx is live.
+                    let dict_has_live = {
+                        let guard = intermediate_envs[dict_idx].read().unwrap();
+                        guard.extras.keys().any(|n| live.contains(n.as_str()))
+                    };
+                    if dict_has_live {
+                        if let Some(deps) = dep_graph.get(dict_idx) {
+                            for dep_name in deps {
+                                if live.insert(dep_name.clone()) {
+                                    changed = true;
+                                }
                             }
                         }
                     }
                 }
-            } // end if false
+            }
+
+            // Step 3: emit warnings for non-live intermediate bindings with user spans.
+            for env_frame in &intermediate_envs {
+                let env_guard = env_frame.read().unwrap();
+                for (name, slot) in &env_guard.extras {
+                    if !live.contains(name.as_str()) {
+                        if let Some(span) = slot
+                            .scheme
+                            .as_ref()
+                            .and_then(|s| s.definition_span.as_ref())
+                        {
+                            state.diagnostics.push(TypeDiagnostic::warn(
+                                "lost-binding",
+                                format!("variable '{}' is never referenced", name),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
             TypeCheckAction::Done(child_ty)
         }
 
@@ -1340,16 +1559,16 @@ async fn apply_cont(
         //
         // Pushed by the Dict arm of infer_step.  Runs Pass 0 (key resolution) and Pass 1
         // (global TypeVar pre-insert) inline, then pushes DictTypeAliasReg to continue the
-        // iterative multi-pass dict inference without Rust stack recursion (T-1874).
+        // iterative multi-pass dict inference without Rust stack recursion.
         //
         // ITERATIVITY NOTE: DictPassZero handles the terminal-dict case (a dict that is the
         // final expression being inferred).  This path is fully iterative via the CEK
         // continuation chain (DictPassZero → DictTypeAliasReg → DictClassPreReg →
         // DictSccMember → ...) — no Rust stack recursion.  The Sequential path (lines ~406
         // and ~1057) uses run_typecheck_dict directly with Box::pin(...).await for
-        // intermediate dict bodies; that direct call is retained intentionally per T-1874
-        // ("keep run_typecheck_dict as an internal async helper for those callers and just
-        // make the DictPassZero handler iterative").
+        // intermediate dict bodies; that direct call is retained intentionally
+        // (run_typecheck_dict is kept as an internal async helper for those callers while
+        // the DictPassZero handler is iterative).
         //
         // Schemes are not propagated to the parent env here: in the DictPassZero path the dict
         // is the terminal expression being inferred, not an intermediate scope-chain body.
@@ -1487,7 +1706,7 @@ async fn apply_cont(
             }
 
             // Inject synthetic innermost scope frame into state.scope_frames (mirrors
-            // run_typecheck_dict behavior for B-477 user-defined typeclass instance dispatch).
+            // run_typecheck_dict behavior for user-defined typeclass instance dispatch).
             // Uses surface_dict_static_keys to compute canonical slot positions (matching the
             // resolver and runtime GroupSpine layout) so instance binding mangled names are
             // included at the correct slots for call_dispatch resolution.
@@ -1882,7 +2101,7 @@ async fn apply_cont(
                                 if let Some(name) = key_name {
                                     field_types.insert(name.clone(), ty);
                                 }
-                                // T-1733: Register class method TypeSchemes after successful
+                                // Register class method TypeSchemes after successful
                                 // ClassDecl processing.
                                 if let SurfaceDeclaration::ClassDecl {
                                     name: class_name,
@@ -2454,7 +2673,7 @@ async fn apply_cont(
 
                         let doc = value_doc.or(key_doc);
 
-                        // Extract annotation-based narrowing hints (T-1761).
+                        // Extract annotation-based narrowing hints.
                         let param_narrowings: Vec<Option<crate::type_def::Type>> = 'narrowing: {
                             // Source 1: key-level @[narrows: T]
                             if let Some(ref key_node) = entry.node.key {
@@ -4124,8 +4343,6 @@ async fn infer_fn_push_cont(
     }
 
     let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
-    // Clone for param_env before fn_env_arc is moved into the Eval action.
-    let param_env = Arc::clone(&fn_env_arc);
 
     // required_count = number of fixed (non-variadic) params
     let required_count = param_types.len();
@@ -4134,6 +4351,8 @@ async fn infer_fn_push_cont(
     let saved_expected_return = state.expected_return.clone();
 
     // Push the continuation so apply_cont can build the Function type from the body type.
+    // param_env carries the fn env frame so the handler can emit lost-binding warnings for
+    // unreferenced parameters after body inference is complete.
     stack.push(TypeCheckCont::FnBody {
         saved_level,
         saved_expected_return,
@@ -4143,7 +4362,7 @@ async fn infer_fn_push_cont(
         rest,
         required_count,
         node_span: node.span.clone(),
-        param_env,
+        param_env: Arc::clone(&fn_env_arc),
     });
 
     // Evaluate body iteratively via the CEK loop.
@@ -4811,7 +5030,7 @@ pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
     }
 }
 
-/// Convert a literal surface expression to a runtime `Value` (B-621).
+/// Convert a literal surface expression to a runtime `Value`.
 ///
 /// Returns `Some(Value)` for Int, U64, Float, and StringLiteral expressions.
 /// Returns `None` for any other expression (not a compile-time constant).
@@ -5096,11 +5315,9 @@ fn dict_finish(
 ///
 /// Note: The top-level CEK path for dict expressions (infer_step Dict arm) now uses the
 /// iterative DictPassZero→DictTypeAliasReg→DictClassPreReg→DictSccMember handler chain
-/// (T-1874) instead of calling run_typecheck_dict directly. run_typecheck_dict is still used
+/// instead of calling run_typecheck_dict directly. run_typecheck_dict is still used
 /// for nested Dict entries (where a dict is a value inside another dict's SCC pass), since
 /// those are leaf-level calls that do not risk Rust stack overflow.
-///
-/// Tracked by T-1644.
 pub(crate) async fn run_typecheck_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &Arc<RwLock<Env>>,
@@ -5434,7 +5651,7 @@ pub(crate) async fn run_typecheck_dict(
                         _ => Vec::new(),
                     };
                     // Collect constructor_constants from literal-valued named args in the
-                    // body AST (B-621). For each variant entry in the type body that is a
+                    // body AST. For each variant entry in the type body that is a
                     // Call with an uppercase head, named_args whose values are literals
                     // (Int/U64/Float/StringLiteral) become constants stored in TyConDef.
                     //
@@ -5629,7 +5846,7 @@ pub(crate) async fn run_typecheck_dict(
                         if let Some(name) = key_name {
                             field_types.insert(name.clone(), ty);
                         }
-                        // T-1733: Register class method TypeSchemes after successful ClassDecl processing
+                        // Register class method TypeSchemes after successful ClassDecl processing
                         if let SurfaceDeclaration::ClassDecl {
                             name: class_name,
                             params,
@@ -5871,7 +6088,6 @@ pub(crate) async fn run_typecheck_dict(
                 let saved_constraints = std::mem::take(&mut state.constraints);
 
                 // Infer the entry value using run_typecheck (CEK path, no Rust stack recursion).
-                // TypeAssert annotation resolution is not yet wired into this CEK path; type_assert_ty = None.
                 // For nested Dict values, call run_typecheck_dict directly to capture schemes.
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
@@ -6153,7 +6369,7 @@ pub(crate) async fn run_typecheck_dict(
 
                     let doc = value_doc.or(key_doc);
 
-                    // Extract annotation-based narrowing hints for this binding (T-1761).
+                    // Extract annotation-based narrowing hints for this binding.
                     //
                     // Two sources of narrowing declarations (checked in priority order):
                     //

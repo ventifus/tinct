@@ -558,10 +558,11 @@ mod tests {
                     .get(&HashableValue::Int(0))
                     .expect("entry 0 missing")
                     .clone();
-                let span_val = span_thunk
-                    .try_get_value()
-                    .cloned()
-                    .expect("span dict should be materialized");
+                let span_val = match span_thunk.peek_result() {
+                    Some(Ok(v)) => v.clone(),
+                    Some(Err(e)) => panic!("span dict evaluation error: {}", e),
+                    None => panic!("span dict not materialized"),
+                };
                 match span_val {
                     Value::Dict { entries, .. } => {
                         assert!(entries.contains_key(&HashableValue::Str("id".into())));

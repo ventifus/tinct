@@ -1017,7 +1017,6 @@ The `builtin-*` names are the canonical registration names for all Rust builtins
 | Alias | Target | Purpose |
 |-------|--------|---------|
 | `builtin-add` | `+` | Stable name for raw addition |
-| `builtin-mul` | `*` | Stable name for raw multiplication |
 | `builtin-div` | `/` | Stable name for raw division |
 | `builtin-eq` | `=` | Stable name for raw equality |
 | `builtin-lt` | `<` | Stable name for raw less-than |

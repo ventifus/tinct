@@ -6083,7 +6083,7 @@ fn push_expr_to_parent(
                     // No pending_key but pending_rhs is set — this shouldn't happen in a valid
                     // parse path (pending_rhs is only set while pending_key is also set).
                     // Drop the orphan rhs and treat the incoming node as a new binding.
-                    let _ = prev_rhs;
+                    drop(prev_rhs);
                     bindings.push(node);
                 } else {
                     bindings.push(node);
@@ -7458,7 +7458,10 @@ mod tests {
                 .contains("`:` is not valid inside a type form")
                 || output2.diagnostics[0]
                     .message
-                    .contains("must follow an uppercase constructor name"),
+                    .contains("must follow an uppercase constructor name")
+                || output2.diagnostics[0]
+                    .message
+                    .contains("requires a value before"),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.diagnostics[0].message
         );

@@ -99,12 +99,6 @@ pub fn core_expr_to_surface_node(expr: &Spanned<CoreExpr>) -> Arc<SurfaceNode>
 Converts a `CoreExpr` back to a `SurfaceNode` for quote/unquote evaluation. Bridges through `core_expr_to_surface_expr`. Used by `eval_core_expr`'s `Quote` arm. The round-trip is lossless for variable names because `CoreExpr::Var` preserves the original name alongside its de Bruijn coordinates.
 
 ```rust
-pub(crate) fn annotation_name_to_type(name: &str) -> Type
-```
-
-Converts well-known type names (`"Int"`, `"String"`, `"Bool"`, `"Seq"`, etc.) to `Type` values for `TypeAssert` pattern coverage. `Type::Unknown` (accept-all) is the fallback for unrecognized names.
-
-```rust
 pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>>
 ```
 
@@ -129,7 +123,7 @@ Extracts concrete uppercase type annotation names from an instance arm pattern (
 | `Pipe { lhs, rhs }` | `Call(rhs, [lhs])` | Defensive; desugar should handle first |
 | `Sequential(exprs)` | `Sequential(core_exprs)` | Each expr lowered in order |
 | `Dict` (no spread entries, no Decl values) | `Dict(core_entries)` | Static keys become `Str`; escaped VarRef keys computed |
-| `Dict` (with `...spread`) | Nested `Call(merge, ...)` | Left-associative merge chain; `merge` Var uses `level: u32::MAX, slot: u32::MAX` (name-based fallback) |
+| `Dict` (with `...spread`) | Nested `Call(builtin-dict-merge, ...)` | Left-associative merge chain; `builtin-dict-merge` Var resolved from `scope_frames` root_group via `DICT_MERGE_NAME` constant — real de Bruijn coordinates, no sentinel |
 | `Dict` with named `InstanceDecl` | `Dict` with single outer key, lowered value | Named instance binding preserved |
 | `Dict` with anonymous `InstanceDecl` (multi-arm) | `Dict` with mangled-name entries | `instance_binding_name` keying for each method |
 | `Dict` with `TypeAlias` | `Dict` with constructor entries | `lower_type_alias_to_constructor_dict` |
@@ -196,11 +190,11 @@ A `TypeAlias` in standalone expression position (not a dict-entry value) lowers 
 `[a: 1  ...rest  b: 2]` desugars to a left-associative merge chain:
 
 ```
-Call(merge, [Dict([a: 1]), rest])
-→ Call(merge, [previous, Dict([b: 2])])
+Call(builtin-dict-merge, [Dict([a: 1]), rest])
+→ Call(builtin-dict-merge, [previous, Dict([b: 2])])
 ```
 
-The `merge` Var uses `level: u32::MAX, slot: u32::MAX` — a sentinel that triggers the name-based fallback in `eval_core.rs` (special-cased for `"merge"` and `"field-get"`) rather than slot-based lookup. This is a deliberate exception to the strict de Bruijn discipline, used because `merge` is always a root builtin and the spread-desugar site has no env context.
+The merge Var is generated as `builtin-dict-merge` — the constant `DICT_MERGE_NAME` in `lower.rs`. Its de Bruijn coordinates are resolved from `scope_frames` (the resolver scope frames passed into `lower()`) by looking up the name in the root_group frame. This requires that `scope_frames` is seeded with the root group before `lower()` is called. The result is a standard `Var { level, slot }` with real coordinates — no sentinel, no name-based fallback. `builtin-dict-merge` is registered as a core builtin alongside other builtins and is prelude-agnostic: the spread-dict feature works regardless of what the user's prelude names its merge function.
 
 ---
 
@@ -330,7 +324,6 @@ This two-phase protocol allows entries to reference each other by slot before an
 6. **Letrec correctness.** The FlatEnv for a dict scope is allocated before any entry value thunks are created. Each value thunk captures the dict's `env_id`. When any value thunk is forced, it can look up sibling entries by slot — the slots are already allocated, even if not yet evaluated.
 7. **`%` threading is loader.llt's responsibility.** `eval_surface_file` does not thread `%` between documents. The loader (via `builtin-eval` returning the exports Dict, and the `merge`-based env accumulation in `eval-document-runtime`) is responsible for making the prior document's output available as `%` in the next document's env.
 8. **Eval stack is per-async-task.** `TASK_EVAL_STACK` (in `eval_materialize.rs`) is a `tokio::task_local!` — it exists per Tokio task, not per `EvalContext`. It is used for cycle path reconstruction when a `Var` lookup encounters an in-progress thunk.
-9. **Spread `merge` Var uses sentinel coordinates.** `level: u32::MAX, slot: u32::MAX` is the name-based fallback sentinel for `"merge"` in spread-dict lowering. This is the only approved exception to strict de Bruijn coordinates in lowering.
 
 ---
 

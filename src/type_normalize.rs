@@ -595,38 +595,55 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
 /// This helper converts them to `crate::type_def::Kind` values so that the type-stage
 /// scope population code (builtins_meta.rs, lib.rs) can produce `TypeStageEntry::TypeVar`.
 ///
-/// Returns `Some(Kind)` for recognised kind strings, `None` for unrecognised values.
-pub(crate) fn typenode_typevar_kind(val: &Value) -> Option<crate::type_def::Kind> {
+/// Returns `Ok(Some(Kind))` for recognised kind strings, `Ok(None)` for unrecognised values,
+/// and `Err(e)` when a thunk inside the TypeVar payload has settled with an evaluation error.
+pub(crate) fn typenode_typevar_kind(
+    val: &Value,
+) -> Result<Option<crate::type_def::Kind>, std::sync::Arc<crate::error::EvalError>> {
     // Only matches Value::Variant { ctor: "TypeNode.TypeVar", payload: Some(thunk) }
     // where the thunk resolves to Value::Dict containing kind: "Operator" | "Label".
     let (ctor, payload_opt) = match val {
         Value::Variant { ctor, payload, .. } => (ctor.as_ref(), payload),
-        _ => return None,
+        _ => return Ok(None),
     };
     if ctor != "TypeNode.TypeVar" {
-        return None;
+        return Ok(None);
     }
     // The payload is an Arc<Thunk> that resolves to a Dict with a "kind" string field.
-    let payload_thunk = payload_opt.as_ref()?;
-    let payload_val = payload_thunk.try_get_value()?;
+    let payload_thunk = match payload_opt.as_ref() {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+    let payload_val = match payload_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => return Err(std::sync::Arc::clone(e)),
+        None => return Ok(None),
+    };
     let dict = match payload_val {
         Value::Dict { entries: d, .. } => d,
-        _ => return None,
+        _ => return Ok(None),
     };
     // Extract the "kind" field value.
     let kind_key = crate::value::HashableValue::Str(std::sync::Arc::from("kind"));
-    let kind_thunk = dict.get(&kind_key)?;
-    let kind_val = kind_thunk.try_get_value()?;
+    let kind_thunk = match dict.get(&kind_key) {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+    let kind_val = match kind_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => return Err(std::sync::Arc::clone(e)),
+        None => return Ok(None),
+    };
     let kind_str = match kind_val {
         Value::String {
             source, start, end, ..
         } => &source[*start..*end],
-        _ => return None,
+        _ => return Ok(None),
     };
     match kind_str {
-        "Operator" => Some(crate::type_def::Kind::Operator),
-        "Label" => Some(crate::type_def::Kind::Label),
-        _ => None,
+        "Operator" => Ok(Some(crate::type_def::Kind::Operator)),
+        "Label" => Ok(Some(crate::type_def::Kind::Label)),
+        _ => Ok(None),
     }
 }
 

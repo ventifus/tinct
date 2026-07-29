@@ -168,10 +168,7 @@ pub(crate) fn builtin_macro_error(
 
         // Extract message (first argument) - materialized by Strictness::Seq
         let arg0_thunk = Arc::clone(&args[0]);
-        let msg_val = arg0_thunk
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let msg_val = arg0_thunk.require_value()?.clone();
         let message = require_string("builtin-macro-error", msg_val, arg0_thunk.span.clone())?;
 
         // Determine the span to use for the error
@@ -461,14 +458,8 @@ pub(crate) fn builtin_apply_impl(
         // Both args[0] and args[1] have been pre-materialized by force_count.
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
-        let func_val = arg0_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let args_val = arg1_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let func_val = arg0_thunk.require_value()?.clone();
+        let args_val = arg1_thunk.require_value()?.clone();
 
         let arg_dict = crate::builtins::require_dict(
             "apply",
@@ -526,7 +517,7 @@ pub(crate) fn builtin_apply_impl(
                 // Pre-materialize strict args before calling the builtin.
                 // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
                 // so `force_count` and `pos_strictness` pre-materialization do NOT happen
-                // automatically. Builtins that use `try_get_value().expect(...)` rely
+                // automatically. Builtins that use `require_value()` rely
                 // on force_count/pos_strictness having been applied; without this, passing a
                 // force_count>0 builtin like `$keys` through `$apply` would panic.
                 //
@@ -605,7 +596,7 @@ pub(crate) fn builtin_apply(
         };
         Ok(Arc::new(Thunk::builtin_call(
             // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
-            // before calling builtin_apply_impl, which uses try_get_value().expect(...).
+            // before calling builtin_apply_impl, which uses require_value().
             builtin!("builtin-apply", builtin_apply_impl, [], 2),
             args,
             named_opt,
@@ -659,7 +650,7 @@ pub(crate) fn builtin_gensym(
         }
 
         let get_str = |thunk: Arc<Thunk>, name: &str, span: &Span| -> EvalResult<String> {
-            match thunk.try_get_value().expect("pre-materialized").clone() {
+            match thunk.require_value()?.clone() {
                 Value::String {
                     source, start, end, ..
                 } => Ok(source[start..end].to_string()),
@@ -1102,112 +1093,109 @@ pub(crate) fn builtin_ast_of(
 
         // Check for Materialized Value::Function — build a metadata dict:
         // {type: "fn", doc: ..., return-ann: ..., params: [...]}
-        if let Some(val) = thunk.try_get_value().cloned() {
-            if let crate::value::Value::Function {
-                params, annotation, ..
-            } = &val
-            {
-                let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        // materialize() succeeded above (propagated via ?), so require_value() cannot fail here.
+        // Propagate with ? anyway — an impossible error must not be silently discarded.
+        let val = thunk.require_value()?.clone();
+        if let crate::value::Value::Function {
+            params, annotation, ..
+        } = &val
+        {
+            let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
-                // type: "fn"
-                dict.insert(
-                    HashableValue::Str("type".into()),
-                    Arc::new(crate::value::Thunk::value(
-                        string_val("fn"),
-                        call_span.clone(),
-                    )),
-                );
+            // type: "fn"
+            dict.insert(
+                HashableValue::Str("type".into()),
+                Arc::new(crate::value::Thunk::value(
+                    string_val("fn"),
+                    call_span.clone(),
+                )),
+            );
 
-                // doc: string or empty string
-                let doc_str = annotation
-                    .as_ref()
-                    .and_then(|a| a.doc.as_deref())
-                    .unwrap_or("");
-                dict.insert(
-                    HashableValue::Str("doc".into()),
-                    Arc::new(crate::value::Thunk::value(
-                        string_val(doc_str),
-                        call_span.clone(),
-                    )),
-                );
+            // doc: string or empty string
+            let doc_str = annotation
+                .as_ref()
+                .and_then(|a| a.doc.as_deref())
+                .unwrap_or("");
+            dict.insert(
+                HashableValue::Str("doc".into()),
+                Arc::new(crate::value::Thunk::value(
+                    string_val(doc_str),
+                    call_span.clone(),
+                )),
+            );
 
-                // return-ann: annotation dict or empty dict (null)
-                let return_ann_thunk = match annotation.as_ref().and_then(|a| a.return_ann.as_ref())
-                {
-                    Some(ann) => {
-                        let spanned = crate::ast::Spanned::new(ann.clone(), call_span.clone());
-                        crate::surface_convert::alloc_annotation(&spanned, &ctx)
-                    }
-                    None => Arc::new(crate::value::Thunk::value(
-                        Value::Dict {
-                            entries: IndexMap::new(),
-                            type_val: crate::value::unknown_type_val(),
-                        },
-                        call_span.clone(),
-                    )),
-                };
-                dict.insert(HashableValue::Str("return-ann".into()), return_ann_thunk);
-
-                // params: integer-keyed dict of param entry dicts [{name: "x", annotation: ...}, ...]
-                let param_arcs: Vec<Arc<Thunk>> = params
-                    .iter()
-                    .map(|p| {
-                        let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                        param_dict.insert(
-                            HashableValue::Str("name".into()),
-                            Arc::new(crate::value::Thunk::value(
-                                string_val(&p.name),
-                                call_span.clone(),
-                            )),
-                        );
-                        if let Some(ann) = &p.annotation {
-                            // ann: &Spanned<Annotation>
-                            let ann_thunk = crate::surface_convert::alloc_annotation(ann, &ctx);
-                            param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
-                        }
-                        Ok(Arc::new(crate::value::Thunk::value(
-                            Value::Dict {
-                                entries: param_dict,
-                                type_val: crate::value::unknown_type_val(),
-                            },
-                            call_span.clone(),
-                        )))
-                    })
-                    .collect::<crate::error::EvalResult<Vec<_>>>()?;
-
-                let params_dict: IndexMap<HashableValue, Arc<Thunk>> = param_arcs
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, t)| (HashableValue::Int(i as i64), t))
-                    .collect();
-                dict.insert(
-                    HashableValue::Str("params".into()),
-                    Arc::new(Thunk::value(
-                        Value::Dict {
-                            entries: params_dict,
-                            type_val: crate::value::unknown_type_val(),
-                        },
-                        call_span.clone(),
-                    )),
-                );
-
-                return Ok(Arc::new(crate::value::Thunk::value(
+            // return-ann: annotation dict or empty dict (null)
+            let return_ann_thunk = match annotation.as_ref().and_then(|a| a.return_ann.as_ref()) {
+                Some(ann) => {
+                    let spanned = crate::ast::Spanned::new(ann.clone(), call_span.clone());
+                    crate::surface_convert::alloc_annotation(&spanned, &ctx)
+                }
+                None => Arc::new(crate::value::Thunk::value(
                     Value::Dict {
-                        entries: dict,
+                        entries: IndexMap::new(),
                         type_val: crate::value::unknown_type_val(),
                     },
-                    call_span,
-                )));
-            }
+                    call_span.clone(),
+                )),
+            };
+            dict.insert(HashableValue::Str("return-ann".into()), return_ann_thunk);
 
-            // ast-of is defined only for unevaluated expressions (AstNodeField) and
-            // Value::Function. If the thunk holds any other materialized value, the caller
-            // should have passed the unevaluated form instead.
-            return Err(EvalError::type_mismatch("Expr.*", val.type_name(), call_span).into());
+            // params: integer-keyed dict of param entry dicts [{name: "x", annotation: ...}, ...]
+            let param_arcs: Vec<Arc<Thunk>> = params
+                .iter()
+                .map(|p| {
+                    let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                    param_dict.insert(
+                        HashableValue::Str("name".into()),
+                        Arc::new(crate::value::Thunk::value(
+                            string_val(&p.name),
+                            call_span.clone(),
+                        )),
+                    );
+                    if let Some(ann) = &p.annotation {
+                        // ann: &Spanned<Annotation>
+                        let ann_thunk = crate::surface_convert::alloc_annotation(ann, &ctx);
+                        param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
+                    }
+                    Ok(Arc::new(crate::value::Thunk::value(
+                        Value::Dict {
+                            entries: param_dict,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    )))
+                })
+                .collect::<crate::error::EvalResult<Vec<_>>>()?;
+
+            let params_dict: IndexMap<HashableValue, Arc<Thunk>> = param_arcs
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| (HashableValue::Int(i as i64), t))
+                .collect();
+            dict.insert(
+                HashableValue::Str("params".into()),
+                Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: params_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span.clone(),
+                )),
+            );
+
+            return Ok(Arc::new(crate::value::Thunk::value(
+                Value::Dict {
+                    entries: dict,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            )));
         }
 
-        // Placeholder or unknown state (should not be observable in user code)
-        Err(EvalError::internal("ast-of: thunk in unknown state".to_string(), call_span).into())
+        // ast-of is defined only for unevaluated expressions (AstNodeField) and
+        // Value::Function. If the thunk holds any other materialized value, the caller
+        // should have passed the unevaluated form instead.
+        Err(EvalError::type_mismatch("Expr.*", val.type_name(), call_span).into())
     })
 }
 
@@ -1374,44 +1362,78 @@ pub(crate) fn builtin_span_of(
         {
             if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" {
                 let payload_thunk = Arc::clone(&payload_id);
+                let payload_val = match payload_thunk.peek_result() {
+                    Some(Ok(v)) => Some(v.clone()),
+                    Some(Err(e)) => return Err(Box::new((**e).clone())),
+                    None => None,
+                };
                 if let Some(Value::Dict {
                     entries: payload_dict,
                     ..
-                }) = payload_thunk.try_get_value().cloned()
+                }) = payload_val
                 {
                     if let Some(span_thunk) = payload_dict.get(&HashableValue::Str("span".into())) {
+                        let span_val = match span_thunk.peek_result() {
+                            Some(Ok(v)) => Some(v.clone()),
+                            Some(Err(e)) => return Err(Box::new((**e).clone())),
+                            None => None,
+                        };
                         if let Some(Value::Dict {
                             entries: span_dict, ..
-                        }) = span_thunk.try_get_value().cloned()
+                        }) = span_val
                         {
                             // Extract {start: {line, col}, end: {line, col}}
-                            let get_pos = |key: &str| -> Option<(i64, i64)> {
-                                let pos_thunk = span_dict.get(&HashableValue::Str(key.into()))?;
-                                let Value::Dict {
-                                    entries: pos_dict, ..
-                                } = pos_thunk.try_get_value()?.clone()
-                                else {
-                                    return None;
+                            // Returns Ok(Some(...)) on success, Ok(None) for missing/wrong-type,
+                            // Err(...) when a span thunk settled with an evaluation error.
+                            let get_pos =
+                                |key: &str| -> crate::error::EvalResult<Option<(i64, i64)>> {
+                                    let pos_thunk =
+                                        match span_dict.get(&HashableValue::Str(key.into())) {
+                                            Some(t) => t,
+                                            None => return Ok(None),
+                                        };
+                                    let pos_val = match pos_thunk.peek_result() {
+                                        Some(Ok(v)) => v.clone(),
+                                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                                        None => return Ok(None),
+                                    };
+                                    let Value::Dict {
+                                        entries: pos_dict, ..
+                                    } = pos_val
+                                    else {
+                                        return Ok(None);
+                                    };
+                                    let line_thunk =
+                                        match pos_dict.get(&HashableValue::Str("line".into())) {
+                                            Some(t) => t,
+                                            None => return Ok(None),
+                                        };
+                                    let line = match line_thunk.peek_result() {
+                                        Some(Ok(v)) => v.clone(),
+                                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                                        None => return Ok(None),
+                                    };
+                                    let col_thunk =
+                                        match pos_dict.get(&HashableValue::Str("col".into())) {
+                                            Some(t) => t,
+                                            None => return Ok(None),
+                                        };
+                                    let col = match col_thunk.peek_result() {
+                                        Some(Ok(v)) => v.clone(),
+                                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                                        None => return Ok(None),
+                                    };
+                                    if let (Value::Int { n: l, .. }, Value::Int { n: c, .. }) =
+                                        (line, col)
+                                    {
+                                        Ok(Some((l, c)))
+                                    } else {
+                                        Ok(None)
+                                    }
                                 };
-                                let line = pos_dict
-                                    .get(&HashableValue::Str("line".into()))?
-                                    .try_get_value()?
-                                    .clone();
-                                let col = pos_dict
-                                    .get(&HashableValue::Str("col".into()))?
-                                    .try_get_value()?
-                                    .clone();
-                                if let (Value::Int { n: l, .. }, Value::Int { n: c, .. }) =
-                                    (line, col)
-                                {
-                                    Some((l, c))
-                                } else {
-                                    None
-                                }
-                            };
 
                             if let (Some((sl, sc)), Some((el, ec))) =
-                                (get_pos("start"), get_pos("end"))
+                                (get_pos("start")?, get_pos("end")?)
                             {
                                 // Get the file from the thunk wrapping the Expr value.
                                 let expr_thunk = Arc::clone(&args[0]);
@@ -1806,14 +1828,8 @@ pub(crate) fn builtin_make_annotated(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let inner_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Seq")
-            .clone();
-        let ann_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone();
+        let inner_val = args[0].require_value()?.clone();
+        let ann_val = args[1].require_value()?.clone();
 
         // annotation must be a Dict
         if !matches!(ann_val, Value::Dict { .. }) {
@@ -2030,10 +2046,7 @@ pub(crate) fn builtin_parse(
         // First arg: Bytes (the source file contents)
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
-        let bytes_val = arg0_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let bytes_val = arg0_thunk.require_value()?.clone();
         let source_bytes = match bytes_val {
             Value::Bytes {
                 source, start, end, ..
@@ -2050,10 +2063,7 @@ pub(crate) fn builtin_parse(
         };
 
         // Second arg: String (the path hint for error messages)
-        let path_val = arg1_thunk
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let path_val = arg1_thunk.require_value()?.clone();
         let path_str = require_string("builtin-parse", path_val, arg1_thunk.span.clone())?;
 
         // Decode bytes as UTF-8 source text
@@ -2244,10 +2254,7 @@ pub(crate) fn builtin_resolve(
         }
 
         // arg0: Document — TypeAssert on the parameter enforces this at the call boundary.
-        let doc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let doc_val = args[0].require_value()?.clone();
         let doc_arc = if let Value::Document { doc: d, .. } = doc_val {
             d
         } else {
@@ -2262,10 +2269,7 @@ pub(crate) fn builtin_resolve(
         // Extract names in insertion order — the i-th name gets LetrecGroupMember(i) from the
         // resolver, matching the position of that env-dict thunk in the initial_group passed to
         // eval_core_document_exprs.
-        let name_set_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let name_set_val = args[1].require_value()?.clone();
         let name_set_dict = match name_set_val {
             Value::Dict { entries: d, .. } => d,
             other => {
@@ -2484,10 +2488,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
             }
         };
 
-        let docs_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let docs_val = args[0].require_value()?.clone();
         let docs_dict = match docs_val {
             Value::Dict { entries: d, .. } => d,
             other => {
@@ -2662,17 +2663,11 @@ pub(crate) fn builtin_typecheck_doc(
         }
 
         // arg0: Value::Document
-        let doc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let doc_val = args[0].require_value()?.clone();
         let doc_arc = require_document("builtin-typecheck-doc", doc_val, args[0].span.clone())?;
 
         // arg1: Value::TypeContext
-        let tc_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let tc_val = args[1].require_value()?.clone();
         let tc_arc = require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone())?;
 
         // arg2: Value::Dict — the doc-env.
@@ -2683,10 +2678,7 @@ pub(crate) fn builtin_typecheck_doc(
             Option<std::sync::Arc<crate::value::GroupSpine>>,
             Option<Value>,
         ) = {
-            let env_val = args[2]
-                .try_get_value()
-                .expect("pre-materialized by force_count/pos_strictness")
-                .clone();
+            let env_val = args[2].require_value()?.clone();
             match env_val {
                 Value::Dict {
                     entries: dict_map,
@@ -3090,10 +3082,7 @@ pub(crate) fn builtin_fork_type_ctx(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let parent_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let parent_val = args[0].require_value()?.clone();
         match parent_val {
             Value::TypeContext {
                 ctx: parent_arc, ..
@@ -3164,7 +3153,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         }
 
         // Extract TypeContext — same pattern as builtin_typecheck_doc
-        let tc_arc = match args[0].try_get_value().expect("Strictness::Seq").clone() {
+        let tc_arc = match args[0].require_value()?.clone() {
             Value::TypeContext { ctx: arc, .. } => arc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -3178,7 +3167,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         };
 
         // Extract Dict
-        let dict_entries = match args[1].try_get_value().expect("Strictness::Seq").clone() {
+        let dict_entries = match args[1].require_value()?.clone() {
             Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -3277,10 +3266,7 @@ pub(crate) fn builtin_program(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let val = args[0].require_value()?.clone();
 
         // Extract documents from the input collection (Seq or Dict)
         let mut documents = Vec::new();
@@ -3360,10 +3346,7 @@ pub(crate) fn builtin_desugar(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let program_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let program_val = args[0].require_value()?.clone();
         let (program, resolutions) = match program_val {
             Value::Program {
                 program,
@@ -3414,10 +3397,7 @@ pub(crate) fn builtin_program_docs(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let program_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let program_val = args[0].require_value()?.clone();
         let program_arc = match program_val {
             Value::Program { program, .. } => program,
             other => {
@@ -3490,10 +3470,7 @@ pub(crate) fn builtin_doc_expressions(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        let doc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let doc_val = args[0].require_value()?.clone();
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
@@ -3558,10 +3535,7 @@ pub(crate) fn builtin_doc_meta(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let doc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let doc_val = args[0].require_value()?.clone();
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
@@ -3578,10 +3552,7 @@ pub(crate) fn builtin_doc_meta(
         // arg1: env-dict (T-1775 protocol) — must be Dict.
         // The value is accepted but not used for header evaluation — doc headers contain
         // literal values (strings, lists of strings) that do not require name resolution.
-        let env_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let env_val = args[1].require_value()?.clone();
         match &env_val {
             Value::Dict { .. } => {}
             other => {
@@ -3713,10 +3684,7 @@ pub(crate) fn builtin_eval(
         }
 
         // arg0: Value::CoreDocument — reject Value::Document with a descriptive type error.
-        let doc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let doc_val = args[0].require_value()?.clone();
         let (core_entries, doc_span) = match doc_val {
             Value::CoreDocument { entries, span, .. } => (entries, span),
             Value::Document { .. } => {
@@ -3745,10 +3713,7 @@ pub(crate) fn builtin_eval(
         // Extract thunks in insertion order; these follow root_group thunks in initial_group.
         // The env-dict keys must be in the same insertion order as the name-set passed to
         // builtin-resolve, which determines the LGM slot assignments (with root_group_len offset).
-        let env_val = args[1]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let env_val = args[1].require_value()?.clone();
         let env_map = match env_val {
             Value::Dict { entries: d, .. } => d,
             other => {
@@ -3819,10 +3784,7 @@ pub(crate) fn builtin_variant_payload(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        let val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let val = args[0].require_value()?.clone();
         match val {
             Value::Variant {
                 payload: Some(payload_id),
@@ -3919,10 +3881,7 @@ pub(crate) fn builtin_eval_macro_ast(
         }
 
         // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
-        let expr_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let expr_val = args[0].require_value()?.clone();
 
         let expr_node = match expr_val {
             Value::Variant { ref ctor, .. }
@@ -4012,10 +3971,7 @@ pub(crate) fn builtin_eval_types(
         crate::builtins::reject_named("eval-types", named.as_ref(), call_span.clone())?;
 
         // Materialize the input — accepts Value::Document only.
-        let input_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let input_val = args[0].require_value()?.clone();
 
         // Document path: extract SurfaceNodes directly (same as builtin-eval Document path).
         if let Value::Document { doc, .. } = &input_val {
@@ -4182,14 +4138,8 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = args[0]
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
-    let val2 = args[1]
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
+    let val1 = args[0].require_value()?.clone();
+    let val2 = args[1].require_value()?.clone();
 
     Ok((val1, val2))
 }
@@ -4785,10 +4735,7 @@ pub(crate) fn builtin_ast_to_program(
         };
 
         // arg[0]: Expr.* Value::Variant
-        let expr_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let expr_val = args[0].require_value()?.clone();
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
@@ -4992,10 +4939,7 @@ pub(crate) fn builtin_lower(
         }
 
         // arg0: Value::Document
-        let doc_val = args[0]
-            .try_get_value()
-            .expect("pre-materialized by Strictness::Seq")
-            .clone();
+        let doc_val = args[0].require_value()?.clone();
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {

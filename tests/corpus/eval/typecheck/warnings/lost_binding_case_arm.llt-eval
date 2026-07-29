@@ -1,0 +1,12 @@
+# A case arm binds 'm' in [case [let m] pattern body] but 'm' is never
+# referenced in the body. The MatchArm lost-binding path emits a warning.
+[call [fn [let]
+  [Color: [type Red Green Blue]]
+  [match Color.Red
+    [case [let m] [Color.Red m] 1]
+    ...: 0]]]
+=== out
+Int(1)
+
+=== warn
+variable 'm' is never referenced

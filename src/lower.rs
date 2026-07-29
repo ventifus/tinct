@@ -9,6 +9,7 @@
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
 //! - `Field` → `Call(builtin-dict-get, [Str/Int(key), target])` (unified key-based lookup)
+//! - `Dict` with spread entries → nested `Call(builtin-dict-merge, [seg, rest])` (Axiom 4: core builtin, not prelude name)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
 //! - All other variants: structural lowering, recursing into child nodes
 
@@ -23,14 +24,19 @@ use crate::rust_span;
 /// The tinct name of the dict-field accessor builtin.
 ///
 /// Every dot-access (`expr.field`) desugars to `[FIELD_GETTER_NAME key target]`. The
-/// resolver writes the VarAddr for this name into `Field.resolution`; the lowerer reads
-/// it out. Centralising the name here prevents the string from drifting between the
-/// resolver, the lowerer, and diagnostic messages.
-///
-/// Coupling note: this name couples the lowerer to a specific tinct builtin. The correct
-/// long-term fix (tracked separately) is to have the resolver always populate
-/// `Field.resolution` so the lowerer never needs to search scope_frames by name.
+/// resolver writes the VarAddr for this name into `Field.resolution` (via a seed frame
+/// built from `root_group_resolver_map()`); the lowerer reads it out and emits a
+/// `CoreExpr::Var` referencing the builtin at its correct runtime slot. Centralising the
+/// name here prevents the string from drifting between the resolver, the lowerer, and
+/// diagnostic messages.
 pub(crate) const FIELD_GETTER_NAME: &str = "builtin-dict-get";
+
+/// Name of the core builtin used to implement spread-dict desugaring.
+///
+/// Spread-dict (`[...rest  key: val]`) desugars to nested `builtin-dict-merge` calls.
+/// Using a core builtin name ensures spread-dict works regardless of which prelude (if any)
+/// is loaded — it is resolved from the root group (always present) rather than user scope.
+pub(crate) const DICT_MERGE_NAME: &str = "builtin-dict-merge";
 
 /// Severity of a diagnostic emitted during lowering.
 #[derive(Debug, Clone)]
@@ -134,7 +140,7 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 /// Convert de Bruijn (level, slot) coordinates to a `VarAddr`.
 ///
 /// Used for sources that still produce (level, slot) pairs rather than VarAddr directly:
-/// - `resolve_name_in_frames` results (scope frame lookups for spread-dict `merge`)
+/// - `resolve_name_in_frames` results (scope frame lookups for spread-dict `builtin-dict-merge`)
 /// - `check_constraints_on_var` in `type_unify.rs` (converts before writing to `CallDispatch`)
 /// - Synthetic addresses for lowerer-generated nodes (constructor functions, builtin-make-annotated)
 ///
@@ -226,37 +232,7 @@ pub(crate) fn lower_inner(
     Spanned::new(core_expr, span)
 }
 
-/// Resolve an annotation name to a Type for TypeAssert pattern coverage.
-///
-/// Used by coverage.rs when the resolved_type OnceLock has no entry (--no-typecheck,
-/// macros). Only Rust-level primitive types are recognized here. Prelude-defined types
-/// (Boolean, Seq, etc.) are NOT hardcoded -- they go through the type checker's TyCon
-/// registry when available, and fall through to Unknown otherwise.
-/// Unknown is the accept-all fallback for unrecognized names.
-pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
-    use crate::type_def::Type;
-    match name {
-        "Int" => Type::Int,
-        "Float" => Type::Float,
-        "String" => Type::Str,
-        "Bytes" => Type::Bytes,
-        "Proxy" => Type::Proxy,
-        // Variadic 0-required-param function = any callable (Function or Builtin).
-        "Fn" | "Function" | "Builtin" => Type::Function {
-            params: vec![],
-            ret: Box::new(Type::Any),
-            typed_variadics: vec![],
-            rest: Some(Box::new(("rest".to_string(), Type::Unknown))),
-            required_count: 0,
-        },
-        // All other names (Boolean, Seq, user types, type variables, etc.)
-        // fall through to Unknown — prelude-defined types are resolved by the
-        // type checker, not hardcoded here.
-        _ => Type::Unknown,
-    }
-}
-
-// lower_pattern deleted (T-1750) — match arm patterns are now Arc<SurfaceNode>, passed through unchanged.
+// lower_pattern deleted — match arm patterns are now Arc<SurfaceNode>, passed through unchanged.
 
 fn lower_expr(
     arc: &Arc<SurfaceNode>,
@@ -331,52 +307,21 @@ fn lower_expr(
             ..
         } => {
             // Build the getter function Var and the key argument.
-            // The resolver writes a VarAddr for FIELD_GETTER_NAME into Field.resolution.
+            // The resolver writes a VarAddr for FIELD_GETTER_NAME into Field.resolution
+            // (because the resolver is always seeded with root_group via root_group_resolver_map).
             // All dot-access desugars to [FIELD_GETTER_NAME key target] — one correct path.
-            // Try Field.resolution first (set by the resolver for programs that include builtins
-            // in their scope chain — e.g., init programs loaded via run_loader_pipeline).
-            // Fall back to scope_frames lookup for programs processed by builtin-resolve (which
-            // uses a user-visible name-set that does NOT include builtins like FIELD_GETTER_NAME).
             let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
                 _ => {
-                    // Resolution unset or None — look up FIELD_GETTER_NAME in scope_frames.
-                    // This is the fallback path for documents resolved via builtin-resolve where
-                    // builtins are not in the name-set (e.g., builtin_core.llt type-stage docs).
-                    if let Some(frames) = scope_frames {
-                        let found = frames.iter().enumerate().rev().find_map(|(depth, frame)| {
-                            frame
-                                .get(FIELD_GETTER_NAME)
-                                .map(|&slot| VarAddr::LetrecGroupMember {
-                                    depth: depth as u32,
-                                    slot,
-                                })
-                        });
-                        match found {
-                            Some(addr) => addr,
-                            None => {
-                                diagnostics.push(LowerDiagnostic {
-                                    kind: LowerDiagnosticKind::Error,
-                                    message: format!(
-                                        "{FIELD_GETTER_NAME}: missing resolver coordinates for `.{}` — not in scope_frames",
-                                        field
-                                    ),
-                                    span: arc.span.clone(),
-                                });
-                                return CoreExpr::Placeholder;
-                            }
-                        }
-                    } else {
-                        diagnostics.push(LowerDiagnostic {
-                            kind: LowerDiagnosticKind::Error,
-                            message: format!(
-                                "{FIELD_GETTER_NAME}: missing resolver coordinates for `.{}` — resolver did not run on this node",
-                                field
-                            ),
-                            span: arc.span.clone(),
-                        });
-                        return CoreExpr::Placeholder;
-                    }
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: format!(
+                            "{FIELD_GETTER_NAME}: resolver did not populate Field.resolution for `.{}` — resolver must be seeded with root_group",
+                            field
+                        ),
+                        span: arc.span.clone(),
+                    });
+                    return CoreExpr::Placeholder;
                 }
             };
 
@@ -472,8 +417,8 @@ fn lower_expr(
         ),
 
         SurfaceExpression::Dict(entries) => {
-            // Check for spread entries (...expr) — desugar to merge calls.
-            // [a: 1  b: 2  ...rest  c: 3] → merge(merge([a: 1  b: 2], rest), [c: 3])
+            // Check for spread entries (...expr) — desugar to builtin-dict-merge calls.
+            // [a: 1  b: 2  ...rest  c: 3] → builtin-dict-merge(builtin-dict-merge([a: 1  b: 2], rest), [c: 3])
             let has_rest = entries.iter().any(|e| {
                 e.node.key.is_none()
                     && matches!(&e.node.value.expr, SurfaceExpression::Placeholder(..))
@@ -519,20 +464,29 @@ fn lower_expr(
                     }};
                 }
 
-                // Build nested merge calls left-associatively.
+                // Build nested builtin-dict-merge calls left-associatively.
                 // acc starts as the first segment dict, then folds over (rest, next_seg) pairs.
                 let span = arc.span.clone();
 
-                // Resolve `merge` through scope_frames to get correct de Bruijn coordinates.
+                // Resolve `builtin-dict-merge` through scope_frames to get correct de Bruijn
+                // coordinates. This is a core builtin (always in the root frame) so it is
+                // independent of which prelude (if any) is loaded — Axiom 4 compliant.
+                //
+                // CALLER REQUIREMENT: scope_frames must be seeded with the root_group frame
+                // (via `resolve_surface_document_with_seed_frames` or equivalent). Without it,
+                // `builtin-dict-merge` is not resolvable and a Placeholder + error is emitted.
+                // All production call sites (formatter.rs, builtin_lower in builtins_meta.rs)
+                // must seed scope_frames before calling lower/lower_inner on spread-dict expressions.
                 let (merge_level, merge_slot) = match scope_frames
-                    .and_then(|frames| resolve_name_in_frames(frames, "merge"))
+                    .and_then(|frames| resolve_name_in_frames(frames, DICT_MERGE_NAME))
                 {
                     Some(coords) => coords,
                     None => {
                         diagnostics.push(LowerDiagnostic {
                             kind: LowerDiagnosticKind::Error,
-                            message: "spread-dict desugaring: 'merge' not found in scope frames"
-                                .to_string(),
+                            message: format!(
+                                "spread-dict desugaring: '{DICT_MERGE_NAME}' not found in scope frames — resolver must be seeded with root_group"
+                            ),
                             span: span.clone(),
                         });
                         return CoreExpr::Placeholder;
@@ -544,11 +498,11 @@ fn lower_expr(
                     // lower_inner returns Spanned<CoreExpr> — wrap in Arc directly.
                     let rest_spanned =
                         lower_inner(&entries[ri].node.value, diagnostics, scope_frames);
-                    // merge(acc, rest)
+                    // builtin-dict-merge(acc, rest)
                     acc = CoreExpr::Call {
                         func: Arc::new(Spanned::new(
                             CoreExpr::Var {
-                                name: "merge".to_string(),
+                                name: DICT_MERGE_NAME.to_string(),
                                 addr: debruijn_to_var_addr(merge_level, merge_slot),
                                 annotation: None,
                             },
@@ -561,13 +515,13 @@ fn lower_expr(
                         named_args: vec![],
                         implied: false,
                     };
-                    // merge(acc, next_segment) if non-empty
+                    // builtin-dict-merge(acc, next_segment) if non-empty
                     if i + 1 < segments.len() && !segments[i + 1].is_empty() {
                         let seg = lower_seg!(&segments[i + 1]);
                         acc = CoreExpr::Call {
                             func: Arc::new(Spanned::new(
                                 CoreExpr::Var {
-                                    name: "merge".to_string(),
+                                    name: DICT_MERGE_NAME.to_string(),
                                     addr: debruijn_to_var_addr(merge_level, merge_slot),
                                     annotation: None,
                                 },
@@ -948,7 +902,7 @@ fn lower_expr(
             arms: arms
                 .iter()
                 .map(|arm| CoreMatchArm {
-                    // T-1750: pattern is now Arc<SurfaceNode>, pass through directly (clone the Arc)
+                    // pattern is now Arc<SurfaceNode>, pass through directly (clone the Arc)
                     pattern: Arc::clone(&arm.pattern),
                     let_bindings: arm
                         .let_bindings
@@ -1061,8 +1015,8 @@ fn lower_expr(
                 CoreExpr::Placeholder
             }
             crate::ast::SurfaceDeclaration::TypeAlias { .. } => {
-                // Type declarations in standalone expression position produce no runtime value
-                // (B-430). The dict-entry case (lower.rs Dict arm, line ~309) calls
+                // Type declarations in standalone expression position produce no runtime value.
+                // The dict-entry case (lower.rs Dict arm, line ~309) calls
                 // lower_type_alias_to_constructor_dict to produce constructor entries under the
                 // declared name. Here (direct Decl, no enclosing dict entry), the declaration is
                 // not bound to any name so there are no constructor entries to emit — return {}.
@@ -1853,7 +1807,7 @@ fn infer_child_role_from_type_expr(expr: &SurfaceExpression) -> &'static str {
 /// 1. Bare VarRef uppercase → unit constructor (e.g., `Red`, `None`)
 /// 2. Annotated uppercase → unit constructor with annotation
 /// 3. Call with uppercase func + no named args → unit constructor (e.g., `[Ok a]`, `[Error String]`)
-/// 6. (T-1538 new form) Dict with named uppercase-key entries → payload/unit constructors:
+/// 6. Dict with named uppercase-key entries → payload/unit constructors:
 ///    `File: [path: String]` (payload), `Noop` (unit)
 fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorInfo> {
     let mut ctors = Vec::new();
@@ -1907,7 +1861,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
     // Top-level dispatch: distinguish body forms.
     match body {
         SurfaceExpression::Dict(entries) => {
-            // T-1538: New named-key constructor body form.
+            // New named-key constructor body form.
             // Detected when ANY entry has a named key whose name starts with an uppercase letter.
             // In this form:
             //   - Named entry with uppercase key → payload constructor
@@ -2109,7 +2063,7 @@ mod tests {
         );
     }
 
-    // B-430: [type MyType Int] in standalone expression position must lower to an empty dict.
+    // [type MyType Int] in standalone expression position must lower to an empty dict.
     //
     // Type declarations produce no runtime value when they appear as standalone expressions
     // (not as dict-entry values). The correct runtime representation is {} (empty dict).
@@ -2144,17 +2098,17 @@ mod tests {
         match lowered.node {
             CoreExpr::Dict(entries) => assert!(
                 entries.is_empty(),
-                "B-430: standalone [type ...] must lower to empty dict, got {} entries",
+                "standalone [type ...] must lower to empty dict, got {} entries",
                 entries.len()
             ),
             other => panic!(
-                "B-430: expected CoreExpr::Dict([]) for standalone TypeAlias, got {:?}",
+                "expected CoreExpr::Dict([]) for standalone TypeAlias, got {:?}",
                 other
             ),
         }
     }
 
-    // B-430 variant: [type Color Red Green Blue] standalone also lowers to empty dict.
+    // [type Color Red Green Blue] standalone also lowers to empty dict.
     //
     // Even with legitimate constructors (Red, Green, Blue), a TypeAlias in standalone
     // expression position (no enclosing dict entry with a name) should return {}.
@@ -2204,11 +2158,11 @@ mod tests {
         match lowered.node {
             CoreExpr::Dict(entries) => assert!(
                 entries.is_empty(),
-                "B-430: standalone [type Red Green Blue] must lower to empty dict, got {} entries",
+                "standalone [type Red Green Blue] must lower to empty dict, got {} entries",
                 entries.len()
             ),
             other => panic!(
-                "B-430: expected CoreExpr::Dict([]) for standalone sum-type TypeAlias, got {:?}",
+                "expected CoreExpr::Dict([]) for standalone sum-type TypeAlias, got {:?}",
                 other
             ),
         }

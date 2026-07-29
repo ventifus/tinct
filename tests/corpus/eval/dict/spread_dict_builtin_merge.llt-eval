@@ -1,0 +1,9 @@
+# spread-dict syntax uses builtin-dict-merge (prelude-agnostic)
+# Verifies that [...a ...b] produces right-biased merge where b's fields override a's
+[
+  a: [x: 1  y: 2]
+  b: [y: 3  z: 4]
+  merged: [...a  ...b]
+]
+=== out
+Dict({"a": Dict({"x": Int(1), "y": Int(2)}), "b": Dict({"y": Int(3), "z": Int(4)}), "merged": Dict({"x": Int(1), "y": Int(3), "z": Int(4)})})

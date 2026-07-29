@@ -99,7 +99,9 @@ pub(crate) async fn classify_type_stage_entry(
         // functions that haven't been called yet, or opaque types that need parameterization).
         return Ok(None);
     }
-    if let Some(kind) = crate::type_normalize::typenode_typevar_kind(val) {
+    if let Some(kind) =
+        crate::type_normalize::typenode_typevar_kind(val).map_err(|e| Box::new((*e).clone()))?
+    {
         return Ok(Some(crate::type_infer::TypeStageEntry::TypeVar(kind)));
     }
     if matches!(val, crate::value::Value::Function { .. }) {

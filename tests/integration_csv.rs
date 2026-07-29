@@ -9,11 +9,6 @@
 // This file focuses on edge cases and CSV-specific behavior.
 
 #![cfg(feature = "cli")]
-#![allow(
-    clippy::disallowed_methods,
-    clippy::useless_format,
-    clippy::to_string_in_format_args
-)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,7 +37,9 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).ok();
+        if let Err(e) = fs::remove_dir_all(&self.path) {
+            eprintln!("TempDir cleanup failed for {:?}: {e}", self.path);
+        }
     }
 }
 

@@ -28,7 +28,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use indexmap::IndexMap;
 
@@ -37,6 +37,11 @@ use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_str
 
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk, Value};
+
+/// Guards rustls crypto provider initialization. `get_or_init` ensures
+/// `install_default()` is called exactly once per process lifetime, making
+/// the "already installed" `Err` case structurally impossible.
+static RUSTLS_CRYPTO_INIT: OnceLock<()> = OnceLock::new();
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
 /// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
@@ -211,9 +216,15 @@ pub(crate) async fn build_tls_config(
 ) -> EvalResult<rustls::ClientConfig> {
     use rustls::RootCertStore;
 
-    // Install the ring crypto provider if not already installed.
+    // Install the ring crypto provider exactly once per process lifetime.
     // rustls 0.23 requires an explicit provider; ring is the default for tinct.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // RUSTLS_CRYPTO_INIT ensures install_default() is called at most once,
+    // making the "already installed" Err case structurally impossible.
+    RUSTLS_CRYPTO_INIT.get_or_init(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("rustls ring provider installation failed");
+    });
 
     let opts_dict = match opts_val {
         Value::Dict { entries: d, .. } => d,
@@ -525,22 +536,10 @@ pub(crate) fn builtin_quic_session(
         }
 
         // All args pre-materialized by force_count
-        let cap_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let host_val = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let port_val = Arc::clone(&args[2])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let opts_val = Arc::clone(&args[3])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let cap_val = Arc::clone(&args[0]).require_value()?.clone();
+        let host_val = Arc::clone(&args[1]).require_value()?.clone();
+        let port_val = Arc::clone(&args[2]).require_value()?.clone();
+        let opts_val = Arc::clone(&args[3]).require_value()?.clone();
 
         // Extract NetCap
         let entries = match cap_val {
@@ -713,10 +712,7 @@ pub(crate) fn builtin_quic_open_datagram(
             .into());
         }
 
-        let session_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let session_val = Arc::clone(&args[0]).require_value()?.clone();
         let conn = match session_val {
             Value::QuicSession { conn: c, .. } => c,
             other => {
@@ -775,14 +771,8 @@ pub(crate) fn builtin_http2_session(
         }
 
         // All args pre-materialized by force_count
-        let cap_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let url_val = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let cap_val = Arc::clone(&args[0]).require_value()?.clone();
+        let url_val = Arc::clone(&args[1]).require_value()?.clone();
 
         // Validate cap
         let entries = match cap_val {
@@ -925,10 +915,7 @@ pub(crate) fn builtin_http3_session(
             .into());
         }
 
-        let session_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let session_val = Arc::clone(&args[0]).require_value()?.clone();
 
         let conn = match session_val {
             Value::QuicSession { conn: c, .. } => c,
@@ -1030,26 +1017,11 @@ pub(crate) fn builtin_http_request(
         }
 
         // All args pre-materialized by force_count
-        let session_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let method_val = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let path_val = Arc::clone(&args[2])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let headers_val = Arc::clone(&args[3])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let body_val = Arc::clone(&args[4])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let session_val = Arc::clone(&args[0]).require_value()?.clone();
+        let method_val = Arc::clone(&args[1]).require_value()?.clone();
+        let path_val = Arc::clone(&args[2]).require_value()?.clone();
+        let headers_val = Arc::clone(&args[3]).require_value()?.clone();
+        let body_val = Arc::clone(&args[4]).require_value()?.clone();
 
         let method_str = require_string("http-request", method_val, call_span.clone())?;
         let path_str = require_string("http-request", path_val, call_span.clone())?;
@@ -1458,18 +1430,9 @@ pub(crate) fn builtin_icmp_ping(
             .into());
         }
 
-        let cap_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let host_val = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let timeout_val = Arc::clone(&args[2])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let cap_val = Arc::clone(&args[0]).require_value()?.clone();
+        let host_val = Arc::clone(&args[1]).require_value()?.clone();
+        let timeout_val = Arc::clone(&args[2]).require_value()?.clone();
 
         // Extract NetCap entries
         let entries = match cap_val {
@@ -1813,14 +1776,8 @@ pub(crate) fn builtin_send_datagram(
         }
         reject_named("send-datagram", named.as_ref(), call_span.clone())?;
 
-        let data_val = Arc::clone(&args[0])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let handle_val = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let data_val = Arc::clone(&args[0]).require_value()?.clone();
+        let handle_val = Arc::clone(&args[1]).require_value()?.clone();
 
         // Extract bytes to send (String or Bytes) — common to all handle variants.
         let data_bytes: Vec<u8> = match data_val {

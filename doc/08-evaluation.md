@@ -315,7 +315,7 @@ Extends Launchbury (1993) natural semantics for call-by-need with deferred compu
 - A thunk is **materialized** when first accessed (you used a value; it was computed and cached).
 - A thunk is **failed** when a computation error occurred (the error is cached; re-accessing returns the same error).
 
-The runtime distinguishes five `UnevaluatedState` variants internally: `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The four logical states — Unevaluated (state present, no result), InProgress (state taken, no result yet), Materialized (result is `Ok`), Failed (result is `Err`) — are observed through borrow-based accessors (`try_get_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
+The runtime distinguishes five `UnevaluatedState` variants internally: `AstField` (lazy AST field access), `CoreExpr` (lowered expression body), `BuiltinCall` (deferred builtin), `FnCall` (deferred function call), and `Guarded` (type assertion contract). The four logical states — Unevaluated (state present, no result), InProgress (state taken, no result yet), Materialized (result is `Ok`), Failed (result is `Err`) — are observed through borrow-based accessors (`peek_result()`, `require_value()`, `try_get_error()`, `is_materialized()`, `is_settled()`) that read the `OnceCell` directly rather than through a `ThunkState` enum.
 
 ### Part 1: State Transition Graph
 
@@ -1424,9 +1424,10 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
                 // eval_core_expr_pub() evaluates the CoreExpr to a thunk; if already
                 // materialized, return value directly; otherwise dispatch to Materialize
                 action = match eval_core_expr_pub(&expr, &env, &action_ctx).await {
-                    Ok(thunk) => match thunk.try_get_value().cloned() {
-                        Some(value) => Action::Continue(Ok(value)),
-                        None => Action::Materialize { thunk, mat_span: Some(expr.span) },
+                    Ok(thunk) => match thunk.peek_result() {
+                        Some(Ok(v))  => Action::Continue(Ok(v.clone())),
+                        Some(Err(e)) => Action::Continue(Err(Box::new((**e).clone()))),
+                        None         => Action::Materialize { thunk, mat_span: Some(expr.span) },
                     },
                     Err(e) => Action::Continue(Err(e)),
                 };

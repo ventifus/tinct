@@ -22,9 +22,7 @@ use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
 use crate::types::Type;
-use crate::value::{
-    string_val, unknown_type_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value,
-};
+use crate::value::{string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value};
 
 tokio::task_local! {
     pub(crate) static TASK_EVAL_STACK: std::cell::RefCell<Vec<(std::sync::Arc<str>, crate::ast::Span)>>;
@@ -64,7 +62,7 @@ impl ProfilingSpanGuard {
                 (None, None)
             };
 
-            // Source text snippet: not available since spans no longer embed source content (T-1771).
+            // Source text snippet: not available since spans no longer embed source content.
             let source_text: Option<String> = None;
 
             let (builtin_name, origin_builtin) = match &thunk.span.name {
@@ -226,11 +224,10 @@ pub(crate) struct GuardedValidateData {
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
-    /// The resolved TypeValue. Currently always the unknown sentinel, which is consistent
-    /// with every type — all assertions pass. S-1002 populates repr_registry with actual
-    /// TypeValues from repr: declarations; S-1004 uses them here for actual type identity
-    /// checks. Until then, this is always the unknown sentinel.
-    pub(crate) resolved: Box<Arc<Value>>,
+    /// The resolved compile-time Type from CoreExpr::TypeAssert::resolved_type.
+    /// Type::Unknown passes everything (annotation not resolved by type checker).
+    /// For concrete types (Int, Str, Float, etc.) the value variant is checked.
+    pub(crate) resolved: Box<Type>,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
     /// EvalFrame for evaluating default: fallback expressions.
@@ -553,7 +550,93 @@ fn is_expr_annotation(ann: &crate::ast::Annotation) -> bool {
     crate::ast::is_expr_annotation(ann)
 }
 
-/// Used by predicate match patterns (T-1140) to construct a call thunk for
+/// Check whether a materialized value satisfies a compile-time Type annotation.
+///
+/// Returns `None` on success, or `Some(reason)` with a failure message when the check fails.
+/// `Type::Unknown`/`Type::Any` always succeed. Compound types (parameterized types, user-defined
+/// nominal types, unresolved type references) always pass — the `_ => None` fallback is the
+/// correct permanent behavior for these cases, because structural checking against a Value variant
+/// is not possible without type identity information from the repr registry. Only primitive types
+/// that have a direct Value variant correspondence are checked structurally.
+fn value_satisfies_type(value: &Value, ty: &Type) -> Option<String> {
+    match ty {
+        Type::Unknown | Type::Any => None,
+        Type::Int | Type::IntLiteral(_) => {
+            // Value::U64 is treated as an integer subtype throughout the system:
+            // its type_name() returns "Int" and builtin-type-of returns "Int" for U64 values.
+            // U64 literals (e.g. `42u`) appear in AST metadata fields (line, column numbers)
+            // and must satisfy @Integer annotations on those fields.
+            if matches!(value, Value::Int { .. } | Value::U64 { .. }) {
+                None
+            } else {
+                Some(value.type_name().to_string())
+            }
+        }
+        Type::Float | Type::FloatLiteral(_) => {
+            if matches!(value, Value::Float { .. }) {
+                None
+            } else {
+                Some(value.type_name().to_string())
+            }
+        }
+        Type::Str | Type::StringLiteral(_) => {
+            if matches!(value, Value::String { .. }) {
+                None
+            } else {
+                Some(value.type_name().to_string())
+            }
+        }
+        Type::Bytes => {
+            if matches!(value, Value::Bytes { .. }) {
+                None
+            } else {
+                Some(value.type_name().to_string())
+            }
+        }
+        Type::Dict(row) => match value {
+            Value::Dict { entries, .. } => {
+                // All named fields in the row must be present as string keys in the dict.
+                for field in row.fields.keys() {
+                    if !entries
+                        .contains_key(&crate::value::HashableValue::Str(Arc::from(field.as_str())))
+                    {
+                        return Some(format!("record missing field {field:?}"));
+                    }
+                }
+                None
+            }
+            _ => Some(value.type_name().to_string()),
+        },
+        Type::Function { .. } => {
+            // A value annotated with a function type must be callable.
+            if matches!(value, Value::Function { .. } | Value::Builtin { .. }) {
+                None
+            } else {
+                Some(value.type_name().to_string())
+            }
+        }
+        Type::Never => Some(value.type_name().to_string()),
+        // Compound, parameterized, and unresolved types pass during bootstrap.
+        _ => None,
+    }
+}
+
+/// Extract a user-facing display string from a type annotation for error messages.
+///
+/// For `Simple` annotations (e.g., `@Integer`), returns the name directly.
+/// For `PropertyDict` annotations (e.g., `@[type: Integer  default: 0]`),
+/// extracts the `type:` value's name if it's a plain VarRef, to give
+/// "expected Integer" rather than "expected ["type": Integer  default: 0]".
+fn annotation_type_display(ann: &Annotation) -> String {
+    if let Some(type_node) = ann.get_property("type") {
+        if let SurfaceExpression::VarRef { name, .. } = &type_node.expr {
+            return name.clone();
+        }
+    }
+    ann.to_string()
+}
+
+/// Used by predicate match patterns to construct a call thunk for
 /// `predicate(subject)` without forcing evaluation.
 ///
 /// The helper is intentionally synchronous: it only constructs thunks, never
@@ -641,8 +724,7 @@ pub(crate) async fn force_step(
                 // Evaluating task has no ID but current does (or vice versa): mixed
                 // contexts. The thunk was claimed on the block_on thread but a spawned
                 // task is waiting on it — different contexts → wait for settlement.
-                // This is the canonical T-1646 case: spawned task waits for the main
-                // evaluation chain to settle the thunk.
+                // Spawned task waits for the main evaluation chain to settle the thunk.
                 (None, Some(_)) | (Some(_), None) => false,
                 // Both in spawned tasks: compare IDs directly.
                 (Some(e), Some(c)) => e == c,
@@ -947,7 +1029,7 @@ async fn dispatch_state(
             if let crate::ast::CoreExpr::TypeAssert {
                 annotation,
                 expr: inner,
-                resolved_type: _,
+                resolved_type,
                 pipeline_blame,
             } = &core_expr.node
             {
@@ -1007,11 +1089,7 @@ async fn dispatch_state(
                 })));
                 stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                     annotation: Box::new(annotation.clone()),
-                    // During bootstrap, all TypeAssert checks pass because type_val is the unknown
-                    // sentinel on every value. This is correct — the unknown sentinel is consistent
-                    // with every type, so no false type assertion failures occur. S-1002 populates
-                    // repr_registry with actual TypeValues; S-1004 uses them for actual type checks.
-                    resolved: Box::new(unknown_type_val()),
+                    resolved: Box::new(resolved_type.clone()),
                     expr_span: core_expr.span.clone(),
                     thunk_span: inner_span,
                     frame: Arc::clone(&frame),
@@ -2005,45 +2083,51 @@ pub(crate) async fn apply_cont(
                     }
                 }
                 Ok(value) => {
-                    // Type identity check: value's runtime TypeValue matches the expected TypeValue
-                    // by Arc pointer identity. `value.type_val()` is available (added by T-1946).
-                    //
-                    // During bootstrap all TypeAssert checks pass because type_val is the unknown
-                    // sentinel. This is correct: unknown is consistent with everything.
-                    if Arc::ptr_eq(&expected, &unknown_type_val()) {
-                        // Pass: unknown accepts anything.
-                        Action::Continue(Ok(value))
-                    } else {
-                        // Fail: types do not match by identity and expected is not the unknown sentinel.
-                        // Use the annotation text for "expected" (e.g. "String", "Integer") — not
-                        // Value::type_name(), which returns the Rust variant discriminant ("Dict",
-                        // "Int", etc.) and would always say "Dict" for TypeValues. For "got", use
-                        // the value's type_val if it is resolved, or "unknown type" otherwise;
-                        // never use type_name() which leaks Rust-internal names into user messages.
-                        let expected_str = annotation.node.to_string();
-                        let value_tv = value.type_val();
-                        let got_str = if Arc::ptr_eq(value_tv, &unknown_type_val()) {
-                            "unknown type".to_string()
-                        } else {
-                            format!("{value_tv:?}")
-                        };
-                        let mut err = EvalError::type_assert_failed(
-                            &expected_str,
-                            &got_str,
-                            thunk_span.clone(),
-                        )
-                        .with_materialization_span(expr_span.clone());
-                        if thunk_span != expr_span {
-                            err =
-                                err.with_secondary_span(thunk_span.clone(), "value produced here");
+                    // Check value variant against the resolved compile-time type.
+                    // Type::Unknown passes everything (annotation not resolved by type checker).
+                    match value_satisfies_type(&value, &expected) {
+                        None => Action::Continue(Ok(value)),
+                        Some(fail_reason) => {
+                            // Type mismatch — try default: fallback before raising an error.
+                            if let Some(default_node) =
+                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                            {
+                                let (lowered_default, lower_diags) = crate::lower::lower(
+                                    default_node,
+                                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
+                                );
+                                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                                    Action::Continue(Err(err))
+                                } else {
+                                    Action::EvalCore {
+                                        expr: Arc::new(lowered_default),
+                                        frame: Arc::clone(&frame),
+                                        ctx: Arc::clone(&ctx),
+                                    }
+                                }
+                            } else {
+                                let expected_str = annotation_type_display(&annotation.node);
+                                let mut err = EvalError::type_assert_failed(
+                                    &expected_str,
+                                    &fail_reason,
+                                    thunk_span.clone(),
+                                )
+                                .with_materialization_span(expr_span.clone());
+                                if thunk_span != expr_span {
+                                    err = err.with_secondary_span(
+                                        thunk_span.clone(),
+                                        "value produced here",
+                                    );
+                                }
+                                let err: crate::error::EvalError =
+                                    if let Some(ref blame) = pipeline_blame {
+                                        err.with_pipeline_blame(blame.clone())
+                                    } else {
+                                        err
+                                    };
+                                Action::Continue(Err(err.into()))
+                            }
                         }
-                        // Attach pipeline blame if this assertion is from a --- expects: boundary.
-                        let err: crate::error::EvalError = if let Some(ref blame) = pipeline_blame {
-                            err.with_pipeline_blame(blame.clone())
-                        } else {
-                            err
-                        };
-                        Action::Continue(Err(err.into()))
                     }
                 }
             }
@@ -3583,7 +3667,7 @@ mod tests {
 
         // Verify the thunk transitioned to Materialized state
         assert_eq!(
-            thunk.try_get_value(),
+            thunk.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 42,
                 type_val: crate::value::unknown_type_val()
@@ -3780,7 +3864,7 @@ mod tests {
 
         // After success, thunk must be in Materialized state (memoized).
         assert_eq!(
-            guarded.try_get_value(),
+            guarded.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 42,
                 type_val: crate::value::unknown_type_val()
@@ -3837,7 +3921,7 @@ mod tests {
 
         // Thunk should be Materialized with the default value, not Failed.
         assert_eq!(
-            guarded.try_get_value(),
+            guarded.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 99,
                 type_val: crate::value::unknown_type_val()
@@ -3915,7 +3999,7 @@ mod tests {
     /// to `builtin_keys` with a pre-materialized dict.
     ///
     /// If `Cont::BuiltinForceArg` is not reached or does not properly force the arg,
-    /// `builtin_keys` will panic at `try_get_value().expect(...)`.
+    /// `builtin_keys` will panic at `require_value().unwrap()`.
     #[tokio::test]
     async fn test_builtin_force_arg_cek_forces_arg_before_dispatch() {
         use crate::value::{BuiltinDef, BuiltinFn, Strictness};
@@ -4032,14 +4116,14 @@ mod tests {
         // Custom dummy builtin that accepts any arity and checks both args are pre-materialized.
         let dummy_func: BuiltinFn = |args| {
             // Both args must be materialized by force_count=2 before this is called.
-            let _ = args.args[0]
-                .try_get_value()
-                .expect("pre-materialized by force_count")
-                .clone();
-            let _ = args.args[1]
-                .try_get_value()
-                .expect("pre-materialized by force_count")
-                .clone();
+            assert!(
+                matches!(args.args[0].peek_result(), Some(Ok(_))),
+                "arg0 must be settled Ok by force_count=2"
+            );
+            assert!(
+                matches!(args.args[1].peek_result(), Some(Ok(_))),
+                "arg1 must be settled Ok by force_count=2"
+            );
             let span = args.call_span;
             Box::pin(async move {
                 Ok(Arc::new(Thunk::value(
@@ -4153,7 +4237,7 @@ mod deep_tests {
 }
 
 // ============================================================================
-// T-1667: CEK lifecycle unit tests
+// CEK lifecycle unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -4228,7 +4312,7 @@ mod cek_lifecycle_tests {
         ));
 
         assert_eq!(
-            thunk.try_get_value(),
+            thunk.peek_result().and_then(|r| r.ok()),
             Some(&Value::Int {
                 n: 99,
                 type_val: crate::value::unknown_type_val()
@@ -4435,7 +4519,7 @@ mod cek_lifecycle_tests {
 /// Recursively materialize all structured container values in a value tree.
 /// Used by `to-tinct` serialization and macro expansion to ensure nested values
 /// are pre-materialized before processing (e.g., `dict_to_surface_node` expects
-/// all values reachable via `try_get_value`).
+/// all values reachable via `peek_result()`).
 ///
 /// Handles two container types:
 /// - `Value::Dict` — materializes all entry thunks and recurses into each value

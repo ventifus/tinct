@@ -1,12 +1,5 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
-#![deny(clippy::disallowed_types, clippy::disallowed_methods)]
-#![allow(
-    clippy::disallowed_types,
-    clippy::disallowed_methods,
-    reason = "main.rs is the CLI bootstrap entry point; capability system initialization occurs here before ambient filesystem access can be eliminated"
-)]
-
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -21,7 +14,7 @@ const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
 // EXIT_OOM (3, formerly used for soft heap limit) is removed — the soft AtomicI64 budget
-// tracker (memory_budget.rs) is deleted (T-1770). The hard RLIMIT_AS backstop still applies
+// tracker (memory_budget.rs) is deleted. The hard RLIMIT_AS backstop still applies
 // but causes abort via handle_alloc_error, not a clean exit.
 // RLIMIT_CPU violations cause SIGXCPU (soft) or SIGKILL (hard). Both terminate without EXIT_ERROR.
 
@@ -313,13 +306,6 @@ async fn async_main() -> i32 {
     if let Err(e) = setup_rlimits(cli.max_memory, cli.max_cpu, cli.max_fds) {
         eprintln!("error: {e}");
         return EXIT_ERROR;
-    }
-    // On non-Unix platforms rlimit flags are accepted for CLI compatibility but have no effect.
-    #[cfg(not(unix))]
-    {
-        let _ = cli.max_memory;
-        let _ = cli.max_cpu;
-        let _ = cli.max_fds;
     }
 
     // Raise the process stack soft limit to match the hard limit (or 512MB if
@@ -1212,13 +1198,15 @@ fn spawn_profile_flush_thread(
 // CLI entrypoint with all flags
 // AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
 async fn run_eval(args: RunArgs) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let no_landlock = args.no_landlock;
     let RunArgs {
         files: file_paths_owned,
         no_fs,
         require_integrity,
         strict,
         timeout,
-        no_landlock,
+        no_landlock: _,
         no_env,
         allow_env,
         no_cwd,
@@ -1240,7 +1228,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
     // Build the interleaved list of user pipeline stages: files and -e expressions in CLI order.
     // Clap doesn't preserve mixed positional/flag order, so we reconstruct it by parsing raw args.
     //
-    // NOTE (T-1347): The -i/-o formatter stages are NO LONGER added here Rust-side.
+    // NOTE: The -i/-o formatter stages are NO LONGER added here Rust-side.
     // loader.llt (dict 3) constructs the formatter ProgramItem.File from %args.output and passes
     // it separately to cli-pipeline, which runs it last. See doc/whatif/type-foundations.md §src/main.rs.
     let interleaved_stages = interleave_files_and_exprs(file_paths, &expr);
@@ -1358,7 +1346,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
     // after all capability thunks have been injected into this env.
     let env = build_core_env();
 
-    // T-1557: Env is type-metadata only; runtime thunks go into the FlatEnv arena.
+    // Env is type-metadata only; runtime thunks go into the FlatEnv arena.
     // Collect (name, thunk) cap entries here; inject into arena after eval_ctx is created.
     // Slot names are registered in env immediately (for the resolver's De Bruijn coordinates);
     // the matching thunks are appended to FlatEnv[0] in the same order after construction.
@@ -1426,20 +1414,18 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
     }
     // On non-Linux platforms, --no-landlock is accepted for CLI compatibility
     // but has no effect (Landlock is a Linux-only API).
-    #[cfg(not(target_os = "linux"))]
-    let _ = no_landlock;
 
     // Install seccomp-bpf network and process sandbox (Linux only).
     // Applied after Landlock so that both kernel-level defenses are active before
     // eval. Gracefully degrades on unsupported kernels (prints warning, continues).
     // Network syscalls are allowed when --cap-net is present (explicit network authority).
-    let allow_network = !cap_net.is_empty();
     #[cfg(target_os = "linux")]
-    if let Err(e) = setup_seccomp(allow_network) {
-        eprintln!("warning: seccomp sandbox not active: {e}");
+    {
+        let allow_network = !cap_net.is_empty();
+        if let Err(e) = setup_seccomp(allow_network) {
+            eprintln!("warning: seccomp sandbox not active: {e}");
+        }
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = allow_network;
 
     // Inject `%cwd` DirCap into the root environment (unless --no-cwd is set).
     // `%cwd` is the process working directory (where `tinct` was invoked from).
@@ -1908,7 +1894,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             None
         };
 
-    // ── Build %programs Dict (T-1347) ─────────────────────────────────────────
+    // ── Build %programs Dict ───────────────────────────────────────────────────
     //
     // Integer-keyed Dict of ProgramItem variants, one per CLI stage in order:
     //   ProgramItem.File { path: String, handle: Handle } — for file arguments
@@ -1958,10 +1944,15 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let span = thunk
             .definition_span()
             .with_name(std::sync::Arc::from(name.as_str()));
-        let named_thunk = if let Some(val) = thunk.try_get_value().cloned() {
-            std::sync::Arc::new(tinct::Thunk::value(val, span))
-        } else {
-            thunk // non-value thunks keep original span (name missing, but capability is injected)
+        let named_thunk = match thunk.peek_result() {
+            Some(Ok(val)) => std::sync::Arc::new(tinct::Thunk::value(val.clone(), span)),
+            Some(Err(e)) => {
+                return Err(format!(
+                    "capability '{}' thunk settled with error: {}",
+                    name, e
+                ))
+            }
+            None => thunk, // not yet settled — keep original (name from span)
         };
         capabilities.push((name, named_thunk));
     }
@@ -1976,7 +1967,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
     // Build %programs as an integer-keyed Value::Dict.
     // Each entry is a Value::Variant (ProgramItem.File or ProgramItem.Expr) Arc<Thunk>.
     //
-    // After T-1772, Value::Dict stores Arc<Thunk> directly.
+    // Value::Dict stores Arc<Thunk> directly.
     // All thunks allocated here use the eval_ctx arena created above.
     let programs_dict: Value = {
         use indexmap::IndexMap;
@@ -2065,7 +2056,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         }
     };
 
-    // ── Build %args Dict (T-1347) ──────────────────────────────────────────────
+    // ── Build %args Dict ──────────────────────────────────────────────────────
     //
     // Dict with parsed CLI flags. loader.llt reads %args.output to select the formatter
     // and %args.strict to decide whether type errors are fatal.
@@ -2398,8 +2389,9 @@ async fn run_fmt(
         (content, name)
     };
 
+    let use_compact = output_name == "compact";
     let formatted =
-        tinct::format_source_tinct_with_dir(&source, &script_source, &script_name).await?;
+        tinct::format_source_tinct(&source, &script_source, &script_name, use_compact).await?;
 
     if check {
         if source != formatted {

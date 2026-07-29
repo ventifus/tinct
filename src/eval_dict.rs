@@ -32,12 +32,17 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             let hv_payload = match payload {
                 None => None,
                 Some(p) => {
-                    let p_val = p.try_get_value().ok_or_else(|| {
-                        EvalError::internal(
-                            "variant payload not materialized".to_string(),
-                            span.clone(),
-                        )
-                    })?;
+                    let p_val = match p.peek_result() {
+                        Some(Ok(v)) => v,
+                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                        None => {
+                            return Err(EvalError::internal(
+                                "variant payload not materialized".to_string(),
+                                span.clone(),
+                            )
+                            .into())
+                        }
+                    };
                     Some(Box::new(value_to_key(p_val, span)?))
                 }
             };
@@ -435,7 +440,9 @@ pub(crate) async fn eval_dict_core(
                     // AnnotatedWrap thunk that forces the inner value when accessed and wraps
                     // it in Value::Annotated { annotation, inner: forced_inner }.
                     // This preserves laziness for non-literal annotated entries.
-                    if let Some(inner_val) = value_thunk.try_get_value().cloned() {
+                    if let Some(Ok(inner_val)) =
+                        value_thunk.peek_result().map(|r| r.map(|v| v.clone()))
+                    {
                         let span = value_thunk.span.clone();
                         Arc::new(Thunk::value(
                             Value::Annotated {

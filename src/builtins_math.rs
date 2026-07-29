@@ -1,16 +1,24 @@
-//! Arithmetic and comparison builtins: `+`, `-`, `*`, `/`, `=`, `<`.
-//! `builtin-add/sub/mul/div` are pure Int/Float primitives — no typeclass dispatch. Dispatch belongs at the operator level.
+//! Arithmetic and comparison builtins.
 //!
-//! These builtins operate on numeric and boolean values. They are all inherently
-//! materializing because they must inspect operand values to compute results.
+//! These builtins are the type-specific protocol primitives declared in `builtin_core.llt`
+//! and `builtin_math.llt`. Each handles exactly one type combination.
+//! Cross-type arithmetic and comparison belong in typeclass instances in prelude, not here.
 //!
-//! - Arithmetic (`+`, `-`, `*`, `/`): auto-promote Int/Float operands
-//! - Comparison (`=`, `<`): cross-type Int/Float promotion; String/Bool same-type comparison
+//! Monomorphic arithmetic primitives:
+//! - `builtin-int-add`, `builtin-int-sub`, `builtin-int-mul`: Integer-only
+//! - `builtin-float-add`, `builtin-float-sub`, `builtin-float-mul`: Float-only
+//! - `builtin-int-to-float`: Integer → Float conversion
+//! - `builtin-div`: Float division (handles Int/Float inputs for Divisible instances)
 //!
-//! Extracted from `builtins.rs` to keep that file manageable.
+//! Monomorphic comparison primitives:
+//! - `builtin-lt`, `builtin-int-gt`, `builtin-int-gte`: Integer-only
+//! - `builtin-float-lt`, `builtin-float-gt`, `builtin-float-gte`: Float-only
+//! - `builtin-str-lt`, `builtin-str-gt`, `builtin-str-gte`: String-only
+//! - `builtin-eq-int`, `builtin-eq-float`, `builtin-eq-string`: type-specific equality
 //!
-//! Registration is via `core_builtins()` in `src/builtins_core.rs`, dispatched by
-//! `builtin_module("core")` in `src/builtins.rs`.
+//! Registration is via `core_builtins()` in `src/builtins_core.rs` and
+//! `math_builtins()` in this file, dispatched by `builtin_module("core"/"math")`
+//! in `src/builtins.rs`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -28,7 +36,7 @@ const MAX_SAFE_INT: i64 = 9007199254740992;
 
 /// Check if an Int→Float promotion would lose precision.
 /// Returns Err if |n| > 2^53, suggesting explicit [float n] cast.
-/// Used by `=` and `<` for cross-type Int/Float comparison.
+/// Used by `builtin-int-to-float` and `builtin-div` for Int→Float conversion.
 fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()> {
     if n.abs() > MAX_SAFE_INT {
         return Err(EvalError::user_error(
@@ -41,68 +49,6 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
         .into());
     }
     Ok(())
-}
-
-/// `builtin-mul`: Pure Int/Float multiplication primitive. No typeclass dispatch.
-pub(crate) fn builtin_mul(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("*", named.as_ref(), call_span.clone())?;
-        if args.len() < 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let thunk0 = args[0].clone();
-        let thunk1 = args[1].clone();
-        let left = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let right = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-
-        match (&left, &right) {
-            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => a
-                .checked_mul(*b)
-                .map(|r| {
-                    Arc::new(Thunk::value(
-                        Value::Int {
-                            n: r,
-                            type_val: crate::value::unknown_type_val(),
-                        },
-                        call_span.clone(),
-                    ))
-                })
-                .ok_or_else(|| EvalError::integer_overflow("*".to_string(), call_span).into()),
-            (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => {
-                check_float_result(a * b, "*", call_span)
-            }
-            (Value::Int { n: a, .. }, Value::Float { n: b, .. }) => {
-                check_int_to_float_precision(*a, thunk0.span.clone())?;
-                check_float_result((*a as f64) * b, "*", call_span)
-            }
-            (Value::Float { n: a, .. }, Value::Int { n: b, .. }) => {
-                check_int_to_float_precision(*b, thunk1.span.clone())?;
-                check_float_result(a * (*b as f64), "*", call_span)
-            }
-            _ => Err(EvalError::type_mismatch(
-                "Int or Float",
-                &format!("{} and {}", left.type_name(), right.type_name()),
-                call_span,
-            )
-            .into()),
-        }
-    })
 }
 
 /// `builtin-div`: Pure Int/Float division primitive. No typeclass dispatch.
@@ -125,14 +71,8 @@ pub(crate) fn builtin_div_float(
 
         let thunk0 = args[0].clone();
         let thunk1 = args[1].clone();
-        let left = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let right = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let left = thunk0.require_value()?.clone();
+        let right = thunk1.require_value()?.clone();
 
         match (&left, &right) {
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => {
@@ -183,14 +123,8 @@ pub(crate) fn builtin_eq_int(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let right = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let left = args[0].require_value()?.clone();
+        let right = args[1].require_value()?.clone();
         match (&left, &right) {
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
                 Value::Int {
@@ -228,14 +162,8 @@ pub(crate) fn builtin_eq_float(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let right = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let left = args[0].require_value()?.clone();
+        let right = args[1].require_value()?.clone();
         match (&left, &right) {
             (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => ok_val(
                 Value::Int {
@@ -273,14 +201,8 @@ pub(crate) fn builtin_eq_string(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let left = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let right = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let left = args[0].require_value()?.clone();
+        let right = args[1].require_value()?.clone();
         match (&left, &right) {
             (
                 Value::String {
@@ -315,11 +237,14 @@ pub(crate) fn builtin_eq_string(
     })
 }
 
-/// `<`: Less-than comparison.
-/// Works on Int, Float, String. Cross-type Int/Float comparison promotes
-/// Int to Float. String comparison is lexicographic.
-/// Incompatible types (e.g. Int vs String) produce a type error.
-/// Inherently materializing: must inspect values to determine ordering.
+/// `builtin-lt`: Integer less-than primitive. Returns Int(1) if a < b, Int(0) otherwise.
+///
+/// This is the Integer-specific primitive declared in builtin_core.llt as
+/// `[fn@[or 0 1] [let a@NativeInt b@NativeInt] ...]`. The Sortable Integer instance
+/// in prelude calls `[builtin-lt a b]`.
+///
+/// Float ordering uses `builtin-float-lt`; String ordering uses `builtin-str-lt`.
+/// Cross-type comparisons belong in typeclass instances, not here.
 pub(crate) fn builtin_lt(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -331,71 +256,29 @@ pub(crate) fn builtin_lt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("<", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // Int/Float/String fast paths are handled directly. Other types fall through
-        // to Comparable instance dispatch. ComparableInt.lt calls [builtin-lt a b] which hits
-        // the (Int,Int) fast path — no infinite recursion.
-        let thunk0 = args[0].clone();
-        let thunk1 = args[1].clone();
-        let left = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
-        let right = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let left = args[0].require_value()?.clone();
+        let right = args[1].require_value()?.clone();
 
-        let result = match (&left, &right) {
-            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => a < b,
-            (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => a < b,
-            (
-                Value::String {
-                    source: source_a,
-                    start: start_a,
-                    end: end_a,
-                    ..
+        match (&left, &right) {
+            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
+                Value::Int {
+                    n: if a < b { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
                 },
-                Value::String {
-                    source: source_b,
-                    start: start_b,
-                    end: end_b,
-                    ..
-                },
-            ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
-            // Cross-type: Int/Float promotion via `as f64` cast.
-            // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
-            // explicit [float n] cast (doc/11-stdlib.md §Equality P3, P6).
-            (Value::Int { n: a, .. }, Value::Float { n: b, .. }) => {
-                check_int_to_float_precision(*a, thunk0.span.clone())?;
-                (*a as f64) < *b
-            }
-            (Value::Float { n: a, .. }, Value::Int { n: b, .. }) => {
-                check_int_to_float_precision(*b, thunk1.span.clone())?;
-                *a < (*b as f64)
-            }
-            // For types not handled above, produce a type error.
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "<".to_string(),
-                    "Int, Float, or String (same or compatible types)",
-                    &format!("{} and {}", left.type_name(), right.type_name()),
-                    thunk0.span.clone(),
-                )
-                .into());
-            }
-        };
-        ok_val(
-            Value::Int {
-                n: if result { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
-            },
-            call_span,
-        )
+                call_span,
+            ),
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
+        }
     })
 }
 
@@ -415,8 +298,8 @@ pub(crate) fn builtin_float_lt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
@@ -451,8 +334,8 @@ pub(crate) fn builtin_str_lt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -516,10 +399,7 @@ pub(crate) fn builtin_lte(
         .await?;
 
         // Negate the result (builtin_lt always returns Value::Int(0/1))
-        let val = gt_result
-            .try_get_value()
-            .expect("builtin_lt returns materialized")
-            .clone();
+        let val = gt_result.require_value()?.clone();
         ok_val(
             Value::Int {
                 n: if matches!(val, Value::Int { n, .. } if n != 0) {
@@ -547,10 +427,7 @@ fn extract_single_float(
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
-    let val = thunk0
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
+    let val = thunk0.require_value()?.clone();
     match val {
         Value::Int { n, .. } => Ok(n as f64),
         Value::Float { n: f, .. } => Ok(f),
@@ -578,14 +455,8 @@ fn extract_two_floats(
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
     let thunk1 = &args[1];
-    let left = thunk0
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
-    let right = thunk1
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
+    let left = thunk0.require_value()?.clone();
+    let right = thunk1.require_value()?.clone();
 
     let a = match left {
         Value::Int { n, .. } => n as f64,
@@ -953,14 +824,8 @@ fn extract_int_pair(
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
     let thunk1 = &args[1];
-    let left = thunk0
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
-    let right = thunk1
-        .try_get_value()
-        .expect("pre-materialized by force_count/pos_strictness")
-        .clone();
+    let left = thunk0.require_value()?.clone();
+    let right = thunk1.require_value()?.clone();
 
     let a = match left {
         Value::Int { n, .. } => n,
@@ -1177,10 +1042,7 @@ pub(crate) fn builtin_float(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let val = thunk0.require_value()?.clone();
         match val {
             Value::Int { n, .. } => ok_val(
                 Value::Float {
@@ -1226,8 +1088,8 @@ pub(crate) fn builtin_int_add(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_add(*y)
@@ -1268,8 +1130,8 @@ pub(crate) fn builtin_float_add(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x + y, "builtin-float-add", call_span)
@@ -1300,7 +1162,7 @@ pub(crate) fn builtin_int_to_float(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let v = thunk0.try_get_value().expect("pre-materialized").clone();
+        let v = thunk0.require_value()?.clone();
         match v {
             Value::Int { n, .. } => {
                 // Precision guard: integers with |n| > 2^53 lose precision as f64.
@@ -1333,8 +1195,8 @@ pub(crate) fn builtin_int_sub(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_sub(*y)
@@ -1375,8 +1237,8 @@ pub(crate) fn builtin_float_sub(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x - y, "builtin-float-sub", call_span)
@@ -1406,8 +1268,8 @@ pub(crate) fn builtin_int_mul(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_mul(*y)
@@ -1448,8 +1310,8 @@ pub(crate) fn builtin_float_mul(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x * y, "builtin-float-mul", call_span)
@@ -1482,8 +1344,8 @@ pub(crate) fn builtin_int_gt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1517,8 +1379,8 @@ pub(crate) fn builtin_float_gt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1552,8 +1414,8 @@ pub(crate) fn builtin_str_gt(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -1600,8 +1462,8 @@ pub(crate) fn builtin_int_gte(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1635,8 +1497,8 @@ pub(crate) fn builtin_float_gte(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1670,8 +1532,8 @@ pub(crate) fn builtin_str_gte(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        let a = args[0].try_get_value().expect("pre-materialized").clone();
-        let b = args[1].try_get_value().expect("pre-materialized").clone();
+        let a = args[0].require_value()?.clone();
+        let b = args[1].require_value()?.clone();
         match (&a, &b) {
             (
                 Value::String {
@@ -1706,9 +1568,9 @@ pub(crate) fn builtin_str_gte(
 /// Returns all "math" module Rust builtins.
 ///
 /// These are the arithmetic, comparison, bitwise, and numeric conversion builtins that
-/// are NOT in the Core-46 set. The Core-46 items (builtin-add, builtin-int-sub, builtin-gt,
-/// builtin-gte, builtin-lt, builtin-eq-int, builtin-eq-string) stay in core_builtins()
-/// for loader.llt which only has `--- uses: ["core"]`.
+/// are NOT in the Core-46 set. The Core-46 items (builtin-int-add/sub/mul, builtin-float-add/sub/mul,
+/// builtin-int-gt, builtin-int-gte, builtin-lt, builtin-eq-int, builtin-eq-string) stay in
+/// core_builtins() for loader.llt which only has `--- uses: ["core"]`.
 ///
 /// Consumed exclusively by `builtin_module("math")` in `src/builtins.rs`.
 pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
@@ -1716,13 +1578,6 @@ pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
     use crate::value::Strictness;
     vec![
         // ── Arithmetic (non-Core-46) ──────────────────────────────────────────────────
-        builtin!(
-            "builtin-mul",
-            builtin_mul,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["a", "b"]
-        ),
         builtin!(
             "builtin-div",
             builtin_div_float,
@@ -1899,6 +1754,15 @@ mod tests {
         crate::async_rt::block_on(f)
     }
 
+    /// Peek a settled thunk's value. Panics with a clear message if the thunk holds an error.
+    fn peek_value(thunk: &Thunk) -> Option<Value> {
+        match thunk.peek_result() {
+            Some(Ok(v)) => Some(v.clone()),
+            Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
+            None => None,
+        }
+    }
+
     // --- MAX_SAFE_INT boundary ---
 
     /// builtin-int-to-float at MAX_SAFE_INT: precision guard passes (boundary case).
@@ -1920,7 +1784,7 @@ mod tests {
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
-            matches!(t.try_get_value(), Some(Value::Float { .. })),
+            matches!(peek_value(&t), Some(Value::Float { .. })),
             "expected Float at MAX_SAFE_INT boundary"
         );
     }
@@ -1948,11 +1812,11 @@ mod tests {
         );
     }
 
-    // --- Monomorphic int-add fast path ---
+    // --- Monomorphic int-add ---
 
     /// builtin-int-add: Int + Int → Int(7).
     #[test]
-    fn test_add_int_int_fast_path() {
+    fn test_add_int_int() {
         let ctx = test_ctx();
         let result = run(builtin_int_add(BuiltinArgs {
             args: vec![
@@ -1978,7 +1842,7 @@ mod tests {
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(
-            t.try_get_value().cloned(),
+            peek_value(&t),
             Some(Value::Int {
                 n: 7,
                 type_val: crate::value::unknown_type_val()
@@ -1986,11 +1850,11 @@ mod tests {
         );
     }
 
-    /// Int * Int uses the fast path — returns Int(42) without any instance registered.
+    /// builtin-int-mul: Int * Int returns Int(42).
     #[test]
-    fn test_mul_int_int_fast_path() {
+    fn test_int_mul_int_int() {
         let ctx = test_ctx();
-        let result = run(builtin_mul(BuiltinArgs {
+        let result = run(builtin_int_mul(BuiltinArgs {
             args: vec![
                 alloc(
                     &ctx,
@@ -2014,7 +1878,7 @@ mod tests {
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(
-            t.try_get_value().cloned(),
+            peek_value(&t),
             Some(Value::Int {
                 n: 42,
                 type_val: crate::value::unknown_type_val()

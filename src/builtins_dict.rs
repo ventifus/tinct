@@ -9,6 +9,7 @@
 //! - `append`: Insert value at next integer key
 //! - `builtin-dict-get`: Primitive dict key lookup (errors on missing key)
 //! - `builtin-has-key?`: Returns Int 1 if key exists, Int 0 if not (O(1), no value force)
+//! - `builtin-dict-merge`: Right-biased dict union (used by spread-dict desugaring)
 //!
 //! **Dict single-step primitives (drive laziness from tinct side):**
 //! - `builtin-dict-has-nth?`: Returns Int 1 if position i is valid, Int 0 if out of bounds
@@ -69,12 +70,17 @@ fn value_to_hashable_key(
             let hv_payload = match payload {
                 None => None,
                 Some(p) => {
-                    let p_val = p.try_get_value().ok_or_else(|| {
-                        EvalError::internal(
-                            format!("{builtin_name}: variant payload not materialized"),
-                            span.clone(),
-                        )
-                    })?;
+                    let p_val = match p.peek_result() {
+                        Some(Ok(v)) => v,
+                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                        None => {
+                            return Err(EvalError::internal(
+                                format!("{builtin_name}: variant payload not materialized"),
+                                span.clone(),
+                            )
+                            .into())
+                        }
+                    };
                     Some(Box::new(value_to_hashable_key(
                         p_val,
                         builtin_name,
@@ -156,10 +162,7 @@ pub(crate) fn builtin_keys(
         }
         // arg[0] is pre-forced by force_count.
         let thunk0 = args[0].clone();
-        let val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "keys",
             val,
@@ -211,10 +214,7 @@ pub(crate) fn builtin_length(
         }
         // arg[0] is pre-forced by force_count.
         let thunk0 = args[0].clone();
-        let val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let val = thunk0.require_value()?.clone();
         match val {
             Value::String {
                 source, start, end, ..
@@ -304,18 +304,12 @@ pub(crate) fn builtin_get(
 
         // Materialize the key
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = value_to_hashable_key(&key_val, "builtin-dict-get", thunk0.span.clone())?;
 
         // Materialize the target
         let thunk1 = args[1].clone();
-        let target_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let target_val = thunk1.require_value()?.clone();
         let target_span = thunk1.span.clone();
 
         builtin_get_on_value(key, target_val, target_span, call_span, None, &ctx).await
@@ -476,18 +470,12 @@ pub(crate) fn builtin_has_key(
 
         // Materialize the key
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = value_to_hashable_key(&key_val, "builtin-has-key?", thunk0.span.clone())?;
 
         // Materialize the dict (spine only, not values)
         let thunk1 = args[1].clone();
-        let dict_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let dict_val = thunk1.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-has-key?",
             dict_val,
@@ -529,10 +517,7 @@ pub(crate) fn builtin_dict_has_nth(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Spine")
-            .clone();
+        let dict_val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-dict-has-nth?",
             dict_val,
@@ -541,11 +526,7 @@ pub(crate) fn builtin_dict_has_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone()
-        {
+        let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -558,10 +539,20 @@ pub(crate) fn builtin_dict_has_nth(
             )
             .into());
         }
-        let exists = match usize::try_from(idx) {
-            Ok(i) => i64::from(map.get_index(i).is_some()),
-            Err(_) => 0i64, // idx exceeds addressable range — not in dict
+        let idx_usize = match usize::try_from(idx) {
+            Ok(i) => i,
+            Err(_overflow) => {
+                // idx > usize::MAX on this platform; no dict can have this many entries.
+                return ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                );
+            }
         };
+        let exists = i64::from(map.get_index(idx_usize).is_some());
         ok_val(
             Value::Int {
                 n: exists,
@@ -594,10 +585,7 @@ pub(crate) fn builtin_dict_nth(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Spine")
-            .clone();
+        let dict_val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-dict-nth",
             dict_val,
@@ -606,11 +594,7 @@ pub(crate) fn builtin_dict_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone()
-        {
+        let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -659,10 +643,7 @@ pub(crate) fn builtin_dict_has_key_nth(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Spine")
-            .clone();
+        let dict_val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-dict-has-key-nth?",
             dict_val,
@@ -671,11 +652,7 @@ pub(crate) fn builtin_dict_has_key_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone()
-        {
+        let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -688,10 +665,20 @@ pub(crate) fn builtin_dict_has_key_nth(
             )
             .into());
         }
-        let exists = match usize::try_from(idx) {
-            Ok(i) => i64::from(map.get_index(i).is_some()),
-            Err(_) => 0i64, // idx exceeds addressable range — not in dict
+        let idx_usize = match usize::try_from(idx) {
+            Ok(i) => i,
+            Err(_overflow) => {
+                // idx > usize::MAX on this platform; no dict can have this many entries.
+                return ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                );
+            }
         };
+        let exists = i64::from(map.get_index(idx_usize).is_some());
         ok_val(
             Value::Int {
                 n: exists,
@@ -723,10 +710,7 @@ pub(crate) fn builtin_dict_key_nth(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Spine")
-            .clone();
+        let dict_val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-dict-key-nth",
             dict_val,
@@ -735,11 +719,7 @@ pub(crate) fn builtin_dict_key_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone()
-        {
+        let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -791,10 +771,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Spine")
-            .clone();
+        let dict_val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-dict-has-kv-nth?",
             dict_val,
@@ -803,11 +780,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone()
-        {
+        let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -820,10 +793,20 @@ pub(crate) fn builtin_dict_has_kv_nth(
             )
             .into());
         }
-        let exists = match usize::try_from(idx) {
-            Ok(i) => i64::from(map.get_index(i).is_some()),
-            Err(_) => 0i64, // idx exceeds addressable range — not in dict
+        let idx_usize = match usize::try_from(idx) {
+            Ok(i) => i,
+            Err(_overflow) => {
+                // idx > usize::MAX on this platform; no dict can have this many entries.
+                return ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                );
+            }
         };
+        let exists = i64::from(map.get_index(idx_usize).is_some());
         ok_val(
             Value::Int {
                 n: exists,
@@ -855,10 +838,7 @@ pub(crate) fn builtin_dict_kv_nth(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[0]=Spine")
-            .clone();
+        let dict_val = thunk0.require_value()?.clone();
         let map = crate::builtins::require_dict(
             "builtin-dict-kv-nth",
             dict_val,
@@ -867,11 +847,7 @@ pub(crate) fn builtin_dict_kv_nth(
             call_span.clone(),
         )
         .await?;
-        let idx = match args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[1]=Seq")
-            .clone()
-        {
+        let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
@@ -938,10 +914,7 @@ pub(crate) fn builtin_builder_get_or(
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -970,10 +943,7 @@ pub(crate) fn builtin_builder_get_or(
 
         // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
         let thunk2 = args[2].clone();
-        let builder_val = thunk2
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[2]=Seq via W1 scan")
-            .clone();
+        let builder_val = thunk2.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1027,10 +997,7 @@ pub(crate) fn builtin_build_dict(
 
         // args[0] is pre-materialized by force_count=1.
         let thunk0 = args[0].clone();
-        let val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count=1")
-            .clone();
+        let val = thunk0.require_value()?.clone();
 
         match val {
             // Dict input: build from key-value pair dicts in insertion order.
@@ -1190,10 +1157,7 @@ pub(crate) fn builtin_builder_set(
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1222,10 +1186,7 @@ pub(crate) fn builtin_builder_set(
 
         // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
         let thunk2 = args[2].clone();
-        let builder_val = thunk2
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness[2]=Seq via W1 scan")
-            .clone();
+        let builder_val = thunk2.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1270,10 +1231,7 @@ pub(crate) fn builtin_builder_delete(
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1299,10 +1257,7 @@ pub(crate) fn builtin_builder_delete(
 
         // args[1] (builder) is pre-forced by force_count
         let thunk1 = args[1].clone();
-        let builder_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let builder_val = thunk1.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1347,10 +1302,7 @@ pub(crate) fn builtin_builder_finish(
 
         // args[0] (builder) is pre-forced by force_count
         let thunk0 = args[0].clone();
-        let builder_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let builder_val = thunk0.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1400,10 +1352,7 @@ pub(crate) fn builtin_builder_snapshot(
 
         // args[0] (builder) is pre-forced by force_count
         let thunk0 = args[0].clone();
-        let builder_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let builder_val = thunk0.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1452,10 +1401,7 @@ pub(crate) fn builtin_builder_has(
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1481,10 +1427,7 @@ pub(crate) fn builtin_builder_has(
 
         // args[1] (builder) is pre-forced by force_count
         let thunk1 = args[1].clone();
-        let builder_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let builder_val = thunk1.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1537,10 +1480,7 @@ pub(crate) fn builtin_builder_get(
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let key_val = thunk0.require_value()?.clone();
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1566,10 +1506,7 @@ pub(crate) fn builtin_builder_get(
 
         // args[1] (builder) is pre-forced by force_count
         let thunk1 = args[1].clone();
-        let builder_val = thunk1
-            .try_get_value()
-            .expect("pre-materialized by force_count")
-            .clone();
+        let builder_val = thunk1.require_value()?.clone();
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
@@ -1633,10 +1570,7 @@ pub(crate) fn builtin_get_by_field(
 
         // arg[0]: field-name (String) — pre-forced by pos_strictness
         let thunk0 = args[0].clone();
-        let field_name_val = thunk0
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let field_name_val = thunk0.require_value()?.clone();
         let field_name: String = match field_name_val {
             Value::String {
                 ref source,
@@ -1656,19 +1590,13 @@ pub(crate) fn builtin_get_by_field(
         };
 
         // arg[1]: field-value (Any) — pre-forced by pos_strictness
-        let field_value = args[1]
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness")
-            .clone();
+        let field_value = args[1].require_value()?.clone();
 
         // arg[2]: type-dict (Dict of Variants) — pre-forced to Spine by pos_strictness.
         // Eagerly collect all (unqualified-name → ThunkId) pairs from the dict so we
         // hold no borrow across the upcoming await points.
         let thunk2 = args[2].clone();
-        let type_dict_val = thunk2
-            .try_get_value()
-            .expect("pre-materialized by pos_strictness (Spine)")
-            .clone();
+        let type_dict_val = thunk2.require_value()?.clone();
         // Collect (string-key → Arc<Thunk>) pairs; skip integer-keyed entries.
         let dict_entries: Vec<(String, Arc<Thunk>)> = match &type_dict_val {
             Value::Dict { entries: map, .. } => map
@@ -1781,6 +1709,76 @@ pub(crate) fn builtin_get_by_field(
     })
 }
 
+/// `builtin-dict-merge`: Right-biased dict union.
+///
+/// Takes two Dict values and returns a new Dict containing all entries from `a`, with entries
+/// from `b` added or overriding any same-keyed entries from `a`. Entries unique to `a` appear
+/// first (in their original order), followed by entries from `b` (in their original order).
+///
+/// This is the primitive used by the spread-dict lowering (`[...rest  key: val]`). It is
+/// registered as a core builtin so that spread-dict desugaring is independent of the prelude.
+///
+/// Args: (a: Dict, b: Dict) — both pre-materialized to Spine.
+pub(crate) fn builtin_dict_merge(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        reject_named("builtin-dict-merge", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+        }
+
+        let thunk_a = args[0].clone();
+        let val_a = thunk_a.require_value()?.clone();
+        let map_a = crate::builtins::require_dict(
+            "builtin-dict-merge",
+            val_a,
+            thunk_a.span.clone(),
+            &ctx,
+            call_span.clone(),
+        )
+        .await?;
+
+        let thunk_b = args[1].clone();
+        let val_b = thunk_b.require_value()?.clone();
+        let map_b = crate::builtins::require_dict(
+            "builtin-dict-merge",
+            val_b,
+            thunk_b.span.clone(),
+            &ctx,
+            call_span.clone(),
+        )
+        .await?;
+
+        // Right-biased union: start with all of a's entries, then overlay b.
+        // Keys present in both take b's value. Keys only in a are preserved.
+        // Keys only in b are appended after a's keys.
+        let mut result: IndexMap<HashableValue, Arc<Thunk>> =
+            IndexMap::with_capacity(map_a.len() + map_b.len());
+        for (k, v) in &map_a {
+            result.insert(k.clone(), Arc::clone(v));
+        }
+        for (k, v) in &map_b {
+            result.insert(k.clone(), Arc::clone(v));
+        }
+
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
+    })
+}
+
 // ── Collection operations (moved from builtins_seq_xform.rs and builtins_seq_reduce.rs
 //    in T-1380 — Dict-only dispatch; Seq paths implemented as pure tinct in prelude.llt) ────────
 
@@ -1806,10 +1804,7 @@ pub(crate) fn builtin_take(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let n = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let n = args[0].require_value()?.clone();
         let n_int = match n {
             Value::Int { n: i, .. } => i,
             other => {
@@ -1823,10 +1818,7 @@ pub(crate) fn builtin_take(
             }
         };
 
-        let xs = Arc::clone(&args[1])
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let xs = Arc::clone(&args[1]).require_value()?.clone();
 
         if n_int <= 0 {
             return ok_val(
@@ -1888,10 +1880,7 @@ pub(crate) fn builtin_drop(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let n = args[0]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let n = args[0].require_value()?.clone();
         let n_int = match n {
             Value::Int { n: i, .. } => i,
             other => {
@@ -1909,10 +1898,7 @@ pub(crate) fn builtin_drop(
             return Ok(args[1].clone());
         }
 
-        let xs = args[1]
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let xs = args[1].require_value()?.clone();
 
         match xs {
             Value::Dict {
@@ -1973,10 +1959,7 @@ pub(crate) fn builtin_concat(
         let thunk1 = args[1].clone();
         let xs_span = thunk0.span.clone();
         let ys_span = thunk1.span.clone();
-        let xs = thunk0
-            .try_get_value()
-            .expect("pre-materialized by force_count/pos_strictness")
-            .clone();
+        let xs = thunk0.require_value()?.clone();
         let ys_thunk = thunk1;
 
         match xs {

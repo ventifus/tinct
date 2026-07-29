@@ -86,7 +86,7 @@ fn value_to_surface_node(
 
 /// Collect all elements from an integer-keyed Dict into a Vec.
 /// Returns an error if the value is not an integer-keyed Dict.
-/// Seq inputs are no longer supported (T-1324: Rust must not know Seq's internal structure).
+/// Seq inputs are no longer supported (Rust must not know Seq's internal structure).
 async fn collect_seq_elements(
     value: &Value,
     span: Span,
@@ -639,7 +639,7 @@ pub(crate) async fn extract_fn_annotation_extra(
                 name, resolution, ..
             } if resolution.get() == Some(None) => string_val(name),
             // Expression-valued fields: lower to CoreExpr, evaluate, materialize to Value.
-            // This is the T-1124 fix: annotations like `as-type: [fn [let u] u]` are now evaluable.
+            // Annotations like `as-type: [fn [let u] u]` are now evaluable.
             _ => {
                 // Lower SurfaceNode → CoreExpr (inline fields provide all needed type info).
                 let core_expr = crate::lower::lower_inner(
@@ -678,7 +678,7 @@ pub(crate) fn eval_core_expr<'a>(
     Box::pin(async move {
         let span = expr.span.clone();
         match &expr.node {
-            // Fast path: literals materialize directly without wrapping in Unevaluated
+            // Literals produce values directly — no thunk wrapping needed
             CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(
                 Value::Int {
                     n: *n,
@@ -834,7 +834,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // Populate extra from annotation fields (literals + expressions).
                 // `doc` is now included in extra: triple-quoted strings desugar to
                 // `[unindent "..."]` (a Call), which is evaluated here at definition time.
-                // T-1124: expression-valued fields are evaluated at function-definition time.
+                // Expression-valued fields are evaluated at function-definition time.
                 let extra = extract_fn_annotation_extra(return_ann.as_ref(), frame, ctx).await?;
 
                 // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
@@ -1037,48 +1037,8 @@ pub(crate) fn eval_core_expr<'a>(
                 is_pred,
                 inner,
             } => {
-                // Validate repr string against the allowlist of known Value variant names.
-                const VALID_REPRS: &[&str] = &[
-                    "Value::Int",
-                    "Value::U64",
-                    "Value::Float",
-                    "Value::String",
-                    "Value::Bytes",
-                    "Value::Dict",
-                    "Value::Function",
-                    "Value::Builtin",
-                    "Value::Proxy",
-                    "Value::Variant",
-                    "Value::Decimal",
-                    "Value::BigInt",
-                    "Value::Duration",
-                    "Value::Uri",
-                    "Value::Timestamp",
-                    "Value::Timezone",
-                    "Value::ClockCap",
-                    "Value::DirCap",
-                    "Value::NetCap",
-                    "Value::File",
-                    "Value::RevocableDirCap",
-                    "Value::QuicSession",
-                    "Value::Http2Session",
-                    "Value::Http3Session",
-                    "Value::QuicDatagramHandle",
-                    "Value::Task",
-                    "Value::Channel",
-                    "Value::BroadcastChannel",
-                    "Value::OneshotSender",
-                    "Value::OneshotReceiver",
-                    "Value::Context",
-                    "Value::ReactiveCell",
-                    "Value::Arena",
-                    "Value::TypeContext",
-                    "Value::Program",
-                    "Value::Document",
-                    "Value::Expression",
-                    "Value::CoreDocument",
-                ];
-                if !VALID_REPRS.contains(&repr.as_str()) {
+                // Validate repr string against the known Value variant names.
+                if !is_valid_repr_string(&repr) {
                     return Err(EvalError::user_error(
                         format!("repr: {:?} is not a known Value variant", repr),
                         span.clone(),
@@ -1130,6 +1090,61 @@ pub(crate) fn eval_core_expr<'a>(
     }) // end Box::pin(async move {
 }
 
+/// Returns `true` if `s` is a valid `repr:` string for [`CoreExpr::ReprDecl`].
+///
+/// Each arm of the `matches!` macro corresponds to exactly one variant of [`Value`].
+/// When a new `Value` variant is added, this function must be updated — the compiler
+/// cannot enforce this directly, but the test [`tests::test_is_valid_repr_string`]
+/// verifies every arm explicitly and will fail if an arm is removed or misspelled.
+///
+/// `Value::Builder` is intentionally excluded: Builder is a transient accumulator that
+/// is consumed before type identity matters; it cannot meaningfully participate in the
+/// `repr:` type-identity protocol.
+fn is_valid_repr_string(s: &str) -> bool {
+    matches!(
+        s,
+        "Value::Int"
+            | "Value::U64"
+            | "Value::Float"
+            | "Value::String"
+            | "Value::Bytes"
+            | "Value::Dict"
+            | "Value::Function"
+            | "Value::Builtin"
+            | "Value::Proxy"
+            | "Value::Variant"
+            | "Value::Decimal"
+            | "Value::BigInt"
+            | "Value::Duration"
+            | "Value::Uri"
+            | "Value::Timestamp"
+            | "Value::Timezone"
+            | "Value::ClockCap"
+            | "Value::DirCap"
+            | "Value::NetCap"
+            | "Value::File"
+            | "Value::RevocableDirCap"
+            | "Value::QuicSession"
+            | "Value::Http2Session"
+            | "Value::Http3Session"
+            | "Value::QuicDatagramHandle"
+            | "Value::Task"
+            | "Value::Channel"
+            | "Value::BroadcastChannel"
+            | "Value::OneshotSender"
+            | "Value::OneshotReceiver"
+            | "Value::Context"
+            | "Value::ReactiveCell"
+            | "Value::Arena"
+            | "Value::TypeContext"
+            | "Value::Program"
+            | "Value::Document"
+            | "Value::Expression"
+            | "Value::CoreDocument"
+            | "Value::Annotated"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1156,8 +1171,8 @@ mod tests {
 
     /// `CoreExpr::Int(42)` evaluates to `Value::Int(42)`.
     ///
-    /// Int literals are on the fast path in eval_core_expr: they return a
-    /// pre-materialized Thunk::value without going through the CEK machine.
+    /// Int literals return a pre-materialized Thunk::value without going
+    /// through the CEK machine.
     #[tokio::test]
     async fn test_eval_int_literal() {
         let ctx = test_ctx();
@@ -1174,7 +1189,7 @@ mod tests {
 
     /// `CoreExpr::Str("hello")` evaluates to the corresponding string Value.
     ///
-    /// String literals are on the fast path: Thunk::value is returned directly.
+    /// String literals return Thunk::value directly — no CEK machine needed.
     /// We verify the value using string_val to account for the intern/slice representation.
     #[tokio::test]
     async fn test_eval_string_literal() {
@@ -1239,6 +1254,85 @@ mod tests {
                 type_val: crate::value::unknown_type_val()
             },
             "CoreExpr::Var with VarAddr::LetrecGroupMember(0) must resolve to the injected Int(77)"
+        );
+    }
+
+    /// Verifies that `is_valid_repr_string` returns `true` for every expected `Value`
+    /// variant name and `false` for unknown strings.
+    ///
+    /// Each assertion corresponds to one arm of the `matches!` macro in
+    /// `is_valid_repr_string`. If an arm is removed or a new variant is added without
+    /// updating the function, this test will fail.
+    #[test]
+    fn test_is_valid_repr_string() {
+        // Every arm that should be accepted — one per Value variant (excluding Builder).
+        let valid = [
+            "Value::Int",
+            "Value::U64",
+            "Value::Float",
+            "Value::String",
+            "Value::Bytes",
+            "Value::Dict",
+            "Value::Function",
+            "Value::Builtin",
+            "Value::Proxy",
+            "Value::Variant",
+            "Value::Decimal",
+            "Value::BigInt",
+            "Value::Duration",
+            "Value::Uri",
+            "Value::Timestamp",
+            "Value::Timezone",
+            "Value::ClockCap",
+            "Value::DirCap",
+            "Value::NetCap",
+            "Value::File",
+            "Value::RevocableDirCap",
+            "Value::QuicSession",
+            "Value::Http2Session",
+            "Value::Http3Session",
+            "Value::QuicDatagramHandle",
+            "Value::Task",
+            "Value::Channel",
+            "Value::BroadcastChannel",
+            "Value::OneshotSender",
+            "Value::OneshotReceiver",
+            "Value::Context",
+            "Value::ReactiveCell",
+            "Value::Arena",
+            "Value::TypeContext",
+            "Value::Program",
+            "Value::Document",
+            "Value::Expression",
+            "Value::CoreDocument",
+            "Value::Annotated",
+        ];
+        for s in &valid {
+            assert!(
+                super::is_valid_repr_string(s),
+                "is_valid_repr_string must return true for {:?}",
+                s
+            );
+        }
+
+        // Builder is explicitly excluded — it is a transient accumulator.
+        assert!(
+            !super::is_valid_repr_string("Value::Builder"),
+            "is_valid_repr_string must return false for Value::Builder (transient accumulator)"
+        );
+
+        // Unknown strings must be rejected.
+        assert!(
+            !super::is_valid_repr_string("Value::Unknown"),
+            "is_valid_repr_string must return false for unknown variant names"
+        );
+        assert!(
+            !super::is_valid_repr_string(""),
+            "is_valid_repr_string must return false for empty string"
+        );
+        assert!(
+            !super::is_valid_repr_string("Int"),
+            "is_valid_repr_string must return false for variant name without 'Value::' prefix"
         );
     }
 }
