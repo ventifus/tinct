@@ -912,6 +912,7 @@ fn count_unresolved_vars(
 pub fn type_to_string_key(ty: &Type) -> String {
     match ty {
         Type::IntLiteral(_) => "Int".to_string(),
+        Type::FloatLiteral(_) => "Float".to_string(),
         Type::StringLiteral(_) => "String".to_string(),
         _ => ty.to_string(),
     }

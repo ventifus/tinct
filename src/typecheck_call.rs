@@ -16,6 +16,7 @@ use crate::types::Type;
 pub(crate) fn widen_literal_types(ty: Type) -> Type {
     match ty {
         Type::IntLiteral(_) => Type::Int,
+        Type::FloatLiteral(_) => Type::Float,
         Type::StringLiteral(_) => Type::Str,
         other => other,
     }

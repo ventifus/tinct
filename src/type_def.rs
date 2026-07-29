@@ -272,6 +272,13 @@ pub enum Type {
     Int,
     IntLiteral(i64),
     Float,
+    /// Float literal type — the type of a specific floating-point value.
+    /// `3.14` has type `FloatLiteral(3.14)`, which is a subtype of `Float`.
+    /// Analogous to `IntLiteral(i64)` for integers and `StringLiteral(String)` for strings.
+    /// Produced by `infer_step` for `SurfaceExpression::Float` nodes; promoted to `Float`
+    /// by `widen_literal_types` at call sites and by `normalize_union` when multiple
+    /// `FloatLiteral` values appear in a union (parallel to the `IntLiteral` promotion rule).
+    FloatLiteral(f64),
     Str,
     StringLiteral(String),
     Bytes,
@@ -438,6 +445,7 @@ impl PartialEq for Type {
             (Type::Int, Type::Int) => true,
             (Type::IntLiteral(v1), Type::IntLiteral(v2)) => v1 == v2,
             (Type::Float, Type::Float) => true,
+            (Type::FloatLiteral(v1), Type::FloatLiteral(v2)) => v1.to_bits() == v2.to_bits(),
             (Type::Str, Type::Str) => true,
             (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
             (Type::Bytes, Type::Bytes) => true,
@@ -563,6 +571,8 @@ impl std::hash::Hash for Type {
             // Error nodes are equal to each other regardless of their causal payload).
             Type::Error(_) => {}
             Type::IntLiteral(v) => v.hash(state),
+            // FloatLiteral: hash the bit pattern to preserve NaN identity (consistent with PartialEq).
+            Type::FloatLiteral(v) => v.to_bits().hash(state),
             Type::StringLiteral(s) => s.hash(state),
             Type::Dict(row) => {
                 // Delegate to Row::hash which is order-independent (sorted by key).
@@ -1184,38 +1194,42 @@ impl Type {
             // Int and Float are disjoint (their supertype, not intersection)
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => true,
             (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => true,
+            (Type::IntLiteral(_), Type::FloatLiteral(_))
+            | (Type::FloatLiteral(_), Type::IntLiteral(_)) => true,
+            // FloatLiteral is a subtype of Float, so FloatLiteral vs Int is disjoint
+            (Type::FloatLiteral(_), Type::Int) | (Type::Int, Type::FloatLiteral(_)) => true,
 
             // Different primitives are disjoint
             (Type::Int | Type::IntLiteral(_), Type::Str | Type::StringLiteral(_)) => true,
             (Type::Int | Type::IntLiteral(_), Type::Bytes) => true,
-            (Type::Float, Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Float, Type::Bytes) => true,
+            (Type::Float | Type::FloatLiteral(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Float | Type::FloatLiteral(_), Type::Bytes) => true,
             (Type::Str | Type::StringLiteral(_), Type::Bytes) => true,
 
             // Symmetric cases
             (Type::Str | Type::StringLiteral(_), Type::Int | Type::IntLiteral(_)) => true,
             (Type::Bytes, Type::Int | Type::IntLiteral(_)) => true,
-            (Type::Str | Type::StringLiteral(_), Type::Float) => true,
-            (Type::Bytes, Type::Float) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Float | Type::FloatLiteral(_)) => true,
+            (Type::Bytes, Type::Float | Type::FloatLiteral(_)) => true,
             (Type::Bytes, Type::Str | Type::StringLiteral(_)) => true,
 
             // Record vs any primitive is disjoint
             (Type::Dict(_), Type::Int | Type::IntLiteral(_)) => true,
-            (Type::Dict(_), Type::Float) => true,
+            (Type::Dict(_), Type::Float | Type::FloatLiteral(_)) => true,
             (Type::Dict(_), Type::Str | Type::StringLiteral(_)) => true,
             (Type::Dict(_), Type::Bytes) => true,
             (Type::Int | Type::IntLiteral(_), Type::Dict(_)) => true,
-            (Type::Float, Type::Dict(_)) => true,
+            (Type::Float | Type::FloatLiteral(_), Type::Dict(_)) => true,
             (Type::Str | Type::StringLiteral(_), Type::Dict(_)) => true,
             (Type::Bytes, Type::Dict(_)) => true,
 
             // Function vs primitives (for precise false-branch narrowing after function predicate guards)
             (Type::Function { .. }, Type::Int | Type::IntLiteral(_)) => true,
-            (Type::Function { .. }, Type::Float) => true,
+            (Type::Function { .. }, Type::Float | Type::FloatLiteral(_)) => true,
             (Type::Function { .. }, Type::Str | Type::StringLiteral(_)) => true,
             (Type::Function { .. }, Type::Bytes) => true,
             (Type::Int | Type::IntLiteral(_), Type::Function { .. }) => true,
-            (Type::Float, Type::Function { .. }) => true,
+            (Type::Float | Type::FloatLiteral(_), Type::Function { .. }) => true,
             (Type::Str | Type::StringLiteral(_), Type::Function { .. }) => true,
             (Type::Bytes, Type::Function { .. }) => true,
 
@@ -1229,12 +1243,12 @@ impl Type {
 
             // NominalVariant vs primitives
             (Type::NominalVariant { .. }, Type::Int | Type::IntLiteral(_)) => true,
-            (Type::NominalVariant { .. }, Type::Float) => true,
+            (Type::NominalVariant { .. }, Type::Float | Type::FloatLiteral(_)) => true,
             (Type::NominalVariant { .. }, Type::Str | Type::StringLiteral(_)) => true,
             (Type::NominalVariant { .. }, Type::Bytes) => true,
             (Type::NominalVariant { .. }, Type::App(_, _)) => true,
             (Type::Int | Type::IntLiteral(_), Type::NominalVariant { .. }) => true,
-            (Type::Float, Type::NominalVariant { .. }) => true,
+            (Type::Float | Type::FloatLiteral(_), Type::NominalVariant { .. }) => true,
             (Type::Str | Type::StringLiteral(_), Type::NominalVariant { .. }) => true,
             (Type::Bytes, Type::NominalVariant { .. }) => true,
             (Type::App(_, _), Type::NominalVariant { .. }) => true,
@@ -1441,6 +1455,7 @@ impl Type {
             }),
             // Literal types are consistent with their parent types (similar to subtyping)
             (Type::IntLiteral(_), Type::Int) | (Type::Int, Type::IntLiteral(_)) => true,
+            (Type::FloatLiteral(_), Type::Float) | (Type::Float, Type::FloatLiteral(_)) => true,
             (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => true,
             // Top is consistent with everything (τ ~ Top for all τ)
             (Type::Any, _) | (_, Type::Any) => true,
@@ -2014,6 +2029,7 @@ impl Type {
             Type::Int
             | Type::IntLiteral(_)
             | Type::Float
+            | Type::FloatLiteral(_)
             | Type::Str
             | Type::StringLiteral(_)
             | Type::Bytes
@@ -2326,6 +2342,28 @@ impl Type {
             Type::Union(members)
                 if members
                     .iter()
+                    .filter(|m| matches!(m, Type::FloatLiteral(_)))
+                    .count()
+                    >= 2 =>
+            {
+                // Replace all FloatLiterals with Float, then re-normalize.
+                // Parallel to IntLiteral→Int promotion: FloatLiteral(f) <: Float, so a union
+                // of 2+ FloatLiterals widens to Float (via [U-SUBSUME]).
+                let promoted: Vec<Type> = members
+                    .into_iter()
+                    .map(|m| {
+                        if matches!(m, Type::FloatLiteral(_)) {
+                            Type::Float
+                        } else {
+                            m
+                        }
+                    })
+                    .collect();
+                Type::simplify_type(Type::normalize_union(promoted))
+            }
+            Type::Union(members)
+                if members
+                    .iter()
                     .filter(|m| matches!(m, Type::StringLiteral(_)))
                     .count()
                     >= 2 =>
@@ -2575,6 +2613,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::Int => 0,
         Type::IntLiteral(_) => 1,
         Type::Float => 2,
+        Type::FloatLiteral(_) => 5, // gap between StringLiteral(4) and Bytes(6); sorts Float literals near Float
         Type::Str => 3,
         Type::StringLiteral(_) => 4,
         Type::Bytes => 6,
@@ -2617,6 +2656,8 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
         (Type::IntLiteral(n1), Type::IntLiteral(n2)) => n1.cmp(n2),
+        // FloatLiteral: compare by bit pattern for total order (NaN sorts deterministically).
+        (Type::FloatLiteral(f1), Type::FloatLiteral(f2)) => f1.to_bits().cmp(&f2.to_bits()),
         (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1.cmp(s2),
         (Type::Var(name1, _), Type::Var(name2, _)) => name1.cmp(name2),
         (Type::Operator(name1), Type::Operator(name2)) => name1.cmp(name2),
@@ -3156,6 +3197,28 @@ mod tests {
     #[test]
     fn test_bas_int_literal_subtype_int() {
         assert!(Type::is_subtype(&Type::IntLiteral(42), &Type::Int, None));
+    }
+
+    #[test]
+    fn test_bas_float_literal_subtype_float() {
+        assert!(Type::is_subtype(
+            &Type::FloatLiteral(3.14),
+            &Type::Float,
+            None
+        ));
+        // FloatLiteral is NOT a subtype of Int
+        assert!(!Type::is_subtype(
+            &Type::FloatLiteral(3.14),
+            &Type::Int,
+            None
+        ));
+        // FloatLiteral is consistent with Float
+        assert!(Type::is_consistent(&Type::FloatLiteral(3.14), &Type::Float));
+        // Different FloatLiterals are disjoint
+        assert!(Type::types_are_disjoint(
+            &Type::FloatLiteral(1.0),
+            &Type::FloatLiteral(2.0)
+        ));
     }
 
     #[test]

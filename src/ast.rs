@@ -1197,10 +1197,6 @@ impl std::fmt::Debug for CapturesCell {
     }
 }
 
-/// Table mapping each TypeAssert SurfaceNode's NodeId to its resolved Type.
-/// Produced by the type checker; consumed by the lowerer to generate CoreExpr::TypeAssert.
-pub type TypeAnnotationTable = std::collections::HashMap<NodeId, crate::types::Type>;
-
 /// Inline annotation for a predicate pattern's resolved Matchable `to-match` instance
 /// binding name. Written once by the type checker during match arm elaboration; read by
 /// the lowerer to carry the binding name into the match arm.

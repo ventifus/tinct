@@ -3741,6 +3741,25 @@ pub(crate) async fn typenode_value_to_type(
                         }
                     }
 
+                    // ── FloatLit ──────────────────────────────────────────────────────────
+                    // TypeNode.FloatLit { value: Float } → Type::FloatLiteral(f)
+                    // Produced by union/or when a raw float value appears in the type-stage
+                    // evaluator (e.g. `[or 1.0 2.0]`).
+                    "FloatLit" => {
+                        let fields = match variant_payload_dict(val, ctx).await? {
+                            Some(f) => f,
+                            None => return Ok(None),
+                        };
+                        let v_val = match fields.get("value") {
+                            Some(v) => v.clone(),
+                            None => return Ok(None),
+                        };
+                        match v_val {
+                            Value::Float { n, .. } => Ok(Some(Type::FloatLiteral(n))),
+                            _ => Ok(None),
+                        }
+                    }
+
                     // ── StringLiteral ─────────────────────────────────────────────────────
                     // TypeNode.StringLiteral { s: String } → Type::StringLiteral(s)
                     // Produced by union/or when a raw string value is normalized via

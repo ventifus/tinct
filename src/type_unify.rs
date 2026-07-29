@@ -1016,6 +1016,7 @@ fn promote_literal_for_constrained_var(
 
     match ty {
         Type::IntLiteral(_) => Type::Int,
+        Type::FloatLiteral(_) => Type::Float,
         Type::StringLiteral(_) => Type::Str,
         _ => ty,
     }
@@ -1563,6 +1564,7 @@ fn lower_levels_check_occurs(
         Type::Int
         | Type::IntLiteral(_)
         | Type::Float
+        | Type::FloatLiteral(_)
         | Type::Str
         | Type::StringLiteral(_)
         | Type::Bytes

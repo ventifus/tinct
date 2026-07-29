@@ -8,7 +8,6 @@ use std::sync::{Arc, RwLock};
 // Pattern import deleted (T-1750)
 use crate::ast::{
     Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
-    TypeAnnotationTable,
 };
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
@@ -128,11 +127,9 @@ pub async fn typecheck_program_bootstrap(
     state.resolution_table = Arc::new(resolve_table);
     state.resolver_frames = frames;
 
-    let mut annotation_table = TypeAnnotationTable::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        let (new_env, _, mut doc_errors) =
-            process_document(doc, &env, &mut state, &mut annotation_table, &mut None).await;
+        let (new_env, _, mut doc_errors) = process_document(doc, &env, &mut state, &mut None).await;
         env = new_env;
         errors.append(&mut doc_errors);
     }
@@ -247,7 +244,6 @@ pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    table: &mut TypeAnnotationTable,
     type_map: &mut Option<&mut TypeMap>,
 ) -> (Arc<RwLock<Env>>, Type, Vec<TypeDiagnostic>) {
     let empty_dict_ty = Type::Dict(Row {
@@ -310,10 +306,6 @@ pub(crate) async fn process_document(
         &mut Vec::new(),
     )
     .await;
-
-    for (nid, ty) in state.type_annotation_table.drain() {
-        table.insert(nid, ty);
-    }
 
     // Check that the last expression's type is a Dict subtype.
     //
@@ -410,7 +402,7 @@ pub(crate) async fn process_document(
 pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
     match ty {
         Type::Int | Type::IntLiteral(_) => Some("Integer".to_string()),
-        Type::Float => Some("Float".to_string()),
+        Type::Float | Type::FloatLiteral(_) => Some("Float".to_string()),
         Type::Str | Type::StringLiteral(_) => Some("String".to_string()),
         // Bytes is a direct variant (not TyCon("Bytes")).
         Type::Bytes => Some("Bytes".to_string()),

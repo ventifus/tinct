@@ -1,6 +1,5 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Scope` (closure-converted EvalFrame-based variable lookup).
 
-use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -955,13 +954,11 @@ pub enum Value {
     /// A complete tinct program — the type returned by `builtin-parse` and related builtins.
     ///
     /// The `SurfaceProgram` AST is stored directly in an `Arc` for shared ownership.
-    /// `resolutions`, `types`, and `expects_resolved` are populated by the resolve/typecheck
-    /// pipeline stages and carried alongside the program for use by downstream builtins.
+    /// `resolutions` is populated by the resolve pipeline stage and carried alongside
+    /// the program for use by downstream builtins.
     Program {
         program: std::sync::Arc<crate::ast::SurfaceProgram>,
         resolutions: Arc<crate::ast::ResolutionTable>,
-        types: Arc<crate::ast::TypeAnnotationTable>,
-        expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
         type_val: Arc<Value>,
     },
 
@@ -1227,14 +1224,10 @@ impl Clone for Value {
             Value::Program {
                 program,
                 resolutions,
-                types,
-                expects_resolved,
                 type_val,
             } => Value::Program {
                 program: std::sync::Arc::clone(program),
                 resolutions: Arc::clone(resolutions),
-                types: Arc::clone(types),
-                expects_resolved: Arc::clone(expects_resolved),
                 type_val: Arc::clone(type_val),
             },
             Value::Document { doc, type_val } => Value::Document {

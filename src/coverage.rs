@@ -189,7 +189,9 @@ impl ConstructorSignature {
                     }
                 }
                 Type::Int => constructors.push((ConstructorTag::Variant("Int".into()), 0)),
-                Type::Float => constructors.push((ConstructorTag::Variant("Float".into()), 0)),
+                Type::Float | Type::FloatLiteral(_) => {
+                    constructors.push((ConstructorTag::Variant("Float".into()), 0))
+                }
                 Type::Str => constructors.push((ConstructorTag::Variant("String".into()), 0)),
                 Type::StringLiteral(s) => {
                     constructors.push((ConstructorTag::LiteralStr(s.clone()), 0));
@@ -526,10 +528,12 @@ pub fn ast_pattern_to_coverage(
                         sub_patterns: inner_sub,
                     }
                 }
-                crate::type_def::Type::Float => CoveragePattern::Constructor {
-                    tag: ConstructorTag::Variant("Float".into()),
-                    sub_patterns: inner_sub,
-                },
+                crate::type_def::Type::Float | crate::type_def::Type::FloatLiteral(_) => {
+                    CoveragePattern::Constructor {
+                        tag: ConstructorTag::Variant("Float".into()),
+                        sub_patterns: inner_sub,
+                    }
+                }
                 crate::type_def::Type::Str | crate::type_def::Type::StringLiteral(_) => {
                     CoveragePattern::Constructor {
                         tag: ConstructorTag::Variant("String".into()),

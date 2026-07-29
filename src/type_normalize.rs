@@ -241,6 +241,30 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
             })
         }
         Type::Float => Some(leaf("Float")),
+        Type::FloatLiteral(f) => {
+            let mut payload = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str(Arc::from("value")),
+                Arc::new(crate::value::Thunk::value(
+                    Value::Float {
+                        n: *f,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    crate::rust_span!(),
+                )),
+            );
+            Some(Value::Variant {
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("TypeNode.FloatLit"),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    Value::Dict {
+                        entries: payload,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    crate::rust_span!(),
+                ))),
+            })
+        }
         Type::Str => Some(leaf("String")),
         Type::StringLiteral(s) => {
             let mut payload = indexmap::IndexMap::new();
@@ -612,6 +636,7 @@ impl fmt::Display for Type {
             Type::Int => write!(f, "Integer"),
             Type::IntLiteral(n) => write!(f, "{}", n),
             Type::Float => write!(f, "Float"),
+            Type::FloatLiteral(v) => write!(f, "{}", v),
             Type::Str => write!(f, "String"),
             Type::StringLiteral(s) => write!(f, "\"{}\"", s),
             Type::Bytes => write!(f, "Bytes"),

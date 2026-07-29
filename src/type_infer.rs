@@ -335,10 +335,6 @@ pub struct InferState {
     /// Prevents emitting duplicate T013 warnings when the same ambiguous TypeVar is encountered
     /// multiple times during constraint discharge. Each unique (var, span) pair is emitted once.
     pub t013_emitted: std::collections::HashSet<(String, crate::ast::Span)>,
-    /// TypeAnnotationTable for nested TypeAssert nodes: keyed by NodeId of the TypeAssert Arc<SurfaceNode>.
-    /// Populated by the CEK machine's TypeAssert handler. Extracted by process_document
-    /// to merge into the document-level annotation table.
-    pub type_annotation_table: crate::ast::TypeAnnotationTable,
     /// Resolution table for slot-indexed TypeEnv lookups.
     ///
     /// The CEK machine's VarRef handler uses the resolved (level, slot) coordinates to
@@ -424,7 +420,6 @@ impl InferState {
             instance_resolution_depth: 0,
             type_var_source_names: HashMap::new(),
             t013_emitted: std::collections::HashSet::new(),
-            type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             resolution_table: std::sync::Arc::new(std::collections::HashMap::new()),
             resolver_frames: Vec::new(),
             eval_ctx: None,

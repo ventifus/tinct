@@ -149,6 +149,10 @@ pub(crate) fn try_eq_literal(
                 var: name.clone(),
                 ty: Type::IntLiteral(*n),
             }),
+            SurfaceExpression::Float(f) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::FloatLiteral(*f),
+            }),
             SurfaceExpression::StringLiteral { content: s, .. } => Some(Narrowing::EqLiteral {
                 var: name.clone(),
                 ty: Type::StringLiteral(s.clone()),

@@ -385,7 +385,7 @@ async fn infer_step(
     match &node.expr {
         // ===== Leaf expressions =====
         SurfaceExpression::Int(n) => TypeCheckAction::Done(Type::IntLiteral(*n)),
-        SurfaceExpression::Float(_) => TypeCheckAction::Done(Type::Float),
+        SurfaceExpression::Float(f) => TypeCheckAction::Done(Type::FloatLiteral(*f)),
         SurfaceExpression::StringLiteral { content, .. } => {
             TypeCheckAction::Done(Type::StringLiteral(content.clone()))
         }
@@ -3507,11 +3507,7 @@ async fn apply_call_args_poly(
         consumed_params.insert(idx);
 
         // Widen literal types before unification
-        let widened_arg = match arg_ty {
-            Type::IntLiteral(_) => Type::Int,
-            Type::StringLiteral(_) => Type::Str,
-            other => other.clone(),
-        };
+        let widened_arg = crate::typecheck::typecheck_call::widen_literal_types(arg_ty.clone());
 
         // Gradual typing boundary guard: Unknown-typed arg flowing into concrete param.
         // When an Unknown/Any arg flows into a concrete parameter, attach a runtime guard so
@@ -3565,11 +3561,7 @@ async fn apply_call_args_poly(
         let mut rest_positional_args: Vec<Type> = Vec::new();
 
         for arg_ty in variadic_args {
-            let widened = match arg_ty {
-                Type::IntLiteral(_) => Type::Int,
-                Type::StringLiteral(_) => Type::Str,
-                other => other.clone(),
-            };
+            let widened = crate::typecheck::typecheck_call::widen_literal_types(arg_ty.clone());
 
             // Match semantics: try each typed bucket in declaration order; first match wins.
             let mut routed = false;
@@ -3764,11 +3756,7 @@ async fn apply_call_args_poly(
             let (_, rest_ty) = rest_param.as_ref();
             let mut fields = indexmap::IndexMap::new();
             for (name, ty) in &unmatched_named_arg_types {
-                let widened = match ty {
-                    Type::IntLiteral(_) => Type::Int,
-                    Type::StringLiteral(_) => Type::Str,
-                    other => other.clone(),
-                };
+                let widened = crate::typecheck::typecheck_call::widen_literal_types(ty.clone());
                 fields.insert(name.clone(), widened);
             }
             let named_dict = Type::Dict(Row {
@@ -6624,13 +6612,11 @@ mod tests {
             &arc_env,
         ))));
         let mut state = crate::types::InferState::with_env(Arc::clone(&child_env));
-        let mut ann_table = crate::ast::TypeAnnotationTable::new();
 
         let (result_env, _result_ty, errors) = crate::typecheck::process_document(
             &program.documents[0].node,
             &arc_env,
             &mut state,
-            &mut ann_table,
             &mut None,
         )
         .await;

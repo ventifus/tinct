@@ -2002,7 +2002,7 @@ pub(crate) fn builtin_cap_identity(
 /// - `path` (String): file path hint used in parse error messages
 ///
 /// Returns `{program: Value::Program, errors: Dict<Int, ErrorDict>}`.
-///   - `program`: raw `Value::Program` with empty resolution/type/expects_resolved tables.
+///   - `program`: raw `Value::Program` with empty resolution table.
 ///   - `errors`: integer-keyed dict of unified error dicts `{kind, message, span, notes, ...}`.
 ///     `kind` is always `"parse-error"` for parse errors.
 ///     Empty dict (`[]`) when parse succeeded with no errors.
@@ -2168,8 +2168,6 @@ pub(crate) fn builtin_parse(
         let program_value = Value::Program {
             program: std::sync::Arc::new(surface_program),
             resolutions: std::sync::Arc::new(Default::default()),
-            types: std::sync::Arc::new(Default::default()),
-            expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
             type_val: crate::value::unknown_type_val(),
         };
 
@@ -2728,7 +2726,7 @@ pub(crate) fn builtin_typecheck_doc(
         };
 
         // Extract TypeContext state
-        let (mut state, mut type_map, parent_env) = {
+        let (mut state, parent_env) = {
             let guard = tc_arc.lock().unwrap();
             let mut state = crate::types::InferState::new();
             state.tycon_env = guard.tycon_env.clone();
@@ -2787,9 +2785,8 @@ pub(crate) fn builtin_typecheck_doc(
             // Store doc-env GroupSpine for eval_type_stage_expr.
             state.type_stage_eval_group = doc_env_spine;
 
-            let type_map = crate::ast::TypeAnnotationTable::new();
             let parent_env = Arc::clone(&guard.inference_env);
-            (state, type_map, parent_env)
+            (state, parent_env)
         };
 
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
@@ -2800,7 +2797,6 @@ pub(crate) fn builtin_typecheck_doc(
             &doc_arc,
             &parent_env,
             &mut state,
-            &mut type_map,
             &mut type_map_ref,
         )
         .await;
@@ -3258,8 +3254,8 @@ pub(crate) fn builtin_tc_update_type_stage_env(
 /// Returns a `Value::Program` with the documents wrapped in a `SurfaceProgram` structure.
 ///
 /// This is the primitive for reconstructing programs after transformation (e.g., desugar.llt).
-/// The resolution, type annotation, and expects_resolved tables are initialized as empty —
-/// callers should use `builtin-resolve` or other builtins to populate them if needed.
+/// The resolution table is initialized as empty — callers should use `builtin-resolve`
+/// or other builtins to populate it if needed.
 ///
 /// Example usage in desugar.llt:
 /// ```llt
@@ -3337,8 +3333,6 @@ pub(crate) fn builtin_program(
             Value::Program {
                 program: std::sync::Arc::new(surface_program),
                 resolutions: std::sync::Arc::new(Default::default()),
-                types: std::sync::Arc::new(Default::default()),
-                expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
                 type_val: crate::value::unknown_type_val(),
             },
             call_span,
@@ -3370,14 +3364,12 @@ pub(crate) fn builtin_desugar(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let (program, resolutions, types, expects_resolved) = match program_val {
+        let (program, resolutions) = match program_val {
             Value::Program {
                 program,
                 resolutions,
-                types,
-                expects_resolved,
                 ..
-            } => (program, resolutions, types, expects_resolved),
+            } => (program, resolutions),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-desugar".to_string(),
@@ -3395,8 +3387,6 @@ pub(crate) fn builtin_desugar(
             Value::Program {
                 program: std::sync::Arc::new(desugared),
                 resolutions,
-                types,
-                expects_resolved,
                 type_val: crate::value::unknown_type_val(),
             },
             call_span,
@@ -4846,8 +4836,6 @@ pub(crate) fn builtin_ast_to_program(
             Value::Program {
                 program: std::sync::Arc::new(program),
                 resolutions: Arc::new(Default::default()),
-                types: Arc::new(Default::default()),
-                expects_resolved: Arc::new(std::collections::HashMap::new()),
                 type_val: crate::value::unknown_type_val(),
             },
             call_span,

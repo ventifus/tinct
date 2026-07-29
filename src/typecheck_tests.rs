@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTable};
+use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
 use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
@@ -178,14 +178,8 @@ async fn doc_env_and_type(
         );
         state.type_stage_scope.push(frame);
     }
-    let (result_env, result_ty, errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (result_env, result_ty, errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
     if !errors.is_empty() {
         return Err(format!("doc_env_with_prelude: typecheck error: {:?}", errors).into());
     }
@@ -223,14 +217,8 @@ async fn doc_tycon_env(
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    let (_result_env, _ty, errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (_result_env, _ty, errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
     if !errors.is_empty() {
         panic!("doc_tycon_env: typecheck error: {:?}", errors);
     }
@@ -250,14 +238,7 @@ async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
     let mut state = InferState::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        let (new_env, _, errors) = process_document(
-            doc,
-            &env,
-            &mut state,
-            &mut TypeAnnotationTable::new(),
-            &mut None,
-        )
-        .await;
+        let (new_env, _, errors) = process_document(doc, &env, &mut state, &mut None).await;
         if !errors.is_empty() {
             panic!("file_env: typecheck error: {:?}", errors);
         }
@@ -275,7 +256,7 @@ async fn test_literal_int() {
 
 #[tokio::test]
 async fn test_literal_float() {
-    assert_eq!(infer("3.14").await, Type::Float);
+    assert_eq!(infer("3.14").await, Type::FloatLiteral(3.14));
 }
 
 #[tokio::test]
@@ -1354,14 +1335,8 @@ async fn test_level_restored_after_non_dict_record_error() {
     let mut env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     // Process first document (should succeed)
-    let (new_env, _doc_output_type, errors) = process_document(
-        &program.documents[0].node,
-        &env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (new_env, _doc_output_type, errors) =
+        process_document(&program.documents[0].node, &env, &mut state, &mut None).await;
     if !errors.is_empty() {
         panic!("first document should type-check, got errors: {:?}", errors);
     }
@@ -1370,14 +1345,8 @@ async fn test_level_restored_after_non_dict_record_error() {
     let level_after_doc1 = state.level;
 
     // Process second document (should fail with undefined variable)
-    let (_, _, errors) = process_document(
-        &program.documents[1].node,
-        &env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (_, _, errors) =
+        process_document(&program.documents[1].node, &env, &mut state, &mut None).await;
     assert!(!errors.is_empty(), "second document should fail");
     assert!(
         errors[0].message.contains("undefined variable"),
@@ -1392,14 +1361,8 @@ async fn test_level_restored_after_non_dict_record_error() {
     );
 
     // Process third document — must succeed and resolve x from doc 1 via env propagation
-    let (new_env, _, errors) = process_document(
-        &program.documents[2].node,
-        &env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (new_env, _, errors) =
+        process_document(&program.documents[2].node, &env, &mut state, &mut None).await;
     if !errors.is_empty() {
         panic!(
             "third document should type-check correctly after level restoration, got errors: {:?}",
@@ -1841,7 +1804,6 @@ async fn test_narrowing_type_map_hover() {
         &program.documents[0].node,
         &env,
         &mut state,
-        &mut TypeAnnotationTable::new(),
         &mut Some(&mut type_map),
     )
     .await;
@@ -3427,13 +3389,14 @@ async fn test_cek_string_literal_infers_string_literal() {
     );
 }
 
-/// T-1666 / Test 3: `run_typecheck` on a Float literal returns `Type::Float`.
+/// T-1666 / Test 3: `run_typecheck` on a Float literal returns `Type::FloatLiteral`.
 ///
-/// The `Float(_)` arm of `infer_step` returns `Done(Type::Float)` — a leaf expression.
-/// Note that float literal values are not preserved as distinct literal types (unlike Int
-/// and String), so all floats share the single `Type::Float` type.
+/// The `Float(f)` arm of `infer_step` returns `Done(Type::FloatLiteral(*f))` — a leaf expression.
+/// Float literals now preserve their precise value as `FloatLiteral(f)`, parallel to
+/// `IntLiteral(n)` for integers and `StringLiteral(s)` for strings.
+/// `FloatLiteral(f)` is a subtype of `Float` (via BAS literal promotion).
 #[tokio::test]
-async fn test_cek_float_literal_infers_float() {
+async fn test_cek_float_literal_infers_float_literal() {
     let src = "3.14";
     let program = crate::desugar::desugar_surface_program(
         &crate::parse(src, test_file(src)).unwrap().program,
@@ -3454,8 +3417,8 @@ async fn test_cek_float_literal_infers_float() {
 
     assert_eq!(
         ty,
-        Type::Float,
-        "run_typecheck on 3.14 must yield Type::Float, got {:?}",
+        Type::FloatLiteral(3.14),
+        "run_typecheck on 3.14 must yield Type::FloatLiteral(3.14), got {:?}",
         ty
     );
     assert!(
@@ -4128,14 +4091,8 @@ async fn test_b477_user_instance_call_dispatch_set_with_scope_frames() {
     outer_frame.insert("builtin-dict-get".to_string(), 0u32);
     state.scope_frames = Some(vec![outer_frame]);
 
-    let (result_env, _ty, errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (result_env, _ty, errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
 
     // The program is well-typed — no errors expected (class + instance + call).
     // Note: in test infrastructure without prelude, type class constraints may be unresolved.
@@ -4231,14 +4188,8 @@ async fn test_b599_instance_type_param_injected_into_scope() {
     );
     state.type_stage_scope = vec![seed_scope];
 
-    let (result_env, _ty, errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (result_env, _ty, errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
 
     // No type ERRORS (advisory diagnostics for ambiguous constraints are acceptable).
     let type_errors: Vec<_> = errors
@@ -4299,14 +4250,8 @@ async fn test_b599_type_stage_scope_restored_after_instance_check() {
     );
     state.type_stage_scope = vec![seed];
 
-    let (_result_env, _ty, _errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (_result_env, _ty, _errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
 
     // type_stage_scope must be restored to its original length (1) regardless of errors.
     assert_eq!(
@@ -4354,14 +4299,8 @@ async fn test_t1853_unannotated_instance_method_params_get_expected_type() {
     );
     state.type_stage_scope = vec![seed_scope];
 
-    let (_result_env, _ty, errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (_result_env, _ty, errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
 
     // No type errors — the unannotated param should get Int (not Unknown), so no T010.
     let type_errors: Vec<_> = errors
@@ -4576,6 +4515,72 @@ async fn test_typenode_string_literal_roundtrip() {
         roundtripped,
         Type::StringLiteral("hello".to_string()),
         "typenode_value_to_type must round-trip type_to_typenode(StringLiteral(\"hello\")) back to Type::StringLiteral(\"hello\")"
+    );
+}
+
+/// T-1998: `type_to_typenode(Type::FloatLiteral(3.14))` produces `TypeNode.FloatLit{value:3.14}`,
+/// NOT the leaf `TypeNode.Float`.
+///
+/// Parallel to the IntLiteral test: the `FloatLiteral` arm must wrap the float value in a
+/// `{value: Float}` payload dict, distinguishing it from the generic `TypeNode.Float` leaf.
+///
+/// Also verifies the round-trip: `typenode_value_to_type(TypeNode.FloatLit{...})` →
+/// `Type::FloatLiteral(3.14)`.
+#[tokio::test]
+async fn test_typenode_float_literal_roundtrip() {
+    let val = crate::type_normalize::type_to_typenode(&Type::FloatLiteral(3.14));
+    assert!(
+        val.is_some(),
+        "type_to_typenode(FloatLiteral(3.14)) must return Some"
+    );
+    let variant = val.unwrap();
+    // Verify the payload contains 'value' = Float(3.14).
+    match &variant {
+        crate::value::Value::Variant { payload, .. } => {
+            let payload_thunk = payload
+                .as_ref()
+                .expect("FloatLit TypeNode must have a payload dict with field 'value'");
+            let ctx = crate::eval::EvalContext::new();
+            let payload_val = crate::eval::materialize(payload_thunk, None, &ctx)
+                .await
+                .expect("payload materialize must succeed");
+            match payload_val {
+                crate::value::Value::Dict {
+                    entries: ref dict, ..
+                } => {
+                    let v_thunk = dict
+                        .get(&crate::value::HashableValue::Str(std::sync::Arc::from(
+                            "value",
+                        )))
+                        .expect("payload dict must have field 'value'");
+                    let v_val = crate::eval::materialize(v_thunk, None, &ctx)
+                        .await
+                        .expect("payload 'value' materialize must succeed");
+                    assert_eq!(
+                        v_val,
+                        crate::value::Value::Float {
+                            n: 3.14,
+                            type_val: crate::value::unknown_type_val()
+                        },
+                        "payload 'value' must be Float(3.14)"
+                    );
+                }
+                other => panic!("payload must be Value::Dict, got {:?}", other),
+            }
+        }
+        other => panic!("expected Value::Variant, got {:?}", other),
+    }
+    // Roundtrip: typenode_value_to_type must reconstruct Type::FloatLiteral(3.14).
+    let ctx = crate::eval::EvalContext::new();
+    let roundtripped =
+        crate::typecheck::typecheck_annot::typenode_value_to_type(&variant, &ctx, &[])
+            .await
+            .expect("typenode_value_to_type must not error")
+            .expect("typenode_value_to_type must return Some for the FloatLit TypeNode");
+    assert_eq!(
+        roundtripped,
+        Type::FloatLiteral(3.14),
+        "typenode_value_to_type must round-trip type_to_typenode(FloatLiteral(3.14)) back to Type::FloatLiteral(3.14)"
     );
 }
 
@@ -4870,14 +4875,8 @@ async fn test_fieldtype_resolver_dict_field_access() -> Result<(), Box<dyn std::
         state.type_stage_scope.push(frame);
     }
 
-    let (result_env, _result_ty, _errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (result_env, _result_ty, _errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
     let result_scheme = result_env
         .read()
         .unwrap()
@@ -4993,14 +4992,8 @@ async fn test_get_wrapper_indexable_constraint() -> Result<(), Box<dyn std::erro
         state.type_stage_scope.push(frame);
     }
 
-    let (result_env, _result_ty, _errors) = process_document(
-        &program.documents[0].node,
-        &arc_env,
-        &mut state,
-        &mut TypeAnnotationTable::new(),
-        &mut None,
-    )
-    .await;
+    let (result_env, _result_ty, _errors) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
     let result_scheme = result_env
         .read()
         .unwrap()

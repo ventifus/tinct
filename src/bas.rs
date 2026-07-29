@@ -124,6 +124,9 @@ pub enum PrimitiveAtom {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LiteralAtom {
     IntLiteral(i64),
+    /// Float literal stored as IEEE 754 bit pattern for `Eq` + `Hash` compatibility.
+    /// Use `f64::from_bits(bits)` to recover the value.
+    FloatLiteral(u64),
     StringLiteral(String),
 }
 
@@ -328,6 +331,9 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         Type::IntLiteral(n) => vec![vec![SignedAtom::Pos(Atom::Literal(
             LiteralAtom::IntLiteral(*n),
         ))]],
+        Type::FloatLiteral(f) => vec![vec![SignedAtom::Pos(Atom::Literal(
+            LiteralAtom::FloatLiteral(f.to_bits()),
+        ))]],
         Type::StringLiteral(s) => vec![vec![SignedAtom::Pos(Atom::Literal(
             LiteralAtom::StringLiteral(s.clone()),
         ))]],
@@ -474,6 +480,9 @@ pub fn is_atom_subtype(
 
         // Literal promotions
         (Atom::Literal(LiteralAtom::IntLiteral(_)), Atom::Primitive(PrimitiveAtom::Int)) => true,
+        (Atom::Literal(LiteralAtom::FloatLiteral(_)), Atom::Primitive(PrimitiveAtom::Float)) => {
+            true
+        }
         (Atom::Literal(LiteralAtom::StringLiteral(_)), Atom::Primitive(PrimitiveAtom::Str)) => true,
 
         // Single-field record: covariant in value type, key must match exactly
@@ -817,6 +826,7 @@ fn atom_to_type(atom: &Atom) -> Type {
         },
         Atom::Literal(l) => match l {
             LiteralAtom::IntLiteral(n) => Type::IntLiteral(*n),
+            LiteralAtom::FloatLiteral(bits) => Type::FloatLiteral(f64::from_bits(*bits)),
             LiteralAtom::StringLiteral(s) => Type::StringLiteral(s.clone()),
         },
         Atom::SingleFieldRecord { key, value } => Type::Dict(Row {
@@ -1040,6 +1050,10 @@ fn atoms_are_disjoint(a: &Atom, b: &Atom, tycon_env: Option<&TyConEnv>) -> bool 
         | (Atom::Primitive(p), Atom::Literal(LiteralAtom::IntLiteral(_))) => {
             !matches!(p, PrimitiveAtom::Int)
         }
+        (Atom::Literal(LiteralAtom::FloatLiteral(_)), Atom::Primitive(p))
+        | (Atom::Primitive(p), Atom::Literal(LiteralAtom::FloatLiteral(_))) => {
+            !matches!(p, PrimitiveAtom::Float)
+        }
         (Atom::Literal(LiteralAtom::StringLiteral(_)), Atom::Primitive(p))
         | (Atom::Primitive(p), Atom::Literal(LiteralAtom::StringLiteral(_))) => {
             !matches!(p, PrimitiveAtom::Str)
@@ -1054,11 +1068,33 @@ fn atoms_are_disjoint(a: &Atom, b: &Atom, tycon_env: Option<&TyConEnv>) -> bool 
             Atom::Literal(LiteralAtom::StringLiteral(_)),
             Atom::Literal(LiteralAtom::IntLiteral(_)),
         ) => true,
+        (
+            Atom::Literal(LiteralAtom::IntLiteral(_)),
+            Atom::Literal(LiteralAtom::FloatLiteral(_)),
+        )
+        | (
+            Atom::Literal(LiteralAtom::FloatLiteral(_)),
+            Atom::Literal(LiteralAtom::IntLiteral(_)),
+        ) => true,
+        (
+            Atom::Literal(LiteralAtom::FloatLiteral(_)),
+            Atom::Literal(LiteralAtom::StringLiteral(_)),
+        )
+        | (
+            Atom::Literal(LiteralAtom::StringLiteral(_)),
+            Atom::Literal(LiteralAtom::FloatLiteral(_)),
+        ) => true,
 
         // Different IntLiterals → disjoint
         (Atom::Literal(LiteralAtom::IntLiteral(a)), Atom::Literal(LiteralAtom::IntLiteral(b))) => {
             a != b
         }
+
+        // Different FloatLiterals → disjoint (compare by bit pattern)
+        (
+            Atom::Literal(LiteralAtom::FloatLiteral(a)),
+            Atom::Literal(LiteralAtom::FloatLiteral(b)),
+        ) => a != b,
 
         // Different StringLiterals → disjoint
         (
