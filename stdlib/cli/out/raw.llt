@@ -1,32 +1,23 @@
-# Raw output formatter — concurrent drain/force/await contract.
+# Raw output formatter — dependency-chain contract.
 #
-# Emits each value as its string representation (strings are written directly,
-# other values are converted via str).
-#
-# Concurrent contract:
-# 1. Drain %emit-channel: write each emitted value as raw text
-# 2. Force %: write the return value (or each Seq element) as raw text
-# 3. Await drain task completion
+# Emits each value as its string representation (strings written directly,
+# other values converted via str).
+# %stdout threads through every write: return value, then emitted values, then flush.
 
 [
-  # Helper: convert value to raw string — str dispatches via Castable to handle all types.
   raw: [fn@String [let v@Any] [str v]]
 ]
 
 --- uses: ["async"]
-# 1. Drain the emit channel concurrently.
-[drain: [task
-  [select [context]
-    [seq [ch: %emit-channel  handler: [fn [let v]
-      [write [raw v] %stdout]]] []]
-    identity]]]
+[
+  # Only write % if non-null ([] means output was entirely via emit).
+  written: [if [seq? %]
+    [reduce [fn [let h x] [write [raw x] h]] %stdout %]
+    [if [= [] %]
+      %stdout
+      [write [raw %] %stdout]]]
 
-# Only write % if it is non-null ([] means "no return value" — output was via emit).
-# Either way, return %stdout as the handle so the pipeline can flush it.
-[written: [if [seq? %]
-  [reduce [fn [let h x] [write [raw x] h]] %stdout %]
-  [if [= [] %]
-    %stdout
-    [write [raw %] %stdout]]]]
+  write-emits: [fn [let h] [reduce [fn [let h v] [write [raw v] h]] h [recv-all %emit-channel]]]
+]
 
-[$written | [fn [let h] [match [await drain] ...: h]] | flush]
+[$written | write-emits | flush]

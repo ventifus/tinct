@@ -1,18 +1,15 @@
 # Stream output formatter — dependency-chain contract.
 #
-# Serializes emitted values and return values to their tinct SCN representation
-# using to-tinct. Each value becomes a single-line tinct expression followed by
-# a newline.
+# Serializes return value and emitted values to tinct SCN format.
+# %stdout threads through every write: return value, then emitted values, then flush.
 
 --- uses: ["async"]
-[drain: [task
-  [select [context]
-    [seq [ch: %emit-channel  handler: [fn [let v]
-      [write [str [to-tinct v] "\n"] %stdout]]] []]
-    identity]]]
+[
+  written: [if [seq? %]
+    [reduce [fn [let h x] [write [str [to-tinct x] "\n"] h]] %stdout %]
+    [write [str [to-tinct %] "\n"] %stdout]]
 
-[written: [if [seq? %]
-  [reduce [fn [let h x] [write [str [to-tinct x] "\n"] h]] %stdout %]
-  [write [str [to-tinct %] "\n"] %stdout]]]
+  write-emits: [fn [let h] [reduce [fn [let h v] [write [str [to-tinct v] "\n"] h]] h [recv-all %emit-channel]]]
+]
 
-[$written | [fn [let h] [match [await drain] ...: h]] | flush]
+[$written | write-emits | flush]

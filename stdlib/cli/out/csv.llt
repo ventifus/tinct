@@ -1,99 +1,46 @@
-# CSV Streaming Output Formatter — Phase 2 data-streaming contract
+# CSV Output Formatter — dependency-chain contract.
 #
-# Responsibilities:
-# 1. Drain %emit-channel — receive emitted values as they arrive; serialize each to stdout
-# 2. Force % — materialize the lazy return value to drive evaluation cascade
-# 3. Await both before exiting
-#
-# Column order is fixed by the first record (from %emit-channel or %).
-# Subsequent records with different keys produce empty cells for missing columns.
+# Column order is fixed by the first record encountered (from % or %emit-channel).
+# Subsequent records use the same column order; missing keys produce empty cells.
+# %stdout threads through every write: return value rows, then emitted rows, then flush.
 
 # Private helpers
 [
-# Internal: quote and escape a CSV field
-# Always quote to avoid checking for special characters
 csv-quote: [fn@String [let s@String]
   [str "\"" [replace "\"" "\"\"" s] "\""]]
 
-# Internal: format header row
 csv-header: [fn@String [let ks@Dict i@Integer acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-header ks [+ i 1]
       [str acc [if [> i 0] "," ""] [csv-quote [get i ks]]]]]]
 
-# Internal: format a single data row using pre-determined column order
 csv-row: [fn@String [let row@Dict ks@Dict i@Integer acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-row row ks [+ i 1]
-      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or [get i ks] "" row]]]]]]]
-]
+      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or [get i ks] "" row]]]]]]]]
 
 --- uses: ["async"]
-# Sequential document expression 1: set up shared state and start drain task.
-# SEQ-SCOPE forces this dict's entries, spawning the drain task before % is forced.
 [
-  # Oneshot channel for header coordination: first writer sends column keys, wins the race
-  oneshot-pair: [oneshot-channel]
-  header-rx: [head oneshot-pair]
-  header-tx: [head [tail oneshot-pair]]
-
-  # Cached column keys after first resolution (via oneshot coordination)
+  # Shared column state: [] = not yet set; set from the first dict value encountered.
   columns: [reactive-cell []]
 
-  drain: [task
-    [select [context]
-      [seq [ch: %emit-channel  handler: [fn [let v]
-        # Try to send column keys — succeeds only for first record across both paths
-        [match [try [fn [let] [send header-tx [keys v]]]]
-          [case [let _] [Result.Ok]
-            # Won the race: write header + first row, cache keys
-            [do [cell-set columns [keys v]]
-                [write [csv-header [keys v] 0 ""] %stdout]
-                [write [csv-row v [keys v] 0 ""] %stdout]]]
-          [case [let _] [Result.Error]
-            # Lost the race: retrieve keys if not cached yet
-            [do [if [= [cell-get columns] []]
-                  [cell-set columns [recv header-rx]]
-                  []]
-                [write [csv-row v [cell-get columns] 0 ""] %stdout]]]]]] []]
-      identity]]
+  # Write one dict value as a CSV row. Sets header from first call.
+  write-row: [fn [let h v]
+    [match [cell-get columns]
+      []: [do [cell-set columns [keys v]]
+              [write [csv-header [keys v] 0 ""] h]
+              [write [csv-row v [keys v] 0 ""] h]]
+      ...: [write [csv-row v [cell-get columns] 0 ""] h]]]
+
+  # Consume % and write all dict records; non-dict values are skipped.
+  written: [if [seq? %]
+    [reduce [fn [let h x] [if [dict? x] [write-row h x] h]] %stdout %]
+    [if [dict? %] [write-row %stdout %] %stdout]]
+
+  # Write all emitted values (same column order, header already set).
+  write-emits: [fn [let h] [reduce [fn [let h v] [if [dict? v] [write-row h v] h]] h [recv-all %emit-channel]]]
 ]
 
-# Sequential document expression 2: force %, thread handle through writes.
-# Each write returns the handle; reduce threads it as the accumulator.
-[written: [if [seq? %]
-  # % is a Seq — write each element as a row
-  [reduce [fn [let h x]
-    [match [try [fn [let] [send header-tx [keys x]]]]
-      [case [let _] [Result.Ok]
-        # Won the race: write header + first row, cache keys
-        [do [cell-set columns [keys x]]
-            [write [csv-header [keys x] 0 ""] h]
-            [write [csv-row x [keys x] 0 ""] h]]]
-      [case [let _] [Result.Error]
-        # Lost the race: retrieve keys if not cached yet, then write data row
-        [do [if [= [cell-get columns] []]
-              [cell-set columns [recv header-rx]]
-              []]
-            [write [csv-row x [cell-get columns] 0 ""] h]]]]]
-    %stdout
-    %]
-  # % is a scalar — if it's a dict, write it as a row; otherwise return handle.
-  [if [dict? %]
-    [match [try [fn [let] [send header-tx [keys %]]]]
-      [case [let _] [Result.Ok]
-        # Won the race: write header + single row, cache keys
-        [do [cell-set columns [keys %]]
-            [write [csv-header [keys %] 0 ""] %stdout]
-            [write [csv-row % [keys %] 0 ""] %stdout]]]
-      [case [let _] [Result.Error]
-        # Lost the race: retrieve keys if not cached yet, then write data row
-        [do [if [= [cell-get columns] []]
-              [cell-set columns [recv header-rx]]
-              []]
-            [write [csv-row % [cell-get columns] 0 ""] %stdout]]]]
-    %stdout]]]
-
-[$written | [fn [let h] [match [await drain] ...: h]] | flush]
+[$written | write-emits | flush]

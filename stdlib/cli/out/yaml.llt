@@ -113,24 +113,14 @@ yaml@[doc: "Convert value to YAML 1.2 string"]: [fn@String [let val@Any]
 ]
 
 --- uses: ["async"]
-# YAML output formatter — concurrent drain/force/await contract.
-#
-# Produces YAML 1.2 output for each emitted value and return value.
-#
-# Concurrent contract:
-# 1. Drain %emit-channel: write each emitted value as YAML
-# 2. Force %: write the return value (or each Seq element) as YAML
-# 3. Await drain task completion
+# YAML output formatter — dependency-chain contract.
+# %stdout threads through every write: return value, then emitted values, then flush.
+[
+  written: [if [seq? %]
+    [reduce [fn [let h x] [write [str [yaml x] "\n"] h]] %stdout %]
+    [write [str [yaml %] "\n"] %stdout]]
 
-# 1. Drain the emit channel concurrently.
-[drain: [task
-  [select [context]
-    [seq [ch: %emit-channel  handler: [fn [let v]
-      [write [str [yaml v] "\n"] %stdout]]] []]
-    identity]]]
+  write-emits: [fn [let h] [reduce [fn [let h v] [write [str [yaml v] "\n"] h]] h [recv-all %emit-channel]]]
+]
 
-[written: [if [seq? %]
-  [reduce [fn [let h x] [write [str [yaml x] "\n"] h]] %stdout %]
-  [write [str [yaml %] "\n"] %stdout]]]
-
-[$written | [fn [let h] [match [await drain] ...: h]] | flush]
+[$written | write-emits | flush]

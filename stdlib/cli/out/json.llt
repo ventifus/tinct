@@ -1,27 +1,17 @@
-# JSON Compact Formatter — concurrent drain/force/await contract.
+# JSON Compact Formatter — dependency-chain contract.
 #
-# Produces NDJSON-compatible output: one compact JSON object per line.
-# Compatible with jq streaming and other NDJSON consumers.
-#
-# Concurrent contract:
-# 1. Drain %emit-channel: write each emitted value as compact JSON (one line per value)
-# 2. Force %: serialize the return value as JSON
-# 3. Await drain task completion
-#
+# %stdout threads through every write: return value, then emitted values, then flush.
 # Uses to-json from stdlib/codecs/json.llt.
 
 [json: [include %libdir "codecs/json.llt"]]
 
 --- uses: ["async"]
-# 1. Drain the emit channel concurrently.
-[drain: [task
-  [select [context]
-    [seq [ch: %emit-channel  handler: [fn [let v]
-      [write [str [json.to-json v] "\n"] %stdout]]] []]
-    identity]]]
+[
+  written: [if [seq? %]
+    [reduce [fn [let h x] [write [str [json.to-json x] "\n"] h]] %stdout %]
+    [write [str [json.to-json %] "\n"] %stdout]]
 
-[written: [if [seq? %]
-  [reduce [fn [let h x] [write [str [json.to-json x] "\n"] h]] %stdout %]
-  [write [str [json.to-json %] "\n"] %stdout]]]
+  write-emits: [fn [let h] [reduce [fn [let h v] [write [str [json.to-json v] "\n"] h]] h [recv-all %emit-channel]]]
+]
 
-[$written | [fn [let h] [match [await drain] ...: h]] | flush]
+[$written | write-emits | flush]
