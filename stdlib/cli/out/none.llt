@@ -15,15 +15,9 @@
     [seq [ch: %emit-channel  handler: [fn [let v] []]] []]
     identity]]]
 
-# 2. Force % to drive the evaluation cascade (for side effects).
-# Wrapped in a dict so this intermediate document extends the scope (LLT requires
-# intermediate documents to be record types). The _: binding is unused.
-[_: [if [seq? %]
-  [reduce [fn [let _ _] []] [] %]
-  [materialize %]]]
+# Force % (for side effects) and return %stdout as the handle to flush.
+[forced: [if [seq? %]
+  [reduce [fn [let h _] h] %stdout %]
+  [match [materialize %] ...: %stdout]]]
 
-# 3. Wait for drain to finish consuming any emits triggered during forcing.
-[_: [await drain]]
-
-# 4. Flush stdout.
-[flush %stdout]
+[$forced | [fn [let h] [match [await drain] ...: h]] | flush]

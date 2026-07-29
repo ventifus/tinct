@@ -1,21 +1,19 @@
-# LLT display format output formatter — concurrent drain/force/flush contract.
+# LLT display format output formatter — dependency-chain contract.
 #
-# Converts each value to its LLT representation string: e.g. 42, "hello", [0: 1  ...], etc.
-# Mirrors stream.llt's concurrent contract:
-# 1. Drain %emit-channel concurrently so emitted values are written before flushing.
-# 2. Force %: write the return value (or each Seq element).
-# 3. Await drain to consume any emits triggered during forcing.
-# 4. Flush %stdout.
+# All work is expressed as a single data dependency chain rooted at the final
+# expression. Forcing the final expression cascades to force every step.
+#
+# Pipeline: $written forces %, writes output; fn awaits drain (collecting emits);
+# flush receives the handle and flushes. Return values thread through | so no
+# step is lazy and the final expression genuinely depends on all prior work.
 
 --- uses: ["async"]
 [drain: [task [select [context]
   [seq [ch: %emit-channel  handler: [fn [let v] [write [str [llt-repr v] "\n"] %stdout]]] []]
   identity]]]
 
-[_: [if [seq? %]
+[written: [if [seq? %]
   [reduce [fn [let h x] [write [str [llt-repr x] "\n"] h]] %stdout %]
   [write [str [llt-repr %] "\n"] %stdout]]]
 
-[_: [await drain]]
-
-[flush %stdout]
+[$written | [fn [let h] [match [await drain] ...: h]] | flush]

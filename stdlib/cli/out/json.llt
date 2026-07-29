@@ -20,16 +20,8 @@
       [write [str [json.to-json v] "\n"] %stdout]]] []]
     identity]]]
 
-# 2. Force the return value to drive the lazy evaluation cascade.
-#    Forcing % drives program evaluation, triggering any emit calls.
-# Wrapped in a dict so this intermediate document extends the scope (LLT requires
-# intermediate documents to be record types). The _: binding is unused.
-[_: [if [seq? %]
+[written: [if [seq? %]
   [reduce [fn [let h x] [write [str [json.to-json x] "\n"] h]] %stdout %]
   [write [str [json.to-json %] "\n"] %stdout]]]
 
-# 3. Wait for drain to finish consuming any emits triggered during forcing.
-[_: [await drain]]
-
-# 4. Flush stdout.
-[flush %stdout]
+[$written | [fn [let h] [match [await drain] ...: h]] | flush]

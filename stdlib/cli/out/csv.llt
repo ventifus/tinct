@@ -61,26 +61,26 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Integer acc@String]
       identity]]
 ]
 
-# Sequential document expression 2: force % to drive the evaluation cascade.
-[_: [if [seq? %]
+# Sequential document expression 2: force %, thread handle through writes.
+# Each write returns the handle; reduce threads it as the accumulator.
+[written: [if [seq? %]
   # % is a Seq — write each element as a row
-  [reduce [fn [let _ x]
-    # Try to send column keys — succeeds only for first record across both paths
+  [reduce [fn [let h x]
     [match [try [fn [let] [send header-tx [keys x]]]]
       [case [let _] [Result.Ok]
         # Won the race: write header + first row, cache keys
         [do [cell-set columns [keys x]]
-            [write [csv-header [keys x] 0 ""] %stdout]
-            [write [csv-row x [keys x] 0 ""] %stdout]]]
+            [write [csv-header [keys x] 0 ""] h]
+            [write [csv-row x [keys x] 0 ""] h]]]
       [case [let _] [Result.Error]
         # Lost the race: retrieve keys if not cached yet, then write data row
         [do [if [= [cell-get columns] []]
               [cell-set columns [recv header-rx]]
               []]
-            [write [csv-row x [cell-get columns] 0 ""] %stdout]]]]]]
-    []
+            [write [csv-row x [cell-get columns] 0 ""] h]]]]]
+    %stdout
     %]
-  # % is a scalar — if it's a dict, write it as a row
+  # % is a scalar — if it's a dict, write it as a row; otherwise return handle.
   [if [dict? %]
     [match [try [fn [let] [send header-tx [keys %]]]]
       [case [let _] [Result.Ok]
@@ -94,10 +94,6 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Integer acc@String]
               [cell-set columns [recv header-rx]]
               []]
             [write [csv-row % [cell-get columns] 0 ""] %stdout]]]]
-    []]]]
+    %stdout]]]
 
-# Sequential document expression 3: await drain.
-[_: [await drain]]
-
-# Sequential document expression 4: flush stdout.
-[flush %stdout]
+[$written | [fn [let h] [match [await drain] ...: h]] | flush]
