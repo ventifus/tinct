@@ -1,23 +1,19 @@
-# Output: none — silent output formatter: forces % for side effects, discards all output.
+# Output: none — silent output formatter: materializes % for side effects, discards all output.
 #
 # Concurrent contract:
 # 1. Drain %emit-channel: discard all emitted values
-# 2. Force %: force for side effects, write nothing
-# 3. Await drain task completion
-#
-# The forcing of % drives the full evaluation cascade (including any emit calls),
-# but nothing is written to stdout.
+# 2. Materialize %: consume for side effects, write nothing
+# 3. Consume drain result before flushing
 
 --- uses: ["async"]
-# 1. Drain the emit channel concurrently, discarding all values.
 [drain: [task
   [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v] []]] []]
     identity]]]
 
-# Materialize % (for side effects) and produce %stdout as the handle for flush.
-[forced: [if [seq? %]
+# Materialize % and produce %stdout as the handle consumed by flush.
+[handle: [if [seq? %]
   [reduce [fn [let h _] h] %stdout %]
   [match [materialize %] ...: %stdout]]]
 
-[$forced | [fn [let h] [match [await drain] ...: h]] | flush]
+[$handle | [fn [let h] [match [await drain] ...: h]] | flush]
