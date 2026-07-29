@@ -222,7 +222,13 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("ok".into()),
                     ok_val(val, call_span.clone())?,
                 );
-                ok_val(Value::Dict(map), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: map,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             Err(e) => {
                 // ResourceLimitExceeded is non-catchable: it indicates a system-level limit.
@@ -255,15 +261,27 @@ pub(crate) fn builtin_try(
                     let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     ss.insert(HashableValue::Str("span".into()), mk_span(span));
                     ss.insert(HashableValue::Str("label".into()), mk(string_val(label)));
-                    secondary.insert(HashableValue::Int(j as i64), mk(Value::Dict(ss)));
+                    secondary.insert(
+                        HashableValue::Int(j as i64),
+                        mk(Value::Dict {
+                            entries: ss,
+                            type_val: crate::value::unknown_type_val(),
+                        }),
+                    );
                 }
                 w.insert(
                     HashableValue::Str("secondary-spans".into()),
-                    mk(Value::Dict(secondary)),
+                    mk(Value::Dict {
+                        entries: secondary,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
                 );
                 w.insert(
                     HashableValue::Str("notes".into()),
-                    mk(Value::Dict(IndexMap::new())),
+                    mk(Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    }),
                 );
                 // call-stack: [{label, span}] from EvalError.stack
                 let mut stack: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -277,27 +295,51 @@ pub(crate) fn builtin_try(
                         HashableValue::Str("span".into()),
                         mk_span(&frame.definition_span),
                     );
-                    stack.insert(HashableValue::Int(j as i64), mk(Value::Dict(fd)));
+                    stack.insert(
+                        HashableValue::Int(j as i64),
+                        mk(Value::Dict {
+                            entries: fd,
+                            type_val: crate::value::unknown_type_val(),
+                        }),
+                    );
                 }
                 w.insert(
                     HashableValue::Str("call-stack".into()),
-                    mk(Value::Dict(stack)),
+                    mk(Value::Dict {
+                        entries: stack,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
                 );
                 // macro-expand: {name, span} or {}
                 let macro_val = if let Some((name, span)) = &e.macro_expansion {
                     let mut me: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     me.insert(HashableValue::Str("name".into()), mk(string_val(name)));
                     me.insert(HashableValue::Str("span".into()), mk_span(span));
-                    Value::Dict(me)
+                    Value::Dict {
+                        entries: me,
+                        type_val: crate::value::unknown_type_val(),
+                    }
                 } else {
-                    Value::Dict(IndexMap::new())
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    }
                 };
                 w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
                 w.insert(
                     HashableValue::Str("blame".into()),
-                    mk(Value::Dict(IndexMap::new())),
+                    mk(Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    }),
                 );
-                ok_val(Value::Dict(w), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: w,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
         }
     })
@@ -480,7 +522,7 @@ pub(crate) fn builtin_apply_impl(
                 })
                 .await
             }
-            Value::Builtin(def) => {
+            Value::Builtin { def, .. } => {
                 // Pre-materialize strict args before calling the builtin.
                 // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
                 // so `force_count` and `pos_strictness` pre-materialization do NOT happen
@@ -618,7 +660,9 @@ pub(crate) fn builtin_gensym(
 
         let get_str = |thunk: Arc<Thunk>, name: &str, span: &Span| -> EvalResult<String> {
             match thunk.try_get_value().expect("pre-materialized").clone() {
-                Value::String { source, start, end } => Ok(source[start..end].to_string()),
+                Value::String {
+                    source, start, end, ..
+                } => Ok(source[start..end].to_string()),
                 v => Err(EvalError::type_mismatch_ctx(
                     format!("builtin-gensym {name}"),
                     "String",
@@ -692,7 +736,13 @@ pub(crate) fn builtin_macro_injects(
                 Arc::new(Thunk::value(string_val(name), call_span.clone())),
             );
         }
-        ok_val(Value::Dict(dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -721,11 +771,18 @@ pub(crate) fn builtin_decimal(
                 ref source,
                 start,
                 end,
+                ..
             } => {
                 let s = &source[start..end];
                 use std::str::FromStr;
                 match rust_decimal::Decimal::from_str(s) {
-                    Ok(d) => ok_val(Value::Decimal(d), call_span),
+                    Ok(d) => ok_val(
+                        Value::Decimal {
+                            n: d,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span,
+                    ),
                     Err(e) => Err(EvalError::internal(
                         format!("decimal: cannot parse \"{s}\": {e}"),
                         call_span,
@@ -733,7 +790,13 @@ pub(crate) fn builtin_decimal(
                     .into()),
                 }
             }
-            Value::Int(n) => ok_val(Value::Decimal(rust_decimal::Decimal::from(n)), call_span),
+            Value::Int { n, .. } => ok_val(
+                Value::Decimal {
+                    n: rust_decimal::Decimal::from(n),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch("String or Int", &type_name(&val), call_span).into()),
         }
     })
@@ -759,15 +822,28 @@ pub(crate) fn builtin_big_int(
             call_span.clone(),
         )?;
         match val {
-            Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
+            Value::Int { n, .. } => ok_val(
+                Value::BigInt {
+                    n: num_bigint::BigInt::from(n),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             Value::String {
                 ref source,
                 start,
                 end,
+                ..
             } => {
                 let s = &source[start..end];
                 match s.parse::<num_bigint::BigInt>() {
-                    Ok(n) => ok_val(Value::BigInt(n), call_span),
+                    Ok(n) => ok_val(
+                        Value::BigInt {
+                            n,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span,
+                    ),
                     Err(e) => Err(EvalError::internal(
                         format!("big-int: cannot parse \"{s}\": {e}"),
                         call_span,
@@ -780,11 +856,10 @@ pub(crate) fn builtin_big_int(
     })
 }
 
-/// `type-of`: takes 1 arg, materializes it, returns the type name.
-/// Both `Function` and `Builtin` return "Function" (from the user's perspective).
-/// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
-/// and map-like dicts — the type system does not track key structure at runtime.
-/// Inherently materializing: must inspect value variant to determine type.
+/// `type-of`: takes 1 arg, materializes it, returns the value's TypeValue dict.
+/// The TypeValue is the `type_val` field carried by every `Value` variant, set at
+/// construction time from the runtime type registry. Inherently materializing: must
+/// inspect the value to retrieve its type_val.
 pub(crate) fn builtin_type_of(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -803,19 +878,8 @@ pub(crate) fn builtin_type_of(
             &ctx,
             call_span.clone(),
         )?;
-        // For variants, return the tycon name — the tinct-level type of Color.Red is Color,
-        // not the Rust implementation category "Variant".
-        let result = match &val {
-            Value::Variant { tycon, .. } => string_val(tycon),
-            _ => {
-                let name = match val.type_name() {
-                    "Builtin" => "Function",
-                    other => other,
-                };
-                string_val(name)
-            }
-        };
-        ok_val(result, call_span)
+        let type_value = Arc::clone(val.type_val());
+        Ok(Arc::new(Thunk::value((*type_value).clone(), call_span)))
     })
 }
 
@@ -847,7 +911,13 @@ pub(crate) fn builtin_is_variant(
             v = inner.as_ref();
         }
         let is_variant = matches!(v, Value::Variant { .. });
-        ok_val(Value::Int(if is_variant { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if is_variant { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -904,7 +974,10 @@ pub(crate) fn builtin_ast_of(
                 )),
             );
             return Ok(Arc::new(crate::value::Thunk::value(
-                crate::value::Value::Dict(entries),
+                crate::value::Value::Dict {
+                    entries,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             )));
         }
@@ -920,7 +993,10 @@ pub(crate) fn builtin_ast_of(
                 )),
             );
             return Ok(Arc::new(crate::value::Thunk::value(
-                crate::value::Value::Dict(entries),
+                crate::value::Value::Dict {
+                    entries,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             )));
         }
@@ -943,7 +1019,10 @@ pub(crate) fn builtin_ast_of(
                 )),
             );
             return Ok(Arc::new(crate::value::Thunk::value(
-                crate::value::Value::Dict(entries),
+                crate::value::Value::Dict {
+                    entries,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             )));
         }
@@ -966,7 +1045,10 @@ pub(crate) fn builtin_ast_of(
                 )),
             );
             return Ok(Arc::new(crate::value::Thunk::value(
-                crate::value::Value::Dict(entries),
+                crate::value::Value::Dict {
+                    entries,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             )));
         }
@@ -996,7 +1078,10 @@ pub(crate) fn builtin_ast_of(
                 )),
             );
             return Ok(Arc::new(crate::value::Thunk::value(
-                crate::value::Value::Dict(entries),
+                crate::value::Value::Dict {
+                    entries,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             )));
         }
@@ -1054,7 +1139,10 @@ pub(crate) fn builtin_ast_of(
                         crate::surface_convert::alloc_annotation(&spanned, &ctx)
                     }
                     None => Arc::new(crate::value::Thunk::value(
-                        Value::Dict(IndexMap::new()),
+                        Value::Dict {
+                            entries: IndexMap::new(),
+                            type_val: crate::value::unknown_type_val(),
+                        },
                         call_span.clone(),
                     )),
                 };
@@ -1078,7 +1166,10 @@ pub(crate) fn builtin_ast_of(
                             param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
                         }
                         Ok(Arc::new(crate::value::Thunk::value(
-                            Value::Dict(param_dict),
+                            Value::Dict {
+                                entries: param_dict,
+                                type_val: crate::value::unknown_type_val(),
+                            },
                             call_span.clone(),
                         )))
                     })
@@ -1091,11 +1182,20 @@ pub(crate) fn builtin_ast_of(
                     .collect();
                 dict.insert(
                     HashableValue::Str("params".into()),
-                    Arc::new(Thunk::value(Value::Dict(params_dict), call_span.clone())),
+                    Arc::new(Thunk::value(
+                        Value::Dict {
+                            entries: params_dict,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    )),
                 );
 
                 return Ok(Arc::new(crate::value::Thunk::value(
-                    Value::Dict(dict),
+                    Value::Dict {
+                        entries: dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     call_span,
                 )));
             }
@@ -1212,9 +1312,7 @@ pub(crate) fn builtin_tag_of(
         };
         match peeled {
             // Expr.* variants return their full qualified tag (e.g. "Expr.Call", "Expr.VarRef").
-            Value::Variant { tycon, ctor, .. } => {
-                ok_val(string_val(&format!("{}.{}", tycon, ctor)), call_span)
-            }
+            Value::Variant { ctor, .. } => ok_val(string_val(ctor.as_ref()), call_span),
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
                 peeled.type_name(),
@@ -1269,20 +1367,29 @@ pub(crate) fn builtin_span_of(
 
         // Extract span from Expr.* variant payload.
         if let Value::Variant {
-            ref tycon,
+            ref ctor,
             payload: Some(payload_id),
             ..
         } = val
         {
-            if tycon.as_ref() == "Expr" {
+            if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" {
                 let payload_thunk = Arc::clone(&payload_id);
-                if let Some(Value::Dict(payload_dict)) = payload_thunk.try_get_value().cloned() {
+                if let Some(Value::Dict {
+                    entries: payload_dict,
+                    ..
+                }) = payload_thunk.try_get_value().cloned()
+                {
                     if let Some(span_thunk) = payload_dict.get(&HashableValue::Str("span".into())) {
-                        if let Some(Value::Dict(span_dict)) = span_thunk.try_get_value().cloned() {
+                        if let Some(Value::Dict {
+                            entries: span_dict, ..
+                        }) = span_thunk.try_get_value().cloned()
+                        {
                             // Extract {start: {line, col}, end: {line, col}}
                             let get_pos = |key: &str| -> Option<(i64, i64)> {
                                 let pos_thunk = span_dict.get(&HashableValue::Str(key.into()))?;
-                                let Value::Dict(pos_dict) = pos_thunk.try_get_value()?.clone()
+                                let Value::Dict {
+                                    entries: pos_dict, ..
+                                } = pos_thunk.try_get_value()?.clone()
                                 else {
                                     return None;
                                 };
@@ -1294,7 +1401,9 @@ pub(crate) fn builtin_span_of(
                                     .get(&HashableValue::Str("col".into()))?
                                     .try_get_value()?
                                     .clone();
-                                if let (Value::Int(l), Value::Int(c)) = (line, col) {
+                                if let (Value::Int { n: l, .. }, Value::Int { n: c, .. }) =
+                                    (line, col)
+                                {
                                     Some((l, c))
                                 } else {
                                     None
@@ -1310,7 +1419,10 @@ pub(crate) fn builtin_span_of(
                                 let file_val = if !file_str.starts_with('<') {
                                     string_val(file_str.as_ref())
                                 } else {
-                                    Value::Dict(IndexMap::new())
+                                    Value::Dict {
+                                        entries: IndexMap::new(),
+                                        type_val: crate::value::unknown_type_val(),
+                                    }
                                 };
 
                                 let mk = |v: Value| Arc::new(Thunk::value(v, call_span.clone()));
@@ -1318,15 +1430,39 @@ pub(crate) fn builtin_span_of(
                                 w.insert(HashableValue::Str("file".into()), mk(file_val));
                                 w.insert(
                                     HashableValue::Str("start-line".into()),
-                                    mk(Value::Int(sl)),
+                                    mk(Value::Int {
+                                        n: sl,
+                                        type_val: crate::value::unknown_type_val(),
+                                    }),
                                 );
                                 w.insert(
                                     HashableValue::Str("start-col".into()),
-                                    mk(Value::Int(sc)),
+                                    mk(Value::Int {
+                                        n: sc,
+                                        type_val: crate::value::unknown_type_val(),
+                                    }),
                                 );
-                                w.insert(HashableValue::Str("end-line".into()), mk(Value::Int(el)));
-                                w.insert(HashableValue::Str("end-col".into()), mk(Value::Int(ec)));
-                                return ok_val(Value::Dict(w), call_span);
+                                w.insert(
+                                    HashableValue::Str("end-line".into()),
+                                    mk(Value::Int {
+                                        n: el,
+                                        type_val: crate::value::unknown_type_val(),
+                                    }),
+                                );
+                                w.insert(
+                                    HashableValue::Str("end-col".into()),
+                                    mk(Value::Int {
+                                        n: ec,
+                                        type_val: crate::value::unknown_type_val(),
+                                    }),
+                                );
+                                return ok_val(
+                                    Value::Dict {
+                                        entries: w,
+                                        type_val: crate::value::unknown_type_val(),
+                                    },
+                                    call_span,
+                                );
                             }
                         }
                     }
@@ -1335,7 +1471,13 @@ pub(crate) fn builtin_span_of(
         }
 
         // Not an Expr variant or no span found — return empty dict.
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1366,7 +1508,7 @@ pub(crate) fn builtin_var_resolution(
         let arg2_thunk = Arc::clone(&args[2]);
         let line_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
         let cursor_line = match line_val {
-            Value::Int(n) => n as u32,
+            Value::Int { n, .. } => n as u32,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
@@ -1379,7 +1521,7 @@ pub(crate) fn builtin_var_resolution(
         };
         let col_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
         let cursor_col = match col_val {
-            Value::Int(n) => n as u32,
+            Value::Int { n, .. } => n as u32,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
@@ -1500,7 +1642,13 @@ pub(crate) fn builtin_var_resolution(
 
         let mk = |v: Value| Arc::new(Thunk::value(v, call_span.clone()));
         match found {
-            None => ok_val(Value::Dict(IndexMap::new()), call_span),
+            None => ok_val(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             Some(addr) => {
                 // Return the VarAddr index as a flat dict {addr-type, index}.
                 use crate::ast::VarAddr;
@@ -1516,9 +1664,18 @@ pub(crate) fn builtin_var_resolution(
                 );
                 result.insert(
                     HashableValue::Str("index".into()),
-                    mk(Value::Int(index as i64)),
+                    mk(Value::Int {
+                        n: index as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
                 );
-                ok_val(Value::Dict(result), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: result,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
         }
     })
@@ -1595,7 +1752,13 @@ pub(crate) fn builtin_annotation_of(
                     }
                 }
 
-                ok_val(Value::Dict(entries), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             Value::Annotated { annotation, .. } => {
                 // Return the annotation value directly — no materialization needed,
@@ -1604,7 +1767,13 @@ pub(crate) fn builtin_annotation_of(
             }
             _ => {
                 // All other values have no annotation — return empty dict.
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
         }
     })
@@ -1647,7 +1816,7 @@ pub(crate) fn builtin_make_annotated(
             .clone();
 
         // annotation must be a Dict
-        if !matches!(ann_val, Value::Dict(_)) {
+        if !matches!(ann_val, Value::Dict { .. }) {
             return Err(Box::new(EvalError::type_mismatch(
                 "Dict",
                 ann_val.type_name(),
@@ -1670,44 +1839,44 @@ pub(crate) fn builtin_make_annotated(
 /// Helper for runtime type name extraction.
 fn type_name(val: &Value) -> String {
     match val {
-        Value::Int(_) => "Int",
-        Value::Float(_) => "Float",
+        Value::Int { .. } => "Int",
+        Value::Float { .. } => "Float",
         Value::String { .. } => "String",
         Value::Bytes { .. } => "Bytes",
-        Value::Dict(_) => "Dict",
+        Value::Dict { .. } => "Dict",
         Value::Function { .. } => "Function",
-        Value::Builtin(_) => "Builtin",
+        Value::Builtin { .. } => "Builtin",
         Value::Proxy { .. } => "Proxy",
         Value::DirCap { .. } | Value::RevocableDirCap { .. } => "DirCap",
-        Value::NetCap(_) => "NetCap",
-        Value::File(_) => "File",
-        Value::Variant { tycon, ctor, .. } => return format!("{}.{}", tycon, ctor),
-        Value::Decimal(_) => "Decimal",
-        Value::BigInt(_) => "BigInt",
+        Value::NetCap { .. } => "NetCap",
+        Value::File { .. } => "File",
+        Value::Variant { ctor, .. } => return ctor.as_ref().to_string(),
+        Value::Decimal { .. } => "Decimal",
+        Value::BigInt { .. } => "BigInt",
         Value::Uri { .. } => "Uri",
-        Value::Timestamp(_) => "Timestamp",
-        Value::Duration(_) => "Duration",
-        Value::ClockCap(_) => "ClockCap",
-        Value::Timezone(_) => "Timezone",
-        Value::QuicSession(_) => "QuicSession",
+        Value::Timestamp { .. } => "Timestamp",
+        Value::Duration { .. } => "Duration",
+        Value::ClockCap { .. } => "ClockCap",
+        Value::Timezone { .. } => "Timezone",
+        Value::QuicSession { .. } => "QuicSession",
         Value::Http2Session { .. } => "Http2Session",
-        Value::Http3Session(_) => "Http3Session",
-        Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
+        Value::Http3Session { .. } => "Http3Session",
+        Value::QuicDatagramHandle { .. } => "QuicDatagramHandle",
         Value::Program { .. } => "Program",
-        Value::Document(_) => "Document",
-        Value::Task(_) => "Task",
-        Value::Channel(_) => "Channel",
-        Value::Context(_) => "Context",
-        Value::ReactiveCell(_) => "ReactiveCell",
+        Value::Document { .. } => "Document",
+        Value::Task { .. } => "Task",
+        Value::Channel { .. } => "Channel",
+        Value::Context { .. } => "Context",
+        Value::ReactiveCell { .. } => "ReactiveCell",
         Value::Builder(_) => "Builder",
-        Value::BroadcastChannel(_) => "BroadcastChannel",
-        Value::OneshotSender(_) => "OneshotSender",
-        Value::OneshotReceiver(_) => "OneshotReceiver",
-        Value::U64(_) => "U64",
+        Value::BroadcastChannel { .. } => "BroadcastChannel",
+        Value::OneshotSender { .. } => "OneshotSender",
+        Value::OneshotReceiver { .. } => "OneshotReceiver",
+        Value::U64 { .. } => "U64",
         // Annotated is transparent — delegate to inner value's type_name.
         Value::Annotated { inner, .. } => return type_name(inner),
-        Value::TypeContext(_) => "TypeContext",
-        Value::Expression(_) => "Expression",
+        Value::TypeContext { .. } => "TypeContext",
+        Value::Expression { .. } => "Expression",
         Value::Arena { .. } => "Arena",
         Value::CoreDocument { .. } => "CoreDocument",
     }
@@ -1866,7 +2035,9 @@ pub(crate) fn builtin_parse(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let source_bytes = match bytes_val {
-            Value::Bytes { source, start, end } => source[start..end].to_vec(),
+            Value::Bytes {
+                source, start, end, ..
+            } => source[start..end].to_vec(),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-parse".to_string(),
@@ -1941,7 +2112,10 @@ pub(crate) fn builtin_parse(
             }
             w.insert(
                 HashableValue::Str("notes".into()),
-                mk(Value::Dict(notes_dict)),
+                mk(Value::Dict {
+                    entries: notes_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (j, help) in diag.help.iter().enumerate() {
@@ -1949,21 +2123,39 @@ pub(crate) fn builtin_parse(
             }
             w.insert(
                 HashableValue::Str("help".into()),
-                mk(Value::Dict(help_dict)),
+                mk(Value::Dict {
+                    entries: help_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("call-stack".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("blame".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
-            errors_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
+            errors_dict.insert(
+                HashableValue::Int(i as i64),
+                mk(Value::Dict {
+                    entries: w,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
         }
 
         // Build the program value. If the parse was fatal, produce an empty program.
@@ -1978,6 +2170,7 @@ pub(crate) fn builtin_parse(
             resolutions: std::sync::Arc::new(Default::default()),
             types: std::sync::Arc::new(Default::default()),
             expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
+            type_val: crate::value::unknown_type_val(),
         };
 
         // Return {program: Value::Program, diagnostics: integer-keyed Dict of diagnostic dicts}.
@@ -1985,9 +2178,18 @@ pub(crate) fn builtin_parse(
         result.insert(HashableValue::Str("program".into()), mk(program_value));
         result.insert(
             HashableValue::Str("diagnostics".into()),
-            mk(Value::Dict(errors_dict)),
+            mk(Value::Dict {
+                entries: errors_dict,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
-        Ok(Arc::new(Thunk::value(Value::Dict(result), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -2048,7 +2250,7 @@ pub(crate) fn builtin_resolve(
             .try_get_value()
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
-        let doc_arc = if let Value::Document(d) = doc_val {
+        let doc_arc = if let Value::Document { doc: d, .. } = doc_val {
             d
         } else {
             return Err(EvalError::internal(
@@ -2067,7 +2269,7 @@ pub(crate) fn builtin_resolve(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let name_set_dict = match name_set_val {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::internal(
                     format!("name-set is not a Dict: {}", other.type_name()),
@@ -2138,7 +2340,10 @@ pub(crate) fn builtin_resolve(
             }
             w.insert(
                 HashableValue::Str("notes".into()),
-                mk(Value::Dict(notes_dict)),
+                mk(Value::Dict {
+                    entries: notes_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (j, help) in diag.help.iter().enumerate() {
@@ -2146,28 +2351,52 @@ pub(crate) fn builtin_resolve(
             }
             w.insert(
                 HashableValue::Str("help".into()),
-                mk(Value::Dict(help_dict)),
+                mk(Value::Dict {
+                    entries: help_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("call-stack".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("blame".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
-            diagnostics_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
+            diagnostics_dict.insert(
+                HashableValue::Int(i as i64),
+                mk(Value::Dict {
+                    entries: w,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
         }
 
         // Build unreferenced dict: {name: 1} for each env-dict name never referenced.
         // Exclude root_group names — they're not user-visible env-dict entries.
         let mut unreferenced_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for name in &unreferenced_names {
-            unreferenced_dict.insert(HashableValue::Str(name.as_str().into()), mk(Value::Int(1)));
+            unreferenced_dict.insert(
+                HashableValue::Str(name.as_str().into()),
+                mk(Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
         }
 
         let doc_span = compute_doc_span(&doc_arc, &call_span);
@@ -2177,18 +2406,33 @@ pub(crate) fn builtin_resolve(
         let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         result_dict.insert(
             HashableValue::Str("doc".into()),
-            mk(Value::Document(std::sync::Arc::clone(&doc_arc))),
+            mk(Value::Document {
+                doc: std::sync::Arc::clone(&doc_arc),
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
         result_dict.insert(
             HashableValue::Str("diagnostics".into()),
-            mk(Value::Dict(diagnostics_dict)),
+            mk(Value::Dict {
+                entries: diagnostics_dict,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
         result_dict.insert(
             HashableValue::Str("unreferenced".into()),
-            mk(Value::Dict(unreferenced_dict)),
+            mk(Value::Dict {
+                entries: unreferenced_dict,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
         result_dict.insert(HashableValue::Str("doc-span".into()), mk_span(&doc_span));
-        ok_val(Value::Dict(result_dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result_dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2247,7 +2491,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let docs_dict = match docs_val {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::internal(
                     format!(
@@ -2274,7 +2518,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
         let mut doc_arcs: Vec<std::sync::Arc<crate::ast::SurfaceDocument>> = Vec::new();
         for (_, thunk) in &doc_entries {
             let val = crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
-            if let Value::Document(d) = val {
+            if let Value::Document { doc: d, .. } = val {
                 doc_arcs.push(d);
             } else {
                 return Err(EvalError::internal(
@@ -2328,7 +2572,10 @@ pub(crate) fn builtin_lint_pipeline_docs(
             }
             w.insert(
                 HashableValue::Str("notes".into()),
-                mk(Value::Dict(notes_dict)),
+                mk(Value::Dict {
+                    entries: notes_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (j, help) in diag.help.iter().enumerate() {
@@ -2336,24 +2583,48 @@ pub(crate) fn builtin_lint_pipeline_docs(
             }
             w.insert(
                 HashableValue::Str("help".into()),
-                mk(Value::Dict(help_dict)),
+                mk(Value::Dict {
+                    entries: help_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("call-stack".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("blame".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
-            diagnostics_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
+            diagnostics_dict.insert(
+                HashableValue::Int(i as i64),
+                mk(Value::Dict {
+                    entries: w,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
         }
 
-        ok_val(Value::Dict(diagnostics_dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: diagnostics_dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2419,7 +2690,10 @@ pub(crate) fn builtin_typecheck_doc(
                 .expect("pre-materialized by force_count/pos_strictness")
                 .clone();
             match env_val {
-                Value::Dict(dict_map) => {
+                Value::Dict {
+                    entries: dict_map,
+                    ref type_val,
+                } => {
                     let thunks: Vec<Arc<Thunk>> = dict_map
                         .iter()
                         .filter_map(|(k, v)| {
@@ -2431,7 +2705,14 @@ pub(crate) fn builtin_typecheck_doc(
                         })
                         .collect();
                     let spine = Some(crate::value::GroupSpine::from_flat(thunks));
-                    (spine, Some(Value::Dict(dict_map)))
+                    let tv = Arc::clone(type_val);
+                    (
+                        spine,
+                        Some(Value::Dict {
+                            entries: dict_map,
+                            type_val: tv,
+                        }),
+                    )
                 }
                 other => {
                     return Err(EvalError::internal(
@@ -2460,7 +2741,11 @@ pub(crate) fn builtin_typecheck_doc(
             // the runtime initial_group layout from builtin-eval (root_group + env-dict).
             // scope_frames is required by check_constraints_on_var (type_unify.rs) to resolve
             // instance binding mangled names to VarAddrs for call_dispatch.
-            if let Some(Value::Dict(ref dict_map)) = doc_env_val {
+            if let Some(Value::Dict {
+                entries: ref dict_map,
+                ..
+            }) = doc_env_val
+            {
                 // Build scope frame from doc-env dict's string keys.
                 // Slots match the resolver's assignments: 0..R-1 are root_group,
                 // R..R+N-1 are env-dict entries (from builtin_resolve's all_names).
@@ -2588,7 +2873,10 @@ pub(crate) fn builtin_typecheck_doc(
             }
             w.insert(
                 HashableValue::Str("notes".into()),
-                mk(Value::Dict(notes_dict)),
+                mk(Value::Dict {
+                    entries: notes_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (j, help) in diag.help.iter().enumerate() {
@@ -2596,19 +2884,31 @@ pub(crate) fn builtin_typecheck_doc(
             }
             w.insert(
                 HashableValue::Str("help".into()),
-                mk(Value::Dict(help_dict)),
+                mk(Value::Dict {
+                    entries: help_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("call-stack".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             w.insert(
                 HashableValue::Str("blame".into()),
-                mk(Value::Dict(IndexMap::new())),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             // Secondary spans (spans[1..]) — e.g., "type declared here" from TypeAssert.
             // Each entry is {span: ..., label: ...} in insertion order.
@@ -2617,25 +2917,52 @@ pub(crate) fn builtin_typecheck_doc(
                 let mut ss_entry: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 ss_entry.insert(HashableValue::Str("span".into()), mk_span(span));
                 ss_entry.insert(HashableValue::Str("label".into()), mk(string_val(label)));
-                ss_dict.insert(HashableValue::Int(j as i64), mk(Value::Dict(ss_entry)));
+                ss_dict.insert(
+                    HashableValue::Int(j as i64),
+                    mk(Value::Dict {
+                        entries: ss_entry,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
             }
             w.insert(
                 HashableValue::Str("secondary-spans".into()),
-                mk(Value::Dict(ss_dict)),
+                mk(Value::Dict {
+                    entries: ss_dict,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
-            diagnostics_dict.insert(HashableValue::Int(i as i64), mk(Value::Dict(w)));
+            diagnostics_dict.insert(
+                HashableValue::Int(i as i64),
+                mk(Value::Dict {
+                    entries: w,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
         }
 
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         result.insert(
             HashableValue::Str("doc".into()),
-            mk(Value::Document(doc_arc)),
+            mk(Value::Document {
+                doc: doc_arc,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
         result.insert(
             HashableValue::Str("diagnostics".into()),
-            mk(Value::Dict(diagnostics_dict)),
+            mk(Value::Dict {
+                entries: diagnostics_dict,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
-        ok_val(Value::Dict(result), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2678,7 +3005,10 @@ pub(crate) fn builtin_get_type_context(
                 let tc_clone = tc.clone();
                 drop(tc_guard);
                 ok_val(
-                    Value::TypeContext(Arc::new(Mutex::new(tc_clone))),
+                    Value::TypeContext {
+                        ctx: Arc::new(Mutex::new(tc_clone)),
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     call_span,
                 )
             }
@@ -2732,7 +3062,13 @@ pub(crate) fn builtin_make_type_ctx(
         // Install it on EvalContext (no-op if already initialized).
         ctx.init_type_context(tc.clone());
         // Wrap in Arc<Mutex<>> and return as a Value::TypeContext handle.
-        ok_val(Value::TypeContext(Arc::new(Mutex::new(tc))), call_span)
+        ok_val(
+            Value::TypeContext {
+                ctx: Arc::new(Mutex::new(tc)),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2763,13 +3099,18 @@ pub(crate) fn builtin_fork_type_ctx(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match parent_val {
-            Value::TypeContext(parent_arc) => {
+            Value::TypeContext {
+                ctx: parent_arc, ..
+            } => {
                 // Clone the parent's TypeContextData into an independent child.
                 // The child gets a fresh Arc<Mutex<>> — parent and child are independent
                 // after this point. Mutations to child do not propagate to parent.
                 let child_data = parent_arc.lock().unwrap().clone();
                 ok_val(
-                    Value::TypeContext(Arc::new(Mutex::new(child_data))),
+                    Value::TypeContext {
+                        ctx: Arc::new(Mutex::new(child_data)),
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     call_span,
                 )
             }
@@ -2828,7 +3169,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
 
         // Extract TypeContext — same pattern as builtin_typecheck_doc
         let tc_arc = match args[0].try_get_value().expect("Strictness::Seq").clone() {
-            Value::TypeContext(arc) => arc,
+            Value::TypeContext { ctx: arc, .. } => arc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-update-type-stage-env".to_string(),
@@ -2842,7 +3183,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
 
         // Extract Dict
         let dict_entries = match args[1].try_get_value().expect("Strictness::Seq").clone() {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-update-type-stage-env".to_string(),
@@ -2901,7 +3242,13 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         }
 
         // Return same TypeContext Arc (mutations visible through it)
-        ok_val(Value::TypeContext(tc_arc), call_span)
+        ok_val(
+            Value::TypeContext {
+                ctx: tc_arc,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2943,12 +3290,14 @@ pub(crate) fn builtin_program(
         let mut documents = Vec::new();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 // Iterate through dict entries in insertion order
                 for (_key, thunk) in map.into_iter() {
                     let doc_val = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
                     match doc_val {
-                        Value::Document(surface_doc) => {
+                        Value::Document {
+                            doc: surface_doc, ..
+                        } => {
                             // T-1603: Use Arc::clone to preserve OnceLocks (resolver coordinates).
                             // Deep clone would create a new SurfaceDocument with empty OnceLocks,
                             // breaking resolution. Arc::clone just increments refcount.
@@ -2990,6 +3339,7 @@ pub(crate) fn builtin_program(
                 resolutions: std::sync::Arc::new(Default::default()),
                 types: std::sync::Arc::new(Default::default()),
                 expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -3026,6 +3376,7 @@ pub(crate) fn builtin_desugar(
                 resolutions,
                 types,
                 expects_resolved,
+                ..
             } => (program, resolutions, types, expects_resolved),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -3046,6 +3397,7 @@ pub(crate) fn builtin_desugar(
                 resolutions,
                 types,
                 expects_resolved,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -3098,10 +3450,22 @@ pub(crate) fn builtin_program_docs(
             .collect();
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, doc_arc) in doc_arcs {
-            let doc_thunk = Arc::new(Thunk::value(Value::Document(doc_arc), call_span.clone()));
+            let doc_thunk = Arc::new(Thunk::value(
+                Value::Document {
+                    doc: doc_arc,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            ));
             result.insert(HashableValue::Int(i as i64), doc_thunk);
         }
-        ok_val(Value::Dict(result), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -3141,7 +3505,7 @@ pub(crate) fn builtin_doc_expressions(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let doc_arc = match doc_val {
-            Value::Document(d) => d,
+            Value::Document { doc: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-expressions".to_string(),
@@ -3163,7 +3527,13 @@ pub(crate) fn builtin_doc_expressions(
                 i += 1;
             }
         }
-        ok_val(Value::Dict(result), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -3203,7 +3573,7 @@ pub(crate) fn builtin_doc_meta(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         let doc_arc = match doc_val {
-            Value::Document(d) => d,
+            Value::Document { doc: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-meta".to_string(),
@@ -3223,7 +3593,7 @@ pub(crate) fn builtin_doc_meta(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match &env_val {
-            Value::Dict(_) => {}
+            Value::Dict { .. } => {}
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-meta".to_string(),
@@ -3248,7 +3618,13 @@ pub(crate) fn builtin_doc_meta(
                 Err(e) => return Err(e),
             }
         }
-        ok_val(Value::Dict(result), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -3288,12 +3664,21 @@ pub(crate) fn builtin_builtin_module(
                 for def in defs {
                     let name_arc: Arc<str> = Arc::from(def.name);
                     let builtin_thunk = Arc::new(Thunk::value(
-                        Value::Builtin(def),
+                        Value::Builtin {
+                            def,
+                            type_val: crate::value::unknown_type_val(),
+                        },
                         call_span.clone().with_name(Arc::clone(&name_arc)),
                     ));
                     dict_map.insert(HashableValue::Str(name_arc), builtin_thunk);
                 }
-                ok_val(Value::Dict(dict_map), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: dict_map,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             None => Err(EvalError::user_error(
                 format!("unknown native module: {:?}", name),
@@ -3343,8 +3728,8 @@ pub(crate) fn builtin_eval(
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let (core_entries, doc_span) = match doc_val {
-            Value::CoreDocument { entries, span } => (entries, span),
-            Value::Document(_) => {
+            Value::CoreDocument { entries, span, .. } => (entries, span),
+            Value::Document { .. } => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval: expected CoreDocument (output of builtin-lower), got Document; \
                      call builtin-lower before builtin-eval"
@@ -3375,7 +3760,7 @@ pub(crate) fn builtin_eval(
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let env_map = match env_val {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval env-dict".to_string(),
@@ -3412,7 +3797,7 @@ pub(crate) fn builtin_eval(
         // a concrete Value::Dict they can iterate to build the next env-dict.
         let result_val = materialize(&result_thunk, Some(&doc_span), &ctx).await?;
         match result_val {
-            Value::Dict(_) => Ok(Arc::new(Thunk::value(result_val, call_span))),
+            Value::Dict { .. } => Ok(Arc::new(Thunk::value(result_val, call_span))),
             other => Err(EvalError::internal(
                 format!(
                     "builtin-eval: document last expression must evaluate to a Dict (the exports), got {}",
@@ -3457,9 +3842,13 @@ pub(crate) fn builtin_variant_payload(
                 let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 ok_val(payload_val, call_span)
             }
-            Value::Variant { payload: None, .. } => {
-                ok_val(Value::Dict(indexmap::IndexMap::new()), call_span)
-            }
+            Value::Variant { payload: None, .. } => ok_val(
+                Value::Dict {
+                    entries: indexmap::IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             other => Err(EvalError::type_mismatch_ctx(
                 "variant-payload".to_string(),
                 "Variant",
@@ -3497,7 +3886,13 @@ pub(crate) fn builtin_current_env(
         let env_id = caller_env_id.expect(
             "builtin-current-env: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
         );
-        Ok(Arc::new(Thunk::value(Value::Int(env_id as i64), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: env_id as i64,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -3540,7 +3935,9 @@ pub(crate) fn builtin_eval_macro_ast(
             .clone();
 
         let expr_node = match expr_val {
-            Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
+            Value::Variant { ref ctor, .. }
+                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
+            {
                 crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
                     |e| {
                         EvalError::internal(
@@ -3631,7 +4028,7 @@ pub(crate) fn builtin_eval_types(
             .clone();
 
         // Document path: extract SurfaceNodes directly (same as builtin-eval Document path).
-        if let Value::Document(doc) = &input_val {
+        if let Value::Document { doc, .. } = &input_val {
             let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = doc
                 .items
                 .iter()
@@ -3649,7 +4046,7 @@ pub(crate) fn builtin_eval_types(
         }
 
         let input_map = match input_val {
-            Value::Dict(m) => m,
+            Value::Dict { entries: m, .. } => m,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-types".to_string(),
@@ -3666,7 +4063,9 @@ pub(crate) fn builtin_eval_types(
         for (_key, val_thunk) in &input_map {
             let val = materialize(val_thunk, Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
+                Value::Variant { ref ctor, .. }
+                    if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
+                {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -3705,7 +4104,13 @@ pub(crate) fn builtin_eval_types(
             result_dict.insert(HashableValue::Int(i as i64), core_thunk);
         }
 
-        ok_val(Value::Dict(result_dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result_dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -3742,7 +4147,7 @@ pub(crate) fn builtin_validate(
 
         // Schema must be a Dict
         let schema_dict = match schema {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Dict (schema)",
@@ -3821,7 +4226,10 @@ fn validate_value(
         // Check `type` constraint
         if let Some(type_thunk) = schema.get(&HashableValue::Str("type".into())) {
             let type_val = materialize(type_thunk, Some(&span), &ctx).await?;
-            if let Value::String { source, start, end } = type_val {
+            if let Value::String {
+                source, start, end, ..
+            } = type_val
+            {
                 let expected_type = &source[start..end];
                 let actual_type = type_name(&data);
                 if expected_type != actual_type {
@@ -3837,16 +4245,16 @@ fn validate_value(
         if let Some(min_thunk) = schema.get(&HashableValue::Str("min".into())) {
             let min_val = materialize(min_thunk, Some(&span), &ctx).await?;
             match (&data, &min_val) {
-                (Value::Int(n), Value::Int(min)) if n < min => {
+                (Value::Int { n, .. }, Value::Int { n: min, .. }) if n < min => {
                     violations.push((path.clone(), format!("must be >= {}", min)));
                 }
-                (Value::Float(n), Value::Float(min)) if n < min => {
+                (Value::Float { n, .. }, Value::Float { n: min, .. }) if n < min => {
                     violations.push((path.clone(), format!("must be >= {}", min)));
                 }
-                (Value::Int(n), Value::Float(min)) if (*n as f64) < *min => {
+                (Value::Int { n, .. }, Value::Float { n: min, .. }) if (*n as f64) < *min => {
                     violations.push((path.clone(), format!("must be >= {}", min)));
                 }
-                (Value::Float(n), Value::Int(min)) if *n < (*min as f64) => {
+                (Value::Float { n, .. }, Value::Int { n: min, .. }) if *n < (*min as f64) => {
                     violations.push((path.clone(), format!("must be >= {}", min)));
                 }
                 _ => {}
@@ -3856,16 +4264,16 @@ fn validate_value(
         if let Some(max_thunk) = schema.get(&HashableValue::Str("max".into())) {
             let max_val = materialize(max_thunk, Some(&span), &ctx).await?;
             match (&data, &max_val) {
-                (Value::Int(n), Value::Int(max)) if n > max => {
+                (Value::Int { n, .. }, Value::Int { n: max, .. }) if n > max => {
                     violations.push((path.clone(), format!("must be <= {}", max)));
                 }
-                (Value::Float(n), Value::Float(max)) if n > max => {
+                (Value::Float { n, .. }, Value::Float { n: max, .. }) if n > max => {
                     violations.push((path.clone(), format!("must be <= {}", max)));
                 }
-                (Value::Int(n), Value::Float(max)) if (*n as f64) > *max => {
+                (Value::Int { n, .. }, Value::Float { n: max, .. }) if (*n as f64) > *max => {
                     violations.push((path.clone(), format!("must be <= {}", max)));
                 }
-                (Value::Float(n), Value::Int(max)) if *n > (*max as f64) => {
+                (Value::Float { n, .. }, Value::Int { n: max, .. }) if *n > (*max as f64) => {
                     violations.push((path.clone(), format!("must be <= {}", max)));
                 }
                 _ => {}
@@ -3875,14 +4283,15 @@ fn validate_value(
         // Check string/sequence length constraints
         if let Some(min_len_thunk) = schema.get(&HashableValue::Str("min-length".into())) {
             let min_len_val = materialize(min_len_thunk, Some(&span), &ctx).await?;
-            if let Value::Int(min_len) = min_len_val {
+            if let Value::Int { n: min_len, .. } = min_len_val {
                 let actual_len = match &data {
                     Value::String {
                         source: _,
                         start,
                         end,
+                        ..
                     } => Some((end - start) as i64),
-                    Value::Dict(d) => Some(d.len() as i64),
+                    Value::Dict { entries: d, .. } => Some(d.len() as i64),
                     _ => None,
                 };
                 if let Some(len) = actual_len {
@@ -3895,14 +4304,15 @@ fn validate_value(
 
         if let Some(max_len_thunk) = schema.get(&HashableValue::Str("max-length".into())) {
             let max_len_val = materialize(max_len_thunk, Some(&span), &ctx).await?;
-            if let Value::Int(max_len) = max_len_val {
+            if let Value::Int { n: max_len, .. } = max_len_val {
                 let actual_len = match &data {
                     Value::String {
                         source: _,
                         start,
                         end,
+                        ..
                     } => Some((end - start) as i64),
-                    Value::Dict(d) => Some(d.len() as i64),
+                    Value::Dict { entries: d, .. } => Some(d.len() as i64),
                     _ => None,
                 };
                 if let Some(len) = actual_len {
@@ -3920,6 +4330,7 @@ fn validate_value(
                 ref source,
                 start,
                 end,
+                ..
             } = pattern_val
             {
                 let pattern_str = &source[start..end];
@@ -3949,7 +4360,10 @@ fn validate_value(
         // are compared. Dict/payload-Variant are not structurally compared.
         if let Some(enum_thunk) = schema.get(&HashableValue::Str("enum".into())) {
             let enum_val = materialize(enum_thunk, Some(&span), &ctx).await?;
-            if let Value::Dict(enum_dict) = enum_val {
+            if let Value::Dict {
+                entries: enum_dict, ..
+            } = enum_val
+            {
                 // Pre-materialize all enum values, then check membership via primitive equality.
                 let mut allowed_values = Vec::with_capacity(enum_dict.len());
                 for (_key, val_thunk) in enum_dict.iter() {
@@ -3972,13 +4386,25 @@ fn validate_value(
         // Check fields constraint (for dicts)
         if let Some(fields_thunk) = schema.get(&HashableValue::Str("fields".into())) {
             let fields_val = materialize(fields_thunk, Some(&span), &ctx).await?;
-            if let Value::Dict(fields_schema) = fields_val {
-                if let Value::Dict(ref data_dict) = data {
+            if let Value::Dict {
+                entries: fields_schema,
+                ..
+            } = fields_val
+            {
+                if let Value::Dict {
+                    entries: ref data_dict,
+                    ..
+                } = data
+                {
                     // Validate each field in the schema
                     for (field_key, field_schema_thunk) in &fields_schema {
                         let field_schema_val =
                             materialize(field_schema_thunk, Some(&span), &ctx).await?;
-                        if let Value::Dict(field_schema) = field_schema_val {
+                        if let Value::Dict {
+                            entries: field_schema,
+                            ..
+                        } = field_schema_val
+                        {
                             let field_name = field_key.to_string();
 
                             let field_path = if path.is_empty() {
@@ -3992,7 +4418,7 @@ fn validate_value(
                                 field_schema.get(&HashableValue::Str("required".into()))
                             {
                                 let req_val = materialize(req_thunk, Some(&span), &ctx).await?;
-                                matches!(&req_val, Value::Int(n) if *n != 0)
+                                matches!(&req_val, Value::Int { n, .. } if *n != 0)
                             } else {
                                 false
                             };
@@ -4022,8 +4448,15 @@ fn validate_value(
         // Check items constraint (for sequences/dicts with uniform element schema)
         if let Some(items_thunk) = schema.get(&HashableValue::Str("items".into())) {
             let items_val = materialize(items_thunk, Some(&span), &ctx).await?;
-            if let Value::Dict(items_schema) = items_val {
-                if let Value::Dict(data_dict) = &data {
+            if let Value::Dict {
+                entries: items_schema,
+                ..
+            } = items_val
+            {
+                if let Value::Dict {
+                    entries: data_dict, ..
+                } = data
+                {
                     for (idx, (_key, val_thunk)) in data_dict.iter().enumerate() {
                         let val = materialize(val_thunk, Some(&span), &ctx).await?;
                         let item_path = if path.is_empty() {
@@ -4100,7 +4533,13 @@ pub(crate) fn builtin_is_contractive(
         )?;
 
         let result = is_contractive_value(&body_val, &ctx).await?;
-        ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if result { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -4125,13 +4564,23 @@ fn is_contractive_value<'a>(
             other => other,
         };
 
+        // Helper to extract the bare constructor name from a potentially qualified ctor.
+        // e.g. "TypeNode.RecursiveRef" → "RecursiveRef", "RecursiveRef" → "RecursiveRef"
+        let bare = |ctor: &Arc<str>| {
+            ctor.as_ref()
+                .split_once('.')
+                .map(|(_, c)| c)
+                .unwrap_or(ctor.as_ref())
+                .to_string()
+        };
+
         match val {
             // Case 1: bare RecursiveRef — non-contractive.
-            Value::Variant { ctor, .. } if ctor.as_ref() == "RecursiveRef" => Ok(false),
+            Value::Variant { ctor, .. } if bare(ctor) == "RecursiveRef" => Ok(false),
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
             Value::Variant { ctor, payload, .. }
-                if ctor.as_ref() == "Union" || ctor.as_ref() == "Intersect" =>
+                if bare(ctor) == "Union" || bare(ctor) == "Intersect" =>
             {
                 let payload_thunk = match payload {
                     Some(id) => id.clone(),
@@ -4139,7 +4588,7 @@ fn is_contractive_value<'a>(
                 };
                 let payload_val = materialize(&payload_thunk, None, ctx).await?;
                 let types_thunk = match &payload_val {
-                    Value::Dict(d) => {
+                    Value::Dict { entries: d, .. } => {
                         match d.get(&crate::value::HashableValue::Str("types".into())) {
                             Some(t) => Arc::clone(t),
                             None => return Ok(true),
@@ -4168,7 +4617,7 @@ async fn is_contractive_seq(
 ) -> EvalResult<bool> {
     let val = materialize(&types_thunk, None, ctx).await?;
     match &val {
-        Value::Dict(d) => {
+        Value::Dict { entries: d, .. } => {
             for (_k, v_thunk) in d {
                 let v_val = materialize(v_thunk, None, ctx).await?;
                 if !is_contractive_value(&v_val, ctx).await? {
@@ -4214,7 +4663,7 @@ pub(crate) fn builtin_sequential(
         let exprs_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
         // Extract each entry in insertion order as Expr.* variant, converting to SurfaceNode
         let exprs_dict = match &exprs_val {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-sequential".to_string(),
@@ -4230,7 +4679,9 @@ pub(crate) fn builtin_sequential(
         for (_key, thunk) in exprs_dict.iter() {
             let val = materialize(thunk, Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
+                Value::Variant { ref ctor, .. }
+                    if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
+                {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4321,7 +4772,7 @@ pub(crate) fn builtin_ast_to_program(
         let call_site_span_thunk = call_site_span_thunk_id;
         let call_site_span_val = materialize(&call_site_span_thunk, Some(&call_span), &ctx).await?;
         let call_site_span_actual = match &call_site_span_val {
-            Value::Dict(dict) => {
+            Value::Dict { entries: dict, .. } => {
                 // Extract span from the dict using extract_span
                 crate::surface_convert::extract_span(dict, &ctx).ok_or_else(|| {
                     EvalError::type_mismatch_ctx(
@@ -4351,7 +4802,9 @@ pub(crate) fn builtin_ast_to_program(
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
-            Value::Variant { ref tycon, .. } if tycon.as_ref() == "Expr" => {
+            Value::Variant { ref ctor, .. }
+                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
+            {
                 crate::surface_convert::dict_to_surface_node(
                     &expr_val,
                     &call_site_span_actual,
@@ -4395,6 +4848,7 @@ pub(crate) fn builtin_ast_to_program(
                 resolutions: Arc::new(Default::default()),
                 types: Arc::new(Default::default()),
                 expects_resolved: Arc::new(std::collections::HashMap::new()),
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -4434,9 +4888,9 @@ pub(crate) fn builtin_check_type(
 
         let passes = match type_name.as_str() {
             "String" => matches!(value, Value::String { .. }),
-            "Int" => matches!(value, Value::Int(_)),
-            "Float" => matches!(value, Value::Float(_)),
-            "Dict" => matches!(value, Value::Dict(_)),
+            "Int" => matches!(value, Value::Int { .. }),
+            "Float" => matches!(value, Value::Float { .. }),
+            "Dict" => matches!(value, Value::Dict { .. }),
             "Bytes" => matches!(value, Value::Bytes { .. }),
             // Unknown annotations (type variables, parameterized types, user-defined names)
             // pass conservatively — runtime cannot distinguish them without full evaluation.
@@ -4492,7 +4946,9 @@ pub(crate) fn builtin_cap_env_has(
         let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
         // Check whether name is a key in the env-dict (env-dict protocol, T-1775).
         let found = match &env_val {
-            Value::Dict(d) => d.contains_key(&HashableValue::Str(Arc::from(name.as_str()))),
+            Value::Dict { entries: d, .. } => {
+                d.contains_key(&HashableValue::Str(Arc::from(name.as_str())))
+            }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-cap-env-has?".to_string(),
@@ -4506,7 +4962,13 @@ pub(crate) fn builtin_cap_env_has(
 
         // Return Int: 1 = found, 0 = not found.
         // The prelude wrapper converts Int → Boolean (prelude-agnostic protocol).
-        ok_val(Value::Int(if found { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if found { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -4547,7 +5009,7 @@ pub(crate) fn builtin_lower(
             .expect("pre-materialized by Strictness::Seq")
             .clone();
         let doc_arc = match doc_val {
-            Value::Document(d) => d,
+            Value::Document { doc: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
@@ -4598,6 +5060,7 @@ pub(crate) fn builtin_lower(
             Value::CoreDocument {
                 entries: std::sync::Arc::new(entries),
                 span,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -4853,8 +5316,8 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Red"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Red"),
             payload: None,
         };
         let ctx = test_ctx();
@@ -4876,11 +5339,14 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            tycon: Arc::from("SimpleType"),
-            ctor: Arc::from("Leaf"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("SimpleType.Leaf"),
             payload: None,
         };
-        let annotation = Value::Dict(IndexMap::new());
+        let annotation = Value::Dict {
+            entries: IndexMap::new(),
+            type_val: crate::value::unknown_type_val(),
+        };
         let annotated = Value::Annotated {
             inner: Box::new(variant),
             annotation: Box::new(annotation),
@@ -4904,17 +5370,23 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            tycon: Arc::from("Shape"),
-            ctor: Arc::from("Circle"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Shape.Circle"),
             payload: None,
         };
         let inner_annotated = Value::Annotated {
             inner: Box::new(variant),
-            annotation: Box::new(Value::Dict(IndexMap::new())),
+            annotation: Box::new(Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }),
         };
         let outer_annotated = Value::Annotated {
             inner: Box::new(inner_annotated),
-            annotation: Box::new(Value::Dict(IndexMap::new())),
+            annotation: Box::new(Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }),
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
@@ -4945,7 +5417,14 @@ mod tests {
 
         // builtin_current_env now returns Value::Int(caller_env_id).
         let val = materialize_sync(&result, &ctx).await?;
-        assert_eq!(val, Value::Int(42), "expected caller_env_id as Int(42)");
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            },
+            "expected caller_env_id as Int(42)"
+        );
         Ok(())
     }
 
@@ -4954,7 +5433,10 @@ mod tests {
     async fn current_env_rejects_positional_args() {
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
-            args: vec![thunk_id(Value::Int(1))],
+            args: vec![thunk_id(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            })],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4977,8 +5459,14 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_non_variant_errors() {
         let annotated = Value::Annotated {
-            inner: Box::new(Value::Int(42)),
-            annotation: Box::new(Value::Dict(IndexMap::new())),
+            inner: Box::new(Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val(),
+            }),
+            annotation: Box::new(Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }),
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {

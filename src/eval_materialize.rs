@@ -14,15 +14,17 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    as_record_row_merged, format_expected_label, format_field_path, format_got_label,
-    format_type_for_assert, match_pattern, materialize, primitive_eq, validate_and_wrap_record,
-    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
+    as_record_row_merged, format_field_path, format_type_for_assert, match_pattern, materialize,
+    primitive_eq, validate_and_wrap_record, value_matches_type, EvalContext,
+    DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
 use crate::types::Type;
-use crate::value::{string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value};
+use crate::value::{
+    string_val, unknown_type_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value,
+};
 
 tokio::task_local! {
     pub(crate) static TASK_EVAL_STACK: std::cell::RefCell<Vec<(std::sync::Arc<str>, crate::ast::Span)>>;
@@ -224,7 +226,11 @@ pub(crate) struct GuardedValidateData {
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
-    pub(crate) resolved: Box<Type>,
+    /// The resolved TypeValue. Currently always the unknown sentinel, which is consistent
+    /// with every type — all assertions pass. S-1002 populates repr_registry with actual
+    /// TypeValues from repr: declarations; S-1004 uses them here for actual type identity
+    /// checks. Until then, this is always the unknown sentinel.
+    pub(crate) resolved: Box<Arc<Value>>,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
     /// EvalFrame for evaluating default: fallback expressions.
@@ -325,25 +331,6 @@ pub(crate) struct MatchGuardCheckData {
     pub(crate) guard_matchable_binding: Option<String>,
 }
 
-/// Payload for Cont::PredicateCheck. Boxed to keep the Cont enum ≤96 bytes.
-pub(crate) struct PredicateCheckData {
-    /// The value being checked (already materialized and type-validated)
-    pub(crate) value: Value,
-    /// The annotation (needed for extracting default: property on failure)
-    pub(crate) annotation: Box<Spanned<Annotation>>,
-    /// Span of the TypeAssert expression (for error reporting)
-    pub(crate) expr_span: Span,
-    /// Span where the value was produced (for error reporting)
-    pub(crate) thunk_span: Span,
-    /// EvalFrame for evaluating the default expression if predicate fails.
-    pub(crate) frame: Arc<EvalFrame>,
-    pub(crate) ctx: Arc<EvalContext>,
-    /// True when the predicate was a callable and has already been invoked via the CEK machine.
-    /// On the second entry into PredicateCheck, `result` is the call's return value
-    /// and truthiness is checked directly without re-invoking.
-    pub(crate) callable_invoked: bool,
-}
-
 /// Payload for Cont::AnnotatedWrapFinalize. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct AnnotatedWrapFinalizeData {
     pub(crate) thunk: Arc<Thunk>,
@@ -403,10 +390,6 @@ pub(crate) enum Cont {
     /// Check the guard result for a matched arm and either evaluate the body (guard passed)
     /// or continue to the next arm (guard failed).
     MatchGuardCheck(Box<MatchGuardCheckData>),
-    /// Check the result of an is: predicate evaluation for a TypeAssert.
-    /// After materializing the predicate result, checks truthiness and either returns
-    /// the original value (predicate passed) or evaluates the default expression / fails.
-    PredicateCheck(Box<PredicateCheckData>),
     /// Wrap a materialized inner value in Value::Annotated.
     /// After materializing the inner thunk from AnnotatedWrap, this continuation wraps the result
     /// in Value::Annotated { inner, annotation } and settles the outer thunk.
@@ -520,27 +503,48 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
             if !span.file.starts_with('<') {
                 string_val(span.file.as_ref())
             } else {
-                Value::Dict(indexmap::IndexMap::new())
+                Value::Dict {
+                    entries: indexmap::IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }
             }
         }),
     );
     w.insert(
         HashableValue::Str("start-line".into()),
-        mk(Value::Int(span.start_line as i64)),
+        mk(Value::Int {
+            n: span.start_line as i64,
+            type_val: crate::value::unknown_type_val(),
+        }),
     );
     w.insert(
         HashableValue::Str("start-col".into()),
-        mk(Value::Int(span.start_col as i64)),
+        mk(Value::Int {
+            n: span.start_col as i64,
+            type_val: crate::value::unknown_type_val(),
+        }),
     );
     w.insert(
         HashableValue::Str("end-line".into()),
-        mk(Value::Int(span.end_line as i64)),
+        mk(Value::Int {
+            n: span.end_line as i64,
+            type_val: crate::value::unknown_type_val(),
+        }),
     );
     w.insert(
         HashableValue::Str("end-col".into()),
-        mk(Value::Int(span.end_col as i64)),
+        mk(Value::Int {
+            n: span.end_col as i64,
+            type_val: crate::value::unknown_type_val(),
+        }),
     );
-    Arc::new(Thunk::value(Value::Dict(w), call_span.clone()))
+    Arc::new(Thunk::value(
+        Value::Dict {
+            entries: w,
+            type_val: crate::value::unknown_type_val(),
+        },
+        call_span.clone(),
+    ))
 }
 
 /// Returns true if the annotation is `@Expr`, meaning the parameter receives a quoted AST
@@ -549,9 +553,8 @@ fn is_expr_annotation(ann: &crate::ast::Annotation) -> bool {
     crate::ast::is_expr_annotation(ann)
 }
 
-/// Used by:
-/// - `Cont::PredicateCheck` — `is:` predicate checks in TypeAssert annotations.
-/// - Predicate match patterns (T-1140).
+/// Used by predicate match patterns (T-1140) to construct a call thunk for
+/// `predicate(subject)` without forcing evaluation.
 ///
 /// The helper is intentionally synchronous: it only constructs thunks, never
 /// forces evaluation.
@@ -645,9 +648,23 @@ pub(crate) async fn force_step(
                 (Some(e), Some(c)) => e == c,
             };
             if same {
-                let cycle_path = TASK_EVAL_STACK
-                    .try_with(|s| s.borrow().clone())
-                    .unwrap_or_default();
+                let cycle_path = match TASK_EVAL_STACK.try_with(|s| s.borrow().clone()) {
+                    Ok(path) => path,
+                    Err(access_err) => {
+                        // Thread-local being destroyed — propagate rather than silently
+                        // producing an empty stack trace. The cycle error cannot be
+                        // constructed without the path; surface the access failure.
+                        let err = EvalError::internal(
+                            format!(
+                                "cycle detection: eval stack thread-local inaccessible: {access_err}"
+                            ),
+                            thunk.span.clone(),
+                        );
+                        let err_boxed: Box<EvalError> = err.into();
+                        thunk.settle(Err(Arc::new((*err_boxed).clone())));
+                        return Action::Continue(Err(err_boxed));
+                    }
+                };
                 let label = thunk.span.name.as_deref().unwrap_or("thunk");
                 let mut err = EvalError::circular_dependency(label, thunk.span.clone(), cycle_path);
                 if let Some(ref span) = mat_span {
@@ -930,7 +947,7 @@ async fn dispatch_state(
             if let crate::ast::CoreExpr::TypeAssert {
                 annotation,
                 expr: inner,
-                resolved_type,
+                resolved_type: _,
                 pipeline_blame,
             } = &core_expr.node
             {
@@ -990,7 +1007,11 @@ async fn dispatch_state(
                 })));
                 stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                     annotation: Box::new(annotation.clone()),
-                    resolved: Box::new(resolved_type.clone()),
+                    // During bootstrap, all TypeAssert checks pass because type_val is the unknown
+                    // sentinel on every value. This is correct — the unknown sentinel is consistent
+                    // with every type, so no false type assertion failures occur. S-1002 populates
+                    // repr_registry with actual TypeValues; S-1004 uses them for actual type checks.
+                    resolved: Box::new(unknown_type_val()),
                     expr_span: core_expr.span.clone(),
                     thunk_span: inner_span,
                     frame: Arc::clone(&frame),
@@ -1008,8 +1029,14 @@ async fn dispatch_state(
             if let crate::ast::CoreExpr::Sequential(exprs) = &core_expr.node {
                 if exprs.is_empty() {
                     // Empty sequential: return empty dict
-                    thunk.settle(Ok(Value::Dict(IndexMap::new())));
-                    return Action::Continue(Ok(Value::Dict(IndexMap::new())));
+                    thunk.settle(Ok(Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    }));
+                    return Action::Continue(Ok(Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    }));
                 }
 
                 // Memoize the final result
@@ -1326,7 +1353,10 @@ pub(crate) async fn apply_cont(
                                     named_map.insert(
                                         MACRO_CALL_ENV_NAME.to_string(),
                                         Arc::new(Thunk::value(
-                                            Value::Int(caller_env_id as i64),
+                                            Value::Int {
+                                                n: caller_env_id as i64,
+                                                type_val: crate::value::unknown_type_val(),
+                                            },
                                             call_span.clone(),
                                         )),
                                     );
@@ -1418,7 +1448,7 @@ pub(crate) async fn apply_cont(
                                 }
                             }
                         }
-                        Value::Builtin(def) => {
+                        Value::Builtin { def, .. } => {
                             // Check if any strict (Seq/Spine) args need pre-materialization.
                             // If so, convert to PendingBuiltin and re-dispatch via force_step
                             // so the BuiltinForceArg continuation can handle them iteratively.
@@ -1516,9 +1546,9 @@ pub(crate) async fn apply_cont(
                         }
                         // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
                         // When a unit Variant (payload: None) is called with exactly one positional
-                        // arg and no named args, treat it as constructing Variant(tycon, ctor, payload).
+                        // arg and no named args, treat it as constructing Variant(type_val, ctor, payload).
                         Value::Variant {
-                            tycon,
+                            type_val,
                             ctor,
                             payload: None,
                         } if args.as_ref().is_some_and(|v| v.len() == 1)
@@ -1530,7 +1560,7 @@ pub(crate) async fn apply_cont(
                             let payload_thunk =
                                 Arc::clone(&args.as_ref().expect("args set above")[0]);
                             let result_val = Value::Variant {
-                                tycon,
+                                type_val,
                                 ctor,
                                 payload: Some(payload_thunk),
                             };
@@ -1560,7 +1590,9 @@ pub(crate) async fn apply_cont(
                                 });
                             // For Dict values, list the first few keys to help identification.
                             let got_detail = match &other {
-                                crate::value::Value::Dict(map) if !map.is_empty() => {
+                                crate::value::Value::Dict { entries: map, .. }
+                                    if !map.is_empty() =>
+                                {
                                     let keys: Vec<String> =
                                         map.keys().take(5).map(|k| format!("{k}")).collect();
                                     let ellipsis = if map.len() > 5 { ", ..." } else { "" };
@@ -1624,7 +1656,7 @@ pub(crate) async fn apply_cont(
                     // For Record types and Intersection-of-Records, apply proxy contract wrapping.
                     // as_record_row_merged handles both forms by merging fields into a single Row.
                     if let Some(row) = as_record_row_merged(&expected) {
-                        if let Value::Dict(ref entries) = value {
+                        if let Value::Dict { ref entries, .. } = value {
                             match validate_and_wrap_record(
                                 entries,
                                 row.as_ref(),
@@ -1635,7 +1667,10 @@ pub(crate) async fn apply_cont(
                                 blame_label.clone(),
                             ) {
                                 Ok(new_entries) => {
-                                    let guarded_value = Value::Dict(new_entries);
+                                    let guarded_value = Value::Dict {
+                                        entries: new_entries,
+                                        type_val: crate::value::unknown_type_val(),
+                                    };
                                     thunk.settle(Ok(guarded_value.clone()));
                                     Action::Continue(Ok(guarded_value))
                                 }
@@ -1970,145 +2005,31 @@ pub(crate) async fn apply_cont(
                     }
                 }
                 Ok(value) => {
-                    // For Record types and Intersection-of-Records, apply proxy contract wrapping.
-                    // as_record_row_merged merges all required fields from all members into a Row.
-                    if let Some(row) = as_record_row_merged(&expected) {
-                        if let Value::Dict(entries) = &value {
-                            let default_opt = if let Some(node) =
-                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                            {
-                                let (lowered, lower_diags) = crate::lower::lower(
-                                    node,
-                                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                                );
-                                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                                    return Action::Continue(Err(err));
-                                }
-                                Some((Arc::new(lowered), 0u32))
-                            } else {
-                                None
-                            };
-                            // Construct BlameLabel for TypeAssert boundary
-                            let blame_label = Some(crate::error::BlameLabel {
-                                origin_span: thunk_span.clone(),  // where the value was produced
-                                boundary_span: expr_span.clone(), // where the TypeAssert annotation is
-                                polarity: crate::error::BlameParity::Positive,
-                            });
-                            match validate_and_wrap_record(
-                                entries,
-                                row.as_ref(),
-                                &mut vec![],
-                                expr_span.clone(),
-                                thunk_span.clone(),
-                                default_opt.clone(),
-                                blame_label,
-                            ) {
-                                Ok(new_entries) => Action::Continue(Ok(Value::Dict(new_entries))),
-                                Err(err) => {
-                                    if let Some((default, _default_env_id)) = default_opt {
-                                        // Evaluate default expression iteratively.
-                                        Action::EvalCore {
-                                            expr: default,
-                                            frame: Arc::clone(&frame),
-                                            ctx: Arc::clone(&ctx),
-                                        }
-                                    } else {
-                                        // Attach pipeline blame if this assertion is from a --- expects: boundary.
-                                        let err = if let Some(ref blame) = pipeline_blame {
-                                            Box::new((*err).with_pipeline_blame(blame.clone()))
-                                        } else {
-                                            err
-                                        };
-                                        Action::Continue(Err(err))
-                                    }
-                                }
-                            }
-                        } else {
-                            if let Some(default_node) =
-                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                            {
-                                // Evaluate default expression iteratively.
-                                // The result will flow to the next continuation on the stack.
-                                let (lowered_default, lower_diags) = crate::lower::lower(
-                                    default_node,
-                                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                                );
-                                if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                                    return Action::Continue(Err(err));
-                                }
-                                Action::EvalCore {
-                                    expr: Arc::new(lowered_default),
-                                    frame: Arc::clone(&frame),
-                                    ctx: Arc::clone(&ctx),
-                                }
-                            } else {
-                                let mut err = EvalError::type_assert_failed(
-                                    &format_expected_label(&expected, &ctx),
-                                    &format_got_label(&value, &expected),
-                                    thunk_span.clone(),
-                                )
-                                .with_materialization_span(expr_span.clone());
-                                if thunk_span != expr_span {
-                                    err = err.with_secondary_span(
-                                        thunk_span.clone(),
-                                        "value produced here",
-                                    );
-                                }
-                                // Attach pipeline blame if this assertion is from a --- expects: boundary.
-                                let err = if let Some(ref blame) = pipeline_blame {
-                                    err.with_pipeline_blame(blame.clone())
-                                } else {
-                                    err
-                                };
-                                Action::Continue(Err(err.into()))
-                            }
-                        }
-                    } else if value_matches_type(&value, &expected, &ctx) {
-                        let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
-                        if let Some(predicate_node) = is_predicate {
-                            let (lowered_pred, lower_diags) = crate::lower::lower(
-                                &predicate_node,
-                                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                            );
-                            if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                                return Action::Continue(Err(err));
-                            }
-                            stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
-                                value: value.clone(),
-                                annotation,
-                                expr_span: expr_span.clone(),
-                                thunk_span: thunk_span.clone(),
-                                frame: Arc::clone(&frame),
-                                ctx: Arc::clone(&ctx),
-                                callable_invoked: false,
-                            })));
-                            Action::EvalCore {
-                                expr: Arc::new(lowered_pred),
-                                frame: Arc::clone(&frame),
-                                ctx: Arc::clone(&ctx),
-                            }
-                        } else {
-                            Action::Continue(Ok(value))
-                        }
-                    } else if let Some(default_node) =
-                        annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                    {
-                        let (lowered_default, lower_diags) = crate::lower::lower(
-                            default_node,
-                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                        );
-                        if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                            return Action::Continue(Err(err));
-                        }
-                        Action::EvalCore {
-                            expr: Arc::new(lowered_default),
-                            frame: Arc::clone(&frame),
-                            ctx: Arc::clone(&ctx),
-                        }
+                    // Type identity check: value's runtime TypeValue matches the expected TypeValue
+                    // by Arc pointer identity. `value.type_val()` is available (added by T-1946).
+                    //
+                    // During bootstrap all TypeAssert checks pass because type_val is the unknown
+                    // sentinel. This is correct: unknown is consistent with everything.
+                    if Arc::ptr_eq(&expected, &unknown_type_val()) {
+                        // Pass: unknown accepts anything.
+                        Action::Continue(Ok(value))
                     } else {
+                        // Fail: types do not match by identity and expected is not the unknown sentinel.
+                        // Use the annotation text for "expected" (e.g. "String", "Integer") — not
+                        // Value::type_name(), which returns the Rust variant discriminant ("Dict",
+                        // "Int", etc.) and would always say "Dict" for TypeValues. For "got", use
+                        // the value's type_val if it is resolved, or "unknown type" otherwise;
+                        // never use type_name() which leaks Rust-internal names into user messages.
+                        let expected_str = annotation.node.to_string();
+                        let value_tv = value.type_val();
+                        let got_str = if Arc::ptr_eq(value_tv, &unknown_type_val()) {
+                            "unknown type".to_string()
+                        } else {
+                            format!("{value_tv:?}")
+                        };
                         let mut err = EvalError::type_assert_failed(
-                            &format_expected_label(&expected, &ctx),
-                            &format_got_label(&value, &expected),
+                            &expected_str,
+                            &got_str,
                             thunk_span.clone(),
                         )
                         .with_materialization_span(expr_span.clone());
@@ -2209,7 +2130,7 @@ pub(crate) async fn apply_cont(
 
                     if static_keys.is_some() {
                         let map = match intermediate_value {
-                            Value::Dict(map) => map,
+                            Value::Dict { entries: map, .. } => map,
                             Value::Variant {
                                 payload: Some(payload_thunk),
                                 ..
@@ -2688,7 +2609,7 @@ pub(crate) async fn apply_cont(
                     // PM1: If the guard is callable and we haven't yet invoked it, do so
                     // iteratively via the CEK machine rather than block_on_anywhere.
                     if !callable_invoked {
-                        if let Value::Function { .. } | Value::Builtin(_) = &guard_value {
+                        if let Value::Function { .. } | Value::Builtin { .. } = &guard_value {
                             // Create Arc<Thunk> for scrutinee and predicate directly.
                             let scrutinee_thunk =
                                 Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));
@@ -2770,97 +2691,6 @@ pub(crate) async fn apply_cont(
             }
         }
 
-        Cont::PredicateCheck(data) => {
-            let PredicateCheckData {
-                value,
-                annotation,
-                expr_span,
-                thunk_span,
-                frame,
-                ctx,
-                callable_invoked,
-            } = *data;
-
-            match result {
-                Err(e) => Action::Continue(Err(e)),
-                Ok(predicate_value) => {
-                    // If the predicate is callable and we haven't yet invoked it, do so
-                    // iteratively via the CEK machine rather than block_on_anywhere.
-                    if !callable_invoked {
-                        if let Value::Function { .. } | Value::Builtin(_) = &predicate_value {
-                            // Build a PendingCall thunk for predicate(value) via the helper.
-                            let call_thunk = apply_predicate_to_subject(
-                                predicate_value,
-                                value.clone(),
-                                expr_span.clone(),
-                                thunk_span.clone(),
-                                0,
-                                &ctx,
-                            );
-                            // Push PredicateCheck again with callable_invoked=true.
-                            stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
-                                value,
-                                annotation,
-                                expr_span: expr_span.clone(),
-                                thunk_span,
-                                frame: Arc::clone(&frame),
-                                ctx: Arc::clone(&ctx),
-                                callable_invoked: true,
-                            })));
-                            return Action::Materialize {
-                                thunk: call_thunk,
-                                mat_span: Some(expr_span),
-                            };
-                        }
-                    }
-
-                    let pred_passed_result =
-                        crate::eval::call_to_match(&predicate_value, &ctx, &expr_span).await;
-
-                    let pred_passed = match pred_passed_result {
-                        Err(e) => return Action::Continue(Err(e)),
-                        Ok(b) => b,
-                    };
-
-                    if pred_passed {
-                        // Predicate passed — return the original value
-                        Action::Continue(Ok(value))
-                    } else {
-                        // Predicate failed — check for default: or fail
-                        if let Some(default_node) =
-                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                        {
-                            // Evaluate default expression iteratively
-                            let (lowered_default, lower_diags) = crate::lower::lower(
-                                default_node,
-                                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                            );
-                            if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                                return Action::Continue(Err(err));
-                            }
-                            Action::EvalCore {
-                                expr: Arc::new(lowered_default),
-                                frame: Arc::clone(&frame),
-                                ctx: Arc::clone(&ctx),
-                            }
-                        } else {
-                            // No default — fail with predicate failed error
-                            let mut err = EvalError::type_assert_failed(
-                                "_ (is: predicate failed)",
-                                value.type_name(),
-                                thunk_span.clone(),
-                            )
-                            .with_materialization_span(expr_span.clone());
-                            if thunk_span != expr_span {
-                                err = err
-                                    .with_secondary_span(thunk_span.clone(), "value produced here");
-                            }
-                            Action::Continue(Err(err.into()))
-                        }
-                    }
-                }
-            }
-        }
         Cont::AnnotatedWrapFinalize(data) => {
             let AnnotatedWrapFinalizeData {
                 thunk,
@@ -3153,9 +2983,11 @@ fn eval_structural_pattern_inner<'a>(
             }
 
             // Literal patterns: compare exact value
-            CoreExpr::Int(n) => Ok(matches!(scrutinee_value, Value::Int(v) if v == n)),
-            CoreExpr::U64(n) => Ok(matches!(scrutinee_value, Value::U64(v) if v == n)),
-            CoreExpr::Float(f) => Ok(matches!(scrutinee_value, Value::Float(v) if v == f)),
+            CoreExpr::Int(n) => Ok(matches!(scrutinee_value, Value::Int { n: v, .. } if v == n)),
+            CoreExpr::U64(n) => Ok(matches!(scrutinee_value, Value::U64 { n: v, .. } if v == n)),
+            CoreExpr::Float(f) => {
+                Ok(matches!(scrutinee_value, Value::Float { n: v, .. } if v == f))
+            }
             CoreExpr::Str(s) => {
                 // Not a wildcard (handled above): literal string comparison
                 Ok(scrutinee_value.as_str().is_some_and(|v| v == s.as_str()))
@@ -3191,7 +3023,7 @@ fn eval_structural_pattern_inner<'a>(
                 //   (a) a unit Variant (payload: None) — the old unit-constructor form
                 //   (b) a Function with return_ann annotation (named-field ctor)
                 let ctor_tag_opt: Option<String> = match &func_val {
-                    Value::Variant { tycon, ctor, .. } => Some(format!("{}.{}", tycon, ctor)),
+                    Value::Variant { ctor, .. } => Some(ctor.as_ref().to_string()),
                     Value::Function { annotation, .. } => annotation.as_deref().and_then(|ann| {
                         ann.return_ann.as_ref().and_then(|ret_ann| {
                             if let crate::ast::Annotation::Simple(tag) = ret_ann {
@@ -3207,15 +3039,14 @@ fn eval_structural_pattern_inner<'a>(
                 if let Some(ctor_tag) = ctor_tag_opt {
                     // Constructor pattern: match scrutinee tag, bind payload.
                     let Value::Variant {
-                        tycon: scrutinee_tycon,
                         ctor: scrutinee_ctor,
                         payload,
+                        ..
                     } = scrutinee_value
                     else {
                         return Ok(false);
                     };
-                    let scrutinee_tag = format!("{}.{}", scrutinee_tycon, scrutinee_ctor);
-                    if scrutinee_tag != ctor_tag {
+                    if scrutinee_ctor.as_ref() != ctor_tag {
                         return Ok(false);
                     }
 
@@ -3229,7 +3060,11 @@ fn eval_structural_pattern_inner<'a>(
                         let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(match_span), ctx).await?;
-                        let Value::Dict(payload_map) = &payload_val else {
+                        let Value::Dict {
+                            entries: payload_map,
+                            ..
+                        } = &payload_val
+                        else {
                             return Ok(false);
                         };
 
@@ -3277,7 +3112,11 @@ fn eval_structural_pattern_inner<'a>(
                     }
 
                     // Multi-arg: match positional args against payload dict integer keys.
-                    let Value::Dict(payload_map) = &payload_val else {
+                    let Value::Dict {
+                        entries: payload_map,
+                        ..
+                    } = &payload_val
+                    else {
                         return Ok(false);
                     };
 
@@ -3297,7 +3136,7 @@ fn eval_structural_pattern_inner<'a>(
                     Ok(true)
                 } else {
                     match func_val {
-                        Value::Function { .. } | Value::Builtin(_) => {
+                        Value::Function { .. } | Value::Builtin { .. } => {
                             // Guard/predicate: bind all declared names to scrutinee, evaluate
                             // the full call expression (func + args), check if result is truthy.
 
@@ -3334,7 +3173,11 @@ fn eval_structural_pattern_inner<'a>(
 
             // Dict pattern: match fields of the scrutinee dict
             CoreExpr::Dict(entries) => {
-                let Value::Dict(scrutinee_map) = scrutinee_value else {
+                let Value::Dict {
+                    entries: scrutinee_map,
+                    ..
+                } = scrutinee_value
+                else {
                     return Ok(false);
                 };
                 for entry in entries {
@@ -3730,12 +3573,21 @@ mod tests {
 
         // Verify the result is correct
         assert!(result.is_ok(), "Expected successful materialization");
-        assert_eq!(result.unwrap(), Value::Int(42));
+        assert_eq!(
+            result.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
 
         // Verify the thunk transitioned to Materialized state
         assert_eq!(
             thunk.try_get_value(),
-            Some(&Value::Int(42)),
+            Some(&Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }),
             "Cached value should be Int(42)"
         );
 
@@ -3749,7 +3601,13 @@ mod tests {
             &ctx,
         )
         .await;
-        assert_eq!(result2.unwrap(), Value::Int(42));
+        assert_eq!(
+            result2.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3896,7 +3754,13 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: an Int value that satisfies the Int guard.
-        let inner = Arc::new(Thunk::value(Value::Int(42), span.clone()));
+        let inner = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        ));
 
         let guarded = Arc::new(Thunk::guarded(inner, Type::Int, vec![], span, None, None));
 
@@ -3906,12 +3770,21 @@ mod tests {
             "Int value should pass Int guard, got: {:?}",
             result.unwrap_err()
         );
-        assert_eq!(result.unwrap(), Value::Int(42));
+        assert_eq!(
+            result.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
 
         // After success, thunk must be in Materialized state (memoized).
         assert_eq!(
             guarded.try_get_value(),
-            Some(&Value::Int(42)),
+            Some(&Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }),
             "after successful validation, thunk should be Materialized(Int(42))"
         );
     }
@@ -3955,14 +3828,20 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Int(99),
+            Value::Int {
+                n: 99,
+                type_val: crate::value::unknown_type_val()
+            },
             "default expression should yield 99 (from caller's env)"
         );
 
         // Thunk should be Materialized with the default value, not Failed.
         assert_eq!(
             guarded.try_get_value(),
-            Some(&Value::Int(99)),
+            Some(&Value::Int {
+                n: 99,
+                type_val: crate::value::unknown_type_val()
+            }),
             "after default fallback, thunk should be Materialized(Int(99))"
         );
     }
@@ -3980,7 +3859,13 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: a Float value — fails the Int guard.
-        let inner = Arc::new(Thunk::value(Value::Float(1.0), span.clone()));
+        let inner = Arc::new(Thunk::value(
+            Value::Float {
+                n: 1.0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        ));
 
         let guarded = Arc::new(Thunk::guarded(inner, Type::Int, vec![], span, None, None));
 
@@ -4092,7 +3977,7 @@ mod tests {
         // builtin_keys on an empty dict returns an empty dict.
         let val = result.unwrap();
         assert!(
-            matches!(val, Value::Dict(ref m) if m.is_empty()),
+            matches!(val, Value::Dict { entries: ref m, .. } if m.is_empty()),
             "expected empty dict from builtin_keys on empty dict, got {:?}",
             val
         );
@@ -4156,7 +4041,15 @@ mod tests {
                 .expect("pre-materialized by force_count")
                 .clone();
             let span = args.call_span;
-            Box::pin(async move { Ok(Arc::new(Thunk::value(Value::Int(1), span))) })
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::value(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span,
+                )))
+            })
         };
 
         const DUMMY_STRICTNESS: &[Strictness] = &[];
@@ -4194,7 +4087,10 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Int(1),
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            },
             "dummy builtin must succeed with both args pre-materialized"
         );
     }
@@ -4278,7 +4174,13 @@ mod cek_lifecycle_tests {
     #[tokio::test]
     async fn test_cont_memoize_construction() {
         let span = test_span(1, 1, 1, 10);
-        let thunk = Arc::new(Thunk::value(Value::Int(7), span.clone()));
+        let thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 7,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        ));
         let origin: Option<Arc<str>> = Some(Arc::from("test-origin"));
 
         let data = MemoizeData {
@@ -4317,11 +4219,20 @@ mod cek_lifecycle_tests {
         let ctx = test_ctx();
 
         // A pre-materialized thunk: created with Thunk::value → already in Materialized state.
-        let thunk = Arc::new(Thunk::value(Value::Int(99), span.clone()));
+        let thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 99,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        ));
 
         assert_eq!(
             thunk.try_get_value(),
-            Some(&Value::Int(99)),
+            Some(&Value::Int {
+                n: 99,
+                type_val: crate::value::unknown_type_val()
+            }),
             "Thunk::value must start Materialized"
         );
 
@@ -4331,7 +4242,14 @@ mod cek_lifecycle_tests {
         // A materialized thunk must return Continue immediately.
         match action {
             Action::Continue(Ok(v)) => {
-                assert_eq!(v, Value::Int(99), "expected the materialized value Int(99)");
+                assert_eq!(
+                    v,
+                    Value::Int {
+                        n: 99,
+                        type_val: crate::value::unknown_type_val()
+                    },
+                    "expected the materialized value Int(99)"
+                );
             }
             Action::Continue(Err(e)) => {
                 panic!("expected Action::Continue(Ok(Int(99))), got error: {e}")
@@ -4545,7 +4463,7 @@ fn force_dict_tree_impl<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + Send + 'a>> {
     Box::pin(async move {
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let mut new_map = IndexMap::new();
                 for (key, thunk) in map {
                     let thunk_ptr = Arc::as_ptr(thunk) as usize;
@@ -4562,10 +4480,13 @@ fn force_dict_tree_impl<'a>(
                     let deep_thunk = Arc::new(Thunk::value(deep_val, thunk.span.clone()));
                     new_map.insert(key.clone(), deep_thunk);
                 }
-                Ok(Value::Dict(new_map))
+                Ok(Value::Dict {
+                    entries: new_map,
+                    type_val: crate::value::unknown_type_val(),
+                })
             }
             Value::Variant {
-                tycon,
+                type_val,
                 ctor,
                 payload,
             } => {
@@ -4582,7 +4503,7 @@ fn force_dict_tree_impl<'a>(
                     let deep_thunk =
                         Arc::new(Thunk::value(deep_payload, payload_thunk.span.clone()));
                     Ok(Value::Variant {
-                        tycon: tycon.clone(),
+                        type_val: Arc::clone(type_val),
                         ctor: ctor.clone(),
                         payload: Some(deep_thunk),
                     })

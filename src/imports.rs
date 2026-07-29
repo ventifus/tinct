@@ -207,7 +207,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                 ))
             })?;
         match ts_val {
-            crate::value::Value::Dict(entries) => {
+            crate::value::Value::Dict { entries, .. } => {
                 let mut map = std::collections::HashMap::new();
                 for (key, thunk) in &entries {
                     if let crate::value::HashableValue::Str(name) = key {

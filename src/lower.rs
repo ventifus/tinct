@@ -20,6 +20,18 @@ use crate::ast::{
 };
 use crate::rust_span;
 
+/// The tinct name of the dict-field accessor builtin.
+///
+/// Every dot-access (`expr.field`) desugars to `[FIELD_GETTER_NAME key target]`. The
+/// resolver writes the VarAddr for this name into `Field.resolution`; the lowerer reads
+/// it out. Centralising the name here prevents the string from drifting between the
+/// resolver, the lowerer, and diagnostic messages.
+///
+/// Coupling note: this name couples the lowerer to a specific tinct builtin. The correct
+/// long-term fix (tracked separately) is to have the resolver always populate
+/// `Field.resolution` so the lowerer never needs to search scope_frames by name.
+pub(crate) const FIELD_GETTER_NAME: &str = "builtin-dict-get";
+
 /// Severity of a diagnostic emitted during lowering.
 #[derive(Debug, Clone)]
 pub enum LowerDiagnosticKind {
@@ -319,22 +331,22 @@ fn lower_expr(
             ..
         } => {
             // Build the getter function Var and the key argument.
-            // The resolver writes a VarAddr for builtin-dict-get into Field.resolution.
-            // All dot-access desugars to [builtin-dict-get key target] — one correct path.
+            // The resolver writes a VarAddr for FIELD_GETTER_NAME into Field.resolution.
+            // All dot-access desugars to [FIELD_GETTER_NAME key target] — one correct path.
             // Try Field.resolution first (set by the resolver for programs that include builtins
             // in their scope chain — e.g., init programs loaded via run_loader_pipeline).
             // Fall back to scope_frames lookup for programs processed by builtin-resolve (which
-            // uses a user-visible name-set that does NOT include builtins like builtin-dict-get).
+            // uses a user-visible name-set that does NOT include builtins like FIELD_GETTER_NAME).
             let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
                 _ => {
-                    // Resolution unset or None — look up builtin-dict-get in scope_frames.
+                    // Resolution unset or None — look up FIELD_GETTER_NAME in scope_frames.
                     // This is the fallback path for documents resolved via builtin-resolve where
                     // builtins are not in the name-set (e.g., builtin_core.llt type-stage docs).
                     if let Some(frames) = scope_frames {
                         let found = frames.iter().enumerate().rev().find_map(|(depth, frame)| {
                             frame
-                                .get("builtin-dict-get")
+                                .get(FIELD_GETTER_NAME)
                                 .map(|&slot| VarAddr::LetrecGroupMember {
                                     depth: depth as u32,
                                     slot,
@@ -346,7 +358,7 @@ fn lower_expr(
                                 diagnostics.push(LowerDiagnostic {
                                     kind: LowerDiagnosticKind::Error,
                                     message: format!(
-                                        "builtin-dict-get: missing resolver coordinates for `.{}` — not in scope_frames",
+                                        "{FIELD_GETTER_NAME}: missing resolver coordinates for `.{}` — not in scope_frames",
                                         field
                                     ),
                                     span: arc.span.clone(),
@@ -358,7 +370,7 @@ fn lower_expr(
                         diagnostics.push(LowerDiagnostic {
                             kind: LowerDiagnosticKind::Error,
                             message: format!(
-                                "builtin-dict-get: missing resolver coordinates for `.{}` — resolver did not run on this node",
+                                "{FIELD_GETTER_NAME}: missing resolver coordinates for `.{}` — resolver did not run on this node",
                                 field
                             ),
                             span: arc.span.clone(),
@@ -375,7 +387,7 @@ fn lower_expr(
 
             let getter_var = Arc::new(crate::ast::Spanned::new(
                 CoreExpr::Var {
-                    name: "builtin-dict-get".to_string(),
+                    name: FIELD_GETTER_NAME.to_string(),
                     addr: getter_addr,
                     annotation: None,
                 },
@@ -1233,6 +1245,9 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             annotation: None,
             do_infer_placeholder: false,
         },
+        // ReprDecl: transparent in quote context — convert as if it were just the inner dict.
+        // The repr: metadata is evaluator-only; it has no surface representation in quotes.
+        CoreExpr::ReprDecl { inner, .. } => core_expr_to_surface_expr(&inner.node),
     }
 }
 
@@ -1462,6 +1477,13 @@ fn build_field_annotations_core_entry(
 }
 
 /// Produces `CoreExpr` nodes for each constructor entry in the runtime dict.
+///
+/// When the TypeAlias body contains a `repr: "Value::X"` key, the result is wrapped in
+/// `CoreExpr::ReprDecl` so that the evaluator can register the TypeValue in
+/// `ctx.repr_registry` when the declaration is first forced.
+///
+/// An optional `is: [fn [let x] ...]` key is passed through as `ReprDecl::is_pred` so the
+/// evaluator can also register the predicate in `ctx.is_predicates`.
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
@@ -1470,8 +1492,13 @@ fn lower_type_alias_to_constructor_dict(
 ) -> CoreExpr {
     use crate::ast::CoreEntry;
 
+    // Extract `repr:` and `is:` metadata from the body dict before extracting constructors.
+    // These are lowercase named keys that are type declaration metadata, not constructors.
+    let (repr_opt, is_pred_opt) =
+        extract_repr_and_is_from_body(&body.expr, diagnostics, scope_frames);
+
     // Extract constructors from the body using the desugar.rs helpers.
-    // We need to import the extraction logic. For now, we'll inline a simplified version.
+    // Constructors are extracted inline from the body expression.
     let ctors = extract_constructors_from_body(&body.expr);
 
     let syn_span = rust_span!();
@@ -1689,7 +1716,77 @@ fn lower_type_alias_to_constructor_dict(
         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
     }
 
-    CoreExpr::Dict(core_entries)
+    let inner_dict = CoreExpr::Dict(core_entries);
+
+    // If the body had `repr:` metadata, wrap the constructor dict in ReprDecl so the
+    // evaluator can register it in ctx.repr_registry when the declaration is first forced.
+    match repr_opt {
+        Some(repr) => CoreExpr::ReprDecl {
+            repr,
+            is_pred: is_pred_opt.map(|expr| Arc::new(Spanned::new(expr, syn_span.clone()))),
+            inner: Arc::new(Spanned::new(inner_dict, syn_span)),
+        },
+        None => inner_dict,
+    }
+}
+
+/// Extract `repr:` and `is:` metadata entries from a TypeAlias body dict.
+///
+/// The TypeAlias body may contain lowercase-keyed metadata entries alongside constructors:
+/// - `repr: "Value::Int"` — identifies the Rust Value variant this type maps to
+/// - `is: [fn [let x] ...]` — predicate function for testing membership
+///
+/// Both keys are lowercase and are NOT constructors; they are silently skipped by
+/// `extract_constructors_from_body`. This function extracts them before the constructor
+/// extraction pass.
+///
+/// Returns `(repr_opt, is_pred_opt)` — both are `None` when the respective key is absent.
+fn extract_repr_and_is_from_body(
+    body: &SurfaceExpression,
+    diagnostics: &mut Vec<LowerDiagnostic>,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
+) -> (Option<String>, Option<CoreExpr>) {
+    let SurfaceExpression::Dict(entries) = body else {
+        return (None, None);
+    };
+
+    let mut repr_opt: Option<String> = None;
+    let mut is_pred_opt: Option<CoreExpr> = None;
+
+    for entry in entries {
+        let Some(key_node) = &entry.node.key else {
+            continue;
+        };
+        let key_name = match &key_node.expr {
+            SurfaceExpression::VarRef { name, .. } => name.as_str(),
+            _ => continue,
+        };
+
+        match key_name {
+            "repr" => {
+                // `repr:` value must be a string literal — the Value variant name.
+                if let SurfaceExpression::StringLiteral { content, .. } = &entry.node.value.expr {
+                    repr_opt = Some(content.clone());
+                } else {
+                    diagnostics.push(LowerDiagnostic {
+                        message: "repr: value must be a string literal (e.g., \"Value::Int\")"
+                            .to_string(),
+                        span: entry.span.clone(),
+                        kind: LowerDiagnosticKind::Error,
+                    });
+                }
+            }
+            "is" => {
+                // `is:` value is an arbitrary expression (typically a function).
+                // Lower it using lower_inner so VarRefs resolve correctly and type guards
+                // are applied (consistent with how other dict value expressions are lowered).
+                is_pred_opt = Some(lower_inner(&entry.node.value, diagnostics, scope_frames).node);
+            }
+            _ => {}
+        }
+    }
+
+    (repr_opt, is_pred_opt)
 }
 
 /// Simplified constructor info for lowering.

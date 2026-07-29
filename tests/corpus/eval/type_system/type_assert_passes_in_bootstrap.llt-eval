@@ -1,0 +1,7 @@
+# During bootstrap, all TypeAssert checks pass because values carry unknown_type_val().
+# [@Int 42] returns 42 (an Integer) — the assertion passes since the unknown sentinel
+# is consistent with every type. See S-1001, sprint-reviewer finding #2.
+# Enforcement (type mismatch detection) is deferred to S-1004 when repr_registry is wired.
+[@Int 42]
+=== out
+Int(42)

@@ -23,16 +23,12 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
             ref source,
             start,
             end,
-        } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
-        Value::Int(n) => Ok(HashableValue::Int(*n)),
-        Value::Float(f) => Ok(HashableValue::Float(f.to_bits())),
-        Value::Variant {
-            tycon,
-            ctor,
-            payload,
             ..
-        } => {
-            let tag = format!("{}.{}", tycon, ctor);
+        } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
+        Value::Int { n, .. } => Ok(HashableValue::Int(*n)),
+        Value::Float { n, .. } => Ok(HashableValue::Float(n.to_bits())),
+        Value::Variant { ctor, payload, .. } => {
+            let tag = ctor.as_ref();
             let hv_payload = match payload {
                 None => None,
                 Some(p) => {
@@ -162,9 +158,18 @@ async fn eval_annotation_property_dict(
                 };
                 string_val(&processed)
             }
-            SurfaceExpression::Int(n) => Value::Int(*n),
-            SurfaceExpression::U64(n) => Value::U64(*n),
-            SurfaceExpression::Float(f) => Value::Float(*f),
+            SurfaceExpression::Int(n) => Value::Int {
+                n: *n,
+                type_val: crate::value::unknown_type_val(),
+            },
+            SurfaceExpression::U64(n) => Value::U64 {
+                n: *n,
+                type_val: crate::value::unknown_type_val(),
+            },
+            SurfaceExpression::Float(f) => Value::Float {
+                n: *f,
+                type_val: crate::value::unknown_type_val(),
+            },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             SurfaceExpression::VarRef {
@@ -214,7 +219,10 @@ async fn eval_annotation_property_dict(
         }
     }
 
-    Ok(Value::Dict(dict_map))
+    Ok(Value::Dict {
+        entries: dict_map,
+        type_val: crate::value::unknown_type_val(),
+    })
 }
 
 // ============================================================================
@@ -354,15 +362,36 @@ pub(crate) async fn eval_dict_core(
         // so we can replace its frame after the group Vec is assembled.
         let (value_thunk, core_expr_thunk): (Arc<Thunk>, Option<Arc<Thunk>>) =
             match &entry.node.value.node {
-                CoreExpr::Int(n) => (Arc::new(Thunk::value(Value::Int(*n), entry_span)), None),
-                CoreExpr::U64(n) => (
+                CoreExpr::Int(n) => (
                     Arc::new(Thunk::value(
-                        Value::BigInt(num_bigint::BigInt::from(*n)),
+                        Value::Int {
+                            n: *n,
+                            type_val: crate::value::unknown_type_val(),
+                        },
                         entry_span,
                     )),
                     None,
                 ),
-                CoreExpr::Float(f) => (Arc::new(Thunk::value(Value::Float(*f), entry_span)), None),
+                CoreExpr::U64(n) => (
+                    Arc::new(Thunk::value(
+                        Value::BigInt {
+                            n: num_bigint::BigInt::from(*n),
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        entry_span,
+                    )),
+                    None,
+                ),
+                CoreExpr::Float(f) => (
+                    Arc::new(Thunk::value(
+                        Value::Float {
+                            n: *f,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        entry_span,
+                    )),
+                    None,
+                ),
                 CoreExpr::Str(s) => (Arc::new(Thunk::value(string_val(s), entry_span)), None),
                 // Non-literal: create with EvalFrame::empty() as a placeholder.
                 // The real letrec frame is patched in below via try_claim/reset after
@@ -537,7 +566,10 @@ pub(crate) async fn eval_dict_core(
     }
 
     Ok(Arc::new(Thunk::value(
-        Value::Dict(dict_map),
+        Value::Dict {
+            entries: dict_map,
+            type_val: crate::value::unknown_type_val(),
+        },
         dict_span.clone(),
     )))
 }
@@ -642,7 +674,9 @@ mod tests {
         let thunk = eval_str("[]", &ctx).await.unwrap();
         let val = materialize(&thunk, &ctx).await.unwrap();
         match val {
-            Value::Dict(map) => assert!(map.is_empty(), "empty dict must have zero entries"),
+            Value::Dict { entries: map, .. } => {
+                assert!(map.is_empty(), "empty dict must have zero entries")
+            }
             other => panic!("expected empty Dict, got: {other:?}"),
         }
     }
@@ -658,7 +692,7 @@ mod tests {
         let thunk = eval_str("[x: 42  y: x]", &ctx).await.unwrap();
         let val = materialize(&thunk, &ctx).await.unwrap();
 
-        let Value::Dict(map) = val else {
+        let Value::Dict { entries: map, .. } = val else {
             panic!("expected Dict, got: {val:?}");
         };
 
@@ -672,10 +706,20 @@ mod tests {
         let x_val = mat_thunk(x_thunk, &ctx).await.unwrap();
         let y_val = mat_thunk(y_thunk, &ctx).await.unwrap();
 
-        assert_eq!(x_val, Value::Int(42), "x must be 42");
+        assert_eq!(
+            x_val,
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            },
+            "x must be 42"
+        );
         assert_eq!(
             y_val,
-            Value::Int(42),
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            },
             "y must equal x (letrec sibling scope)"
         );
     }
@@ -691,7 +735,7 @@ mod tests {
         let thunk = eval_str("[k: \"found\"  v: 42]", &ctx).await.unwrap();
         let val = materialize(&thunk, &ctx).await.unwrap();
 
-        let Value::Dict(map) = val else {
+        let Value::Dict { entries: map, .. } = val else {
             panic!("expected Dict, got: {val:?}");
         };
 
@@ -717,7 +761,10 @@ mod tests {
         // bleed into sibling value scopes.
         assert_eq!(
             v_val,
-            Value::Int(42),
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            },
             "v must be Int(42), not the value of k"
         );
     }

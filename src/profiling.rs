@@ -134,21 +134,30 @@ impl SpanRecord {
 
         /// The tinct empty-value sentinel (empty dict = `[]`).
         fn empty() -> Value {
-            Value::Dict(IndexMap::new())
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }
         }
 
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         entries.insert(
             HashableValue::Str("id".into()),
-            alloc(Value::Int(self.id as i64)),
+            alloc(Value::Int {
+                n: self.id as i64,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
 
         entries.insert(
             HashableValue::Str("materialize-parent".into()),
             alloc(
                 self.materialize_parent
-                    .map(|id| Value::Int(id as i64))
+                    .map(|id| Value::Int {
+                        n: id as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    })
                     .unwrap_or_else(empty),
             ),
         );
@@ -157,14 +166,20 @@ impl SpanRecord {
             HashableValue::Str("create-parent".into()),
             alloc(
                 self.create_parent
-                    .map(|id| Value::Int(id as i64))
+                    .map(|id| Value::Int {
+                        n: id as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    })
                     .unwrap_or_else(empty),
             ),
         );
 
         entries.insert(
             HashableValue::Str("create-time-us".into()),
-            alloc(Value::Int(self.create_time_us as i64)),
+            alloc(Value::Int {
+                n: self.create_time_us as i64,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
 
         entries.insert(
@@ -181,8 +196,14 @@ impl SpanRecord {
             HashableValue::Str("source-start".into()),
             alloc(
                 self.source_start
-                    .map(|(line, col)| Value::Int((line as i64) * 1000000 + col as i64))
-                    .unwrap_or(Value::Int(0)),
+                    .map(|(line, col)| Value::Int {
+                        n: (line as i64) * 1000000 + col as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    })
+                    .unwrap_or(Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
             ),
         );
 
@@ -190,8 +211,14 @@ impl SpanRecord {
             HashableValue::Str("source-end".into()),
             alloc(
                 self.source_end
-                    .map(|(line, col)| Value::Int((line as i64) * 1000000 + col as i64))
-                    .unwrap_or(Value::Int(0)),
+                    .map(|(line, col)| Value::Int {
+                        n: (line as i64) * 1000000 + col as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    })
+                    .unwrap_or(Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
             ),
         );
 
@@ -227,15 +254,24 @@ impl SpanRecord {
 
         entries.insert(
             HashableValue::Str("start-us".into()),
-            alloc(Value::Int(self.start_us as i64)),
+            alloc(Value::Int {
+                n: self.start_us as i64,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
         entries.insert(
             HashableValue::Str("end-us".into()),
-            alloc(Value::Int(self.end_us as i64)),
+            alloc(Value::Int {
+                n: self.end_us as i64,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
         entries.insert(
             HashableValue::Str("stall-us".into()),
-            alloc(Value::Int(self.stall_us as i64)),
+            alloc(Value::Int {
+                n: self.stall_us as i64,
+                type_val: crate::value::unknown_type_val(),
+            }),
         );
 
         entries.insert(
@@ -248,7 +284,10 @@ impl SpanRecord {
             ),
         );
 
-        Value::Dict(entries)
+        Value::Dict {
+            entries,
+            type_val: crate::value::unknown_type_val(),
+        }
     }
 }
 
@@ -469,7 +508,10 @@ impl ProfilingCollector {
             let thunk = Arc::new(Thunk::value(span_dict, rust_span!()));
             dict.insert(HashableValue::Int(i as i64), thunk);
         }
-        Value::Dict(dict)
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        }
     }
 }
 
@@ -508,7 +550,9 @@ mod tests {
         let ctx = test_ctx().await;
         let value = collector.into_value(&ctx);
         match value {
-            Value::Dict(ref outer) => {
+            Value::Dict {
+                entries: ref outer, ..
+            } => {
                 assert_eq!(outer.len(), 1, "expected one span entry");
                 let span_thunk = outer
                     .get(&HashableValue::Int(0))
@@ -519,7 +563,7 @@ mod tests {
                     .cloned()
                     .expect("span dict should be materialized");
                 match span_val {
-                    Value::Dict(entries) => {
+                    Value::Dict { entries, .. } => {
                         assert!(entries.contains_key(&HashableValue::Str("id".into())));
                         assert!(
                             entries.contains_key(&HashableValue::Str("materialize-parent".into()))

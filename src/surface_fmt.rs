@@ -445,6 +445,14 @@ fn collect_free_vars(
                 collect_free_vars(&binding.node, param_scope, stdlib_env, out);
             }
         }
+
+        // ReprDecl: metadata wrapper — recurse into inner dict and optional is: predicate.
+        CoreExpr::ReprDecl { is_pred, inner, .. } => {
+            collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+            if let Some(pred) = is_pred {
+                collect_free_vars(&pred.node, param_scope, stdlib_env, out);
+            }
+        }
     }
 }
 
@@ -534,6 +542,13 @@ fn collect_free_vars_in_quote(
         CoreExpr::Variant { payload, .. } => {
             if let Some(inner) = payload {
                 collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
+            }
+        }
+        // ReprDecl: recurse into inner dict and optional is: predicate even inside quotes.
+        CoreExpr::ReprDecl { is_pred, inner, .. } => {
+            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
+            if let Some(pred) = is_pred {
+                collect_free_vars_in_quote(&pred.node, depth, param_scope, stdlib_env, out);
             }
         }
         // Leaves — nothing to do even inside quotes
@@ -888,6 +903,12 @@ fn core_expr_to_tinct(
                 Ok(format!("{}.{}", tycon, ctor))
             }
         }
+
+        // ReprDecl: transparent for serialization — emit the inner constructor dict.
+        // The repr: metadata is evaluator-only and has no tinct source representation.
+        CoreExpr::ReprDecl { inner, .. } => {
+            core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)
+        }
     }
 }
 
@@ -1194,6 +1215,16 @@ fn core_expr_to_tinct_raw(
                 Ok(format!("{}.{}", tycon, ctor))
             }
         }
+
+        // ReprDecl: transparent in quote context — emit the inner constructor dict.
+        CoreExpr::ReprDecl { inner, .. } => core_expr_to_tinct_in_quote(
+            &inner.node,
+            depth,
+            param_scope,
+            substitutions,
+            rename_map,
+            ctx,
+        ),
     }
 }
 
@@ -1252,42 +1283,49 @@ impl Value {
     /// Returns an error for values with no tinct representation (capabilities, tasks, etc.).
     pub fn to_tinct(&self, ctx: Option<&Arc<EvalContext>>) -> Result<String, String> {
         match self {
-            Value::Int(n) => Ok(fmt_int(*n)),
-            Value::Float(f) => fmt_float(*f),
-            Value::String { source, start, end } => Ok(fmt_string(&source[*start..*end])),
-            Value::Dict(map) => fmt_dict(map, ctx),
-            Value::Variant {
-                tycon,
-                ctor,
-                payload,
-            } => fmt_variant(&format!("{}.{}", tycon, ctor), payload.clone(), ctx),
-            Value::Builtin(b) => Ok(b.name.to_string()),
+            Value::Int { n, .. } => Ok(fmt_int(*n)),
+            Value::Float { n, .. } => fmt_float(*n),
+            Value::String {
+                source, start, end, ..
+            } => Ok(fmt_string(&source[*start..*end])),
+            Value::Dict { entries: map, .. } => fmt_dict(map, ctx),
+            Value::Variant { ctor, payload, .. } => {
+                fmt_variant(ctor.as_ref(), payload.clone(), ctx)
+            }
+            Value::Builtin { def: b, .. } => Ok(b.name.to_string()),
             Value::Function {
                 params,
                 body,
                 closure_env: _,
                 annotation: _,
+                type_val: _,
             } => match ctx {
                 Some(ctx) => fmt_fn(params, body, ctx),
                 None => Err("Function serialization requires EvalContext".to_string()),
             },
-            Value::Decimal(d) => Ok(crate::lexer::fmt_decimal(d)),
-            Value::BigInt(n) => Ok(crate::lexer::fmt_bigint(n)),
-            Value::Bytes { source, start, end } => {
-                Ok(crate::lexer::fmt_bytes(&source[*start..*end]))
+            Value::Decimal { n: d, .. } => Ok(crate::lexer::fmt_decimal(d)),
+            Value::BigInt { n, .. } => Ok(crate::lexer::fmt_bigint(n)),
+            Value::Bytes {
+                source, start, end, ..
+            } => Ok(crate::lexer::fmt_bytes(&source[*start..*end])),
+            Value::Timestamp { ts, .. } => {
+                Ok(format!("[timestamp-nanos {}]", ts.as_nanosecond() as i64))
             }
-            Value::Timestamp(ts) => Ok(format!("[timestamp-nanos {}]", ts.as_nanosecond() as i64)),
-            Value::Duration(nanos) => Ok(format!("[duration-nanos {}]", nanos)),
+            Value::Duration { nanos, .. } => Ok(format!("[duration-nanos {}]", nanos)),
             // Non-serializable values — no tinct representation exists
             Value::DirCap { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::NetCap(_) => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::ClockCap(_) => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::NetCap { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::ClockCap { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
             Value::RevocableDirCap { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::File(_) => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::File { .. } => Err(format!("no tinct representation for {}", self.type_name())),
             Value::QuicSession { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
@@ -1300,30 +1338,40 @@ impl Value {
             Value::QuicDatagramHandle { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Task(_) => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::Channel(_) => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::Context(_) => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::Task { .. } => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::Channel { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::Context { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
             Value::Builder(_) => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Proxy { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::Timezone(_) => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::Timezone { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
             Value::Program { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Document(_) => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::Document { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
             Value::Uri { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::ReactiveCell(_) => {
+            Value::ReactiveCell { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::BroadcastChannel(_) | Value::OneshotSender(_) | Value::OneshotReceiver(_) => {
+            Value::BroadcastChannel { .. }
+            | Value::OneshotSender { .. }
+            | Value::OneshotReceiver { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::U64(n) => Ok(format!("{n}u")),
+            Value::U64 { n, .. } => Ok(format!("{n}u")),
             // Annotated is transparent — delegate to inner value.
             Value::Annotated { inner, .. } => inner.to_tinct(ctx),
-            Value::TypeContext(_) => {
+            Value::TypeContext { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Expression(_) => {
+            Value::Expression { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
             Value::Arena { .. } => Err(format!("no tinct representation for {}", self.type_name())),

@@ -1,0 +1,4 @@
+# repr: validation: unrecognized Rust Value variant name errors immediately
+[Bogus: [type repr: "Value::BOGUS"]]
+=== error
+repr: "Value::BOGUS" is not a known Value variant

@@ -134,7 +134,7 @@ async fn collect_dict_to_vec(
     _name: &str,
 ) -> EvalResult<Vec<Arc<Thunk>>> {
     let map = match dict_val {
-        Value::Dict(m) => m,
+        Value::Dict { entries: m, .. } => m,
         other => return Err(EvalError::type_mismatch("Dict", other.type_name(), call_span).into()),
     };
 
@@ -209,7 +209,7 @@ pub(crate) fn builtin_task(
                     .await?;
                     materialize(&thunk, None, &ctx_clone).await
                 }
-                Value::Builtin(def) => {
+                Value::Builtin { def, .. } => {
                     // Call the builtin with no arguments
                     let result = (def.func)(BuiltinArgs {
                         args: vec![],
@@ -231,9 +231,12 @@ pub(crate) fn builtin_task(
 
         // Return a Task value wrapping the JoinHandle
         ok_val(
-            Value::Task(Arc::new(tokio::sync::Mutex::new(
-                crate::value::TaskState::Pending(handle),
-            ))),
+            Value::Task {
+                state: Arc::new(tokio::sync::Mutex::new(crate::value::TaskState::Pending(
+                    handle,
+                ))),
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )
     })
@@ -260,7 +263,9 @@ pub(crate) fn builtin_await(
         let task_val = materialize(&task_thunk, Some(&call_span), &ctx).await?;
 
         match task_val {
-            Value::Task(state_mutex) => {
+            Value::Task {
+                state: state_mutex, ..
+            } => {
                 // Lock the TaskState mutex
                 let mut guard = state_mutex.lock().await;
 
@@ -277,7 +282,10 @@ pub(crate) fn builtin_await(
                 // whether success or error.
                 match std::mem::replace(
                     &mut *guard,
-                    crate::value::TaskState::Done(Ok(Value::Dict(IndexMap::new()))),
+                    crate::value::TaskState::Done(Ok(Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
                         // Await the handle (JoinHandle<EvalResult<Value>>), racing against
@@ -346,7 +354,7 @@ pub(crate) fn builtin_channel(
         let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
 
         match capacity_val {
-            Value::Int(n) if n >= 1 => {
+            Value::Int { n, .. } if n >= 1 => {
                 // Create the channel
                 let (tx, rx) = tokio::sync::mpsc::channel(n as usize);
                 let channel_inner = crate::value::ChannelInner {
@@ -354,9 +362,15 @@ pub(crate) fn builtin_channel(
                     receiver: tokio::sync::Mutex::new(rx),
                     capacity: n,
                 };
-                ok_val(Value::Channel(Arc::new(channel_inner)), call_span)
+                ok_val(
+                    Value::Channel {
+                        inner: Arc::new(channel_inner),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
-            Value::Int(n) if n < 1 => Err(EvalError::user_error(
+            Value::Int { n, .. } if n < 1 => Err(EvalError::user_error(
                 format!("channel capacity must be ≥ 1, got {n}"),
                 call_span,
             )
@@ -387,7 +401,10 @@ pub(crate) fn builtin_send(
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
-            Value::Channel(channel_inner) => {
+            Value::Channel {
+                inner: channel_inner,
+                ..
+            } => {
                 // Materialize the value to send
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
 
@@ -410,9 +427,18 @@ pub(crate) fn builtin_send(
                 }
 
                 // Return null (empty dict)
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
-            Value::BroadcastChannel(channel_inner) => {
+            Value::BroadcastChannel {
+                inner: channel_inner,
+                ..
+            } => {
                 // Materialize the value to send
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
 
@@ -425,9 +451,18 @@ pub(crate) fn builtin_send(
                 })?;
 
                 // Return null (empty dict)
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
-            Value::OneshotSender(sender_inner) => {
+            Value::OneshotSender {
+                inner: sender_inner,
+                ..
+            } => {
                 // Materialize the value to send
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
 
@@ -449,7 +484,13 @@ pub(crate) fn builtin_send(
                 })?;
 
                 // Return null (empty dict)
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotSender",
@@ -482,7 +523,10 @@ pub(crate) fn builtin_recv(
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
-            Value::Channel(channel_inner) => {
+            Value::Channel {
+                inner: channel_inner,
+                ..
+            } => {
                 // Lock the receiver
                 let mut rx = channel_inner.receiver.lock().await;
 
@@ -504,8 +548,8 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tycon: Arc::from("Closed"),
-                                ctor: Arc::from("Closed"),
+                                type_val: crate::value::unknown_type_val(),
+                                ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -513,7 +557,10 @@ pub(crate) fn builtin_recv(
                     }
                 }
             }
-            Value::BroadcastChannel(channel_inner) => {
+            Value::BroadcastChannel {
+                inner: channel_inner,
+                ..
+            } => {
                 // Create a new subscriber
                 let mut rx = channel_inner.sender.subscribe();
 
@@ -533,12 +580,17 @@ pub(crate) fn builtin_recv(
                     Ok(value) => ok_val(value, call_span),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Subscriber too slow, missed n messages
-                        let count_thunk =
-                            Arc::new(Thunk::value(Value::Int(n as i64), call_span.clone()));
+                        let count_thunk = Arc::new(Thunk::value(
+                            Value::Int {
+                                n: n as i64,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span.clone(),
+                        ));
                         ok_val(
                             Value::Variant {
-                                tycon: Arc::from("Lagged"),
-                                ctor: Arc::from("Lagged"),
+                                type_val: crate::value::unknown_type_val(),
+                                ctor: Arc::from("Lagged.Lagged"),
                                 payload: Some(count_thunk),
                             },
                             call_span,
@@ -548,8 +600,8 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tycon: Arc::from("Closed"),
-                                ctor: Arc::from("Closed"),
+                                type_val: crate::value::unknown_type_val(),
+                                ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -557,7 +609,10 @@ pub(crate) fn builtin_recv(
                     }
                 }
             }
-            Value::OneshotReceiver(receiver_inner) => {
+            Value::OneshotReceiver {
+                inner: receiver_inner,
+                ..
+            } => {
                 // Take the receiver (single-use)
                 let mut rx_opt = receiver_inner.receiver.lock().await;
                 let rx = rx_opt.take().ok_or_else(|| {
@@ -589,8 +644,8 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                                tycon: Arc::from("Closed"),
-                                ctor: Arc::from("Closed"),
+                                type_val: crate::value::unknown_type_val(),
+                                ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -649,16 +704,22 @@ pub(crate) fn builtin_broadcast_channel(
         let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
 
         match capacity_val {
-            Value::Int(n) if n >= 1 => {
+            Value::Int { n, .. } if n >= 1 => {
                 // Create the broadcast channel
                 let (tx, _rx) = tokio::sync::broadcast::channel(n as usize);
                 let channel_inner = crate::value::BroadcastChannelInner {
                     sender: tx,
                     capacity: n,
                 };
-                ok_val(Value::BroadcastChannel(Arc::new(channel_inner)), call_span)
+                ok_val(
+                    Value::BroadcastChannel {
+                        inner: Arc::new(channel_inner),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
-            Value::Int(n) if n < 1 => Err(EvalError::user_error(
+            Value::Int { n, .. } if n < 1 => Err(EvalError::user_error(
                 format!("broadcast-channel capacity must be ≥ 1, got {n}"),
                 call_span,
             )
@@ -712,17 +773,29 @@ pub(crate) fn builtin_oneshot_channel(
 
         // Return {0: receiver, 1: sender}
         let sender_thunk = Arc::new(Thunk::value(
-            Value::OneshotSender(Arc::new(sender_inner)),
+            Value::OneshotSender {
+                inner: Arc::new(sender_inner),
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span.clone(),
         ));
         let receiver_thunk = Arc::new(Thunk::value(
-            Value::OneshotReceiver(Arc::new(receiver_inner)),
+            Value::OneshotReceiver {
+                inner: Arc::new(receiver_inner),
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span.clone(),
         ));
         let mut dict = indexmap::IndexMap::new();
         dict.insert(HashableValue::Int(0), receiver_thunk);
         dict.insert(HashableValue::Int(1), sender_thunk);
-        ok_val(Value::Dict(dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -748,7 +821,10 @@ pub(crate) fn builtin_try_send(
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
-            Value::Channel(channel_inner) => {
+            Value::Channel {
+                inner: channel_inner,
+                ..
+            } => {
                 // Materialize the value to send
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
 
@@ -756,14 +832,20 @@ pub(crate) fn builtin_try_send(
                 match channel_inner.sender.try_send(value) {
                     Ok(_) => {
                         // Success: return empty dict (unit value)
-                        ok_val(Value::Dict(IndexMap::new()), call_span)
+                        ok_val(
+                            Value::Dict {
+                                entries: IndexMap::new(),
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                                tycon: Arc::from("Full"),
-                                ctor: Arc::from("Full"),
+                                type_val: crate::value::unknown_type_val(),
+                                ctor: Arc::from("Full.Full"),
                                 payload: None,
                             },
                             call_span,
@@ -773,8 +855,8 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                                tycon: Arc::from("Closed"),
-                                ctor: Arc::from("Closed"),
+                                type_val: crate::value::unknown_type_val(),
+                                ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
                             call_span,
@@ -845,7 +927,7 @@ pub(crate) fn builtin_select_once(
         let user_ctx_thunk = Arc::clone(&args[0]);
         let user_ctx_val = materialize(&user_ctx_thunk, Some(&call_span), &ctx).await?;
         let user_token = match user_ctx_val {
-            Value::Context(token) => token,
+            Value::Context { token, .. } => token,
             other => {
                 return Err(
                     EvalError::type_mismatch("Context", other.type_name(), call_span).into(),
@@ -883,7 +965,9 @@ pub(crate) fn builtin_select_once(
             let source_val = materialize(&source_thunk, Some(&call_span), &ctx).await?;
 
             match source_val {
-                Value::Dict(ref map) => {
+                Value::Dict {
+                    entries: ref map, ..
+                } => {
                     // Validate that the dict has the required `ch:` and `handler:` keys.
                     let ch_thunk_opt = map.get(&HashableValue::Str("ch".into())).cloned();
                     let handler_thunk_opt = map.get(&HashableValue::Str("handler".into())).cloned();
@@ -891,15 +975,15 @@ pub(crate) fn builtin_select_once(
                         (Some(ch_thunk_val), Some(handler_id)) => {
                             let ch_val = materialize(&ch_thunk_val, Some(&call_span), &ctx).await?;
                             match ch_val {
-                                Value::Channel(ch) => {
+                                Value::Channel { inner: ch, .. } => {
                                     sources.push((ChannelSource::Channel(ch), handler_id));
                                 }
-                                Value::BroadcastChannel(ch) => {
+                                Value::BroadcastChannel { inner: ch, .. } => {
                                     // Subscribe immediately so we see messages sent during select
                                     let rx = ch.sender.subscribe();
                                     sources.push((ChannelSource::BroadcastChannel(rx), handler_id));
                                 }
-                                Value::OneshotReceiver(ch) => {
+                                Value::OneshotReceiver { inner: ch, .. } => {
                                     sources.push((ChannelSource::OneshotReceiver(ch), handler_id));
                                 }
                                 _ => {
@@ -989,11 +1073,20 @@ pub(crate) fn builtin_select_once(
                                     closed_map.insert(
                                         HashableValue::Str("closed".into()),
                                         Arc::new(Thunk::value(
-                                            Value::Dict(IndexMap::new()),
+                                            Value::Dict {
+                                                entries: IndexMap::new(),
+                                                type_val: crate::value::unknown_type_val(),
+                                            },
                                             call_span.clone(),
                                         )),
                                     );
-                                    return ok_val(Value::Dict(closed_map), call_span);
+                                    return ok_val(
+                                        Value::Dict {
+                                            entries: closed_map,
+                                            type_val: crate::value::unknown_type_val(),
+                                        },
+                                        call_span,
+                                    );
                                 }
                                 continue;
                             }
@@ -1022,11 +1115,20 @@ pub(crate) fn builtin_select_once(
                                     closed_map.insert(
                                         HashableValue::Str("closed".into()),
                                         Arc::new(Thunk::value(
-                                            Value::Dict(IndexMap::new()),
+                                            Value::Dict {
+                                                entries: IndexMap::new(),
+                                                type_val: crate::value::unknown_type_val(),
+                                            },
                                             call_span.clone(),
                                         )),
                                     );
-                                    return ok_val(Value::Dict(closed_map), call_span);
+                                    return ok_val(
+                                        Value::Dict {
+                                            entries: closed_map,
+                                            type_val: crate::value::unknown_type_val(),
+                                        },
+                                        call_span,
+                                    );
                                 }
                                 continue;
                             }
@@ -1050,8 +1152,8 @@ pub(crate) fn builtin_select_once(
                                 // All channels closed — return [Closed]
                                 return ok_val(
                                     Value::Variant {
-                                        tycon: Arc::from("Closed"),
-                                        ctor: Arc::from("Closed"),
+                                        type_val: crate::value::unknown_type_val(),
+                                        ctor: Arc::from("Closed.Closed"),
                                         payload: None,
                                     },
                                     call_span,
@@ -1086,11 +1188,20 @@ pub(crate) fn builtin_select_once(
                                     closed_map.insert(
                                         HashableValue::Str("closed".into()),
                                         Arc::new(Thunk::value(
-                                            Value::Dict(IndexMap::new()),
+                                            Value::Dict {
+                                                entries: IndexMap::new(),
+                                                type_val: crate::value::unknown_type_val(),
+                                            },
                                             call_span.clone(),
                                         )),
                                     );
-                                    return ok_val(Value::Dict(closed_map), call_span);
+                                    return ok_val(
+                                        Value::Dict {
+                                            entries: closed_map,
+                                            type_val: crate::value::unknown_type_val(),
+                                        },
+                                        call_span,
+                                    );
                                 }
                                 continue;
                             }
@@ -1127,7 +1238,7 @@ pub(crate) fn builtin_select_once(
                             })
                             .await?
                         }
-                        Value::Builtin(def) => {
+                        Value::Builtin { def, .. } => {
                             // Call builtin with the value — return result thunk directly.
                             let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
                             (def.func)(BuiltinArgs {
@@ -1156,7 +1267,13 @@ pub(crate) fn builtin_select_once(
                     // prematurely terminate the select loop.
                     let mut map = IndexMap::new();
                     map.insert(HashableValue::Str("ok".into()), result_thunk);
-                    return ok_val(Value::Dict(map), call_span);
+                    return ok_val(
+                        Value::Dict {
+                            entries: map,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span,
+                    );
                 }
             }
 
@@ -1221,7 +1338,7 @@ pub(crate) fn builtin_signal_channel(
 
         // Collect signal names from an integer-keyed Dict of Signal variants.
         let sig_dict = match signals_val {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch(
                     "Dict of Signal",
@@ -1234,12 +1351,8 @@ pub(crate) fn builtin_signal_channel(
         let mut sig_names: Vec<String> = Vec::new();
         for (_idx, head_thunk) in &sig_dict {
             let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
-            let name = match head_val {
-                Value::Variant {
-                    ref tycon,
-                    ref ctor,
-                    ..
-                } => format!("{}.{}", tycon, ctor),
+            let name = match &head_val {
+                Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
                 _ => {
                     return Err(
                         EvalError::type_mismatch("Signal", head_val.type_name(), call_span).into(),
@@ -1303,12 +1416,9 @@ pub(crate) fn builtin_signal_channel(
                                 if result.is_none() {
                                     break;
                                 }
-                                let (sig_tycon, sig_ctor) = sig_name
-                                    .split_once('.')
-                                    .unwrap_or(("", sig_name.as_str()));
                                 match tx_clone.try_send(Value::Variant {
-                                    tycon: Arc::from(sig_tycon),
-                                    ctor: Arc::from(sig_ctor),
+                                    type_val: crate::value::unknown_type_val(),
+                                    ctor: Arc::from(sig_name.as_str()),
                                     payload: None,
                                 }) {
                                     Ok(_) => {}
@@ -1333,7 +1443,13 @@ pub(crate) fn builtin_signal_channel(
                 receiver: tokio::sync::Mutex::new(rx),
                 capacity: capacity as i64,
             };
-            ok_val(Value::Channel(Arc::new(channel_inner)), call_span)
+            ok_val(
+                Value::Channel {
+                    inner: Arc::new(channel_inner),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            )
         }
 
         #[cfg(not(unix))]
@@ -1383,7 +1499,7 @@ pub(crate) fn builtin_timer_channel(
             .expect("pre-materialized by force_count=1")
             .clone();
         let clock_inner: ClockCapInner = match &clock_val {
-            Value::ClockCap(inner) => inner.as_ref().clone(),
+            Value::ClockCap { inner, .. } => inner.as_ref().clone(),
             _ => {
                 return Err(EvalError::type_mismatch(
                     "ClockCap",
@@ -1398,8 +1514,8 @@ pub(crate) fn builtin_timer_channel(
 
         let interval_ms = match interval_val {
             // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
-            Value::Duration(nanos) if nanos >= 1_000_000 => (nanos / 1_000_000) as u64,
-            Value::Duration(nanos) => {
+            Value::Duration { nanos, .. } if nanos >= 1_000_000 => (nanos / 1_000_000) as u64,
+            Value::Duration { nanos, .. } => {
                 return Err(EvalError::user_error(
                     format!("timer-channel: interval must be ≥ 1 ms, got {} ns", nanos),
                     call_span,
@@ -1407,8 +1523,8 @@ pub(crate) fn builtin_timer_channel(
                 .into())
             }
             // Backward compatibility: accept bare Int as milliseconds
-            Value::Int(n) if n >= 1 => n as u64,
-            Value::Int(n) => {
+            Value::Int { n, .. } if n >= 1 => n as u64,
+            Value::Int { n, .. } => {
                 return Err(EvalError::user_error(
                     format!("timer-channel: interval must be ≥ 1 ms, got {n}"),
                     call_span,
@@ -1462,7 +1578,10 @@ pub(crate) fn builtin_timer_channel(
                         };
                         // Non-blocking: if the receiver hasn't consumed the previous tick, drop this one.
                         // Full is expected (last-tick-wins, capacity=1); Closed means consumer dropped.
-                        match tx_clone.try_send(Value::Timestamp(now_ts)) {
+                        match tx_clone.try_send(Value::Timestamp {
+                            ts: now_ts,
+                            type_val: crate::value::unknown_type_val(),
+                        }) {
                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                                 // Receiver dropped the channel — stop ticking.
@@ -1482,7 +1601,13 @@ pub(crate) fn builtin_timer_channel(
             receiver: tokio::sync::Mutex::new(rx),
             capacity: 1,
         };
-        ok_val(Value::Channel(Arc::new(channel_inner)), call_span)
+        ok_val(
+            Value::Channel {
+                inner: Arc::new(channel_inner),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1531,7 +1656,7 @@ pub(crate) fn builtin_watch_channel(
 
         // Extract DirCap
         let dir = match dir_cap_val {
-            Value::DirCap { dir, perms: _ } => dir,
+            Value::DirCap { dir, .. } => dir,
             _ => {
                 return Err(
                     EvalError::type_mismatch("DirCap", dir_cap_val.type_name(), call_span).into(),
@@ -1541,7 +1666,9 @@ pub(crate) fn builtin_watch_channel(
 
         // Extract path String
         let path = match path_val {
-            Value::String { source, start, end } => source[start..end].to_string(),
+            Value::String {
+                source, start, end, ..
+            } => source[start..end].to_string(),
             _ => {
                 return Err(
                     EvalError::type_mismatch("String", path_val.type_name(), call_span).into(),
@@ -1624,7 +1751,10 @@ pub(crate) fn builtin_watch_channel(
                                         if current_modified != last {
                                             // File changed — send null on the channel
                                             // Full is expected (last-write-wins, capacity=1); Closed means consumer dropped.
-                                            match tx_clone.try_send(Value::Dict(IndexMap::new())) {
+                                            match tx_clone.try_send(Value::Dict {
+                                                entries: IndexMap::new(),
+                                                type_val: crate::value::unknown_type_val(),
+                                            }) {
                                                 Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                                             }
@@ -1632,7 +1762,10 @@ pub(crate) fn builtin_watch_channel(
                                         }
                                     } else {
                                         // File appeared — treat as a change
-                                        match tx_clone.try_send(Value::Dict(IndexMap::new())) {
+                                        match tx_clone.try_send(Value::Dict {
+                                                entries: IndexMap::new(),
+                                                type_val: crate::value::unknown_type_val(),
+                                            }) {
                                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                                         }
@@ -1643,7 +1776,10 @@ pub(crate) fn builtin_watch_channel(
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                                 // File disappeared — treat as a change if we had a baseline
                                 if last_modified.is_some() {
-                                    match tx_clone.try_send(Value::Dict(IndexMap::new())) {
+                                    match tx_clone.try_send(Value::Dict {
+                                                entries: IndexMap::new(),
+                                                type_val: crate::value::unknown_type_val(),
+                                            }) {
                                         Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                                     }
@@ -1674,7 +1810,13 @@ pub(crate) fn builtin_watch_channel(
             receiver: tokio::sync::Mutex::new(rx),
             capacity: 1,
         };
-        ok_val(Value::Channel(Arc::new(channel_inner)), call_span)
+        ok_val(
+            Value::Channel {
+                inner: Arc::new(channel_inner),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1718,7 +1860,13 @@ pub(crate) fn builtin_context(
             .into());
         }
         let token = tokio_util::sync::CancellationToken::new();
-        ok_val(Value::Context(token), call_span)
+        ok_val(
+            Value::Context {
+                token,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1756,7 +1904,7 @@ pub(crate) fn builtin_with_cancel(
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
 
         let parent_token = match parent_val {
-            Value::Context(token) => token,
+            Value::Context { token, .. } => token,
             _ => {
                 return Err(
                     EvalError::type_mismatch("Context", parent_val.type_name(), call_span).into(),
@@ -1770,8 +1918,14 @@ pub(crate) fn builtin_with_cancel(
 
         // cancel is a Context clone of child_token; caller fires it with [cancel-task pair.cancel].
         // See doc/08-evaluation.md §Cancellation Primitives for the spec deviation rationale.
-        let child_ctx_val = Value::Context(child_token);
-        let cancel_val = Value::Context(cancel_token);
+        let child_ctx_val = Value::Context {
+            token: child_token,
+            type_val: crate::value::unknown_type_val(),
+        };
+        let cancel_val = Value::Context {
+            token: cancel_token,
+            type_val: crate::value::unknown_type_val(),
+        };
 
         // Build the payload dict with the same structure as before
         let mut payload_dict = IndexMap::new();
@@ -1785,12 +1939,18 @@ pub(crate) fn builtin_with_cancel(
         );
 
         // Wrap the dict in a Variant with tag "CancelHandle"
-        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload_dict), call_span.clone()));
+        let payload_thunk = Arc::new(Thunk::value(
+            Value::Dict {
+                entries: payload_dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span.clone(),
+        ));
 
         ok_val(
             Value::Variant {
-                tycon: Arc::from("CancelHandle"),
-                ctor: Arc::from("CancelHandle"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("CancelHandle.CancelHandle"),
                 payload: Some(payload_thunk),
             },
             call_span,
@@ -1833,7 +1993,7 @@ pub(crate) fn builtin_with_timeout(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        if !matches!(clock_val, Value::ClockCap(_)) {
+        if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
                 clock_val.type_name(),
@@ -1846,7 +2006,7 @@ pub(crate) fn builtin_with_timeout(
         let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
 
         let parent_token = match parent_val {
-            Value::Context(token) => token,
+            Value::Context { token, .. } => token,
             _ => {
                 return Err(
                     EvalError::type_mismatch("Context", parent_val.type_name(), call_span).into(),
@@ -1856,8 +2016,8 @@ pub(crate) fn builtin_with_timeout(
 
         let duration_ms = match ms_val {
             // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
-            Value::Duration(nanos) if nanos >= 0 => (nanos / 1_000_000).max(1) as u64,
-            Value::Duration(nanos) => {
+            Value::Duration { nanos, .. } if nanos >= 0 => (nanos / 1_000_000).max(1) as u64,
+            Value::Duration { nanos, .. } => {
                 return Err(EvalError::user_error(
                     format!("with-timeout: duration must be ≥ 0, got {} ns", nanos),
                     call_span,
@@ -1865,8 +2025,8 @@ pub(crate) fn builtin_with_timeout(
                 .into())
             }
             // Backward compatibility: accept bare Int as milliseconds
-            Value::Int(n) if n >= 0 => n as u64,
-            Value::Int(n) => {
+            Value::Int { n, .. } if n >= 0 => n as u64,
+            Value::Int { n, .. } => {
                 return Err(EvalError::user_error(
                     format!("with-timeout: duration must be ≥ 0 ms, got {n}"),
                     call_span,
@@ -1898,7 +2058,13 @@ pub(crate) fn builtin_with_timeout(
         // Register background task for drain tracking
         ctx.task_registry.lock().unwrap().push(handle);
 
-        ok_val(Value::Context(child_token), call_span)
+        ok_val(
+            Value::Context {
+                token: child_token,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1937,7 +2103,7 @@ pub(crate) fn builtin_with_deadline(
             .try_get_value()
             .expect("pre-materialized by force_count=1")
             .clone();
-        if !matches!(clock_val, Value::ClockCap(_)) {
+        if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
                 clock_val.type_name(),
@@ -1950,7 +2116,7 @@ pub(crate) fn builtin_with_deadline(
         let ts_val = materialize(&ts_thunk, Some(&call_span), &ctx).await?;
 
         let parent_token = match parent_val {
-            Value::Context(token) => token,
+            Value::Context { token, .. } => token,
             _ => {
                 return Err(
                     EvalError::type_mismatch("Context", parent_val.type_name(), call_span).into(),
@@ -1960,11 +2126,11 @@ pub(crate) fn builtin_with_deadline(
 
         // Accept Int (unix-ms) or Timestamp (nanoseconds since Unix epoch as i64).
         let deadline_unix_ns: i64 = match ts_val {
-            Value::Int(n) => {
+            Value::Int { n, .. } => {
                 // Treat Int as Unix milliseconds — convert to nanoseconds for uniform handling.
                 n.saturating_mul(1_000_000)
             }
-            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
+            Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Int or Timestamp",
@@ -2001,7 +2167,13 @@ pub(crate) fn builtin_with_deadline(
         // Register background task for drain tracking
         ctx.task_registry.lock().unwrap().push(handle);
 
-        ok_val(Value::Context(child_token), call_span)
+        ok_val(
+            Value::Context {
+                token: child_token,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2029,8 +2201,11 @@ pub(crate) fn builtin_cancelled_q(
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
-            Value::Context(token) => ok_val(
-                Value::Int(if token.is_cancelled() { 1 } else { 0 }),
+            Value::Context { token, .. } => ok_val(
+                Value::Int {
+                    n: if token.is_cancelled() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             ),
             _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
@@ -2067,9 +2242,15 @@ pub(crate) fn builtin_cancel_task(
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
-            Value::Context(token) => {
+            Value::Context { token, .. } => {
                 token.cancel();
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
         }
@@ -2118,7 +2299,13 @@ pub(crate) fn builtin_cancel_root(
         ctx.cancel.cancel();
 
         // Return null (empty dict)
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2198,7 +2385,13 @@ pub(crate) fn builtin_drain(
         }
 
         // Return null (empty dict)
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2241,7 +2434,7 @@ pub(crate) fn builtin_exit_now(
         let code_val = materialize(&code_thunk, Some(&call_span), &ctx).await?; // H1: exit code must be known to terminate process
 
         let exit_code = match code_val {
-            Value::Int(n) => n.clamp(0, 255) as i32,
+            Value::Int { n, .. } => n.clamp(0, 255) as i32,
             _ => {
                 return Err(EvalError::type_mismatch("Int", code_val.type_name(), call_span).into())
             }
@@ -2289,7 +2482,13 @@ pub(crate) fn builtin_non_cancellable(
             .into());
         }
         let token = tokio_util::sync::CancellationToken::new();
-        ok_val(Value::Context(token), call_span)
+        ok_val(
+            Value::Context {
+                token,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2335,7 +2534,7 @@ pub(crate) fn builtin_with_context(
             ))?;
 
         let new_cancel = match context_val {
-            Value::Context(token) => token,
+            Value::Context { token, .. } => token,
             _ => {
                 return Err(
                     EvalError::type_mismatch("Context", context_val.type_name(), call_span).into(),
@@ -2404,7 +2603,13 @@ pub(crate) fn builtin_reactive_cell(
             sender: tokio::sync::Mutex::new(tx),
             receiver: rx,
         };
-        ok_val(Value::ReactiveCell(Arc::new(cell_inner)), call_span)
+        ok_val(
+            Value::ReactiveCell {
+                inner: Arc::new(cell_inner),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2430,7 +2635,9 @@ pub(crate) fn builtin_cell_get(
         let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
 
         match cell_val {
-            Value::ReactiveCell(cell_inner) => {
+            Value::ReactiveCell {
+                inner: cell_inner, ..
+            } => {
                 // borrow() returns a reference to the current value; clone it to get ownership.
                 let current = cell_inner.receiver.borrow().clone();
                 ok_val(current, call_span)
@@ -2468,7 +2675,9 @@ pub(crate) fn builtin_cell_set(
         let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
 
         match cell_val {
-            Value::ReactiveCell(cell_inner) => {
+            Value::ReactiveCell {
+                inner: cell_inner, ..
+            } => {
                 // Materialize the new value before acquiring the sender lock.
                 let new_val = materialize(&val_thunk, Some(&call_span), &ctx).await?;
 
@@ -2484,7 +2693,13 @@ pub(crate) fn builtin_cell_set(
                 })?;
 
                 // Return null (empty dict)
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             _ => Err(
                 EvalError::type_mismatch("ReactiveCell", cell_val.type_name(), call_span).into(),

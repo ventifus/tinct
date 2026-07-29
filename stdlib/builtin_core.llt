@@ -273,7 +273,7 @@
 
   # ── Type introspection ─────────────────────────────────────────────────────
   # These accept any value — the Any is genuine (type dispatch happens in Rust).
-  builtin-type-of:         [fn@String  [let x@Any] ...]
+  builtin-type-of:         [fn@Any     [let x@Any] ...]
   builtin-check-type:      [fn@Any     [let type-name@String x@Any] ...]
   builtin-variant-payload: [fn@Any     [let variant@Any] ...]
   builtin-tag-of:          [fn@String  [let x@Any] ...]

@@ -561,7 +561,8 @@ async fn infer_step(
                     // Extend env with schemes (preserving let-polymorphism).
                     // Propagate referenced state from the sub-run: run_typecheck_dict creates
                     // fresh EnvSlots via insert_scheme_named_only, losing the `referenced` flag
-                    // set during its internal CEK run. Re-apply from the returned set (B-633).
+                    // set during its internal CEK run. Re-apply from the returned set to prevent
+                    // false lost-binding diagnostics on names used inside the sub-dict.
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (name, scheme) in &schemes {
                         new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
@@ -923,8 +924,8 @@ async fn apply_cont(
             record_type_map(type_map, &node_span, &fn_type);
 
             // Lost-binding detection for function parameters.
-            // Suppressed: remaining false positives cause cascading type errors.
-            // B-633 env propagation is correct. Edge cases still pending:
+            // Warning emission is suppressed here because three false-positive cases
+            // cause spurious lost-binding warnings that cascade into type errors:
             // - leading-dot .name shadowed by dict key with same name
             // - computed-key dict values ([expr: v]) don't trigger mark_extras_referenced
             // - IIFE fn closures: fn body references captured via closure, not direct ref
@@ -1304,12 +1305,11 @@ async fn apply_cont(
         // ===== AfterSequentialFinal =====
         //
         // Fires after the final expression in a Sequential whose intermediates were all Dict.
-        // B-633 fix: env propagation from run_typecheck_dict is now correct (referenced state
-        // is propagated via HashSet<String>). However, remaining false positives exist for:
+        // Env propagation from run_typecheck_dict is correct (referenced state is
+        // propagated via HashSet<String>). Warning emission is suppressed because two
+        // false-positive cases produce spurious warnings that cascade into type errors:
         // - IIFE fn closures (fn body references captured via closure, not direct ref)
         // - leading-dot .name shadowed by dict key with same name
-        // These still produce spurious warnings that cascade into type errors.
-        // Warning emission suppressed until those cases are resolved.
         // The propagation machinery is correct; only emission is suppressed.
         TypeCheckCont::AfterSequentialFinal { intermediate_envs } => {
             let _ = &intermediate_envs;
@@ -4832,9 +4832,18 @@ pub(crate) fn type_contains_typevar(ty: &Type, name: &str) -> bool {
 /// from `name: literal` entries in variant constructor declarations.
 fn literal_expr_to_value(expr: &SurfaceExpression) -> Option<crate::value::Value> {
     match expr {
-        SurfaceExpression::Int(n) => Some(crate::value::Value::Int(*n)),
-        SurfaceExpression::U64(n) => Some(crate::value::Value::U64(*n)),
-        SurfaceExpression::Float(f) => Some(crate::value::Value::Float(*f)),
+        SurfaceExpression::Int(n) => Some(crate::value::Value::Int {
+            n: *n,
+            type_val: crate::value::unknown_type_val(),
+        }),
+        SurfaceExpression::U64(n) => Some(crate::value::Value::U64 {
+            n: *n,
+            type_val: crate::value::unknown_type_val(),
+        }),
+        SurfaceExpression::Float(f) => Some(crate::value::Value::Float {
+            n: *f,
+            type_val: crate::value::unknown_type_val(),
+        }),
         SurfaceExpression::StringLiteral { content, .. } => {
             Some(crate::value::string_val(content.as_str()))
         }
@@ -6414,7 +6423,8 @@ pub(crate) async fn run_typecheck_dict(
     // Collect referenced names from the internal dict env before returning.
     // The Sequential arm creates fresh EnvSlots when building new_env_inner, losing the
     // `referenced` flag set during our internal CEK run. Return the set so callers can
-    // propagate it to avoid lost-binding false positives (B-633).
+    // re-apply it and avoid false lost-binding diagnostics on names actually used inside
+    // the sub-dict.
     let referenced: std::collections::HashSet<String> = {
         let dict_env_guard = dict_env.read().unwrap();
         dict_env_guard

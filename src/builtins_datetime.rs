@@ -56,7 +56,13 @@ pub fn builtin_parse_timestamp(
             )
         })?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -79,7 +85,7 @@ pub fn builtin_format_timestamp(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "format-timestamp requires a Timestamp",
@@ -114,7 +120,7 @@ pub fn builtin_timestamp_to_unix(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp->unix requires a Timestamp",
@@ -125,7 +131,13 @@ pub fn builtin_timestamp_to_unix(
 
         let seconds = ts.as_nanosecond() as i64 / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::value(Value::Int(seconds), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: seconds,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -148,7 +160,7 @@ pub fn builtin_unix_to_timestamp(
             .expect("pre-materialized by force_count=1")
             .clone();
         let seconds = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => return Err(dt_err("unix->timestamp requires an Int", call_span.clone())),
         };
 
@@ -163,7 +175,13 @@ pub fn builtin_unix_to_timestamp(
             )
         })?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -183,7 +201,7 @@ pub fn builtin_now(
             .expect("pre-materialized by force_count=1")
             .clone();
         let clock_cap = match &cap_val {
-            Value::ClockCap(inner) => inner,
+            Value::ClockCap { inner, .. } => inner,
             _ => return Err(dt_err("now requires a ClockCap", call_span.clone())),
         };
 
@@ -199,7 +217,13 @@ pub fn builtin_now(
             }
         };
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -219,7 +243,7 @@ pub fn builtin_fixed_clock(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "fixed-clock requires a Timestamp",
@@ -231,7 +255,10 @@ pub fn builtin_fixed_clock(
         let nanos = ts.as_nanosecond() as i64;
 
         Ok(Arc::new(Thunk::value(
-            Value::ClockCap(Arc::new(ClockCapInner::Fixed(nanos))),
+            Value::ClockCap {
+                inner: Arc::new(ClockCapInner::Fixed(nanos)),
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )))
     })
@@ -262,7 +289,7 @@ pub fn builtin_timestamp_add(
             .clone();
 
         let t_nanos = match &t_val {
-            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
+            Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
                 return Err(dt_err(
                     "timestamp-add requires Timestamp as first argument",
@@ -272,7 +299,7 @@ pub fn builtin_timestamp_add(
         };
 
         let d_nanos = match &d_val {
-            Value::Duration(n) => *n,
+            Value::Duration { nanos: n, .. } => *n,
             _ => {
                 return Err(dt_err(
                     "timestamp-add requires Duration as second argument",
@@ -293,7 +320,10 @@ pub fn builtin_timestamp_add(
         })?;
 
         Ok(Arc::new(Thunk::value(
-            Value::Timestamp(result_ts),
+            Value::Timestamp {
+                ts: result_ts,
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )))
     })
@@ -324,7 +354,7 @@ pub fn builtin_timestamp_diff(
             .clone();
 
         let t1_nanos = match &t1_val {
-            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
+            Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
                 return Err(dt_err(
                     "timestamp-diff requires Timestamp as first argument",
@@ -334,7 +364,7 @@ pub fn builtin_timestamp_diff(
         };
 
         let t2_nanos = match &t2_val {
-            Value::Timestamp(ts) => ts.as_nanosecond() as i64,
+            Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
                 return Err(dt_err(
                     "timestamp-diff requires Timestamp as second argument",
@@ -347,7 +377,13 @@ pub fn builtin_timestamp_diff(
             .checked_sub(t2_nanos)
             .ok_or_else(|| dt_err("timestamp-diff overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration(result), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -376,7 +412,7 @@ pub fn builtin_timestamp_lt(
             .clone();
 
         let t1 = match &t1_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp<? requires Timestamp as first argument",
@@ -386,7 +422,7 @@ pub fn builtin_timestamp_lt(
         };
 
         let t2 = match &t2_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp<? requires Timestamp as second argument",
@@ -396,7 +432,10 @@ pub fn builtin_timestamp_lt(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::Int(if t1 < t2 { 1 } else { 0 }),
+            Value::Int {
+                n: if t1 < t2 { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )))
     })
@@ -427,7 +466,7 @@ pub fn builtin_timestamp_gt(
             .clone();
 
         let t1 = match &t1_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp>? requires Timestamp as first argument",
@@ -437,7 +476,7 @@ pub fn builtin_timestamp_gt(
         };
 
         let t2 = match &t2_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp>? requires Timestamp as second argument",
@@ -447,7 +486,10 @@ pub fn builtin_timestamp_gt(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::Int(if t1 > t2 { 1 } else { 0 }),
+            Value::Int {
+                n: if t1 > t2 { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )))
     })
@@ -478,7 +520,7 @@ pub fn builtin_timestamp_eq(
             .clone();
 
         let t1 = match &t1_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp=? requires Timestamp as first argument",
@@ -488,7 +530,7 @@ pub fn builtin_timestamp_eq(
         };
 
         let t2 = match &t2_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp=? requires Timestamp as second argument",
@@ -498,7 +540,10 @@ pub fn builtin_timestamp_eq(
         };
 
         Ok(Arc::new(Thunk::value(
-            Value::Int(if t1 == t2 { 1 } else { 0 }),
+            Value::Int {
+                n: if t1 == t2 { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )))
     })
@@ -523,7 +568,7 @@ pub fn builtin_timestamp_year(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-year requires a Timestamp",
@@ -535,7 +580,13 @@ pub fn builtin_timestamp_year(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let year = dt.year() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int(year), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: year,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -558,7 +609,7 @@ pub fn builtin_timestamp_month(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-month requires a Timestamp",
@@ -570,7 +621,13 @@ pub fn builtin_timestamp_month(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let month = dt.month() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int(month), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: month,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -593,7 +650,7 @@ pub fn builtin_timestamp_day(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-day requires a Timestamp",
@@ -605,7 +662,13 @@ pub fn builtin_timestamp_day(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let day = dt.day() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int(day), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: day,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -628,7 +691,7 @@ pub fn builtin_timestamp_hour(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-hour requires a Timestamp",
@@ -640,7 +703,13 @@ pub fn builtin_timestamp_hour(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let hour = dt.hour() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int(hour), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: hour,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -663,7 +732,7 @@ pub fn builtin_timestamp_minute(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-minute requires a Timestamp",
@@ -675,7 +744,13 @@ pub fn builtin_timestamp_minute(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let minute = dt.minute() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int(minute), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: minute,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -698,7 +773,7 @@ pub fn builtin_timestamp_second(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-second requires a Timestamp",
@@ -710,7 +785,13 @@ pub fn builtin_timestamp_second(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let second = dt.second() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int(second), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: second,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -733,7 +814,7 @@ pub fn builtin_timestamp_parts(
             .expect("pre-materialized by force_count=1")
             .clone();
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-parts requires a Timestamp",
@@ -748,44 +829,71 @@ pub fn builtin_timestamp_parts(
         map.insert(
             HashableValue::Str("year".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.year() as i64),
+                Value::Int {
+                    n: dt.year() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("month".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.month() as i64),
+                Value::Int {
+                    n: dt.month() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("day".into()),
-            Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n: dt.day() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("hour".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.hour() as i64),
+                Value::Int {
+                    n: dt.hour() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("minute".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.minute() as i64),
+                Value::Int {
+                    n: dt.minute() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("second".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.second() as i64),
+                Value::Int {
+                    n: dt.second() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
 
-        Ok(Arc::new(Thunk::value(Value::Dict(map), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Dict {
+                entries: map,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -808,11 +916,17 @@ pub fn builtin_duration_nanos(
             .expect("pre-materialized by force_count=1")
             .clone();
         let nanos = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => return Err(dt_err("duration-nanos requires an Int", call_span.clone())),
         };
 
-        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -839,7 +953,7 @@ pub fn builtin_timestamp_nanos(
             .expect("pre-materialized by force_count=1")
             .clone();
         let nanos = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
         };
 
@@ -850,7 +964,13 @@ pub fn builtin_timestamp_nanos(
             )
         })?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -873,7 +993,7 @@ pub fn builtin_duration_seconds(
             .expect("pre-materialized by force_count=1")
             .clone();
         let seconds = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => {
                 return Err(dt_err(
                     "duration-seconds requires an Int",
@@ -886,7 +1006,13 @@ pub fn builtin_duration_seconds(
             .checked_mul(1_000_000_000)
             .ok_or_else(|| dt_err("duration-seconds overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -909,7 +1035,7 @@ pub fn builtin_duration_minutes(
             .expect("pre-materialized by force_count=1")
             .clone();
         let minutes = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => {
                 return Err(dt_err(
                     "duration-minutes requires an Int",
@@ -923,7 +1049,13 @@ pub fn builtin_duration_minutes(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-minutes overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -946,7 +1078,7 @@ pub fn builtin_duration_hours(
             .expect("pre-materialized by force_count=1")
             .clone();
         let hours = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => return Err(dt_err("duration-hours requires an Int", call_span.clone())),
         };
 
@@ -955,7 +1087,13 @@ pub fn builtin_duration_hours(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-hours overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -978,7 +1116,7 @@ pub fn builtin_duration_days(
             .expect("pre-materialized by force_count=1")
             .clone();
         let days = match &n_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => return Err(dt_err("duration-days requires an Int", call_span.clone())),
         };
 
@@ -987,7 +1125,13 @@ pub fn builtin_duration_days(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-days overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -1010,7 +1154,7 @@ pub fn builtin_duration_to_seconds(
             .expect("pre-materialized by force_count=1")
             .clone();
         let nanos = match &d_val {
-            Value::Duration(n) => *n,
+            Value::Duration { nanos: n, .. } => *n,
             _ => {
                 return Err(dt_err(
                     "duration->seconds requires a Duration",
@@ -1021,7 +1165,13 @@ pub fn builtin_duration_to_seconds(
 
         let seconds = nanos / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::value(Value::Int(seconds), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: seconds,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -1044,7 +1194,7 @@ pub fn builtin_duration_to_nanos(
             .expect("pre-materialized by force_count=1")
             .clone();
         let nanos = match &d_val {
-            Value::Duration(n) => *n,
+            Value::Duration { nanos: n, .. } => *n,
             _ => {
                 return Err(dt_err(
                     "duration->nanos requires a Duration",
@@ -1053,7 +1203,13 @@ pub fn builtin_duration_to_nanos(
             }
         };
 
-        Ok(Arc::new(Thunk::value(Value::Int(nanos), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: nanos,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -1123,7 +1279,10 @@ pub fn builtin_load_tz(
         })?;
 
         Ok(Arc::new(Thunk::value(
-            Value::Timezone(Arc::new(tz)),
+            Value::Timezone {
+                tz: Arc::new(tz),
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )))
     })
@@ -1154,7 +1313,7 @@ pub fn builtin_timestamp_in_tz(
             .clone();
 
         let ts = match &t_val {
-            Value::Timestamp(ts) => ts.clone(),
+            Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
                 return Err(dt_err(
                     "timestamp-in-tz requires Timestamp as first argument",
@@ -1164,7 +1323,7 @@ pub fn builtin_timestamp_in_tz(
         };
 
         let tz = match &tz_val {
-            Value::Timezone(tz) => tz,
+            Value::Timezone { tz, .. } => tz,
             _ => {
                 return Err(dt_err(
                     "timestamp-in-tz requires Timezone as second argument",
@@ -1179,46 +1338,70 @@ pub fn builtin_timestamp_in_tz(
         map.insert(
             HashableValue::Str("year".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.year() as i64),
+                Value::Int {
+                    n: dt.year() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("month".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.month() as i64),
+                Value::Int {
+                    n: dt.month() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("day".into()),
-            Arc::new(Thunk::value(Value::Int(dt.day() as i64), call_span.clone())),
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n: dt.day() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )),
         );
         map.insert(
             HashableValue::Str("hour".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.hour() as i64),
+                Value::Int {
+                    n: dt.hour() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("minute".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.minute() as i64),
+                Value::Int {
+                    n: dt.minute() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("second".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.second() as i64),
+                Value::Int {
+                    n: dt.second() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
         map.insert(
             HashableValue::Str("offset-seconds".into()),
             Arc::new(Thunk::value(
-                Value::Int(dt.offset().seconds() as i64),
+                Value::Int {
+                    n: dt.offset().seconds() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )),
         );
@@ -1230,7 +1413,13 @@ pub fn builtin_timestamp_in_tz(
             )),
         );
 
-        Ok(Arc::new(Thunk::value(Value::Dict(map), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Dict {
+                entries: map,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -1277,7 +1466,7 @@ pub fn builtin_local_to_timestamp(
             .clone();
 
         let year = match &year_val {
-            Value::Int(n) => *n as i16,
+            Value::Int { n, .. } => *n as i16,
             _ => {
                 return Err(dt_err(
                     "local->timestamp year must be Int",
@@ -1286,7 +1475,7 @@ pub fn builtin_local_to_timestamp(
             }
         };
         let month = match &month_val {
-            Value::Int(n) => *n as i8,
+            Value::Int { n, .. } => *n as i8,
             _ => {
                 return Err(dt_err(
                     "local->timestamp month must be Int",
@@ -1295,7 +1484,7 @@ pub fn builtin_local_to_timestamp(
             }
         };
         let day = match &day_val {
-            Value::Int(n) => *n as i8,
+            Value::Int { n, .. } => *n as i8,
             _ => {
                 return Err(dt_err(
                     "local->timestamp day must be Int",
@@ -1304,7 +1493,7 @@ pub fn builtin_local_to_timestamp(
             }
         };
         let hour = match &hour_val {
-            Value::Int(n) => *n as i8,
+            Value::Int { n, .. } => *n as i8,
             _ => {
                 return Err(dt_err(
                     "local->timestamp hour must be Int",
@@ -1313,7 +1502,7 @@ pub fn builtin_local_to_timestamp(
             }
         };
         let minute = match &minute_val {
-            Value::Int(n) => *n as i8,
+            Value::Int { n, .. } => *n as i8,
             _ => {
                 return Err(dt_err(
                     "local->timestamp minute must be Int",
@@ -1322,7 +1511,7 @@ pub fn builtin_local_to_timestamp(
             }
         };
         let second = match &second_val {
-            Value::Int(n) => *n as i8,
+            Value::Int { n, .. } => *n as i8,
             _ => {
                 return Err(dt_err(
                     "local->timestamp second must be Int",
@@ -1331,7 +1520,7 @@ pub fn builtin_local_to_timestamp(
             }
         };
         let tz = match &tz_val {
-            Value::Timezone(tz) => tz,
+            Value::Timezone { tz, .. } => tz,
             _ => {
                 return Err(dt_err(
                     "local->timestamp timezone must be Timezone",
@@ -1358,7 +1547,13 @@ pub fn builtin_local_to_timestamp(
 
         let ts = zoned.timestamp();
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp(ts), call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 

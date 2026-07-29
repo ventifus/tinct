@@ -166,10 +166,9 @@ pub(crate) fn expect_one_arg(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Value> {
-    let _ = ctx;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
@@ -202,7 +201,13 @@ pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<A
     if !val.is_finite() {
         Err(EvalError::float_not_finite(op.to_string(), val, span).into())
     } else {
-        ok_val(Value::Float(val), span)
+        ok_val(
+            Value::Float {
+                n: val,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span,
+        )
     }
 }
 
@@ -217,7 +222,7 @@ pub(crate) async fn require_dict(
     call_span: Span,
 ) -> EvalResult<IndexMap<HashableValue, Arc<crate::value::Thunk>>> {
     match value {
-        Value::Dict(map) => Ok(map),
+        Value::Dict { entries: map, .. } => Ok(map),
         Value::Variant { payload, .. } => {
             // Auto-unpack variant payload — consistent with DotAccess behavior
             match payload {
@@ -254,6 +259,7 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
             ref source,
             start,
             end,
+            ..
         } => Ok(source[start..end].to_string()),
         other => {
             let err = EvalError::type_mismatch_ctx(
@@ -276,7 +282,7 @@ pub(crate) fn require_document(
     def_span: Span,
 ) -> EvalResult<std::sync::Arc<crate::ast::SurfaceDocument>> {
     match value {
-        Value::Document(d) => Ok(d),
+        Value::Document { doc: d, .. } => Ok(d),
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Document",
@@ -294,7 +300,7 @@ pub(crate) fn require_type_context(
     def_span: Span,
 ) -> EvalResult<std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>> {
     match value {
-        Value::TypeContext(tc) => Ok(tc),
+        Value::TypeContext { ctx: tc, .. } => Ok(tc),
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "TypeContext",
@@ -334,13 +340,16 @@ fn float_to_int_builtin(
     let val = expect_one_arg(name, args, named, ctx, call_span.clone())?;
     let arg0_span = args[0].span.clone();
     match val {
-        Value::Int(n) => ok_val(Value::Int(n), call_span),
-        Value::Float(f) => {
+        Value::Int { n, type_val } => ok_val(Value::Int { n, type_val }, call_span),
+        Value::Float { n: f, .. } => {
             if !f.is_finite() {
                 return Err(EvalError::float_not_finite(name.to_string(), f, arg0_span).into());
             }
             ok_val(
-                Value::Int(checked_f64_to_i64(name, op(f), call_span.clone())?),
+                Value::Int {
+                    n: checked_f64_to_i64(name, op(f), call_span.clone())?,
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             )
         }
@@ -423,7 +432,13 @@ pub(crate) fn builtin_to_int(
         let arg0_span = args[0].span.clone();
         let s = require_string("to-int", val, arg0_span)?;
         match s.parse::<i64>() {
-            Ok(n) => ok_val(Value::Int(n), call_span),
+            Ok(n) => ok_val(
+                Value::Int {
+                    n,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             Err(_) => {
                 Err(
                     EvalError::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
@@ -457,7 +472,13 @@ pub(crate) fn builtin_to_float(
         let arg0_span = args[0].span.clone();
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
-            Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
+            Ok(f) if f.is_finite() => ok_val(
+                Value::Float {
+                    n: f,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
             Err(_) => Err(EvalError::parse_conversion(
                 "to-float".to_string(),
@@ -488,6 +509,7 @@ pub(crate) fn builtin_proxy(
         Ok(Arc::new(Thunk::value(
             Value::Proxy {
                 handler: Arc::clone(&args[0]),
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )))
@@ -663,7 +685,13 @@ mod tests {
         map: IndexMap<HashableValue, Arc<Thunk>>,
         _ctx: &Arc<crate::eval::EvalContext>,
     ) -> Arc<Thunk> {
-        Arc::new(Thunk::value(Value::Dict(map), test_span(1, 1, 1, 5)))
+        Arc::new(Thunk::value(
+            Value::Dict {
+                entries: map,
+                type_val: crate::value::unknown_type_val(),
+            },
+            test_span(1, 1, 1, 5),
+        ))
     }
 
     /// Helper: materialize an `Arc<Thunk>` — used by tests inspecting dict entry values after T-1772.
@@ -675,56 +703,104 @@ mod tests {
     async fn floor_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(42));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn floor_negative_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Int(-7), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: -7,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-7));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn floor_zero_int() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Int(0), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(0));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn floor_positive_float() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.7), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 3.7,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(3));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -732,49 +808,91 @@ mod tests {
         // floor(-3.2) = -4, not -3
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(-3.2), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -3.2,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-4));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -4,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn floor_float_exact_integer() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(5.0), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 5.0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(5));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn floor_float_just_below_integer() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.9999999), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.9999999,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn floor_nan_errors() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::NAN), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: f64::NAN,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -789,7 +907,13 @@ mod tests {
     async fn floor_positive_infinity_errors() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::INFINITY), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: f64::INFINITY,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -808,7 +932,13 @@ mod tests {
     async fn floor_negative_infinity_errors() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::NEG_INFINITY), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: f64::NEG_INFINITY,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -865,7 +995,13 @@ mod tests {
     async fn floor_dict_type_error() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
+            args: vec![alloc(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -903,7 +1039,22 @@ mod tests {
     async fn floor_wrong_arity_two() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -922,9 +1073,24 @@ mod tests {
     async fn floor_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "x".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(3.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 3.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -943,7 +1109,13 @@ mod tests {
     async fn floor_large_positive_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(1e19), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 1e19,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -962,7 +1134,13 @@ mod tests {
     async fn floor_large_negative_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(Value::Float(-1e19), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -1e19,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -981,28 +1159,52 @@ mod tests {
     async fn round_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(42));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_negative_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Int(-7), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: -7,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-7));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1010,14 +1212,26 @@ mod tests {
         // 0.5 rounds to 1 (half-away-from-zero)
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(0.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 0.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(1));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1025,42 +1239,78 @@ mod tests {
         // -0.5 rounds to -1 (half-away-from-zero)
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(-0.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -0.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-1));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_positive_below_half() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.4), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.4,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_positive_above_half() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.6), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.6,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(3));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1068,14 +1318,26 @@ mod tests {
         // -2.4 rounds to -2
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(-2.4), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -2.4,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1083,63 +1345,117 @@ mod tests {
         // -2.6 rounds to -3
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(-2.6), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -2.6,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-3));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -3,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_1_5_rounds_to_2() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(1.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 1.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_negative_1_5_rounds_to_negative_2() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(-1.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -1.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_float_exact_integer() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(5.0), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 5.0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(5));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn round_nan_errors() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::NAN), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: f64::NAN,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1154,7 +1470,13 @@ mod tests {
     async fn round_positive_infinity_errors() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::INFINITY), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: f64::INFINITY,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1173,7 +1495,13 @@ mod tests {
     async fn round_negative_infinity_errors() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(f64::NEG_INFINITY), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: f64::NEG_INFINITY,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1249,7 +1577,22 @@ mod tests {
     async fn round_wrong_arity_two() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1268,7 +1611,13 @@ mod tests {
     async fn round_large_positive_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(1e19), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 1e19,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1287,7 +1636,13 @@ mod tests {
     async fn round_large_negative_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(Value::Float(-1e19), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: -1e19,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1313,7 +1668,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(42));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1327,7 +1688,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(-7));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: -7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1341,7 +1708,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(0));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1355,7 +1728,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(i64::MAX));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: i64::MAX,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1438,7 +1817,13 @@ mod tests {
     async fn to_int_rejects_int_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1462,7 +1847,13 @@ mod tests {
     async fn to_int_rejects_float_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1481,7 +1872,13 @@ mod tests {
     async fn to_int_rejects_float_whole_number() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(Value::Float(1.0), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 1.0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1500,7 +1897,13 @@ mod tests {
     async fn to_int_rejects_dict_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
+            args: vec![alloc(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1564,7 +1967,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(2.5));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: 2.5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1579,7 +1988,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(42.0));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: 42.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1593,7 +2008,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(-2.5));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: -2.5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1607,7 +2028,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(1.5e10));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: 1.5e10,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1621,7 +2048,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(2.5e-3));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: 2.5e-3,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1635,7 +2068,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(0.0));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: 0.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1650,7 +2089,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Float(0.5));
+        assert_eq!(
+            result,
+            Value::Float {
+                n: 0.5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -1771,7 +2216,13 @@ mod tests {
     async fn to_float_rejects_int_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1790,7 +2241,13 @@ mod tests {
     async fn to_float_rejects_float_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1809,7 +2266,13 @@ mod tests {
     async fn to_float_rejects_dict_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
+            args: vec![alloc(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1940,7 +2403,13 @@ mod tests {
     async fn error_type_mismatch_on_non_string() {
         let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1980,7 +2449,13 @@ mod tests {
         // Any thunk forced by builtin-try wraps its value in {ok: ...}.
         let ctx = test_ctx();
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -1988,13 +2463,19 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let ok_thunk = map
                     .get(&HashableValue::Str("ok".into()))
                     .cloned()
                     .expect("success dict must have 'ok' key");
                 let ok_val_result = mat_id(ok_thunk, &ctx).await;
-                assert_eq!(ok_val_result, Value::Int(42));
+                assert_eq!(
+                    ok_val_result,
+                    Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val()
+                    }
+                );
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
@@ -2012,7 +2493,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let ok_thunk = map
                     .get(&HashableValue::Str("ok".into()))
                     .cloned()
@@ -2037,7 +2518,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        if let Value::Dict(map) = result {
+        if let Value::Dict { entries: map, .. } = result {
             assert!(
                 map.contains_key(&HashableValue::Str("ok".into())),
                 "function value should be wrapped in {{ok: ...}}"
@@ -2072,7 +2553,15 @@ mod tests {
         fn ok_builtin(
             _ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-            Box::pin(async move { ok_val(Value::Int(99), rust_span!()) })
+            Box::pin(async move {
+                ok_val(
+                    Value::Int {
+                        n: 99,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    rust_span!(),
+                )
+            })
         }
         let ctx = test_ctx();
         let ok_def = builtin!("ok", ok_builtin, [], 0);
@@ -2093,13 +2582,19 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let ok_thunk = map
                     .get(&HashableValue::Str("ok".into()))
                     .cloned()
                     .expect("success dict must have 'ok' key");
                 let ok_val_result = mat_id(ok_thunk, &ctx).await;
-                assert_eq!(ok_val_result, Value::Int(99));
+                assert_eq!(
+                    ok_val_result,
+                    Value::Int {
+                        n: 99,
+                        type_val: crate::value::unknown_type_val()
+                    }
+                );
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
@@ -2135,7 +2630,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let err_thunk = map
                     .get(&HashableValue::Str("message".into()))
                     .cloned()
@@ -2200,7 +2695,16 @@ mod tests {
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Int(0), thunk(Value::Int(42)));
+                m.insert(
+                    HashableValue::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
@@ -2214,7 +2718,13 @@ mod tests {
             caller_env_id: Some(0),
         }))
         .await;
-        assert_eq!(result, Value::Int(42));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2225,8 +2735,26 @@ mod tests {
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Int(0), thunk(Value::Int(10)));
-                m.insert(HashableValue::Int(1), thunk(Value::Int(20)));
+                m.insert(
+                    HashableValue::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
+                m.insert(
+                    HashableValue::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 20,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
@@ -2240,7 +2768,13 @@ mod tests {
             caller_env_id: Some(0),
         }))
         .await;
-        assert_eq!(result, Value::Int(10));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 10,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2251,8 +2785,26 @@ mod tests {
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Int(0), thunk(Value::Int(10)));
-                m.insert(HashableValue::Int(1), thunk(Value::Int(20)));
+                m.insert(
+                    HashableValue::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
+                m.insert(
+                    HashableValue::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 20,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
@@ -2266,7 +2818,13 @@ mod tests {
             caller_env_id: Some(0),
         }))
         .await;
-        assert_eq!(result, Value::Int(20));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 20,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2285,24 +2843,51 @@ mod tests {
                 let a = materialize(&args[0], None, &ctx).await?; // TEST: test-only inline builtin
                 let b = materialize(&args[1], None, &ctx).await?; // TEST: test-only inline builtin
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
+                    (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
+                        Value::Int {
+                            n: x + y,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span,
+                    ),
                     _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
                 }
             })
         }
         let ctx = test_ctx();
-        let func = Value::Builtin(crate::value::BuiltinDef {
-            func: add_builtin,
-            name: "add",
-            pos_strictness: &[],
-            force_count: 0,
-            needs_caller_env: false,
-        });
+        let func = Value::Builtin {
+            def: crate::value::BuiltinDef {
+                func: add_builtin,
+                name: "add",
+                pos_strictness: &[],
+                force_count: 0,
+                needs_caller_env: false,
+            },
+            type_val: crate::value::unknown_type_val(),
+        };
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Int(0), thunk(Value::Int(3)));
-                m.insert(HashableValue::Int(1), thunk(Value::Int(4)));
+                m.insert(
+                    HashableValue::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
+                m.insert(
+                    HashableValue::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
@@ -2316,7 +2901,13 @@ mod tests {
             caller_env_id: Some(0),
         }))
         .await;
-        assert_eq!(result, Value::Int(7));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2326,7 +2917,16 @@ mod tests {
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Int(0), thunk(Value::Int(1)));
+                m.insert(
+                    HashableValue::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
@@ -2359,14 +2959,32 @@ mod tests {
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Int(0), thunk(Value::Int(1)));
+                m.insert(
+                    HashableValue::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    thunk(Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
         );
 
         let apply_thunk = run(builtin_apply(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx), args_val],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                args_val,
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2389,7 +3007,16 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [let x] $x]", &ctx).await;
         let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), alloc(Value::Int(42), &ctx)],
+            args: vec![
+                alloc(func, &ctx),
+                alloc(
+                    Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2411,7 +3038,13 @@ mod tests {
     async fn apply_wrong_arity() {
         let ctx = test_ctx();
         let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2429,36 +3062,74 @@ mod tests {
         );
     }
 
+    /// Check that a value is the unknown_type_val sentinel (empty Dict).
+    ///
+    /// builtin_type_of returns val.type_val() directly. During bootstrap all values carry
+    /// unknown_type_val() — an empty Value::Dict. Value::Dict falls through to `_ => false`
+    /// in PartialEq, so we verify by checking the discriminant and entry count instead.
+    fn assert_is_unknown_type_val(result: &Value, context: &str) {
+        match result {
+            Value::Dict { entries, .. } => {
+                assert!(
+                    entries.is_empty(),
+                    "{context}: expected unknown_type_val() (empty Dict), but Dict had {} entries",
+                    entries.len()
+                );
+            }
+            other => panic!(
+                "{context}: expected unknown_type_val() (empty Dict), got {:?}",
+                other.type_name()
+            ),
+        }
+    }
+
     #[tokio::test]
     async fn type_of_int() {
+        // builtin_type_of returns val.type_val(). During bootstrap all Values carry
+        // unknown_type_val() — an empty Dict. The returned Value must be that sentinel.
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Int"));
+        assert_is_unknown_type_val(&result, "type_of_int");
     }
 
     #[tokio::test]
     async fn type_of_float() {
+        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Float"));
+        assert_is_unknown_type_val(&result, "type_of_float");
     }
 
     #[tokio::test]
     async fn type_of_string() {
+        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
+        // string_val() is constructed with type_val: unknown_type_val() by default.
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(string_val("hi"), &ctx)],
@@ -2468,25 +3139,34 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("String"));
+        assert_is_unknown_type_val(&result, "type_of_string");
     }
 
     #[tokio::test]
     async fn type_of_dict() {
+        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(Value::Dict(IndexMap::new()), &ctx)],
+            args: vec![alloc(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Dict"));
+        assert_is_unknown_type_val(&result, "type_of_dict");
     }
 
     #[tokio::test]
     async fn type_of_function() {
+        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
+        // Functions created by parse_eval carry unknown_type_val().
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 0]", &ctx).await;
         let result = mat(builtin_type_of(BuiltinArgs {
@@ -2497,23 +3177,37 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Function"));
+        assert_is_unknown_type_val(&result, "type_of_function");
     }
 
     #[tokio::test]
-    async fn type_of_builtin_returns_function() {
+    async fn type_of_builtin_returns_unknown_sentinel() {
+        // builtin_type_of returns val.type_val(). A Builtin constructed with unknown_type_val()
+        // returns the unknown sentinel (empty Dict). The old assertion "Function" reflected the
+        // pre-T-1951 behavior where type_of returned a string name; now it returns the TypeValue.
         fn dummy(
             _ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-            Box::pin(async move { ok_val(Value::Int(0), rust_span!()) })
+            Box::pin(async move {
+                ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    rust_span!(),
+                )
+            })
         }
-        let builtin = Value::Builtin(crate::value::BuiltinDef {
-            func: dummy,
-            name: "dummy",
-            pos_strictness: &[],
-            force_count: 0,
-            needs_caller_env: false,
-        });
+        let builtin = Value::Builtin {
+            def: crate::value::BuiltinDef {
+                func: dummy,
+                name: "dummy",
+                pos_strictness: &[],
+                force_count: 0,
+                needs_caller_env: false,
+            },
+            type_val: crate::value::unknown_type_val(),
+        };
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(builtin, &ctx)],
@@ -2523,18 +3217,20 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Function"));
+        assert_is_unknown_type_val(&result, "type_of_builtin_returns_unknown_sentinel");
     }
 
     #[tokio::test]
     async fn test_type_of_variant() {
-        // type-of on a Variant returns the tycon name — the tinct-level type.
-        // Color.Red has tinct type Color, not "Variant" (a Rust impl detail).
+        // builtin_type_of returns val.type_val() — the runtime TypeValue dict attached at
+        // construction. A Variant constructed with unknown_type_val() returns the unknown
+        // sentinel (empty Dict). The old assertion "Color" reflected the pre-T-1951 behavior
+        // where type_of extracted the tycon name string; now it returns the TypeValue directly.
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
-                tycon: Arc::from("Color"),
-                ctor: Arc::from("Red"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("Color.Red"),
                 payload: None,
             },
             &ctx,
@@ -2547,7 +3243,7 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, string_val("Color"));
+        assert_is_unknown_type_val(&result, "test_type_of_variant");
     }
 
     #[tokio::test]
@@ -2582,7 +3278,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => assert_eq!(map.len(), 0),
+            Value::Dict { entries: map, .. } => assert_eq!(map.len(), 0),
             other => panic!("expected Dict, got {other:?}"),
         }
     }
@@ -2591,9 +3287,27 @@ mod tests {
     async fn keys_int_keyed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("a")));
-        map.insert(HashableValue::Int(1), thunk(string_val("b")));
-        map.insert(HashableValue::Int(2), thunk(string_val("c")));
+        map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("a")),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("b")),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("c")),
+        );
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -2605,11 +3319,28 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(keys_map) => {
+            Value::Dict {
+                entries: keys_map, ..
+            } => {
                 assert_eq!(keys_map.len(), 3);
                 for i in 0..3 {
-                    let val = mat_id(Arc::clone(&keys_map[&HashableValue::Int(i)]), &ctx).await;
-                    assert_eq!(val, Value::Int(i));
+                    let val = mat_id(
+                        Arc::clone(
+                            &keys_map[&HashableValue::Int {
+                                n: i,
+                                type_val: crate::value::unknown_type_val(),
+                            }],
+                        ),
+                        &ctx,
+                    )
+                    .await;
+                    assert_eq!(
+                        val,
+                        Value::Int {
+                            n: i,
+                            type_val: crate::value::unknown_type_val()
+                        }
+                    );
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -2624,7 +3355,13 @@ mod tests {
             HashableValue::Str("name".into()),
             thunk(string_val("Alice")),
         );
-        map.insert(HashableValue::Str("age".into()), thunk(Value::Int(30)));
+        map.insert(
+            HashableValue::Str("age".into()),
+            thunk(Value::Int {
+                n: 30,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -2636,11 +3373,31 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(keys_map) => {
+            Value::Dict {
+                entries: keys_map, ..
+            } => {
                 assert_eq!(keys_map.len(), 2);
-                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
+                let k0 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 0,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
                 assert_eq!(k0, string_val("name"));
-                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
+                let k1 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 1,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
                 assert_eq!(k1, string_val("age"));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -2651,12 +3408,24 @@ mod tests {
     async fn keys_mixed_key_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("first")));
+        map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("first")),
+        );
         map.insert(
             HashableValue::Str("label".into()),
             thunk(string_val("second")),
         );
-        map.insert(HashableValue::Int(5), thunk(string_val("third")));
+        map.insert(
+            HashableValue::Int {
+                n: 5,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("third")),
+        );
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -2668,14 +3437,55 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(keys_map) => {
+            Value::Dict {
+                entries: keys_map, ..
+            } => {
                 assert_eq!(keys_map.len(), 3);
-                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
-                assert_eq!(k0, Value::Int(0));
-                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
+                let k0 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 0,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
+                assert_eq!(
+                    k0,
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val()
+                    }
+                );
+                let k1 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 1,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
                 assert_eq!(k1, string_val("label"));
-                let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
-                assert_eq!(k2, Value::Int(5));
+                let k2 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 2,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
+                assert_eq!(
+                    k2,
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val()
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2685,9 +3495,27 @@ mod tests {
     async fn keys_preserves_insertion_order() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("z".into()), thunk(Value::Int(1)));
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(2)));
-        map.insert(HashableValue::Str("m".into()), thunk(Value::Int(3)));
+        map.insert(
+            HashableValue::Str("z".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("m".into()),
+            thunk(Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -2699,10 +3527,39 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(keys_map) => {
-                let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
-                let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
-                let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
+            Value::Dict {
+                entries: keys_map, ..
+            } => {
+                let k0 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 0,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
+                let k1 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 1,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
+                let k2 = mat_id(
+                    Arc::clone(
+                        &keys_map[&HashableValue::Int {
+                            n: 2,
+                            type_val: crate::value::unknown_type_val(),
+                        }],
+                    ),
+                    &ctx,
+                )
+                .await;
                 assert_eq!(k0, string_val("z"));
                 assert_eq!(k1, string_val("a"));
                 assert_eq!(k2, string_val("m"));
@@ -2723,16 +3580,40 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(0));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn length_non_empty_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
-        map.insert(HashableValue::Str("b".into()), thunk(Value::Int(2)));
-        map.insert(HashableValue::Str("c".into()), thunk(Value::Int(3)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("b".into()),
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("c".into()),
+            thunk(Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: vec![dict],
@@ -2742,15 +3623,33 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(3));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn length_int_keyed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("x")));
-        map.insert(HashableValue::Int(1), thunk(string_val("y")));
+        map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("x")),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("y")),
+        );
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: vec![dict],
@@ -2760,7 +3659,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2877,7 +3782,13 @@ mod tests {
     async fn keys_non_dict_int() {
         let ctx = test_ctx();
         let err = run(builtin_keys(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2930,7 +3841,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(5));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2944,7 +3861,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(0));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2959,7 +3882,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(2));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3243,7 +4172,13 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
-                alloc(Value::Int(1), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
                 alloc(string_val("b"), &ctx),
                 alloc(string_val("abc"), &ctx),
             ],
@@ -3272,7 +4207,13 @@ mod tests {
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
                 alloc(string_val("a"), &ctx),
-                alloc(Value::Dict(IndexMap::new()), &ctx),
+                alloc(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
                 alloc(string_val("abc"), &ctx),
             ],
             named: no_named(),
@@ -3296,7 +4237,13 @@ mod tests {
             args: vec![
                 alloc(string_val("a"), &ctx),
                 alloc(string_val("b"), &ctx),
-                alloc(Value::Float(2.5), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3321,7 +4268,13 @@ mod tests {
     async fn trim_wrong_type() {
         let ctx = test_ctx();
         let err = run(builtin_trim(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx)],
+            args: vec![alloc(
+                Value::Float {
+                    n: 2.5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -3371,7 +4324,16 @@ mod tests {
     async fn error_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "x".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_raise(BuiltinArgs {
             args: vec![alloc(string_val("boom"), &ctx)],
             named: Some(named),
@@ -3392,9 +4354,24 @@ mod tests {
     async fn type_of_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "x".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3413,7 +4390,16 @@ mod tests {
     async fn to_int_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "x".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_to_int(BuiltinArgs {
             args: vec![alloc(string_val("42"), &ctx)],
             named: Some(named),
@@ -3434,7 +4420,16 @@ mod tests {
     async fn replace_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("x".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "x".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
                 alloc(string_val("a"), &ctx),
@@ -3459,9 +4454,33 @@ mod tests {
     async fn add_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(99), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 99,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3480,9 +4499,33 @@ mod tests {
     async fn sub_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3501,9 +4544,33 @@ mod tests {
     async fn mul_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(2), &ctx), alloc(Value::Int(3), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3522,9 +4589,33 @@ mod tests {
     async fn div_float_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(3), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3543,9 +4634,33 @@ mod tests {
     async fn eq_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_eq_int(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3564,9 +4679,33 @@ mod tests {
     async fn lt_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let err = run(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3585,11 +4724,26 @@ mod tests {
     async fn keys_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let dict = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
+                m.insert(
+                    HashableValue::Str("a".into()),
+                    thunk(Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 m
             },
             &ctx,
@@ -3614,10 +4768,25 @@ mod tests {
     async fn length_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let map = IndexMap::new();
         let err = run(builtin_length(BuiltinArgs {
-            args: vec![alloc(Value::Dict(map), &ctx)],
+            args: vec![alloc(
+                Value::Dict {
+                    entries: map,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -3636,7 +4805,16 @@ mod tests {
     async fn try_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let err = run(builtin_try(BuiltinArgs {
             args: vec![alloc(func, &ctx)],
@@ -3658,10 +4836,28 @@ mod tests {
     async fn apply_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("extra".into(), alloc(Value::Int(1), &ctx));
+        named.insert(
+            "extra".into(),
+            alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), alloc(Value::Dict(IndexMap::new()), &ctx)],
+            args: vec![
+                alloc(func, &ctx),
+                alloc(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3710,14 +4906,35 @@ mod tests {
     async fn add_int_int() {
         let ctx = test_ctx();
         let r = mat(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(5), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(8));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 8,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3727,8 +4944,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_add(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(3.0), &ctx),
-                alloc(Value::Float(2.5), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 3.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3736,7 +4965,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Float(5.5));
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 5.5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3744,8 +4979,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_add(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(1.5), &ctx),
-                alloc(Value::Float(2.5), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 1.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3753,42 +5000,99 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Float(4.0));
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 4.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn add_negative_ints() {
         let ctx = test_ctx();
         let r = mat(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(-10), &ctx), alloc(Value::Int(3), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: -10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(-7));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: -7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn add_zeros() {
         let ctx = test_ctx();
         let r = mat(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(0), &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn add_type_error_string() {
         let ctx = test_ctx();
         let e = run(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(string_val("hello"), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(string_val("hello"), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -3808,7 +5112,13 @@ mod tests {
     async fn add_arity_one_arg() {
         let ctx = test_ctx();
         let e = run(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -3828,8 +5138,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(Value::Int(i64::MAX), &ctx),
-                alloc(Value::Int(1), &ctx),
+                alloc(
+                    Value::Int {
+                        n: i64::MAX,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3850,8 +5172,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(Value::Int(i64::MIN), &ctx),
-                alloc(Value::Int(1), &ctx),
+                alloc(
+                    Value::Int {
+                        n: i64::MIN,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3871,23 +5205,21 @@ mod tests {
     async fn sub_int_int() {
         let ctx = test_ctx();
         let r = mat(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(3), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Int(7));
-    }
-
-    #[tokio::test]
-    async fn sub_float_float() {
-        let ctx = test_ctx();
-        let r = mat(builtin_float_sub(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(10.5), &ctx),
-                alloc(Value::Float(3.5), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3895,35 +5227,118 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Float(7.0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn sub_float_float() {
+        let ctx = test_ctx();
+        let r = mat(builtin_float_sub(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Float {
+                        n: 10.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 3.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 7.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn sub_result_negative() {
         let ctx = test_ctx();
         let r = mat(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(10), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(-7));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: -7,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn sub_to_zero() {
         let ctx = test_ctx();
         let r = mat(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(5), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3949,7 +5364,13 @@ mod tests {
     async fn sub_arity_one_arg() {
         let ctx = test_ctx();
         let e = run(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -3968,7 +5389,16 @@ mod tests {
     async fn sub_type_error_string() {
         let ctx = test_ctx();
         let e = run(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(string_val("hello"), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(string_val("hello"), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -3988,51 +5418,21 @@ mod tests {
     async fn mul_int_int() {
         let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(4), &ctx), alloc(Value::Int(5), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Int(20));
-    }
-
-    #[tokio::test]
-    async fn mul_int_float() {
-        let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(4), &ctx), alloc(Value::Float(2.5), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Float(10.0));
-    }
-
-    #[tokio::test]
-    async fn mul_float_int() {
-        let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Int(4), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Float(10.0));
-    }
-
-    #[tokio::test]
-    async fn mul_float_float() {
-        let ctx = test_ctx();
-        let r = mat(builtin_mul(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(2.5), &ctx),
-                alloc(Value::Float(3.0), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4040,49 +5440,223 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Float(7.5));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 20,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn mul_int_float() {
+        let ctx = test_ctx();
+        let r = mat(builtin_mul(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 10.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn mul_float_int() {
+        let ctx = test_ctx();
+        let r = mat(builtin_mul(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 10.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn mul_float_float() {
+        let ctx = test_ctx();
+        let r = mat(builtin_mul(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 3.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 7.5,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn mul_by_zero() {
         let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn mul_negative() {
         let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(-3), &ctx), alloc(Value::Int(4), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: -3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(-12));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: -12,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn mul_by_negative_one() {
         let ctx = test_ctx();
         let r = mat(builtin_mul(BuiltinArgs {
-            args: vec![alloc(Value::Int(42), &ctx), alloc(Value::Int(-1), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: -1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(-42));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: -42,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4090,8 +5664,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_mul(BuiltinArgs {
             args: vec![
-                alloc(Value::Int(i64::MAX), &ctx),
-                alloc(Value::Int(2), &ctx),
+                alloc(
+                    Value::Int {
+                        n: i64::MAX,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4112,8 +5698,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_float_add(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(1e308), &ctx),
-                alloc(Value::Float(1e308), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 1e308,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 1e308,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4135,8 +5733,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_float_sub(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(f64::INFINITY), &ctx),
-                alloc(Value::Float(f64::INFINITY), &ctx),
+                alloc(
+                    Value::Float {
+                        n: f64::INFINITY,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: f64::INFINITY,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4157,8 +5767,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_mul(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(1e308), &ctx),
-                alloc(Value::Float(10.0), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 1e308,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 10.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4183,8 +5805,20 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(f64::INFINITY), &ctx),
-                alloc(Value::Float(f64::INFINITY), &ctx),
+                alloc(
+                    Value::Float {
+                        n: f64::INFINITY,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: f64::INFINITY,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4204,7 +5838,22 @@ mod tests {
     async fn div_float_int_int_returns_float() {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(3), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4212,7 +5861,7 @@ mod tests {
         }))
         .await;
         match r {
-            Value::Float(f) => {
+            Value::Float { n: f, .. } => {
                 assert!((f - 10.0 / 3.0).abs() < 1e-10, "expected ~3.333, got {f}")
             }
             other => panic!("expected Float, got {other:?}"),
@@ -4223,7 +5872,22 @@ mod tests {
     async fn div_float_int_int_exact_returns_float() {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4231,7 +5895,7 @@ mod tests {
         }))
         .await;
         match r {
-            Value::Float(f) => assert_eq!(f, 5.0),
+            Value::Float { n: f, .. } => assert_eq!(f, 5.0),
             other => panic!("expected Float(5.0), got {other:?}"),
         }
     }
@@ -4240,7 +5904,22 @@ mod tests {
     async fn div_float_int_float() {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Float(3.0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 3.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4248,7 +5927,7 @@ mod tests {
         }))
         .await;
         match r {
-            Value::Float(f) => {
+            Value::Float { n: f, .. } => {
                 assert!((f - 10.0 / 3.0).abs() < 1e-10, "expected ~3.333, got {f}")
             }
             other => panic!("expected Float, got {other:?}"),
@@ -4260,8 +5939,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(7.5), &ctx),
-                alloc(Value::Float(2.5), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 7.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4269,14 +5960,35 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Float(3.0));
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 3.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn div_float_by_zero_int() {
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4302,8 +6014,20 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(10.0), &ctx),
-                alloc(Value::Float(0.0), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 10.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 0.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4324,7 +6048,22 @@ mod tests {
         // Int / Float(0.0) produces Inf which check_float_result rejects as non-finite.
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), alloc(Value::Float(0.0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 0.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4344,8 +6083,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(-0.0), &ctx),
-                alloc(Value::Float(1.0), &ctx),
+                alloc(
+                    Value::Float {
+                        n: -0.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 1.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4353,35 +6104,83 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Float(0.0));
+        assert_eq!(
+            r,
+            Value::Float {
+                n: 0.0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn eq_int_int_equal() {
         let ctx = test_ctx();
         let r = mat(builtin_eq_int(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(5), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn eq_int_int_not_equal() {
         let ctx = test_ctx();
         let r = mat(builtin_eq_int(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(6), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 6,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     // ── builtin-eq-float tests ──────────────────────────────────────────────────────────
@@ -4390,8 +6189,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(2.5), &ctx),
-                alloc(Value::Float(2.5), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4399,7 +6210,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4407,8 +6224,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(2.5), &ctx),
-                alloc(Value::Float(2.71), &ctx),
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 2.71,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4416,7 +6245,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4424,8 +6259,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(f64::NAN), &ctx),
-                alloc(Value::Float(f64::NAN), &ctx),
+                alloc(
+                    Value::Float {
+                        n: f64::NAN,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: f64::NAN,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4433,7 +6280,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4441,8 +6294,20 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(-0.0), &ctx),
-                alloc(Value::Float(0.0), &ctx),
+                alloc(
+                    Value::Float {
+                        n: -0.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 0.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4450,7 +6315,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     // ── builtin-eq-string tests ─────────────────────────────────────────────────────────
@@ -4468,7 +6339,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4485,14 +6362,26 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn eq_arity_error() {
         let ctx = test_ctx();
         let e = run(builtin_eq_int(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4511,51 +6400,21 @@ mod tests {
     async fn lt_int_int_true() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Int(5), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn lt_int_int_false() {
-        let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(3), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Int(0));
-    }
-
-    #[tokio::test]
-    async fn lt_int_int_equal_is_false() {
-        let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Int(5), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Int(0));
-    }
-
-    #[tokio::test]
-    async fn lt_float_float() {
-        let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(2.5), &ctx),
-                alloc(Value::Float(3.5), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4563,7 +6422,118 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn lt_int_int_false() {
+        let ctx = test_ctx();
+        let r = mat(builtin_lt(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn lt_int_int_equal_is_false() {
+        let ctx = test_ctx();
+        let r = mat(builtin_lt(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn lt_float_float() {
+        let ctx = test_ctx();
+        let r = mat(builtin_lt(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 3.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4580,7 +6550,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4597,7 +6573,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4614,7 +6596,13 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4631,56 +6619,134 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn lt_cross_type_int_float() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(3), &ctx), alloc(Value::Float(3.5), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 3.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn lt_cross_type_float_int() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Float(2.5), &ctx), alloc(Value::Int(3), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Float {
+                        n: 2.5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn lt_cross_type_equal_values() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx), alloc(Value::Float(5.0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 5.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn lt_incompatible_types_error() {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(string_val("hello"), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(string_val("hello"), &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4696,14 +6762,35 @@ mod tests {
         // Int(0) < Int(1) — canonical false < true
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(0), &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(1));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4711,14 +6798,35 @@ mod tests {
         // Int(1) < Int(0) is false — canonical true is not less than false
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4726,14 +6834,35 @@ mod tests {
         // Int(0) < Int(0) is false
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(0), &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4741,14 +6870,35 @@ mod tests {
         // Int(1) < Int(1) is false
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -4756,8 +6906,20 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(Value::Dict(IndexMap::new()), &ctx),
-                alloc(Value::Dict(IndexMap::new()), &ctx),
+                alloc(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4773,7 +6935,13 @@ mod tests {
     async fn lt_arity_error() {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4792,23 +6960,21 @@ mod tests {
     async fn lt_negative_numbers() {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![alloc(Value::Int(-10), &ctx), alloc(Value::Int(-5), &ctx)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: None,
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn lt_nan_float() {
-        let ctx = test_ctx();
-        let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(Value::Float(f64::NAN), &ctx),
-                alloc(Value::Float(1.0), &ctx),
+                alloc(
+                    Value::Int {
+                        n: -10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: -5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4816,7 +6982,48 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn lt_nan_float() {
+        let ctx = test_ctx();
+        let r = mat(builtin_lt(BuiltinArgs {
+            args: vec![
+                alloc(
+                    Value::Float {
+                        n: f64::NAN,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Float {
+                        n: 1.0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await;
+        assert_eq!(
+            r,
+            Value::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     /// Parse-only smoke test for the prelude. Evaluating the full prelude requires a
@@ -4844,13 +7051,40 @@ mod tests {
         // take(2, [a: 1, b: 2, c: 3]) → [a: 1, b: 2]
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
-        map.insert(HashableValue::Str("b".into()), thunk(Value::Int(2)));
-        map.insert(HashableValue::Str("c".into()), thunk(Value::Int(3)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("b".into()),
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("c".into()),
+            thunk(Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![alloc(Value::Int(2), &ctx), dict_val],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                dict_val,
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4858,7 +7092,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
                     mat_id(
@@ -4866,7 +7100,10 @@ mod tests {
                         &ctx
                     )
                     .await,
-                    Value::Int(1)
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
                     mat_id(
@@ -4874,7 +7111,10 @@ mod tests {
                         &ctx
                     )
                     .await,
-                    Value::Int(2)
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -4886,11 +7126,26 @@ mod tests {
         // take(0, dict) → []
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![alloc(Value::Int(0), &ctx), dict_val],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                dict_val,
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4898,7 +7153,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) if map.is_empty() => {} // Success
+            Value::Dict { entries: map, .. } if map.is_empty() => {} // Success
             other => panic!("expected empty dict, got {:?}", other),
         }
     }
@@ -4908,11 +7163,26 @@ mod tests {
         // take(-5, dict) → []
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![alloc(Value::Int(-5), &ctx), dict_val],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: -5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                dict_val,
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4920,7 +7190,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) if map.is_empty() => {} // Success
+            Value::Dict { entries: map, .. } if map.is_empty() => {} // Success
             other => panic!("expected empty dict, got {:?}", other),
         }
     }
@@ -4930,12 +7200,33 @@ mod tests {
         // take(10, [a: 1, b: 2]) → [a: 1, b: 2]
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
-        map.insert(HashableValue::Str("b".into()), thunk(Value::Int(2)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("b".into()),
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![alloc(Value::Int(10), &ctx), dict_val],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 10,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                dict_val,
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4943,7 +7234,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 2);
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -4956,7 +7247,13 @@ mod tests {
         let result = run(builtin_take(BuiltinArgs {
             args: vec![
                 alloc(string_val("not int"), &ctx),
-                alloc(Value::Int(1), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4972,7 +7269,13 @@ mod tests {
         let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
             args: vec![
-                alloc(Value::Int(5), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
                 alloc(string_val("not dict or seq"), &ctx),
             ],
             named: no_named(),
@@ -4988,7 +7291,13 @@ mod tests {
     async fn take_arity_one() {
         let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
-            args: vec![alloc(Value::Int(5), &ctx)],
+            args: vec![alloc(
+                Value::Int {
+                    n: 5,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -5002,9 +7311,24 @@ mod tests {
     async fn concat_dict_empty_xs_returns_ys() {
         // concat({}, ys) returns ys unchanged (empty xs short-circuit)
         let ctx = test_ctx();
-        let xs = alloc(Value::Dict(IndexMap::new()), &ctx);
+        let xs = alloc(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            &ctx,
+        );
         let mut ys_map = IndexMap::new();
-        ys_map.insert(HashableValue::Int(0), thunk(Value::Int(1)));
+        ys_map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let ys = thunk_dict(ys_map, &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
@@ -5017,11 +7341,26 @@ mod tests {
         .await;
 
         match result {
-            Value::Dict(ref map) => {
+            Value::Dict {
+                entries: ref map, ..
+            } => {
                 assert_eq!(map.len(), 1);
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int(1)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 0,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -5033,10 +7372,34 @@ mod tests {
         // concat({0:1, 1:2}, {}) → {0:1, 1:2} (empty ys is a no-op via reindexing)
         let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
-        xs_map.insert(HashableValue::Int(0), thunk(Value::Int(1)));
-        xs_map.insert(HashableValue::Int(1), thunk(Value::Int(2)));
+        xs_map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        xs_map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let xs = thunk_dict(xs_map, &ctx);
-        let ys = alloc(Value::Dict(IndexMap::new()), &ctx);
+        let ys = alloc(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            &ctx,
+        );
 
         let result = mat(builtin_concat(BuiltinArgs {
             args: vec![xs, ys],
@@ -5048,15 +7411,43 @@ mod tests {
         .await;
 
         match result {
-            Value::Dict(ref map) => {
+            Value::Dict {
+                entries: ref map, ..
+            } => {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int(1)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 0,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
-                    Value::Int(2)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 1,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -5068,13 +7459,49 @@ mod tests {
         // concat([1, 2], [3, 4]) -> [1, 2, 3, 4] with integer reindexing
         let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
-        xs_map.insert(HashableValue::Int(0), thunk(Value::Int(1)));
-        xs_map.insert(HashableValue::Int(1), thunk(Value::Int(2)));
+        xs_map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        xs_map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let xs = thunk_dict(xs_map, &ctx);
 
         let mut ys_map = IndexMap::new();
-        ys_map.insert(HashableValue::Int(0), thunk(Value::Int(3)));
-        ys_map.insert(HashableValue::Int(1), thunk(Value::Int(4)));
+        ys_map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        ys_map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 4,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let ys = thunk_dict(ys_map, &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
@@ -5087,23 +7514,77 @@ mod tests {
         .await;
 
         match result {
-            Value::Dict(ref map) => {
+            Value::Dict {
+                entries: ref map, ..
+            } => {
                 assert_eq!(map.len(), 4);
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int(1)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 0,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
-                    Value::Int(2)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 1,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
-                    Value::Int(3)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 2,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
-                    Value::Int(4)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 3,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -5116,13 +7597,19 @@ mod tests {
         let ctx = test_ctx();
         let xs = alloc(
             Value::Variant {
-                tycon: Arc::from("Color"),
-                ctor: Arc::from("Red"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("Color.Red"),
                 payload: None,
             },
             &ctx,
         );
-        let ys = alloc(Value::Dict(IndexMap::new()), &ctx);
+        let ys = alloc(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            &ctx,
+        );
 
         let err = run(builtin_concat(BuiltinArgs {
             args: vec![xs, ys],
@@ -5147,12 +7634,36 @@ mod tests {
         // This exercises the checked_add call site that prevents integer overflow
         let ctx = test_ctx();
         let mut dict1 = IndexMap::new();
-        dict1.insert(HashableValue::Str("a".into()), thunk(Value::Int(1)));
-        dict1.insert(HashableValue::Str("b".into()), thunk(Value::Int(2)));
+        dict1.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        dict1.insert(
+            HashableValue::Str("b".into()),
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
 
         let mut dict2 = IndexMap::new();
-        dict2.insert(HashableValue::Str("c".into()), thunk(Value::Int(3)));
-        dict2.insert(HashableValue::Str("d".into()), thunk(Value::Int(4)));
+        dict2.insert(
+            HashableValue::Str("c".into()),
+            thunk(Value::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        dict2.insert(
+            HashableValue::Str("d".into()),
+            thunk(Value::Int {
+                n: 4,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
 
         let result = mat(builtin_concat(BuiltinArgs {
             args: vec![thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
@@ -5164,24 +7675,76 @@ mod tests {
         .await;
 
         match result {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 4);
                 // All values should be reindexed with integer keys 0, 1, 2, 3
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int(1)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 0,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
-                    Value::Int(2)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 1,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
-                    Value::Int(3)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 2,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
                 assert_eq!(
-                    mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
-                    Value::Int(4)
+                    mat_id(
+                        Arc::clone(
+                            map.get(&HashableValue::Int {
+                                n: 3,
+                                type_val: crate::value::unknown_type_val()
+                            })
+                            .unwrap()
+                        ),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -5192,9 +7755,24 @@ mod tests {
     async fn concat_empty_xs_dict_ys_valid_dict_succeeds() {
         // Task 2: When xs is empty Dict and ys is a valid Dict, concat should succeed.
         let ctx = test_ctx();
-        let xs = alloc(Value::Dict(IndexMap::new()), &ctx); // empty dict
+        let xs = alloc(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            &ctx,
+        ); // empty dict
         let mut ys_map = IndexMap::new();
-        ys_map.insert(HashableValue::Int(0), thunk(Value::Int(99)));
+        ys_map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(Value::Int {
+                n: 99,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let ys = thunk_dict(ys_map, &ctx);
 
         // Should succeed and return ys (the same thunk or an equivalent materialized form)
@@ -5210,11 +7788,23 @@ mod tests {
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
         let val = mat_val(result.unwrap()).await;
         match val {
-            Value::Dict(ref m) => {
+            Value::Dict { entries: ref m, .. } => {
                 assert_eq!(m.len(), 1);
                 assert_eq!(
-                    mat_id(m.get(&HashableValue::Int(0)).unwrap().clone(), &ctx).await,
-                    Value::Int(99)
+                    mat_id(
+                        m.get(&HashableValue::Int {
+                            n: 0,
+                            type_val: crate::value::unknown_type_val()
+                        })
+                        .unwrap()
+                        .clone(),
+                        &ctx
+                    )
+                    .await,
+                    Value::Int {
+                        n: 99,
+                        type_val: crate::value::unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -5224,7 +7814,13 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_returns_proxy_value() {
         let ctx = test_ctx();
-        let handler = alloc(Value::Int(42), &ctx);
+        let handler = alloc(
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val(),
+            },
+            &ctx,
+        );
         let result = run(builtin_proxy(BuiltinArgs {
             args: vec![handler],
             named: no_named(),
@@ -5237,10 +7833,16 @@ mod tests {
 
         let val = mat_val(result).await;
         match val {
-            Value::Proxy { handler: h } => {
+            Value::Proxy { handler: h, .. } => {
                 // Verify the handler thunk contains the expected value.
                 let handler_val = mat_id(h, &ctx).await;
-                assert_eq!(handler_val, Value::Int(42));
+                assert_eq!(
+                    handler_val,
+                    Value::Int {
+                        n: 42,
+                        type_val: crate::value::unknown_type_val()
+                    }
+                );
             }
             other => panic!("expected Proxy, got {:?}", other),
         }
@@ -5267,7 +7869,22 @@ mod tests {
 
         // Two args
         let err = run(builtin_proxy(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), alloc(Value::Int(2), &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5284,9 +7901,27 @@ mod tests {
         // Three args
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![
-                alloc(Value::Int(1), &ctx),
-                alloc(Value::Int(2), &ctx),
-                alloc(Value::Int(3), &ctx),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 2,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                alloc(
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5306,7 +7941,16 @@ mod tests {
     async fn test_proxy_named_arg_error() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert("handler".to_string(), alloc(Value::Int(42), &ctx));
+        named.insert(
+            "handler".to_string(),
+            alloc(
+                Value::Int {
+                    n: 42,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                &ctx,
+            ),
+        );
 
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![],
@@ -5367,18 +8011,51 @@ mod tests {
     async fn dict_nth_in_bounds() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(10)));
-        map.insert(HashableValue::Str("b".into()), thunk(Value::Int(20)));
-        map.insert(HashableValue::Str("c".into()), thunk(Value::Int(30)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 10,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("b".into()),
+            thunk(Value::Int {
+                n: 20,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("c".into()),
+            thunk(Value::Int {
+                n: 30,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let result = mat(builtin_dict_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(1), &ctx)],
+            args: vec![
+                thunk_dict(map, &ctx),
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
         }))
         .await;
-        assert_eq!(result, Value::Int(20));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 20,
+                type_val: crate::value::unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -5387,9 +8064,24 @@ mod tests {
         // Prelude step functions guard with builtin-dict-has-nth? before calling this.
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(10)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 10,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let result = run(builtin_dict_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(5), &ctx)],
+            args: vec![
+                thunk_dict(map, &ctx),
+                alloc(
+                    Value::Int {
+                        n: 5,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5406,10 +8098,31 @@ mod tests {
     async fn dict_key_nth_string_key() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("foo".into()), thunk(Value::Int(1)));
-        map.insert(HashableValue::Str("bar".into()), thunk(Value::Int(2)));
+        map.insert(
+            HashableValue::Str("foo".into()),
+            thunk(Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("bar".into()),
+            thunk(Value::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let result = mat(builtin_dict_key_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                thunk_dict(map, &ctx),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5423,9 +8136,24 @@ mod tests {
     async fn dict_kv_nth_returns_kv_pair() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("x".into()), thunk(Value::Int(42)));
+        map.insert(
+            HashableValue::Str("x".into()),
+            thunk(Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let result = mat(builtin_dict_kv_nth(BuiltinArgs {
-            args: vec![thunk_dict(map, &ctx), alloc(Value::Int(0), &ctx)],
+            args: vec![
+                thunk_dict(map, &ctx),
+                alloc(
+                    Value::Int {
+                        n: 0,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5433,7 +8161,7 @@ mod tests {
         }))
         .await;
         match result {
-            Value::Dict(m) => {
+            Value::Dict { entries: m, .. } => {
                 assert!(m.contains_key(&HashableValue::Str("key".into())));
                 assert!(m.contains_key(&HashableValue::Str("value".into())));
             }
@@ -5445,11 +8173,38 @@ mod tests {
     async fn builtin_get_int_key_auto_indexed_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), thunk(string_val("first")));
-        map.insert(HashableValue::Int(1), thunk(string_val("second")));
-        map.insert(HashableValue::Int(2), thunk(string_val("third")));
+        map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("first")),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("second")),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            },
+            thunk(string_val("third")),
+        );
         let result = mat(builtin_get(BuiltinArgs {
-            args: vec![alloc(Value::Int(1), &ctx), thunk_dict(map, &ctx)],
+            args: vec![
+                alloc(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    &ctx,
+                ),
+                thunk_dict(map, &ctx),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5463,8 +8218,20 @@ mod tests {
     async fn builtin_get_key_not_found_error() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Str("a".into()), thunk(Value::Int(10)));
-        map.insert(HashableValue::Str("b".into()), thunk(Value::Int(20)));
+        map.insert(
+            HashableValue::Str("a".into()),
+            thunk(Value::Int {
+                n: 10,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        map.insert(
+            HashableValue::Str("b".into()),
+            thunk(Value::Int {
+                n: 20,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
         let result = run(builtin_get(BuiltinArgs {
             args: vec![alloc(string_val("z"), &ctx), thunk_dict(map, &ctx)],
             named: no_named(),
@@ -5523,7 +8290,7 @@ mod tests {
         // The result should be a dict with 3 entries (one per key).
         let val = mat_val(result_thunk).await;
         match val {
-            Value::Dict(ref m) => {
+            Value::Dict { entries: ref m, .. } => {
                 assert_eq!(m.len(), 3, "expected 3 keys in result, got {}", m.len())
             }
             other => panic!("expected Dict from builtin_keys, got {:?}", other),
@@ -5541,10 +8308,34 @@ mod tests {
         let ctx = test_ctx();
         // Build a dict with 4 bomb-value entries.
         let mut map = IndexMap::new();
-        map.insert(HashableValue::Int(0), make_undef_thunk(&ctx));
-        map.insert(HashableValue::Int(1), make_undef_thunk(&ctx));
-        map.insert(HashableValue::Int(2), make_undef_thunk(&ctx));
-        map.insert(HashableValue::Int(3), make_undef_thunk(&ctx));
+        map.insert(
+            HashableValue::Int {
+                n: 0,
+                type_val: crate::value::unknown_type_val(),
+            },
+            make_undef_thunk(&ctx),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            make_undef_thunk(&ctx),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 2,
+                type_val: crate::value::unknown_type_val(),
+            },
+            make_undef_thunk(&ctx),
+        );
+        map.insert(
+            HashableValue::Int {
+                n: 3,
+                type_val: crate::value::unknown_type_val(),
+            },
+            make_undef_thunk(&ctx),
+        );
         let dict = thunk_dict(map, &ctx);
 
         // builtin_length should succeed: it only counts entries, not values.
@@ -5563,6 +8354,14 @@ mod tests {
             )
         });
         let val = mat_val(result_thunk).await;
-        assert_eq!(val, Value::Int(4), "expected length 4, got {:?}", val);
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 4,
+                type_val: crate::value::unknown_type_val()
+            },
+            "expected length 4, got {:?}",
+            val
+        );
     }
 }

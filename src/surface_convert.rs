@@ -76,10 +76,24 @@ fn inject_span_into_expr_variant(
 
     let make_pos = |line: u32, col: u32| -> Arc<Thunk> {
         let mut d: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        let mk = |n: i64| Arc::new(Thunk::value(Value::Int(n), synth.clone()));
+        let mk = |n: i64| {
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                synth.clone(),
+            ))
+        };
         d.insert(HashableValue::Str("line".into()), mk(line as i64));
         d.insert(HashableValue::Str("col".into()), mk(col as i64));
-        Arc::new(Thunk::value(Value::Dict(d), synth.clone()))
+        Arc::new(Thunk::value(
+            Value::Dict {
+                entries: d,
+                type_val: crate::value::unknown_type_val(),
+            },
+            synth.clone(),
+        ))
     };
 
     let span_val = {
@@ -92,27 +106,40 @@ fn inject_span_into_expr_variant(
             HashableValue::Str("end".into()),
             make_pos(span.end_line, span.end_col),
         );
-        Value::Dict(d)
+        Value::Dict {
+            entries: d,
+            type_val: crate::value::unknown_type_val(),
+        }
     };
 
     match val {
         Value::Variant {
-            tycon,
+            type_val,
             ctor,
             payload: Some(payload_thunk),
         } => {
-            if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_value().cloned() {
+            if let Some(Value::Dict {
+                entries: mut payload_dict,
+                ..
+            }) = payload_thunk.try_get_value().cloned()
+            {
                 let span_thunk = Arc::new(Thunk::value(span_val, synth.clone()));
                 payload_dict.insert(HashableValue::Str("span".into()), span_thunk);
-                let new_payload = Arc::new(Thunk::value(Value::Dict(payload_dict), span.clone()));
+                let new_payload = Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: payload_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span.clone(),
+                ));
                 Value::Variant {
-                    tycon,
+                    type_val,
                     ctor,
                     payload: Some(new_payload),
                 }
             } else {
                 Value::Variant {
-                    tycon,
+                    type_val,
                     ctor,
                     payload: Some(payload_thunk),
                 }
@@ -151,12 +178,12 @@ fn dict_to_surface_node_inner(
     // AstError is a skip variant — to_expr_variant produces a unit Expr.AstError (no payload).
     // Handle it here before from_expr_variant tries to read a non-existent payload.
     if let Value::Variant {
-        tycon,
         ctor,
         payload: None,
+        ..
     } = val
     {
-        if tycon.as_ref() == "Expr" && ctor.as_ref() == "AstError" {
+        if ctor.as_ref() == "Expr.AstError" {
             return Ok(Arc::new(SurfaceNode::new(
                 SurfaceExpression::Error(call_site_span.clone()),
                 call_site_span.clone(),
@@ -173,21 +200,20 @@ fn dict_to_surface_node_inner(
     // resulting VarRef so the type checker can dispatch on the flag instead of inspecting
     // the gensym name prefix.
     if let Value::Variant {
-        tycon,
         ctor,
         payload: Some(ref payload_thunk),
+        ..
     } = val
     {
-        if let Some(Value::Dict(dict)) = payload_thunk.try_get_value().cloned() {
+        if let Some(Value::Dict { entries: dict, .. }) = payload_thunk.try_get_value().cloned() {
             let span_opt = extract_span(&dict, ctx);
-            let is_do_infer_placeholder = tycon.as_ref() == "Expr"
-                && ctor.as_ref() == "VarRef"
+            let is_do_infer_placeholder = ctor.as_ref() == "Expr.VarRef"
                 && dict
                     .get(&crate::value::HashableValue::Str(
                         "do-infer-placeholder".into(),
                     ))
                     .and_then(|t| t.try_get_value())
-                    .is_some_and(|v| matches!(v, Value::Int(n) if *n != 0));
+                    .is_some_and(|v| matches!(v, Value::Int { n, .. } if *n != 0));
 
             if is_do_infer_placeholder {
                 // Rebuild the VarRef with do_infer_placeholder: true.
@@ -253,7 +279,13 @@ pub fn core_expr_to_expr_value(
             let child_thunk = recurse(child);
             dict.insert(HashableValue::Int(i as i64), child_thunk);
         }
-        Arc::new(Thunk::value(Value::Dict(dict), synth.clone()))
+        Arc::new(Thunk::value(
+            Value::Dict {
+                entries: dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            synth.clone(),
+        ))
     };
 
     // Helper to build an Expr.* variant with a payload dict
@@ -262,20 +294,38 @@ pub fn core_expr_to_expr_value(
     };
 
     // Helper: build a Dict-typed Arc<Thunk> from a map (for inner nested dicts)
-    let mk_dict = |map: IndexMap<HashableValue, Arc<Thunk>>,
-                   span: crate::ast::Span|
-     -> Arc<Thunk> { Arc::new(Thunk::value(Value::Dict(map), span)) };
+    let mk_dict =
+        |map: IndexMap<HashableValue, Arc<Thunk>>, span: crate::ast::Span| -> Arc<Thunk> {
+            Arc::new(Thunk::value(
+                Value::Dict {
+                    entries: map,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                span,
+            ))
+        };
     // Helper: build a simple materialized Arc<Thunk> for scalar values
     let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, synth.clone())) };
     // Null sentinel (empty dict)
-    let null_thunk = || mk(Value::Dict(IndexMap::new()));
+    let null_thunk = || {
+        mk(Value::Dict {
+            entries: IndexMap::new(),
+            type_val: crate::value::unknown_type_val(),
+        })
+    };
 
     let val = match &core.node {
         // ── Literals ─────────────────────────────────────────────────────────────
         CoreExpr::Int(n) => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("int")));
-            payload.insert(HashableValue::Str("value".into()), mk(Value::Int(*n)));
+            payload.insert(
+                HashableValue::Str("value".into()),
+                mk(Value::Int {
+                    n: *n,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
@@ -285,7 +335,10 @@ pub fn core_expr_to_expr_value(
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("u64")));
             payload.insert(
                 HashableValue::Str("value".into()),
-                mk(Value::Int(*n as i64)),
+                mk(Value::Int {
+                    n: *n as i64,
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
@@ -294,7 +347,13 @@ pub fn core_expr_to_expr_value(
         CoreExpr::Float(f) => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("float")));
-            payload.insert(HashableValue::Str("value".into()), mk(Value::Float(*f)));
+            payload.insert(
+                HashableValue::Str("value".into()),
+                mk(Value::Float {
+                    n: *f,
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
@@ -349,7 +408,10 @@ pub fn core_expr_to_expr_value(
             );
             payload.insert(
                 HashableValue::Str("implied".into()),
-                mk(Value::Int(if *implied { 1 } else { 0 })),
+                mk(Value::Int {
+                    n: if *implied { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                }),
             );
             make_variant("Call", payload)
         }
@@ -403,7 +465,10 @@ pub fn core_expr_to_expr_value(
                 );
                 param_dict.insert(
                     HashableValue::Str("variadic".into()),
-                    mk(Value::Int(if param.node.variadic { 1 } else { 0 })),
+                    mk(Value::Int {
+                        n: if param.node.variadic { 1 } else { 0 },
+                        type_val: crate::value::unknown_type_val(),
+                    }),
                 );
                 params_dict.insert(
                     HashableValue::Int(i as i64),
@@ -555,6 +620,11 @@ pub fn core_expr_to_expr_value(
 
         // ── Placeholder ──────────────────────────────────────────────────────────
         CoreExpr::Placeholder => make_unit_variant("Expr.Placeholder"),
+
+        // ── ReprDecl ─────────────────────────────────────────────────────────────
+        // Transparent in AST representation — the quoted form is the inner dict.
+        // The repr: metadata is evaluator-only and has no surface AST node type.
+        CoreExpr::ReprDecl { inner, .. } => core_expr_to_expr_value(inner.as_ref(), ctx),
     };
 
     // Inject the span into the payload (like surface_node_to_expr_variant does)
@@ -571,7 +641,7 @@ fn dict_to_surface_entry(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<SurfaceEntry>, AstError> {
     let dict = match val {
-        Value::Dict(d) => d,
+        Value::Dict { entries: d, .. } => d,
         _ => {
             return Err(AstError {
                 message: "entry must be Dict".into(),
@@ -582,7 +652,7 @@ fn dict_to_surface_entry(
 
     let key_val = get_dict_field(dict, "key", path, ctx)?;
     let key: Option<Arc<SurfaceNode>> = match &key_val {
-        Value::Dict(d) if d.is_empty() => None,
+        Value::Dict { entries: d, .. } if d.is_empty() => None,
         _ => Some(dict_to_surface_node(&key_val, call_site_span, ctx)?),
     };
 
@@ -609,14 +679,14 @@ fn dict_to_annotation(
     // Handle the Variant format produced by annotation_to_value / annotation_inner_to_value.
     // Tags: "Annotation.Simple", "Annotation.PropertyDict", "Annotation.Annotated", "Annotation.Unknown"
     if let Value::Variant {
-        tycon,
         ctor,
         payload: Some(payload_thunk),
+        ..
     } = val
     {
-        if tycon.as_ref() != "Annotation" {
+        if crate::value::tycon_name_from_ctor(ctor.as_ref()) != "Annotation" {
             return Err(AstError {
-                message: format!("expected Annotation variant, got {tycon}.{ctor}"),
+                message: format!("expected Annotation variant, got {}", ctor),
                 field_path: path.iter().map(|s| s.to_string()).collect(),
             });
         }
@@ -627,10 +697,16 @@ fn dict_to_annotation(
                 message: "annotation payload thunk is not yet materialized".to_string(),
                 field_path: path.iter().map(|s| s.to_string()).collect(),
             })?;
-        let ann = match ctor.as_ref() {
+        // Strip "Annotation." prefix to get bare constructor name for dispatch.
+        let bare_ctor = ctor
+            .as_ref()
+            .split_once('.')
+            .map(|(_, c)| c)
+            .unwrap_or(ctor.as_ref());
+        let ann = match bare_ctor {
             "Quote" => Annotation::Quote,
             "Simple" => match &payload_val {
-                Value::Dict(d) => {
+                Value::Dict { entries: d, .. } => {
                     // Try "name" first (canonical field); fall back to "text" if absent.
                     // If both are absent, propagate the "text" field error.
                     let name = get_string_field(d, "name", path, ctx)
@@ -642,7 +718,7 @@ fn dict_to_annotation(
             "PropertyDict" | "Unknown" => {
                 // Reconstruct as a simple annotation using the text field
                 match &payload_val {
-                    Value::Dict(d) => {
+                    Value::Dict { entries: d, .. } => {
                         let text = get_string_field(d, "text", path, ctx)?;
                         Annotation::Simple(text)
                     }
@@ -650,7 +726,7 @@ fn dict_to_annotation(
                 }
             }
             "Annotated" => match &payload_val {
-                Value::Dict(d) => {
+                Value::Dict { entries: d, .. } => {
                     // Deserialize outer: non-Simple outer is stored as a nested "outer" Annotation
                     // value; Simple outer uses the flat "name" string for backward compatibility.
                     let outer_ann = if let Ok(outer_val) = get_field(d, "outer", path, ctx) {
@@ -672,7 +748,7 @@ fn dict_to_annotation(
     }
 
     let dict = match val {
-        Value::Dict(d) => d,
+        Value::Dict { entries: d, .. } => d,
         _ => {
             return Err(AstError {
                 message: "annotation must be Dict".into(),
@@ -766,8 +842,9 @@ fn get_string_field(
             ref source,
             start,
             end,
+            ..
         } => Ok(source[start..end].to_string()),
-        Value::Dict(d) if d.is_empty() => {
+        Value::Dict { entries: d, .. } if d.is_empty() => {
             // Empty dict represents "null" in tinct - field access failed silently
             Err(AstError {
                 message: format!(
@@ -782,7 +859,7 @@ fn get_string_field(
                 "field '{}' must be String, got {} (type: {})",
                 key,
                 match &val {
-                    Value::Dict(d) => format!("Dict with {} entries", d.len()),
+                    Value::Dict { entries: d, .. } => format!("Dict with {} entries", d.len()),
                     _ => format!("{:?}", val),
                 },
                 val.type_name()
@@ -799,7 +876,7 @@ fn get_bool_field(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
-    Ok(matches!(val, Value::Int(n) if n != 0))
+    Ok(matches!(val, Value::Int { n, .. } if n != 0))
 }
 
 fn get_dict_field(
@@ -810,7 +887,7 @@ fn get_dict_field(
 ) -> Result<Value, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
-        Value::Dict(_) | Value::Variant { .. } => Ok(val),
+        Value::Dict { .. } | Value::Variant { .. } => Ok(val),
         _ => Err(AstError {
             message: format!("field '{}' must be Dict or Variant", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
@@ -830,7 +907,7 @@ fn get_optional_dict_field(
 }
 
 fn is_empty_dict(val: &Value) -> bool {
-    matches!(val, Value::Dict(d) if d.is_empty())
+    matches!(val, Value::Dict { entries: d, .. } if d.is_empty())
 }
 
 pub(crate) fn extract_span(
@@ -841,7 +918,9 @@ pub(crate) fn extract_span(
     let span_val = span_thunk.try_get_value().cloned()?;
 
     match span_val {
-        Value::Dict(span_dict) => {
+        Value::Dict {
+            entries: span_dict, ..
+        } => {
             let start_thunk = span_dict.get(&HashableValue::Str("start".into()))?;
             let start_val = start_thunk.try_get_value().cloned()?;
 
@@ -865,16 +944,16 @@ pub(crate) fn extract_span(
 
 fn extract_position(val: &Value, _ctx: &Arc<crate::eval::EvalContext>) -> Option<(u32, u32)> {
     match val {
-        Value::Dict(dict) => {
+        Value::Dict { entries: dict, .. } => {
             let line_thunk = dict.get(&HashableValue::Str("line".into()))?;
             let line = match line_thunk.try_get_value().cloned()? {
-                Value::Int(n) => n as u32,
+                Value::Int { n, .. } => n as u32,
                 _ => return None,
             };
 
             let col_thunk = dict.get(&HashableValue::Str("col".into()))?;
             let col = match col_thunk.try_get_value().cloned()? {
-                Value::Int(n) => n as u32,
+                Value::Int { n, .. } => n as u32,
                 _ => return None,
             };
 
@@ -890,7 +969,7 @@ fn extract_list(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Value>, AstError> {
     match val {
-        Value::Dict(d) => {
+        Value::Dict { entries: d, .. } => {
             let mut result = Vec::new();
             for i in 0.. {
                 match d.get(&HashableValue::Int(i)) {
@@ -928,21 +1007,42 @@ pub(crate) fn alloc_str(s: &str, span: &Span, _ctx: &Arc<crate::eval::EvalContex
 
 pub(crate) fn alloc_bool(b: bool, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
     Arc::new(Thunk::value(
-        Value::Int(if b { 1 } else { 0 }),
+        Value::Int {
+            n: if b { 1 } else { 0 },
+            type_val: crate::value::unknown_type_val(),
+        },
         span.clone(),
     ))
 }
 
 pub(crate) fn alloc_int(n: i64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-    Arc::new(Thunk::value(Value::Int(n), span.clone()))
+    Arc::new(Thunk::value(
+        Value::Int {
+            n,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span.clone(),
+    ))
 }
 
 pub(crate) fn alloc_u64(n: u64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-    Arc::new(Thunk::value(Value::U64(n), span.clone()))
+    Arc::new(Thunk::value(
+        Value::U64 {
+            n,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span.clone(),
+    ))
 }
 
 pub(crate) fn alloc_float(f: f64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-    Arc::new(Thunk::value(Value::Float(f), span.clone()))
+    Arc::new(Thunk::value(
+        Value::Float {
+            n: f,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span.clone(),
+    ))
 }
 
 pub(crate) fn alloc_expr_child(
@@ -962,7 +1062,13 @@ pub(crate) fn alloc_expr_child_opt(
 ) -> Arc<Thunk> {
     match node {
         Some(n) => alloc_expr_child(n, ctx),
-        None => Arc::new(Thunk::value(Value::Dict(IndexMap::new()), rust_span!())),
+        None => Arc::new(Thunk::value(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            rust_span!(),
+        )),
     }
 }
 
@@ -978,7 +1084,13 @@ pub(crate) fn alloc_child_list(
         ));
         map.insert(HashableValue::Int(i as i64), thunk);
     }
-    Arc::new(Thunk::value(Value::Dict(map), rust_span!()))
+    Arc::new(Thunk::value(
+        Value::Dict {
+            entries: map,
+            type_val: crate::value::unknown_type_val(),
+        },
+        rust_span!(),
+    ))
 }
 
 pub(crate) fn alloc_entry_list(
@@ -990,7 +1102,10 @@ pub(crate) fn alloc_entry_list(
         // key: Some(node) → Expr.* variant, None → null (empty dict)
         let key_val = match &entry.node.key {
             Some(key_node) => SurfaceExpression::to_expr_variant(key_node, ctx),
-            None => Value::Dict(IndexMap::new()),
+            None => Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
         };
         let key_thunk = Arc::new(Thunk::value(key_val, entry.span.clone()));
         // value: Expr.* variant
@@ -1000,17 +1115,29 @@ pub(crate) fn alloc_entry_list(
         let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("key".into()), key_thunk);
         payload.insert(HashableValue::Str("value".into()), val_thunk);
-        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone()));
+        let payload_thunk = Arc::new(Thunk::value(
+            Value::Dict {
+                entries: payload,
+                type_val: crate::value::unknown_type_val(),
+            },
+            entry.span.clone(),
+        ));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            tycon: Arc::from("Expr"),
-            ctor: Arc::from("Entry"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    Arc::new(Thunk::value(Value::Dict(dict), rust_span!()))
+    Arc::new(Thunk::value(
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        },
+        rust_span!(),
+    ))
 }
 
 pub(crate) fn alloc_named_arg_list(
@@ -1031,18 +1158,30 @@ pub(crate) fn alloc_named_arg_list(
                 na.span.clone(),
             )),
         );
-        let payload_thunk = Arc::new(Thunk::value(Value::Dict(na_payload), na.span.clone()));
+        let payload_thunk = Arc::new(Thunk::value(
+            Value::Dict {
+                entries: na_payload,
+                type_val: crate::value::unknown_type_val(),
+            },
+            na.span.clone(),
+        ));
         let na_thunk = Arc::new(Thunk::value(
             Value::Variant {
-                tycon: Arc::from("Expr"),
-                ctor: Arc::from("NamedArg"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("Expr.NamedArg"),
                 payload: Some(payload_thunk),
             },
             na.span.clone(),
         ));
         na_map.insert(HashableValue::Int(i as i64), na_thunk);
     }
-    Arc::new(Thunk::value(Value::Dict(na_map), rust_span!()))
+    Arc::new(Thunk::value(
+        Value::Dict {
+            entries: na_map,
+            type_val: crate::value::unknown_type_val(),
+        },
+        rust_span!(),
+    ))
 }
 
 pub(crate) fn alloc_param_list(
@@ -1059,7 +1198,10 @@ pub(crate) fn alloc_param_list(
         p_payload.insert(
             HashableValue::Str("variadic".into()),
             Arc::new(Thunk::value(
-                Value::Int(if p.node.variadic { 1 } else { 0 }),
+                Value::Int {
+                    n: if p.node.variadic { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 p.span.clone(),
             )),
         );
@@ -1069,18 +1211,30 @@ pub(crate) fn alloc_param_list(
             HashableValue::Str("annotation".into()),
             Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
-        let param_payload_thunk = Arc::new(Thunk::value(Value::Dict(p_payload), p.span.clone()));
+        let param_payload_thunk = Arc::new(Thunk::value(
+            Value::Dict {
+                entries: p_payload,
+                type_val: crate::value::unknown_type_val(),
+            },
+            p.span.clone(),
+        ));
         let p_thunk = Arc::new(Thunk::value(
             Value::Variant {
-                tycon: Arc::from("Expr"),
-                ctor: Arc::from("Param"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("Expr.Param"),
                 payload: Some(param_payload_thunk),
             },
             p.span.clone(),
         ));
         params_map.insert(HashableValue::Int(i as i64), p_thunk);
     }
-    Arc::new(Thunk::value(Value::Dict(params_map), rust_span!()))
+    Arc::new(Thunk::value(
+        Value::Dict {
+            entries: params_map,
+            type_val: crate::value::unknown_type_val(),
+        },
+        rust_span!(),
+    ))
 }
 
 pub(crate) fn alloc_match_arm_list(
@@ -1113,7 +1267,10 @@ pub(crate) fn alloc_string_opt(
 ) -> Arc<Thunk> {
     let val = match s {
         Some(name) => string_val(name),
-        None => Value::Dict(IndexMap::new()),
+        None => Value::Dict {
+            entries: IndexMap::new(),
+            type_val: crate::value::unknown_type_val(),
+        },
     };
     Arc::new(Thunk::value(val, rust_span!()))
 }
@@ -1141,21 +1298,22 @@ pub(crate) fn make_variant_with_payload(
     span: &Span,
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
-    let payload_val = Value::Dict(payload);
+    let payload_val = Value::Dict {
+        entries: payload,
+        type_val: crate::value::unknown_type_val(),
+    };
     let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
-    let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
-        tycon: Arc::from(tycon),
-        ctor: Arc::from(ctor),
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(tag),
         payload: Some(payload_thunk),
     }
 }
 
 pub(crate) fn make_unit_variant(tag: &str) -> Value {
-    let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag));
     Value::Variant {
-        tycon: Arc::from(tycon),
-        ctor: Arc::from(ctor),
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(tag),
         payload: None,
     }
 }
@@ -1176,13 +1334,9 @@ pub(crate) fn extract_tag_and_dict(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(String, IndexMap<HashableValue, Arc<Thunk>>), AstError> {
     match val {
-        Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } => {
+        Value::Variant { ctor, payload, .. } => {
             let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
-                message: format!("Expr variant {}.{} has no payload", tycon, ctor),
+                message: format!("Expr variant {} has no payload", ctor),
                 field_path: vec![],
             })?;
             let payload_val = payload_thunk
@@ -1192,8 +1346,15 @@ pub(crate) fn extract_tag_and_dict(
                     message: "variant payload is not materialized".into(),
                     field_path: vec![],
                 })?;
+            // Return the bare constructor name (strip tycon prefix) for dispatch in callers.
+            let bare_ctor = ctor
+                .as_ref()
+                .split_once('.')
+                .map(|(_, c)| c)
+                .unwrap_or(ctor.as_ref())
+                .to_string();
             match payload_val {
-                Value::Dict(d) => Ok((ctor.to_string(), d)),
+                Value::Dict { entries: d, .. } => Ok((bare_ctor, d)),
                 _ => Err(AstError {
                     message: format!(
                         "Expr variant payload must be Dict, got {}",
@@ -1251,8 +1412,9 @@ pub(crate) fn get_string_field_with_aliases(
             ref source,
             start,
             end,
+            ..
         } => Ok(source[start..end].to_string()),
-        Value::Dict(d) if d.is_empty() => Err(AstError {
+        Value::Dict { entries: d, .. } if d.is_empty() => Err(AstError {
             message: format!("field '{}' is empty dict (null)", key),
             field_path: vec![key.to_string()],
         }),
@@ -1270,7 +1432,7 @@ pub(crate) fn get_bool_field_with_aliases(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
-    Ok(matches!(val, Value::Int(n) if n != 0))
+    Ok(matches!(val, Value::Int { n, .. } if n != 0))
 }
 
 pub(crate) fn get_int_field_with_aliases(
@@ -1281,7 +1443,7 @@ pub(crate) fn get_int_field_with_aliases(
 ) -> Result<i64, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     match val {
-        Value::Int(n) => Ok(n),
+        Value::Int { n, .. } => Ok(n),
         _ => Err(AstError {
             message: format!("field '{}' must be Int", key),
             field_path: vec![key.to_string()],
@@ -1297,7 +1459,7 @@ pub(crate) fn get_u64_field_with_aliases(
 ) -> Result<u64, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     match val {
-        Value::U64(n) => Ok(n),
+        Value::U64 { n, .. } => Ok(n),
         _ => Err(AstError {
             message: format!("field '{}' must be U64", key),
             field_path: vec![key.to_string()],
@@ -1313,7 +1475,7 @@ pub(crate) fn get_float_field_with_aliases(
 ) -> Result<f64, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     match val {
-        Value::Float(f) => Ok(f),
+        Value::Float { n: f, .. } => Ok(f),
         _ => Err(AstError {
             message: format!("field '{}' must be Float", key),
             field_path: vec![key.to_string()],
@@ -1405,7 +1567,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
             field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
         })?;
         let key_node = match &key_val {
-            Value::Dict(d) if d.is_empty() => None,
+            Value::Dict { entries: d, .. } if d.is_empty() => None,
             _ => Some(
                 dict_to_surface_node(&key_val, &fallback_span, ctx).map_err(|mut e| {
                     e.field_path.insert(0, "key".to_string());
@@ -1560,7 +1722,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
     for (i, arm_val) in list.into_iter().enumerate() {
         let i_str = i.to_string();
         let arm_dict = match arm_val {
-            Value::Dict(d) => d,
+            Value::Dict { entries: d, .. } => d,
             _ => {
                 return Err(AstError {
                     message: format!("match arm {} must be Dict", i),
@@ -1623,11 +1785,12 @@ pub(crate) fn get_string_opt_field_with_aliases(
 ) -> Result<Option<String>, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     match val {
-        Value::Dict(d) if d.is_empty() => Ok(None),
+        Value::Dict { entries: d, .. } if d.is_empty() => Ok(None),
         Value::String {
             ref source,
             start,
             end,
+            ..
         } => Ok(Some(source[start..end].to_string())),
         _ => Err(AstError {
             message: format!("field '{}' must be String or empty dict", key),
@@ -1648,6 +1811,7 @@ pub(crate) fn get_dot_key_field_with_aliases(
             ref source,
             start,
             end,
+            ..
         } => {
             let s = source[start..end].to_string();
             // Try to parse as integer first, fall back to Ident
@@ -1657,7 +1821,7 @@ pub(crate) fn get_dot_key_field_with_aliases(
                 Ok(DotKey::Ident(s))
             }
         }
-        Value::Int(n) => Ok(DotKey::Int(n)),
+        Value::Int { n, .. } => Ok(DotKey::Int(n)),
         _ => Err(AstError {
             message: format!("field '{}' must be String or Int for DotKey", key),
             field_path: vec![key.to_string()],
@@ -1728,7 +1892,13 @@ pub fn surface_program_to_dict(
 
     root.insert(
         HashableValue::Str("schema-version".into()),
-        Arc::new(Thunk::value(Value::Int(1), span.clone())),
+        Arc::new(Thunk::value(
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        )),
     );
 
     // documents: list of document dicts
@@ -1748,7 +1918,13 @@ pub fn surface_program_to_dict(
         span_to_thunk_id(span.clone(), ctx)?,
     );
 
-    Ok(Arc::new(Thunk::value(Value::Dict(root), span)))
+    Ok(Arc::new(Thunk::value(
+        Value::Dict {
+            entries: root,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span,
+    )))
 }
 
 /// Return the character at 1-based (line, col) in the given source text, if in bounds.
@@ -1770,14 +1946,20 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
     start_dict.insert(
         HashableValue::Str("line".into()),
         Arc::new(Thunk::value(
-            Value::Int(span.start_line as i64),
+            Value::Int {
+                n: span.start_line as i64,
+                type_val: crate::value::unknown_type_val(),
+            },
             span.clone(),
         )),
     );
     start_dict.insert(
         HashableValue::Str("col".into()),
         Arc::new(Thunk::value(
-            Value::Int(span.start_col as i64),
+            Value::Int {
+                n: span.start_col as i64,
+                type_val: crate::value::unknown_type_val(),
+            },
             span.clone(),
         )),
     );
@@ -1786,23 +1968,53 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
     let mut end_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     end_dict.insert(
         HashableValue::Str("line".into()),
-        Arc::new(Thunk::value(Value::Int(span.end_line as i64), span.clone())),
+        Arc::new(Thunk::value(
+            Value::Int {
+                n: span.end_line as i64,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        )),
     );
     end_dict.insert(
         HashableValue::Str("col".into()),
-        Arc::new(Thunk::value(Value::Int(span.end_col as i64), span.clone())),
+        Arc::new(Thunk::value(
+            Value::Int {
+                n: span.end_col as i64,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        )),
     );
 
     dict.insert(
         HashableValue::Str("start".into()),
-        Arc::new(Thunk::value(Value::Dict(start_dict), span.clone())),
+        Arc::new(Thunk::value(
+            Value::Dict {
+                entries: start_dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        )),
     );
     dict.insert(
         HashableValue::Str("end".into()),
-        Arc::new(Thunk::value(Value::Dict(end_dict), span.clone())),
+        Arc::new(Thunk::value(
+            Value::Dict {
+                entries: end_dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        )),
     );
 
-    Ok(Arc::new(Thunk::value(Value::Dict(dict), span)))
+    Ok(Arc::new(Thunk::value(
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span,
+    )))
 }
 
 /// Convert an iterator of Arc<Thunk> to a dict-based list (auto-indexed dict with integer keys).
@@ -1815,7 +2027,13 @@ pub(crate) fn list_to_thunk_id(
     for (i, item) in items.enumerate() {
         dict.insert(HashableValue::Int(i as i64), item);
     }
-    Ok(Arc::new(Thunk::value(Value::Dict(dict), span)))
+    Ok(Arc::new(Thunk::value(
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span,
+    )))
 }
 
 /// Convert a `SurfaceDocument` to an `Arc<Thunk>` containing its dict representation.
@@ -1867,7 +2085,13 @@ fn surface_document_to_thunk_id(
         .collect::<EvalResult<_>>()?;
     dict.insert(
         HashableValue::Str("header".into()),
-        Arc::new(Thunk::value(Value::Dict(header_thunks), span.clone())),
+        Arc::new(Thunk::value(
+            Value::Dict {
+                entries: header_thunks,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        )),
     );
 
     // leading-comments: absent when None or empty
@@ -1894,7 +2118,13 @@ fn surface_document_to_thunk_id(
         span_to_thunk_id(span.clone(), ctx)?,
     );
 
-    Ok(Arc::new(Thunk::value(Value::Dict(dict), span)))
+    Ok(Arc::new(Thunk::value(
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span,
+    )))
 }
 
 /// Convert a `SurfaceDeclaration` to an `Arc<Thunk>` containing its dict representation.
@@ -1959,7 +2189,13 @@ fn surface_decl_to_thunk_id(
                 .collect();
             dict.insert(
                 HashableValue::Str("params".into()),
-                Arc::new(Thunk::value(Value::Dict(params_dict), span.clone())),
+                Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: params_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span.clone(),
+                )),
             );
             // superclasses: Seq of [class-name, param1, param2, ...] seqs
             // Only emitted when non-empty (e.g. [class Ord a where Eq a] → [[Eq a]])
@@ -1979,7 +2215,13 @@ fn surface_decl_to_thunk_id(
                         }
                         let inner: IndexMap<HashableValue, Arc<Thunk>> =
                             entries.into_iter().collect();
-                        Arc::new(Thunk::value(Value::Dict(inner), span.clone()))
+                        Arc::new(Thunk::value(
+                            Value::Dict {
+                                entries: inner,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            span.clone(),
+                        ))
                     })
                     .collect();
                 dict.insert(
@@ -2015,7 +2257,13 @@ fn surface_decl_to_thunk_id(
                 .collect();
             dict.insert(
                 HashableValue::Str("methods".into()),
-                Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
+                Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: methods_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span.clone(),
+                )),
             );
             // determines: optional integer-keyed list of expression dicts
             if !determines.is_empty() {
@@ -2033,7 +2281,13 @@ fn surface_decl_to_thunk_id(
                     .collect();
                 dict.insert(
                     HashableValue::Str("determines".into()),
-                    Arc::new(Thunk::value(Value::Dict(determines_dict), span.clone())),
+                    Arc::new(Thunk::value(
+                        Value::Dict {
+                            entries: determines_dict,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        span.clone(),
+                    )),
                 );
             }
             // resolver: optional expression dict
@@ -2047,7 +2301,13 @@ fn surface_decl_to_thunk_id(
             if *resolver_injective {
                 dict.insert(
                     HashableValue::Str("injective".into()),
-                    Arc::new(Thunk::value(Value::Int(1), span.clone())),
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: 1,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        span.clone(),
+                    )),
                 );
             }
         }
@@ -2103,11 +2363,23 @@ fn surface_decl_to_thunk_id(
                             .collect();
                         arm_dict.insert(
                             HashableValue::Str("methods".into()),
-                            Arc::new(Thunk::value(Value::Dict(methods_dict), span.clone())),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: methods_dict,
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                span.clone(),
+                            )),
                         );
                         Ok((
                             HashableValue::Int(i as i64),
-                            Arc::new(Thunk::value(Value::Dict(arm_dict), span.clone())),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: arm_dict,
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                span.clone(),
+                            )),
                         ))
                     },
                 )
@@ -2116,7 +2388,13 @@ fn surface_decl_to_thunk_id(
                 .collect();
             dict.insert(
                 HashableValue::Str("arms".into()),
-                Arc::new(Thunk::value(Value::Dict(arms_dict), span.clone())),
+                Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: arms_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span.clone(),
+                )),
             );
         }
 
@@ -2151,13 +2429,14 @@ fn surface_decl_to_thunk_id(
             dict.insert(
                 HashableValue::Str("forms".into()),
                 Arc::new(Thunk::value(
-                    Value::Dict(
-                        form_arcs
+                    Value::Dict {
+                        entries: form_arcs
                             .into_iter()
                             .enumerate()
                             .map(|(i, v)| (HashableValue::Int(i as i64), v))
                             .collect(),
-                    ),
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     span.clone(),
                 )),
             );
@@ -2168,12 +2447,17 @@ fn surface_decl_to_thunk_id(
         HashableValue::Str("span".into()),
         span_to_thunk_id(span.clone(), ctx)?,
     );
-    let payload = Arc::new(Thunk::value(Value::Dict(dict), span.clone()));
-    let (vt_tycon, vt_ctor) = variant_tag.split_once('.').unwrap_or(("", variant_tag));
+    let payload = Arc::new(Thunk::value(
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        },
+        span.clone(),
+    ));
     Ok(Arc::new(Thunk::value(
         Value::Variant {
-            tycon: Arc::from(vt_tycon),
-            ctor: Arc::from(vt_ctor),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(variant_tag),
             payload: Some(payload),
         },
         span,
@@ -2196,21 +2480,33 @@ fn override_bare_in_literal_variant(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     if let Value::Variant {
-        ref tycon,
+        ref type_val,
         ref ctor,
         payload: Some(ref payload_thunk),
     } = val
     {
-        if tycon.as_ref() == "Expr" && ctor.as_ref() == "Literal" {
-            if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_value().cloned() {
+        if ctor.as_ref() == "Expr.Literal" {
+            if let Some(Value::Dict {
+                entries: mut dict, ..
+            }) = payload_thunk.try_get_value().cloned()
+            {
                 let new_bare_thunk = Arc::new(Thunk::value(
-                    Value::Int(if bare { 1 } else { 0 }),
+                    Value::Int {
+                        n: if bare { 1 } else { 0 },
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     span.clone(),
                 ));
                 dict.insert(HashableValue::Str("bare".into()), new_bare_thunk);
-                let new_payload = Arc::new(Thunk::value(Value::Dict(dict), span.clone()));
+                let new_payload = Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span.clone(),
+                ));
                 return Value::Variant {
-                    tycon: tycon.clone(),
+                    type_val: Arc::clone(type_val),
                     ctor: ctor.clone(),
                     payload: Some(new_payload),
                 };
@@ -2257,7 +2553,10 @@ fn alloc_entry_list_with_opts(
                 }
                 val
             }
-            None => Value::Dict(IndexMap::new()),
+            None => Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
         };
         let key_thunk = Arc::new(Thunk::value(key_val, entry.span.clone()));
 
@@ -2293,7 +2592,10 @@ fn alloc_entry_list_with_opts(
             // blank-before: true when there is a blank line before this entry
             let is_blank = comment_maps.blank_before.get(&key) == Some(&true);
             let blank_thunk = Arc::new(Thunk::value(
-                Value::Int(if is_blank { 1 } else { 0 }),
+                Value::Int {
+                    n: if is_blank { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 entry.span.clone(),
             ));
             payload.insert(HashableValue::Str("blank-before".into()), blank_thunk);
@@ -2301,21 +2603,39 @@ fn alloc_entry_list_with_opts(
 
         // When no comment maps, always include blank-before: false as default
         if opts.comments.is_none() {
-            let blank_thunk = Arc::new(Thunk::value(Value::Int(0), entry.span.clone()));
+            let blank_thunk = Arc::new(Thunk::value(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                entry.span.clone(),
+            ));
             payload.insert(HashableValue::Str("blank-before".into()), blank_thunk);
         }
 
-        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload), entry.span.clone()));
+        let payload_thunk = Arc::new(Thunk::value(
+            Value::Dict {
+                entries: payload,
+                type_val: crate::value::unknown_type_val(),
+            },
+            entry.span.clone(),
+        ));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            tycon: Arc::from("Expr"),
-            ctor: Arc::from("Entry"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    Ok(Arc::new(Thunk::value(Value::Dict(dict), rust_span!())))
+    Ok(Arc::new(Thunk::value(
+        Value::Dict {
+            entries: dict,
+            type_val: crate::value::unknown_type_val(),
+        },
+        rust_span!(),
+    )))
 }
 
 /// Convert a SurfaceNode to an `Arc<Thunk>` containing its `Expr.*` variant representation.
@@ -2334,11 +2654,17 @@ fn surface_node_to_thunk_id(
         let entries_thunk = alloc_entry_list_with_opts(entries, opts, ctx)?;
         let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("entries".into()), entries_thunk);
-        let payload_thunk = Arc::new(Thunk::value(Value::Dict(payload), node.span.clone()));
+        let payload_thunk = Arc::new(Thunk::value(
+            Value::Dict {
+                entries: payload,
+                type_val: crate::value::unknown_type_val(),
+            },
+            node.span.clone(),
+        ));
         inject_span_into_expr_variant(
             Value::Variant {
-                tycon: Arc::from("Expr"),
-                ctor: Arc::from("Dict"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("Expr.Dict"),
                 payload: Some(payload_thunk),
             },
             &node.span,
@@ -2366,11 +2692,11 @@ mod tests {
     ) -> (String, IndexMap<HashableValue, Arc<Thunk>>) {
         match val {
             Value::Variant {
-                tycon,
                 ctor,
                 payload: Some(payload_thunk),
+                ..
             } => match payload_thunk.try_get_value().cloned() {
-                Some(Value::Dict(map)) => (format!("{}.{}", tycon, ctor), map),
+                Some(Value::Dict { entries: map, .. }) => (ctor.as_ref().to_string(), map),
                 other => panic!("expected Dict payload for Variant, got {:?}", other),
             },
             other => panic!("expected Variant, got {:?}", other),
@@ -2392,7 +2718,7 @@ mod tests {
         let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         match thunk.try_get_value().cloned() {
-            Some(Value::Dict(map)) => {
+            Some(Value::Dict { entries: map, .. }) => {
                 let type_thunk = map.get(&HashableValue::Str("type".into())).unwrap().clone();
                 assert_eq!(
                     type_thunk.try_get_value().cloned(),
@@ -2403,7 +2729,13 @@ mod tests {
                     .get(&HashableValue::Str("schema-version".into()))
                     .unwrap()
                     .clone();
-                assert_eq!(version_thunk.try_get_value().cloned(), Some(Value::Int(1)));
+                assert_eq!(
+                    version_thunk.try_get_value().cloned(),
+                    Some(Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val()
+                    })
+                );
             }
             _ => panic!("expected Dict"),
         }
@@ -2426,22 +2758,31 @@ mod tests {
 
         // Navigate to the first document's first expression (the dict)
         match thunk.try_get_value().cloned() {
-            Some(Value::Dict(file_dict)) => {
+            Some(Value::Dict {
+                entries: file_dict, ..
+            }) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
                 match docs_thunk.try_get_value().cloned() {
-                    Some(Value::Dict(docs_list)) => {
+                    Some(Value::Dict {
+                        entries: docs_list, ..
+                    }) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_value().cloned() {
-                            Some(Value::Dict(doc_dict)) => {
+                            Some(Value::Dict {
+                                entries: doc_dict, ..
+                            }) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
                                 match exprs_thunk.try_get_value().cloned() {
-                                    Some(Value::Dict(exprs_list)) => {
+                                    Some(Value::Dict {
+                                        entries: exprs_list,
+                                        ..
+                                    }) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
@@ -2456,7 +2797,10 @@ mod tests {
                                                 .unwrap()
                                                 .clone();
                                             match entries_thunk.try_get_value().cloned() {
-                                                Some(Value::Dict(entries_list)) => {
+                                                Some(Value::Dict {
+                                                    entries: entries_list,
+                                                    ..
+                                                }) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
@@ -2487,7 +2831,7 @@ mod tests {
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_value().cloned(),
-                                                            Some(Value::Int(1)),
+                                                            Some(Value::Int { n: 1, type_val: crate::value::unknown_type_val() }),
                                                             "bare should be true for bare word 'foo'"
                                                         );
                                                     }
@@ -2526,22 +2870,31 @@ mod tests {
 
         // Navigate to the key and check bare: false
         match thunk.try_get_value().cloned() {
-            Some(Value::Dict(file_dict)) => {
+            Some(Value::Dict {
+                entries: file_dict, ..
+            }) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
                 match docs_thunk.try_get_value().cloned() {
-                    Some(Value::Dict(docs_list)) => {
+                    Some(Value::Dict {
+                        entries: docs_list, ..
+                    }) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_value().cloned() {
-                            Some(Value::Dict(doc_dict)) => {
+                            Some(Value::Dict {
+                                entries: doc_dict, ..
+                            }) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
                                 match exprs_thunk.try_get_value().cloned() {
-                                    Some(Value::Dict(exprs_list)) => {
+                                    Some(Value::Dict {
+                                        entries: exprs_list,
+                                        ..
+                                    }) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
@@ -2555,7 +2908,10 @@ mod tests {
                                                 .unwrap()
                                                 .clone();
                                             match entries_thunk.try_get_value().cloned() {
-                                                Some(Value::Dict(entries_list)) => {
+                                                Some(Value::Dict {
+                                                    entries: entries_list,
+                                                    ..
+                                                }) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
@@ -2584,7 +2940,7 @@ mod tests {
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_value().cloned(),
-                                                            Some(Value::Int(0)),
+                                                            Some(Value::Int { n: 0, type_val: crate::value::unknown_type_val() }),
                                                             "bare should be false for quoted string \"foo\""
                                                         );
                                                     }
@@ -2628,22 +2984,31 @@ mod tests {
 
         // Navigate to the entry and check for leading-comments
         match thunk.try_get_value().cloned() {
-            Some(Value::Dict(file_dict)) => {
+            Some(Value::Dict {
+                entries: file_dict, ..
+            }) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
                 match docs_thunk.try_get_value().cloned() {
-                    Some(Value::Dict(docs_list)) => {
+                    Some(Value::Dict {
+                        entries: docs_list, ..
+                    }) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_value().cloned() {
-                            Some(Value::Dict(doc_dict)) => {
+                            Some(Value::Dict {
+                                entries: doc_dict, ..
+                            }) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
                                 match exprs_thunk.try_get_value().cloned() {
-                                    Some(Value::Dict(exprs_list)) => {
+                                    Some(Value::Dict {
+                                        entries: exprs_list,
+                                        ..
+                                    }) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
@@ -2657,7 +3022,10 @@ mod tests {
                                                 .unwrap()
                                                 .clone();
                                             match entries_thunk.try_get_value().cloned() {
-                                                Some(Value::Dict(entries_list)) => {
+                                                Some(Value::Dict {
+                                                    entries: entries_list,
+                                                    ..
+                                                }) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
@@ -2682,7 +3050,10 @@ mod tests {
                                                             .try_get_value()
                                                             .cloned()
                                                         {
-                                                            Some(Value::Dict(comments_list)) => {
+                                                            Some(Value::Dict {
+                                                                entries: comments_list,
+                                                                ..
+                                                            }) => {
                                                                 let comment_thunk = comments_list
                                                                     .get(&HashableValue::Int(0))
                                                                     .expect("comment 0 missing")
@@ -2748,22 +3119,31 @@ mod tests {
 
         // Navigate to the second entry and check blank-before: true
         match thunk.try_get_value().cloned() {
-            Some(Value::Dict(file_dict)) => {
+            Some(Value::Dict {
+                entries: file_dict, ..
+            }) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
                 match docs_thunk.try_get_value().cloned() {
-                    Some(Value::Dict(docs_list)) => {
+                    Some(Value::Dict {
+                        entries: docs_list, ..
+                    }) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_value().cloned() {
-                            Some(Value::Dict(doc_dict)) => {
+                            Some(Value::Dict {
+                                entries: doc_dict, ..
+                            }) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
                                 match exprs_thunk.try_get_value().cloned() {
-                                    Some(Value::Dict(exprs_list)) => {
+                                    Some(Value::Dict {
+                                        entries: exprs_list,
+                                        ..
+                                    }) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
@@ -2777,7 +3157,10 @@ mod tests {
                                                 .unwrap()
                                                 .clone();
                                             match entries_thunk.try_get_value().cloned() {
-                                                Some(Value::Dict(entries_list)) => {
+                                                Some(Value::Dict {
+                                                    entries: entries_list,
+                                                    ..
+                                                }) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(1))
                                                         .unwrap()
@@ -2799,7 +3182,7 @@ mod tests {
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_value().cloned(),
-                                                            Some(Value::Int(1)),
+                                                            Some(Value::Int { n: 1, type_val: crate::value::unknown_type_val() }),
                                                             "blank-before should be true for second entry"
                                                         );
                                                     }
@@ -2838,22 +3221,31 @@ mod tests {
 
         // Navigate to the key and check bare: false (default when source is None)
         match thunk.try_get_value().cloned() {
-            Some(Value::Dict(file_dict)) => {
+            Some(Value::Dict {
+                entries: file_dict, ..
+            }) => {
                 let docs_thunk = file_dict
                     .get(&HashableValue::Str("documents".into()))
                     .unwrap()
                     .clone();
                 match docs_thunk.try_get_value().cloned() {
-                    Some(Value::Dict(docs_list)) => {
+                    Some(Value::Dict {
+                        entries: docs_list, ..
+                    }) => {
                         let doc_thunk = docs_list.get(&HashableValue::Int(0)).unwrap().clone();
                         match doc_thunk.try_get_value().cloned() {
-                            Some(Value::Dict(doc_dict)) => {
+                            Some(Value::Dict {
+                                entries: doc_dict, ..
+                            }) => {
                                 let exprs_thunk = doc_dict
                                     .get(&HashableValue::Str("expressions".into()))
                                     .unwrap()
                                     .clone();
                                 match exprs_thunk.try_get_value().cloned() {
-                                    Some(Value::Dict(exprs_list)) => {
+                                    Some(Value::Dict {
+                                        entries: exprs_list,
+                                        ..
+                                    }) => {
                                         let expr_thunk =
                                             exprs_list.get(&HashableValue::Int(0)).unwrap().clone();
                                         let expr_val = expr_thunk
@@ -2867,7 +3259,10 @@ mod tests {
                                                 .unwrap()
                                                 .clone();
                                             match entries_thunk.try_get_value().cloned() {
-                                                Some(Value::Dict(entries_list)) => {
+                                                Some(Value::Dict {
+                                                    entries: entries_list,
+                                                    ..
+                                                }) => {
                                                     let entry_thunk = entries_list
                                                         .get(&HashableValue::Int(0))
                                                         .unwrap()
@@ -2896,7 +3291,7 @@ mod tests {
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_value().cloned(),
-                                                            Some(Value::Int(0)),
+                                                            Some(Value::Int { n: 0, type_val: crate::value::unknown_type_val() }),
                                                             "bare should be false when source is None"
                                                         );
 
@@ -2910,7 +3305,7 @@ mod tests {
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_value().cloned(),
-                                                            Some(Value::Int(0)),
+                                                            Some(Value::Int { n: 0, type_val: crate::value::unknown_type_val() }),
                                                             "blank-before should be false when comments is None"
                                                         );
 

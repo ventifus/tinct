@@ -205,11 +205,11 @@ pub fn normalize<'a>(
 /// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
 pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given constructor name.
-    // tycon is always "TypeNode" for all TypeNode variants.
+    // The ctor field stores the fully qualified tag "TypeNode.<ctor>".
     let leaf = |ctor: &str| -> Value {
         Value::Variant {
-            tycon: Arc::from("TypeNode"),
-            ctor: Arc::from(ctor),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(format!("TypeNode.{}", ctor).as_str()),
             payload: None,
         }
     };
@@ -221,15 +221,21 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
             payload.insert(
                 crate::value::HashableValue::Str(Arc::from("n")),
                 Arc::new(crate::value::Thunk::value(
-                    Value::Int(*n),
+                    Value::Int {
+                        n: *n,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 )),
             );
             Some(Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("IntLiteral"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("TypeNode.IntLiteral"),
                 payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict(payload),
+                    Value::Dict {
+                        entries: payload,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 ))),
             })
@@ -245,15 +251,19 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
                         source: Arc::from(s.as_str()),
                         start: 0,
                         end: s.len(),
+                        type_val: crate::value::unknown_type_val(),
                     },
                     crate::rust_span!(),
                 )),
             );
             Some(Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("StringLiteral"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("TypeNode.StringLiteral"),
                 payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict(payload),
+                    Value::Dict {
+                        entries: payload,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 ))),
             })
@@ -274,14 +284,23 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
                 );
             }
             let open_val = match &row.tail {
-                crate::type_def::RowTail::Empty => Value::Int(0),
-                _ => Value::Int(1),
+                crate::type_def::RowTail::Empty => Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                _ => Value::Int {
+                    n: 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
             };
             let mut payload = indexmap::IndexMap::new();
             payload.insert(
                 crate::value::HashableValue::Str(Arc::from("fields")),
                 Arc::new(crate::value::Thunk::value(
-                    Value::Dict(fields_dict),
+                    Value::Dict {
+                        entries: fields_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 )),
             );
@@ -305,10 +324,13 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
                 );
             }
             Some(Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Dict"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("TypeNode.Dict"),
                 payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict(payload),
+                    Value::Dict {
+                        entries: payload,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 ))),
             })
@@ -326,15 +348,21 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
             payload.insert(
                 crate::value::HashableValue::Str(Arc::from("types")),
                 Arc::new(crate::value::Thunk::value(
-                    Value::Dict(types_dict),
+                    Value::Dict {
+                        entries: types_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 )),
             );
             Some(Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Union"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("TypeNode.Union"),
                 payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict(payload),
+                    Value::Dict {
+                        entries: payload,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 ))),
             })
@@ -352,15 +380,21 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
             payload.insert(
                 crate::value::HashableValue::Str(Arc::from("types")),
                 Arc::new(crate::value::Thunk::value(
-                    Value::Dict(types_dict),
+                    Value::Dict {
+                        entries: types_dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 )),
             );
             Some(Value::Variant {
-                tycon: Arc::from("TypeNode"),
-                ctor: Arc::from("Intersect"),
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from("TypeNode.Intersect"),
                 payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict(payload),
+                    Value::Dict {
+                        entries: payload,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 ))),
             })
@@ -473,7 +507,7 @@ pub(crate) async fn evaluate_resolver_with_thunk(
 /// structural conversion; this function is the fallback when that returns None.
 pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
     let tag = match val {
-        Value::Variant { tycon, ctor, .. } => format!("{}.{}", tycon, ctor),
+        Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
         _ => return None,
     };
     match tag.as_str() {
@@ -539,24 +573,20 @@ pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
 ///
 /// Returns `Some(Kind)` for recognised kind strings, `None` for unrecognised values.
 pub(crate) fn typenode_typevar_kind(val: &Value) -> Option<crate::type_def::Kind> {
-    // Only matches Value::Variant { tycon: "TypeNode", ctor: "TypeVar", payload: Some(thunk) }
+    // Only matches Value::Variant { ctor: "TypeNode.TypeVar", payload: Some(thunk) }
     // where the thunk resolves to Value::Dict containing kind: "Operator" | "Label".
-    let (tycon, ctor, payload_opt) = match val {
-        Value::Variant {
-            tycon,
-            ctor,
-            payload,
-        } => (&**tycon, &**ctor, payload),
+    let (ctor, payload_opt) = match val {
+        Value::Variant { ctor, payload, .. } => (ctor.as_ref(), payload),
         _ => return None,
     };
-    if tycon != "TypeNode" || ctor != "TypeVar" {
+    if ctor != "TypeNode.TypeVar" {
         return None;
     }
     // The payload is an Arc<Thunk> that resolves to a Dict with a "kind" string field.
     let payload_thunk = payload_opt.as_ref()?;
     let payload_val = payload_thunk.try_get_value()?;
     let dict = match payload_val {
-        Value::Dict(d) => d,
+        Value::Dict { entries: d, .. } => d,
         _ => return None,
     };
     // Extract the "kind" field value.
@@ -564,7 +594,9 @@ pub(crate) fn typenode_typevar_kind(val: &Value) -> Option<crate::type_def::Kind
     let kind_thunk = dict.get(&kind_key)?;
     let kind_val = kind_thunk.try_get_value()?;
     let kind_str = match kind_val {
-        Value::String { source, start, end } => &source[*start..*end],
+        Value::String {
+            source, start, end, ..
+        } => &source[*start..*end],
         _ => return None,
     };
     match kind_str {

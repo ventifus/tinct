@@ -44,7 +44,7 @@ pub(crate) async fn invoke_proxy_handler(
             })
             .await
         }
-        Value::Builtin(def) => Ok(Arc::new(Thunk::builtin_call(
+        Value::Builtin { def, .. } => Ok(Arc::new(Thunk::builtin_call(
             def,
             vec![key_arg_id],
             None,
@@ -128,7 +128,7 @@ mod tests {
         let thunk = eval_str("[d: [a: 1]  result: d.a]", &ctx).await?;
         let val = materialize(&thunk, &ctx).await?;
 
-        let Value::Dict(map) = val else {
+        let Value::Dict { entries: map, .. } = val else {
             return Err(Box::new(EvalError::internal(
                 "expected Dict".to_string(),
                 crate::rust_span!(),
@@ -141,7 +141,10 @@ mod tests {
         let result_val = crate::eval::materialize(&result_thunk, None, &ctx).await?;
         assert_eq!(
             result_val,
-            Value::Int(1),
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val()
+            },
             "d.a must return Int(1) when d = {{a: 1}}"
         );
         Ok(())
@@ -158,7 +161,7 @@ mod tests {
 
         // The outer dict materializes fine; forcing `result` triggers the access error.
         let outer_val = materialize(&thunk, &ctx).await?;
-        let Value::Dict(map) = outer_val else {
+        let Value::Dict { entries: map, .. } = outer_val else {
             return Err(Box::new(EvalError::internal(
                 "expected Dict".to_string(),
                 crate::rust_span!(),
@@ -194,7 +197,7 @@ mod tests {
         let thunk = eval_str("[d: [\"x\"]  result: d.0]", &ctx).await?;
         let outer_val = materialize(&thunk, &ctx).await?;
 
-        let Value::Dict(map) = outer_val else {
+        let Value::Dict { entries: map, .. } = outer_val else {
             return Err(Box::new(EvalError::internal(
                 "expected Dict".to_string(),
                 crate::rust_span!(),

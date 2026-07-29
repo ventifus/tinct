@@ -1372,6 +1372,25 @@ pub enum CoreExpr {
         bindings: Vec<Spanned<CoreExpr>>,
     },
     Placeholder,
+    /// A type declaration with `repr:` metadata.
+    ///
+    /// Produced by `lower_type_alias_to_constructor_dict` when the TypeAlias body contains a
+    /// `repr: "Value::X"` key. At evaluation time the evaluator:
+    ///   1. Evaluates `inner` to get the constructor dict.
+    ///   2. Validates `repr` against the Value variant allowlist.
+    ///   3. Registers the constructor dict in `ctx.repr_registry` under `repr`.
+    ///   4. If `is_pred` is Some, evaluates it and registers in `ctx.is_predicates` under `repr`.
+    ///   5. Returns the constructor dict thunk (transparent to callers — the value IS the dict).
+    ///
+    /// The `repr` string is the exact `Value::X` variant name (e.g., `"Value::Int"`).
+    ReprDecl {
+        /// The repr string (e.g., `"Value::Int"`).
+        repr: String,
+        /// Optional `is:` predicate expression (a tinct function `[fn [let x] ...]`).
+        is_pred: Option<Arc<Spanned<CoreExpr>>>,
+        /// The inner constructor dict produced by `lower_type_alias_to_constructor_dict`.
+        inner: Arc<Spanned<CoreExpr>>,
+    },
 }
 
 /// A dict/list entry in a CoreExpr::Dict.

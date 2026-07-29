@@ -72,16 +72,26 @@ pub(crate) fn builtin_mul(
             .clone();
 
         match (&left, &right) {
-            (Value::Int(a), Value::Int(b)) => a
+            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => a
                 .checked_mul(*b)
-                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
+                .map(|r| {
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: r,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    ))
+                })
                 .ok_or_else(|| EvalError::integer_overflow("*".to_string(), call_span).into()),
-            (Value::Float(a), Value::Float(b)) => check_float_result(a * b, "*", call_span),
-            (Value::Int(a), Value::Float(b)) => {
+            (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => {
+                check_float_result(a * b, "*", call_span)
+            }
+            (Value::Int { n: a, .. }, Value::Float { n: b, .. }) => {
                 check_int_to_float_precision(*a, thunk0.span.clone())?;
                 check_float_result((*a as f64) * b, "*", call_span)
             }
-            (Value::Float(a), Value::Int(b)) => {
+            (Value::Float { n: a, .. }, Value::Int { n: b, .. }) => {
                 check_int_to_float_precision(*b, thunk1.span.clone())?;
                 check_float_result(a * (*b as f64), "*", call_span)
             }
@@ -125,7 +135,7 @@ pub(crate) fn builtin_div_float(
             .clone();
 
         match (&left, &right) {
-            (Value::Int(a), Value::Int(b)) => {
+            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => {
                 if *b == 0 {
                     return Err(
                         EvalError::division_by_zero("/".to_string(), call_span.clone()).into(),
@@ -133,12 +143,14 @@ pub(crate) fn builtin_div_float(
                 }
                 check_float_result(*a as f64 / *b as f64, "/", call_span)
             }
-            (Value::Float(a), Value::Float(b)) => check_float_result(a / b, "/", call_span),
-            (Value::Int(a), Value::Float(b)) => {
+            (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => {
+                check_float_result(a / b, "/", call_span)
+            }
+            (Value::Int { n: a, .. }, Value::Float { n: b, .. }) => {
                 check_int_to_float_precision(*a, thunk0.span.clone())?;
                 check_float_result((*a as f64) / b, "/", call_span)
             }
-            (Value::Float(a), Value::Int(b)) => {
+            (Value::Float { n: a, .. }, Value::Int { n: b, .. }) => {
                 check_int_to_float_precision(*b, thunk1.span.clone())?;
                 check_float_result(a / (*b as f64), "/", call_span)
             }
@@ -180,9 +192,13 @@ pub(crate) fn builtin_eq_int(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match (&left, &right) {
-            (Value::Int(a), Value::Int(b)) => {
-                ok_val(Value::Int(if a == b { 1 } else { 0 }), call_span)
-            }
+            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
+                Value::Int {
+                    n: if a == b { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Int",
                 &format!("{} and {}", left.type_name(), right.type_name()),
@@ -221,9 +237,13 @@ pub(crate) fn builtin_eq_float(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match (&left, &right) {
-            (Value::Float(a), Value::Float(b)) => {
-                ok_val(Value::Int(if a == b { 1 } else { 0 }), call_span)
-            }
+            (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => ok_val(
+                Value::Int {
+                    n: if a == b { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
                 &format!("{} and {}", left.type_name(), right.type_name()),
@@ -267,15 +287,23 @@ pub(crate) fn builtin_eq_string(
                     source: s1,
                     start: start1,
                     end: end1,
+                    ..
                 },
                 Value::String {
                     source: s2,
                     start: start2,
                     end: end2,
+                    ..
                 },
             ) => {
                 let eq = s1[*start1..*end1] == s2[*start2..*end2];
-                ok_val(Value::Int(if eq { 1 } else { 0 }), call_span)
+                ok_val(
+                    Value::Int {
+                        n: if eq { 1 } else { 0 },
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             _ => Err(EvalError::type_mismatch(
                 "String",
@@ -323,28 +351,30 @@ pub(crate) fn builtin_lt(
             .clone();
 
         let result = match (&left, &right) {
-            (Value::Int(a), Value::Int(b)) => a < b,
-            (Value::Float(a), Value::Float(b)) => a < b,
+            (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => a < b,
+            (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => a < b,
             (
                 Value::String {
                     source: source_a,
                     start: start_a,
                     end: end_a,
+                    ..
                 },
                 Value::String {
                     source: source_b,
                     start: start_b,
                     end: end_b,
+                    ..
                 },
             ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
             // Cross-type: Int/Float promotion via `as f64` cast.
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
             // explicit [float n] cast (doc/11-stdlib.md §Equality P3, P6).
-            (Value::Int(a), Value::Float(b)) => {
+            (Value::Int { n: a, .. }, Value::Float { n: b, .. }) => {
                 check_int_to_float_precision(*a, thunk0.span.clone())?;
                 (*a as f64) < *b
             }
-            (Value::Float(a), Value::Int(b)) => {
+            (Value::Float { n: a, .. }, Value::Int { n: b, .. }) => {
                 check_int_to_float_precision(*b, thunk1.span.clone())?;
                 *a < (*b as f64)
             }
@@ -359,7 +389,13 @@ pub(crate) fn builtin_lt(
                 .into());
             }
         };
-        ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if result { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -382,9 +418,13 @@ pub(crate) fn builtin_float_lt(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => {
-                ok_val(Value::Int(if x < y { 1 } else { 0 }), call_span)
-            }
+            (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
+                Value::Int {
+                    n: if x < y { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
                 &format!("{} and {}", a.type_name(), b.type_name()),
@@ -419,14 +459,19 @@ pub(crate) fn builtin_str_lt(
                     source: sa,
                     start: sta,
                     end: ea,
+                    ..
                 },
                 Value::String {
                     source: sb,
                     start: stb,
                     end: eb,
+                    ..
                 },
             ) => ok_val(
-                Value::Int(if sa[*sta..*ea] < sb[*stb..*eb] { 1 } else { 0 }),
+                Value::Int {
+                    n: if sa[*sta..*ea] < sb[*stb..*eb] { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             ),
             _ => Err(EvalError::type_mismatch(
@@ -476,11 +521,14 @@ pub(crate) fn builtin_lte(
             .expect("builtin_lt returns materialized")
             .clone();
         ok_val(
-            Value::Int(if matches!(val, Value::Int(n) if n != 0) {
-                0
-            } else {
-                1
-            }),
+            Value::Int {
+                n: if matches!(val, Value::Int { n, .. } if n != 0) {
+                    0
+                } else {
+                    1
+                },
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )
     })
@@ -491,10 +539,9 @@ fn extract_single_float(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<f64> {
-    let _ = ctx;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
@@ -505,8 +552,8 @@ fn extract_single_float(
         .expect("pre-materialized by force_count/pos_strictness")
         .clone();
     match val {
-        Value::Int(n) => Ok(n as f64),
-        Value::Float(f) => Ok(f),
+        Value::Int { n, .. } => Ok(n as f64),
+        Value::Float { n: f, .. } => Ok(f),
         _ => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Int or Float",
@@ -522,10 +569,9 @@ fn extract_two_floats(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(f64, f64)> {
-    let _ = ctx;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
@@ -542,8 +588,8 @@ fn extract_two_floats(
         .clone();
 
     let a = match left {
-        Value::Int(n) => n as f64,
-        Value::Float(f) => f,
+        Value::Int { n, .. } => n as f64,
+        Value::Float { n: f, .. } => f,
         _ => {
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
@@ -556,8 +602,8 @@ fn extract_two_floats(
     };
 
     let b = match right {
-        Value::Int(n) => n as f64,
-        Value::Float(f) => f,
+        Value::Int { n, .. } => n as f64,
+        Value::Float { n: f, .. } => f,
         _ => {
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
@@ -606,7 +652,13 @@ pub(crate) fn builtin_sqrt(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Float(val.sqrt()), call_span)
+        ok_val(
+            Value::Float {
+                n: val.sqrt(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -625,7 +677,13 @@ pub(crate) fn builtin_log(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("log", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Float(val.ln()), call_span)
+        ok_val(
+            Value::Float {
+                n: val.ln(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -823,7 +881,13 @@ pub(crate) fn builtin_nan_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Int(if val.is_nan() { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if val.is_nan() { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -841,7 +905,13 @@ pub(crate) fn builtin_inf_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Int(if val.is_infinite() { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if val.is_infinite() { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -859,7 +929,13 @@ pub(crate) fn builtin_finite_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Int(if val.is_finite() { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if val.is_finite() { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -868,10 +944,9 @@ fn extract_int_pair(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(i64, i64)> {
-    let _ = ctx;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
@@ -888,7 +963,7 @@ fn extract_int_pair(
         .clone();
 
     let a = match left {
-        Value::Int(n) => n,
+        Value::Int { n, .. } => n,
         _ => {
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
@@ -901,7 +976,7 @@ fn extract_int_pair(
     };
 
     let b = match right {
-        Value::Int(n) => n,
+        Value::Int { n, .. } => n,
         _ => {
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
@@ -930,7 +1005,13 @@ pub(crate) fn builtin_band(
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Int(a & b), call_span)
+        ok_val(
+            Value::Int {
+                n: a & b,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -948,7 +1029,13 @@ pub(crate) fn builtin_bor(
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Int(a | b), call_span)
+        ok_val(
+            Value::Int {
+                n: a | b,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -966,7 +1053,13 @@ pub(crate) fn builtin_bxor(
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Int(a ^ b), call_span)
+        ok_val(
+            Value::Int {
+                n: a ^ b,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -996,10 +1089,22 @@ pub(crate) fn builtin_shl(
         }
 
         if bits >= 64 {
-            return ok_val(Value::Int(0), call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            );
         }
 
-        ok_val(Value::Int(value << bits), call_span)
+        ok_val(
+            Value::Int {
+                n: value << bits,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1029,12 +1134,24 @@ pub(crate) fn builtin_shr(
         }
 
         if bits >= 64 {
-            return ok_val(Value::Int(0), call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            );
         }
 
         // Logical shift: cast to u64, shift, cast back to i64
         let result = ((value as u64) >> bits) as i64;
-        ok_val(Value::Int(result), call_span)
+        ok_val(
+            Value::Int {
+                n: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1065,8 +1182,20 @@ pub(crate) fn builtin_float(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match val {
-            Value::Int(n) => ok_val(Value::Float(n as f64), call_span),
-            Value::Float(f) => ok_val(Value::Float(f), call_span),
+            Value::Int { n, .. } => ok_val(
+                Value::Float {
+                    n: n as f64,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
+            Value::Float { n: f, .. } => ok_val(
+                Value::Float {
+                    n: f,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch_ctx(
                 "float".to_string(),
                 "Int or Float",
@@ -1100,9 +1229,17 @@ pub(crate) fn builtin_int_add(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_add(*y)
-                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
+                .map(|r| {
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: r,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    ))
+                })
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-add".to_string(), call_span).into()
                 }),
@@ -1134,7 +1271,7 @@ pub(crate) fn builtin_float_add(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => {
+            (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x + y, "builtin-float-add", call_span)
             }
             _ => Err(EvalError::type_mismatch(
@@ -1165,10 +1302,16 @@ pub(crate) fn builtin_int_to_float(
         let thunk0 = args[0].clone();
         let v = thunk0.try_get_value().expect("pre-materialized").clone();
         match v {
-            Value::Int(n) => {
+            Value::Int { n, .. } => {
                 // Precision guard: integers with |n| > 2^53 lose precision as f64.
                 check_int_to_float_precision(n, thunk0.span.clone())?;
-                ok_val(Value::Float(n as f64), call_span)
+                ok_val(
+                    Value::Float {
+                        n: n as f64,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             _ => Err(EvalError::type_mismatch("Integer", v.type_name(), call_span).into()),
         }
@@ -1193,9 +1336,17 @@ pub(crate) fn builtin_int_sub(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_sub(*y)
-                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
+                .map(|r| {
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: r,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    ))
+                })
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-sub".to_string(), call_span).into()
                 }),
@@ -1227,7 +1378,7 @@ pub(crate) fn builtin_float_sub(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => {
+            (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x - y, "builtin-float-sub", call_span)
             }
             _ => Err(EvalError::type_mismatch(
@@ -1258,9 +1409,17 @@ pub(crate) fn builtin_int_mul(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => x
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_mul(*y)
-                .map(|r| Arc::new(Thunk::value(Value::Int(r), call_span.clone())))
+                .map(|r| {
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: r,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    ))
+                })
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-mul".to_string(), call_span).into()
                 }),
@@ -1292,7 +1451,7 @@ pub(crate) fn builtin_float_mul(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => {
+            (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x * y, "builtin-float-mul", call_span)
             }
             _ => Err(EvalError::type_mismatch(
@@ -1326,9 +1485,13 @@ pub(crate) fn builtin_int_gt(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => {
-                ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
-            }
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
+                Value::Int {
+                    n: if x > y { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
                 &format!("{} and {}", a.type_name(), b.type_name()),
@@ -1357,9 +1520,13 @@ pub(crate) fn builtin_float_gt(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => {
-                ok_val(Value::Int(if x > y { 1 } else { 0 }), call_span)
-            }
+            (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
+                Value::Int {
+                    n: if x > y { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
                 &format!("{} and {}", a.type_name(), b.type_name()),
@@ -1393,14 +1560,19 @@ pub(crate) fn builtin_str_gt(
                     source: sa,
                     start: sta,
                     end: ea,
+                    ..
                 },
                 Value::String {
                     source: sb,
                     start: stb,
                     end: eb,
+                    ..
                 },
             ) => ok_val(
-                Value::Int(if sa[*sta..*ea] > sb[*stb..*eb] { 1 } else { 0 }),
+                Value::Int {
+                    n: if sa[*sta..*ea] > sb[*stb..*eb] { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             ),
             _ => Err(EvalError::type_mismatch(
@@ -1431,9 +1603,13 @@ pub(crate) fn builtin_int_gte(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Int(x), Value::Int(y)) => {
-                ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
-            }
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
+                Value::Int {
+                    n: if x >= y { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
                 &format!("{} and {}", a.type_name(), b.type_name()),
@@ -1462,9 +1638,13 @@ pub(crate) fn builtin_float_gte(
         let a = args[0].try_get_value().expect("pre-materialized").clone();
         let b = args[1].try_get_value().expect("pre-materialized").clone();
         match (&a, &b) {
-            (Value::Float(x), Value::Float(y)) => {
-                ok_val(Value::Int(if x >= y { 1 } else { 0 }), call_span)
-            }
+            (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
+                Value::Int {
+                    n: if x >= y { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
                 &format!("{} and {}", a.type_name(), b.type_name()),
@@ -1498,14 +1678,19 @@ pub(crate) fn builtin_str_gte(
                     source: sa,
                     start: sta,
                     end: ea,
+                    ..
                 },
                 Value::String {
                     source: sb,
                     start: stb,
                     end: eb,
+                    ..
                 },
             ) => ok_val(
-                Value::Int(if sa[*sta..*ea] >= sb[*stb..*eb] { 1 } else { 0 }),
+                Value::Int {
+                    n: if sa[*sta..*ea] >= sb[*stb..*eb] { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             ),
             _ => Err(EvalError::type_mismatch(
@@ -1721,7 +1906,13 @@ mod tests {
     fn test_max_safe_int_boundary_ok() {
         let ctx = test_ctx();
         let result = run(builtin_int_to_float(BuiltinArgs {
-            args: vec![alloc(&ctx, Value::Int(MAX_SAFE_INT))],
+            args: vec![alloc(
+                &ctx,
+                Value::Int {
+                    n: MAX_SAFE_INT,
+                    type_val: crate::value::unknown_type_val(),
+                },
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1729,7 +1920,7 @@ mod tests {
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
-            matches!(t.try_get_value(), Some(Value::Float(_))),
+            matches!(t.try_get_value(), Some(Value::Float { .. })),
             "expected Float at MAX_SAFE_INT boundary"
         );
     }
@@ -1739,7 +1930,13 @@ mod tests {
     fn test_max_safe_int_plus_one_precision_error() {
         let ctx = test_ctx();
         let result = run(builtin_int_to_float(BuiltinArgs {
-            args: vec![alloc(&ctx, Value::Int(MAX_SAFE_INT + 1))],
+            args: vec![alloc(
+                &ctx,
+                Value::Int {
+                    n: MAX_SAFE_INT + 1,
+                    type_val: crate::value::unknown_type_val(),
+                },
+            )],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1758,14 +1955,35 @@ mod tests {
     fn test_add_int_int_fast_path() {
         let ctx = test_ctx();
         let result = run(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(&ctx, Value::Int(3)), alloc(&ctx, Value::Int(4))],
+            args: vec![
+                alloc(
+                    &ctx,
+                    Value::Int {
+                        n: 3,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                ),
+                alloc(
+                    &ctx,
+                    Value::Int {
+                        n: 4,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }));
         let t = result.expect("expected Int(7)");
-        assert_eq!(t.try_get_value().cloned(), Some(Value::Int(7)));
+        assert_eq!(
+            t.try_get_value().cloned(),
+            Some(Value::Int {
+                n: 7,
+                type_val: crate::value::unknown_type_val()
+            })
+        );
     }
 
     /// Int * Int uses the fast path — returns Int(42) without any instance registered.
@@ -1773,14 +1991,35 @@ mod tests {
     fn test_mul_int_int_fast_path() {
         let ctx = test_ctx();
         let result = run(builtin_mul(BuiltinArgs {
-            args: vec![alloc(&ctx, Value::Int(6)), alloc(&ctx, Value::Int(7))],
+            args: vec![
+                alloc(
+                    &ctx,
+                    Value::Int {
+                        n: 6,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                ),
+                alloc(
+                    &ctx,
+                    Value::Int {
+                        n: 7,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                ),
+            ],
             named: no_named(),
             call_span: call_span(),
             ctx,
             caller_env_id: None,
         }));
         let t = result.expect("expected Int(42)");
-        assert_eq!(t.try_get_value().cloned(), Some(Value::Int(42)));
+        assert_eq!(
+            t.try_get_value().cloned(),
+            Some(Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            })
+        );
     }
 
     /// builtin-int-add: non-Integer types produce TypeMismatch error.

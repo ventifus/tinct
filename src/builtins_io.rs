@@ -60,11 +60,12 @@ pub(crate) fn extract_dir_cap<'a>(
     span: Span,
 ) -> EvalResult<(&'a cap_std::fs::Dir, &'a DirPerms)> {
     match val {
-        Value::DirCap { dir, perms } => Ok((dir, perms)),
+        Value::DirCap { dir, perms, .. } => Ok((dir, perms)),
         Value::RevocableDirCap {
             inner,
             perms,
             revoked,
+            ..
         } => {
             if revoked.load(Ordering::Acquire) {
                 return Err(EvalError::user_error(
@@ -132,7 +133,13 @@ pub(crate) fn builtin_emit(
             .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span.clone()))?;
 
         // Return null (empty dict)
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -220,12 +227,24 @@ pub(crate) fn builtin_env_has(
         };
 
         if !allowed {
-            return ok_val(Value::Int(0), call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            );
         }
 
         // Check whether the env var is set
         let present = std::env::var(&name).is_ok();
-        ok_val(Value::Int(if present { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if present { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -295,6 +314,7 @@ pub(crate) fn builtin_narrow(
                 Value::DirCap {
                     dir: narrowed,
                     perms: perms.clone(),
+                    type_val: crate::value::unknown_type_val(),
                 },
                 call_span,
             )
@@ -319,12 +339,14 @@ pub(crate) fn builtin_narrow(
                     crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
 
                 match flag_val {
-                    Value::Variant {
-                        tycon: _, ref ctor, ..
-                    } => {
-                        // Use ctor name directly ("Statable") for
-                        // compatibility with T-974 qualified variant tags.
-                        let flag_name: &str = ctor;
+                    Value::Variant { ref ctor, .. } => {
+                        // Strip the tycon prefix (e.g. "DirPerms.Readable" → "Readable")
+                        // to get the bare flag name for matching.
+                        let flag_name: &str = ctor
+                            .as_ref()
+                            .split_once('.')
+                            .map(|(_, c)| c)
+                            .unwrap_or(ctor.as_ref());
                         match flag_name {
                             "Readable" => requested.readable = true,
                             "Statable" => requested.statable = true,
@@ -450,6 +472,7 @@ pub(crate) fn builtin_narrow(
                 Value::DirCap {
                     dir: dir.try_clone().expect("dir try_clone"),
                     perms: narrowed_perms,
+                    type_val: crate::value::unknown_type_val(),
                 },
                 call_span,
             )
@@ -490,13 +513,14 @@ pub(crate) fn builtin_revocable(
 
         // Extract DirCap and preserve permissions
         let (dir, perms) = match val {
-            Value::DirCap { dir, perms } => {
+            Value::DirCap { dir, perms, .. } => {
                 (dir.try_clone().expect("dir try_clone"), perms.clone())
             }
             Value::RevocableDirCap {
                 inner,
                 perms,
                 revoked: _,
+                ..
             } => {
                 // Already revocable — return a new revocable wrapper with a new flag
                 // (allows independent revocation)
@@ -521,6 +545,7 @@ pub(crate) fn builtin_revocable(
                 inner: dir,
                 perms,
                 revoked,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -553,7 +578,14 @@ pub(crate) fn builtin_revoke_cap(
         match val {
             Value::RevocableDirCap { revoked, .. } => {
                 revoked.store(true, Ordering::Release);
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             other => Err(EvalError::type_mismatch_ctx(
                 "revoke-cap".to_string(),
@@ -639,7 +671,13 @@ pub(crate) fn builtin_write(
         })?;
 
         // Return null (empty dict)
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -760,7 +798,13 @@ pub(crate) fn builtin_write_atomic(
         })?;
 
         // Return null (empty dict)
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -887,16 +931,31 @@ pub(crate) fn builtin_list_dir(
             );
             dict.insert(
                 HashableValue::Str("size".into()),
-                ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
+                ok_val(
+                    Value::Int {
+                        n: metadata.len() as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span.clone(),
+                )?,
             );
             if let Some(mtime_secs) = mtime {
                 dict.insert(
                     HashableValue::Str("mtime".into()),
-                    ok_val(Value::Int(mtime_secs), call_span.clone())?,
+                    ok_val(
+                        Value::Int {
+                            n: mtime_secs,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        call_span.clone(),
+                    )?,
                 );
             }
 
-            entry_values.push(Value::Dict(dict));
+            entry_values.push(Value::Dict {
+                entries: dict,
+                type_val: crate::value::unknown_type_val(),
+            });
         }
 
         // Build an integer-keyed Dict from the collected entries
@@ -907,7 +966,13 @@ pub(crate) fn builtin_list_dir(
                 ok_val(entry, call_span.clone())?,
             );
         }
-        ok_val(Value::Dict(result), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1014,41 +1079,74 @@ pub(crate) fn builtin_stat(
         );
         dict.insert(
             HashableValue::Str("size".into()),
-            ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
+            ok_val(
+                Value::Int {
+                    n: metadata.len() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )?,
         );
         if let Some(mtime_secs) = mtime {
             dict.insert(
                 HashableValue::Str("mtime".into()),
-                ok_val(Value::Int(mtime_secs), call_span.clone())?,
+                ok_val(
+                    Value::Int {
+                        n: mtime_secs,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span.clone(),
+                )?,
             );
         }
         dict.insert(
             HashableValue::Str("mode".into()),
-            ok_val(Value::Int(mode), call_span.clone())?,
+            ok_val(
+                Value::Int {
+                    n: mode,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )?,
         );
         dict.insert(
             HashableValue::Str("is-dir".into()),
             ok_val(
-                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
+                Value::Int {
+                    n: if metadata.is_dir() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )?,
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
             ok_val(
-                Value::Int(if metadata.is_file() { 1 } else { 0 }),
+                Value::Int {
+                    n: if metadata.is_file() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )?,
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
             ok_val(
-                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
+                Value::Int {
+                    n: if metadata.is_symlink() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )?,
         );
 
-        ok_val(Value::Dict(dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1104,7 +1202,13 @@ pub(crate) fn builtin_exists(
             )
         })?;
 
-        ok_val(Value::Int(if exists { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if exists { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1216,41 +1320,74 @@ pub(crate) fn builtin_stat_symlink(
         );
         dict.insert(
             HashableValue::Str("size".into()),
-            ok_val(Value::Int(metadata.len() as i64), call_span.clone())?,
+            ok_val(
+                Value::Int {
+                    n: metadata.len() as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )?,
         );
         if let Some(mtime_secs) = mtime {
             dict.insert(
                 HashableValue::Str("mtime".into()),
-                ok_val(Value::Int(mtime_secs), call_span.clone())?,
+                ok_val(
+                    Value::Int {
+                        n: mtime_secs,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span.clone(),
+                )?,
             );
         }
         dict.insert(
             HashableValue::Str("mode".into()),
-            ok_val(Value::Int(mode), call_span.clone())?,
+            ok_val(
+                Value::Int {
+                    n: mode,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )?,
         );
         dict.insert(
             HashableValue::Str("is-dir".into()),
             ok_val(
-                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
+                Value::Int {
+                    n: if metadata.is_dir() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )?,
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
             ok_val(
-                Value::Int(if metadata.is_file() { 1 } else { 0 }),
+                Value::Int {
+                    n: if metadata.is_file() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )?,
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
             ok_val(
-                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
+                Value::Int {
+                    n: if metadata.is_symlink() { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span.clone(),
             )?,
         );
 
-        ok_val(Value::Dict(dict), call_span)
+        ok_val(
+            Value::Dict {
+                entries: dict,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1330,7 +1467,13 @@ pub(crate) fn builtin_copy_file(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1435,7 +1578,13 @@ pub(crate) fn builtin_symlink(
             .into());
         }
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1491,7 +1640,7 @@ pub(crate) fn builtin_set_permissions(
 
         // Extract mode as Int
         let mode = match mode_val {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "set-permissions".to_string(),
@@ -1537,7 +1686,13 @@ pub(crate) fn builtin_set_permissions(
             .into());
         }
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1615,13 +1770,20 @@ pub(crate) fn builtin_get_xattr(
                         source: Arc::from(value.as_slice()),
                         start: 0,
                         end: len,
+                        type_val: crate::value::unknown_type_val(),
                     },
                     call_span,
                 )
             }
             Ok(None) => {
                 // Attribute not found — return []
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             Err(e) => Err(EvalError::user_error(
                 format!(
@@ -1715,7 +1877,9 @@ pub(crate) fn builtin_set_xattr(
 
         // Extract value as Bytes
         let value_bytes = match value_val {
-            Value::Bytes { source, start, end } => source[start..end].to_vec(),
+            Value::Bytes {
+                source, start, end, ..
+            } => source[start..end].to_vec(),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "set-xattr".to_string(),
@@ -1751,7 +1915,13 @@ pub(crate) fn builtin_set_xattr(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1843,10 +2013,22 @@ pub(crate) fn builtin_remove_xattr(
         let raw_fd = file.as_raw_fd();
         let proc_path = format!("/proc/self/fd/{}", raw_fd);
         match xattr::remove(&proc_path, &attr_name) {
-            Ok(()) => ok_val(Value::Dict(IndexMap::new()), call_span),
+            Ok(()) => ok_val(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // ENODATA — attribute doesn't exist, no-op gracefully
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(
+                    Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             Err(e) => Err(EvalError::user_error(
                 format!(
@@ -1955,7 +2137,13 @@ pub(crate) fn builtin_list_xattrs(
             );
         }
 
-        ok_val(Value::Dict(result), call_span)
+        ok_val(
+            Value::Dict {
+                entries: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2024,7 +2212,13 @@ pub(crate) fn builtin_make_dir(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2085,7 +2279,13 @@ pub(crate) fn builtin_remove(
             })?;
         }
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2149,7 +2349,13 @@ pub(crate) fn builtin_rename(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2210,7 +2416,13 @@ pub(crate) fn builtin_link(
                 )
             })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2337,7 +2549,7 @@ pub(crate) fn builtin_file_open(
 
         // Third arg: positional list of mode strings — ["read"], ["write" "create" "truncate"], etc.
         let modes_dict = match modes_raw {
-            Value::Dict(map) => map,
+            Value::Dict { entries: map, .. } => map,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
@@ -2353,7 +2565,7 @@ pub(crate) fn builtin_file_open(
         // Prefixed with `_` so the compiler does not warn on non-unix platforms where
         // these values are validated but not applied (unix-specific OpenOptionsExt).
         let _mode_bits = match mode_raw {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
@@ -2368,7 +2580,7 @@ pub(crate) fn builtin_file_open(
         // Fifth arg: raw open(2) flags (-1 = none).
         // Prefixed with `_` for the same reason as _mode_bits above.
         let _custom_flags = match flags_raw {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
@@ -2388,6 +2600,7 @@ pub(crate) fn builtin_file_open(
                 ref source,
                 start,
                 end,
+                ..
             } = val
             {
                 match &source[start..end] {
@@ -2432,7 +2645,13 @@ pub(crate) fn builtin_file_open(
             )
         })?;
 
-        ok_val(Value::File(Arc::new(Mutex::new(file))), call_span)
+        ok_val(
+            Value::File {
+                inner: Arc::new(Mutex::new(file)),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2469,7 +2688,7 @@ pub(crate) fn builtin_file_read(
             .clone();
 
         let file_rc = match file_val {
-            Value::File(rc) => rc,
+            Value::File { inner: rc, .. } => rc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
@@ -2482,8 +2701,8 @@ pub(crate) fn builtin_file_read(
         };
 
         let n = match n_val {
-            Value::Int(i) if i > 0 => i as usize,
-            Value::Int(_) => {
+            Value::Int { n: i, .. } if i > 0 => i as usize,
+            Value::Int { .. } => {
                 return Err(EvalError::user_error(
                     "builtin-file-read: byte count must be positive".to_string(),
                     call_span,
@@ -2527,6 +2746,7 @@ pub(crate) fn builtin_file_read(
                 source: Arc::from(buf),
                 start: 0,
                 end: len,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -2566,7 +2786,7 @@ pub(crate) fn builtin_file_write(
             .clone();
 
         let file_rc = match file_val {
-            Value::File(rc) => rc,
+            Value::File { inner: rc, .. } => rc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-write".to_string(),
@@ -2620,7 +2840,7 @@ pub(crate) fn builtin_file_flush(
         )?;
 
         let file_rc = match val {
-            Value::File(rc) => rc,
+            Value::File { inner: rc, .. } => rc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-flush".to_string(),
@@ -2640,7 +2860,13 @@ pub(crate) fn builtin_file_flush(
             )
         })?;
 
-        ok_val(Value::Int(1), call_span)
+        ok_val(
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2669,10 +2895,16 @@ pub(crate) fn builtin_file_close(
         )?;
 
         match val {
-            Value::File(_) => {
+            Value::File { .. } => {
                 // Dropping the Arc here closes the file if no other references exist.
                 drop(val);
-                ok_val(Value::Int(1), call_span)
+                ok_val(
+                    Value::Int {
+                        n: 1,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
             }
             other => Err(EvalError::type_mismatch_ctx(
                 "builtin-file-close".to_string(),
@@ -2718,7 +2950,7 @@ pub(crate) fn builtin_file_seek(
             .clone();
 
         let file_rc = match file_val {
-            Value::File(rc) => rc,
+            Value::File { inner: rc, .. } => rc,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
@@ -2731,8 +2963,8 @@ pub(crate) fn builtin_file_seek(
         };
 
         let pos = match pos_val {
-            Value::Int(i) if i >= 0 => i as u64,
-            Value::Int(_) => {
+            Value::Int { n: i, .. } if i >= 0 => i as u64,
+            Value::Int { .. } => {
                 return Err(EvalError::user_error(
                     "builtin-file-seek: position must be non-negative".to_string(),
                     call_span,
@@ -2762,7 +2994,13 @@ pub(crate) fn builtin_file_seek(
                 )
             })?;
 
-        ok_val(Value::Int(1), call_span)
+        ok_val(
+            Value::Int {
+                n: 1,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2876,8 +3114,8 @@ pub(crate) fn builtin_read_stdin(
             .clone();
 
         let n = match n_val {
-            Value::Int(i) if i > 0 => i as usize,
-            Value::Int(_) => {
+            Value::Int { n: i, .. } if i > 0 => i as usize,
+            Value::Int { .. } => {
                 return Err(EvalError::user_error(
                     "builtin-read-stdin: byte count must be positive".to_string(),
                     call_span,
@@ -2910,6 +3148,7 @@ pub(crate) fn builtin_read_stdin(
                 source: Arc::from(buf),
                 start: 0,
                 end: len,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )

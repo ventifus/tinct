@@ -3235,7 +3235,7 @@ async fn variant_payload_dict(
     let payload_thunk = payload_id;
     let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await?;
     match payload_val {
-        Value::Dict(dict) => {
+        Value::Dict { entries: dict, .. } => {
             // Extract each string-keyed field, materializing the field value.
             let mut fields = HashMap::new();
             for (key, thunk) in &dict {
@@ -3265,7 +3265,7 @@ async fn collect_typenode_seq(
 ) -> crate::error::EvalResult<Option<Vec<Type>>> {
     // T-1555: Value::Annotated is removed; no unwrapping needed.
     let dict = match dict_val {
-        Value::Dict(d) => d,
+        Value::Dict { entries: d, .. } => d,
         _ => return Ok(None),
     };
 
@@ -3303,11 +3303,17 @@ pub(crate) async fn typenode_value_to_type(
 ) -> crate::error::EvalResult<Option<Type>> {
     Box::pin(async move {
         match val {
-            Value::Variant { tycon, ctor, .. } if tycon.as_ref() == "TypeNode" => {
-                // NOTE: ctor holds the UNQUALIFIED constructor name (e.g., "Unknown", not "TypeNode.Unknown").
-                // Values are created by eval_core.rs which splits "TypeNode.Unknown" into
-                // tycon="TypeNode", ctor="Unknown". All match arms use unqualified names.
-                match ctor.as_ref() {
+            Value::Variant { ctor, .. }
+                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "TypeNode" =>
+            {
+                // NOTE: ctor holds the FULLY QUALIFIED constructor name (e.g., "TypeNode.Unknown").
+                // Strip the "TypeNode." prefix to get the bare constructor name for dispatch.
+                let bare_ctor = ctor
+                    .as_ref()
+                    .split_once('.')
+                    .map(|(_, c)| c)
+                    .unwrap_or(ctor.as_ref());
+                match bare_ctor {
                     "Unknown" => Ok(Some(Type::Unknown)),
                     // Top is the sound lattice top (τ <: Top for all τ).
                     // Rust represents this as Type::Any (which IS the top type in the lattice).
@@ -3433,7 +3439,9 @@ pub(crate) async fn typenode_value_to_type(
 
                         // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
                         let record_fields = match fields_val {
-                            Value::Dict(ref dict) => {
+                            Value::Dict {
+                                entries: ref dict, ..
+                            } => {
                                 let mut out: indexmap::IndexMap<String, Type> =
                                     indexmap::IndexMap::new();
                                 for (key, thunk) in dict {
@@ -3487,7 +3495,7 @@ pub(crate) async fn typenode_value_to_type(
                                 key: Some(Box::new(key_ty)),
                                 value: Box::new(value_ty),
                             }
-                        } else if matches!(&open_val, Value::Int(n) if *n != 0) {
+                        } else if matches!(&open_val, Value::Int { n, .. } if *n != 0) {
                             // Open record: any field value is allowed (Top = Any).
                             // Dict <: open-record: Null <: Record <: Dict hierarchy.
                             crate::type_def::RowTail::Uniform {
@@ -3643,7 +3651,7 @@ pub(crate) async fn typenode_value_to_type(
                             None => return Ok(None),
                         };
                         let level = match level_val {
-                            Value::Int(n) => n as u32,
+                            Value::Int { n, .. } => n as u32,
                             _ => return Ok(None),
                         };
                         Ok(Some(Type::Var(name, level)))
@@ -3728,7 +3736,7 @@ pub(crate) async fn typenode_value_to_type(
                             None => return Ok(None),
                         };
                         match n_val {
-                            Value::Int(n) => Ok(Some(Type::IntLiteral(n))),
+                            Value::Int { n, .. } => Ok(Some(Type::IntLiteral(n))),
                             _ => Ok(None),
                         }
                     }
@@ -3761,22 +3769,26 @@ pub(crate) async fn typenode_value_to_type(
             // evaluates to `{ Red: Variant("Color.Red"), Green: Variant("Color.Green"), ... }`.
             // Detect the pattern: all values are Variants sharing the same qualified prefix.
             // If so, return Type::TyCon(prefix) — the name of the declared type.
-            Value::Dict(entries) if !entries.is_empty() => {
+            Value::Dict { entries, .. } if !entries.is_empty() => {
                 let mut prefix: Option<String> = None;
                 let mut all_match = true;
                 for (_key, thunk) in entries {
                     if let Some(val) = thunk.try_get_value().cloned() {
                         match val {
-                            Value::Variant { tycon, .. } => match &prefix {
-                                None => prefix = Some(tycon.to_string()),
-                                Some(existing) if existing.as_str() == tycon.as_ref() => {}
-                                _ => {
-                                    all_match = false;
-                                    break;
+                            Value::Variant { ref ctor, .. } => {
+                                let tycon_name =
+                                    crate::value::tycon_name_from_ctor(ctor.as_ref()).to_string();
+                                match &prefix {
+                                    None => prefix = Some(tycon_name),
+                                    Some(existing) if existing.as_str() == tycon_name.as_str() => {}
+                                    _ => {
+                                        all_match = false;
+                                        break;
+                                    }
                                 }
-                            },
+                            }
                             // Function entries (payload constructors) — still count as the same ADT
-                            Value::Function { .. } | Value::Builtin(_) => {}
+                            Value::Function { .. } | Value::Builtin { .. } => {}
                             _ => {
                                 all_match = false;
                                 break;

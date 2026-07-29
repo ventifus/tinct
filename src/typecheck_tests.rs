@@ -416,8 +416,8 @@ async fn test_dot_access_found() -> Result<(), Box<dyn std::error::Error>> {
     // With the builtin core env (no full prelude), the Indexable/FieldType machinery that
     // would resolve the concrete type is not in scope. The result is a TypeVar (gradual type)
     // from the [$Indexable c k v] constraint — not an error, just unresolved.
-    // Full resolution to StringLiteral("Andrew") requires the full prelude with FieldType.
-    // B-635 tracks the complete fix (synthetic VarRef resolver address).
+    // Full resolution to StringLiteral("Andrew") requires the full prelude with FieldType
+    // providing the synthetic VarRef resolver for dot-access.
     let ty = result_field(
         "[person: [name: \"Andrew\"  age: 30]]\n[result: $person.name]",
         "result",
@@ -434,7 +434,7 @@ async fn test_dot_access_found() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_dot_access_missing_field() -> Result<(), Box<dyn std::error::Error>> {
     // With the builtin core env (no full prelude), field access on an unknown field produces
     // a TypeVar from the [$Indexable c k v] constraint rather than Type::Unknown.
-    // Full Unknown resolution requires FieldType in the prelude. B-635 tracks the fix.
+    // Full Unknown resolution requires FieldType in the prelude (not available in the minimal test env).
     let ty = result_field(
         "[person: [name: \"Andrew\"]]\n[result: $person.age]",
         "result",
@@ -452,7 +452,7 @@ async fn test_dot_access_non_record() {
     // With the builtin core env (no full prelude), field access on a non-record type
     // produces a TypeVar from [$Indexable c k v] without an Indexable instance for Int.
     // The "expected record type" error from the old check_dot_access path no longer fires.
-    // Full Indexable constraint checking requires the full prelude. B-635 tracks the fix.
+    // Full Indexable constraint checking requires the full prelude (not available in the minimal test env).
     let result = doc_env_and_type("[x: 42]\n[result: $x.field]").await;
     assert!(
         result.is_ok(),
@@ -507,7 +507,7 @@ async fn test_dot_access_constraint_generation_on_open_record_with_known_field()
     // (the constraint variable from [$Indexable c k v]) without the full prelude.
     // With the builtin core env, builtin-dict-get's Indexable constraint fires but
     // FieldType is not in scope, so the result stays as TypeVar — no Err-level error.
-    // B-635 tracks full Unknown resolution requiring FieldType in the prelude.
+    // Full Unknown resolution requires FieldType in the prelude (not available in the minimal test env).
     let result = doc_env_and_type("[result: $data.unknown  data: [known: 1]]").await;
     assert!(
         result.is_ok(),
@@ -561,7 +561,7 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
     // through the γ_data constraint — the Indexable class is not in scope. The result stays
     // as TypeVar. The key assertion: result is NOT Type::Any (which would indicate check_dot_access
     // fell through to the Any arm without generating a constraint at all).
-    // B-635 tracks full StringLiteral resolution requiring the full prelude with FieldType.
+    // Full StringLiteral resolution requires the full prelude with FieldType.
     let result = doc_env_and_type("[result: $data.name  data: [name: \"hello\"]]").await;
     let (doc_env, _ty) = result.expect("typecheck should succeed with builtin core env");
 
@@ -1091,7 +1091,6 @@ async fn test_let_gen_typevar_in_dot_access() {
             // the Indexable constraint fires but TypeVar β remains unresolved.
             // Assert non-Any: constraint must be generated (Pass 3b machinery is correct),
             // but final resolution to IntLiteral(1) requires FieldType from the full prelude.
-            // B-635 tracks full resolution.
             let result_ty = fields.get("result").expect("field 'result' should exist");
             assert!(
                 !matches!(result_ty, Type::Unknown),
@@ -1599,7 +1598,6 @@ async fn test_pass3b_state_subst_merge_unifies_overlapping_keys(
     // With builtin core env (no full prelude), FieldType is not in scope — Indexable constraint
     // fires but result stays as TypeVar. Pass 3b unification machinery IS correct (the constraint
     // was generated), but final resolution requires FieldType. Assert non-Any (constraint fires).
-    // B-635 tracks full StringLiteral resolution.
     let ty = result_field("[result: $data.name  data: [name: \"hello\"]]", "result").await?;
     assert!(
         !matches!(ty, Type::Any),
@@ -1708,7 +1706,10 @@ async fn test_union_type_assert_success() {
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let ctx = crate::eval::EvalContext::new();
     assert!(crate::eval::value_matches_type(
-        &crate::value::Value::Int(42),
+        &crate::value::Value::Int {
+            n: 42,
+            type_val: crate::value::unknown_type_val()
+        },
         &union,
         &ctx,
     ));
@@ -1720,7 +1721,10 @@ async fn test_union_type_assert_failure_float() {
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let ctx = crate::eval::EvalContext::new();
     assert!(!crate::eval::value_matches_type(
-        &crate::value::Value::Float(1.0),
+        &crate::value::Value::Float {
+            n: 1.0,
+            type_val: crate::value::unknown_type_val()
+        },
         &union,
         &ctx,
     ));
@@ -2352,7 +2356,7 @@ async fn test_cek_detects_unknown_field_access() {
     // With the builtin core env (needed for builtin-dict-get to resolve via extras), the
     // Indexable constraint machinery fires but FieldType is not in scope without the full
     // prelude — result is TypeVar (gradual type), not Unknown.
-    // Full Unknown-type Warn diagnostics require the full prelude with FieldType. B-635 tracks this.
+    // Full Unknown-type Warn diagnostics require the full prelude with FieldType.
     let program = crate::desugar::desugar_surface_program(
         &crate::parse(
             "[f: [fn [let r@[x: Int]] $r.y]]",
@@ -2980,7 +2984,7 @@ async fn test_b452_type_alias_decl_does_not_produce_unknown() {
     // A dict with a type alias declaration followed by a use of one of the constructors.
     // Color.Red is a field access requiring builtin-dict-get (via synthetic VarRef).
     // Uses doc_env_and_type (builtin core env) so builtin-dict-get resolves via extras.
-    // B-635 tracks the proper synthetic VarRef resolver fix.
+    // Full dot-access resolution requires a synthetic VarRef resolver from the full prelude.
     let result = doc_env_and_type("[Color: [type Red Green Blue]  c: Color.Red]").await;
     assert!(
         result.is_ok(),
@@ -4474,7 +4478,9 @@ async fn test_typenode_int_literal_roundtrip() {
                 .await
                 .expect("payload materialize must succeed");
             match payload_val {
-                crate::value::Value::Dict(ref dict) => {
+                crate::value::Value::Dict {
+                    entries: ref dict, ..
+                } => {
                     let n_thunk = dict
                         .get(&crate::value::HashableValue::Str(std::sync::Arc::from("n")))
                         .expect("payload dict must have field 'n'");
@@ -4483,7 +4489,10 @@ async fn test_typenode_int_literal_roundtrip() {
                         .expect("payload 'n' materialize must succeed");
                     assert_eq!(
                         n_val,
-                        crate::value::Value::Int(42),
+                        crate::value::Value::Int {
+                            n: 42,
+                            type_val: crate::value::unknown_type_val()
+                        },
                         "payload 'n' must be Int(42)"
                     );
                 }
@@ -4535,7 +4544,9 @@ async fn test_typenode_string_literal_roundtrip() {
                 .await
                 .expect("payload materialize must succeed");
             match payload_val {
-                crate::value::Value::Dict(ref dict) => {
+                crate::value::Value::Dict {
+                    entries: ref dict, ..
+                } => {
                     let s_thunk = dict
                         .get(&crate::value::HashableValue::Str(std::sync::Arc::from("s")))
                         .expect("payload dict must have field 's'");
@@ -4607,7 +4618,9 @@ async fn test_typenode_dict_type_produces_variant() {
                 .await
                 .expect("payload materialize must succeed");
             match payload_val {
-                crate::value::Value::Dict(ref dict) => {
+                crate::value::Value::Dict {
+                    entries: ref dict, ..
+                } => {
                     // Check 'open' == Int(0) for a closed record (RowTail::Empty).
                     let open_thunk = dict
                         .get(&crate::value::HashableValue::Str(std::sync::Arc::from(
@@ -4619,7 +4632,10 @@ async fn test_typenode_dict_type_produces_variant() {
                         .expect("payload 'open' materialize must succeed");
                     assert_eq!(
                         open_val,
-                        crate::value::Value::Int(0),
+                        crate::value::Value::Int {
+                            n: 0,
+                            type_val: crate::value::unknown_type_val()
+                        },
                         "closed record (RowTail::Empty) must produce open: Int(0)"
                     );
 
@@ -4634,7 +4650,10 @@ async fn test_typenode_dict_type_produces_variant() {
                         .await
                         .expect("payload 'fields' materialize must succeed");
                     match fields_val {
-                        crate::value::Value::Dict(ref fields_dict) => {
+                        crate::value::Value::Dict {
+                            entries: ref fields_dict,
+                            ..
+                        } => {
                             // "name" field must round-trip to Type::Str.
                             let name_thunk = fields_dict
                                 .get(&crate::value::HashableValue::Str(std::sync::Arc::from(
@@ -4779,7 +4798,7 @@ async fn build_fieldtype_type_stage_entry() -> crate::type_infer::TypeStageEntry
 
     // The result is a Dict with key "FieldType" → the function closure.
     let fields = match result_val {
-        crate::value::Value::Dict(d) => d,
+        crate::value::Value::Dict { entries: d, .. } => d,
         other => panic!("FieldType program must produce a Dict, got {:?}", other),
     };
     let ft_thunk = fields

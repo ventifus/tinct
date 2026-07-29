@@ -154,7 +154,13 @@ pub(crate) fn builtin_bytes_find(
 
         // Empty needle: found at position 0 (consistent with str-find behavior)
         if needle.is_empty() {
-            return ok_val(Value::Int(0), call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            );
         }
 
         // Find the first occurrence
@@ -167,7 +173,13 @@ pub(crate) fn builtin_bytes_find(
             None => -1,
         };
 
-        ok_val(Value::Int(result), call_span)
+        ok_val(
+            Value::Int {
+                n: result,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -198,16 +210,16 @@ pub(crate) fn builtin_bytes_of(
         let mut bytes = Vec::new();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 // Iterate dict values in insertion order — map is owned (Send)
                 for (_key, item_thunk) in map {
                     let item_val = materialize(&item_thunk, Some(&call_span), &ctx).await?;
 
                     match item_val {
-                        Value::Int(n) if (0..=255).contains(&n) => {
+                        Value::Int { n, .. } if (0..=255).contains(&n) => {
                             bytes.push(n as u8);
                         }
-                        Value::Int(n) => {
+                        Value::Int { n, .. } => {
                             return Err(EvalError::internal(
                                 format!("bytes-of: integer {n} out of range 0-255"),
                                 call_span,
@@ -409,7 +421,13 @@ pub(crate) fn builtin_bytes_equal(
             }
         };
 
-        ok_val(Value::Int(if bytes1 == bytes2 { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if bytes1 == bytes2 { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -495,12 +513,24 @@ pub(crate) fn builtin_ct_equal(
 
         // Different lengths: return false (still in constant time per subtle docs)
         if bytes1.len() != bytes2.len() {
-            return ok_val(Value::Int(0), call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            );
         }
 
         // Constant-time comparison
         let result = bytes1.ct_eq(bytes2);
-        ok_val(Value::Int(if result.into() { 1 } else { 0 }), call_span)
+        ok_val(
+            Value::Int {
+                n: if result.into() { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -563,7 +593,7 @@ pub(crate) fn builtin_encode(
         // Extract the Int discriminant from the format argument.
         // The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
         let fmt_int = match &fmt_val {
-            Value::Int(n) => *n,
+            Value::Int { n, .. } => *n,
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-encode".to_string(),
@@ -577,12 +607,12 @@ pub(crate) fn builtin_encode(
 
         // Extract numeric value
         let as_i64 = match &num_val {
-            Value::Int(n) => Some(*n),
+            Value::Int { n, .. } => Some(*n),
             _ => None,
         };
         let as_f64 = match &num_val {
-            Value::Float(f) => Some(*f),
-            Value::Int(n) => Some(*n as f64),
+            Value::Float { n, .. } => Some(*n),
+            Value::Int { n, .. } => Some(*n as f64),
             _ => None,
         };
 
@@ -704,7 +734,7 @@ pub(crate) fn builtin_bytes_get(
             .clone();
 
         let i = match i_val {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-get".to_string(),
@@ -742,7 +772,13 @@ pub(crate) fn builtin_bytes_get(
         }
 
         let byte_val = bytes[i as usize] as i64;
-        ok_val(Value::Int(byte_val), call_span)
+        ok_val(
+            Value::Int {
+                n: byte_val,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -819,7 +855,13 @@ pub(crate) fn builtin_bytes_to_int(
 
         let arr: [u8; 8] = bytes[..8].try_into().unwrap();
         let n = i64::from_le_bytes(arr);
-        ok_val(Value::Int(n), call_span)
+        ok_val(
+            Value::Int {
+                n,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -883,7 +925,9 @@ pub(crate) fn builtin_bytes_slice(
             .clone();
 
         let (source, base_start, base_end) = match &b_val {
-            Value::Bytes { source, start, end } => (Arc::clone(source), *start, *end),
+            Value::Bytes {
+                source, start, end, ..
+            } => (Arc::clone(source), *start, *end),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
@@ -896,7 +940,7 @@ pub(crate) fn builtin_bytes_slice(
         };
 
         let start_i = match start_val {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
@@ -909,7 +953,7 @@ pub(crate) fn builtin_bytes_slice(
         };
 
         let len_i = match len_val {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
@@ -963,6 +1007,7 @@ pub(crate) fn builtin_bytes_slice(
                 source,
                 start: new_start,
                 end: new_end,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )

@@ -152,7 +152,13 @@ pub(crate) fn builtin_str_length(
                 call_span.clone(),
             )
         })?;
-        ok_val(Value::Int(len_i64), call_span)
+        ok_val(
+            Value::Int {
+                n: len_i64,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -178,7 +184,13 @@ pub(crate) fn builtin_str_byte_count(
             call_span.clone(),
         )?;
         let s = require_string("str-byte-count", val, Arc::clone(&args[0]).span.clone())?;
-        ok_val(Value::Int(s.len() as i64), call_span)
+        ok_val(
+            Value::Int {
+                n: s.len() as i64,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -214,14 +226,17 @@ pub(crate) fn builtin_str_has_nth_byte(
             }
         };
         let idx = match thunk1.try_get_value().expect("pre-materialized").clone() {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
         let len = (str_end - str_start) as i64;
         ok_val(
-            Value::Int(if idx >= 0 && idx < len { 1 } else { 0 }),
+            Value::Int {
+                n: if idx >= 0 && idx < len { 1 } else { 0 },
+                type_val: crate::value::unknown_type_val(),
+            },
             call_span,
         )
     })
@@ -249,13 +264,15 @@ pub(crate) fn builtin_str_nth_byte(
         let thunk1 = Arc::clone(&args[1]);
         let s_val = thunk0.try_get_value().expect("pre-materialized").clone();
         let (source, str_start, str_end) = match s_val {
-            Value::String { source, start, end } => (source, start, end),
+            Value::String {
+                source, start, end, ..
+            } => (source, start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
         let idx = match thunk1.try_get_value().expect("pre-materialized").clone() {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
@@ -268,7 +285,13 @@ pub(crate) fn builtin_str_nth_byte(
             .into());
         }
         let byte = source.as_bytes()[str_start + idx as usize] as i64;
-        ok_val(Value::Int(byte), call_span)
+        ok_val(
+            Value::Int {
+                n: byte,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -312,7 +335,9 @@ pub(crate) fn builtin_str_slice(
 
         // Extract the source Arc<str> from the input string
         let (input_source, input_start, input_end) = match input_val {
-            Value::String { source, start, end } => (source, start, end),
+            Value::String {
+                source, start, end, ..
+            } => (source, start, end),
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "str-slice".to_string(),
@@ -326,8 +351,8 @@ pub(crate) fn builtin_str_slice(
 
         // Extract start and end indices
         let start_idx = match start_val {
-            Value::Int(n) if n >= 0 => n as usize,
-            Value::Int(n) => {
+            Value::Int { n, .. } if n >= 0 => n as usize,
+            Value::Int { n, .. } => {
                 return Err(EvalError::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "non-negative Int",
@@ -348,8 +373,8 @@ pub(crate) fn builtin_str_slice(
         };
 
         let end_idx = match end_val {
-            Value::Int(n) if n >= 0 => n as usize,
-            Value::Int(n) => {
+            Value::Int { n, .. } if n >= 0 => n as usize,
+            Value::Int { n, .. } => {
                 return Err(EvalError::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "non-negative Int",
@@ -405,6 +430,7 @@ pub(crate) fn builtin_str_slice(
                 source: input_source,
                 start: byte_start,
                 end: byte_end,
+                type_val: crate::value::unknown_type_val(),
             },
             call_span,
         )
@@ -440,7 +466,9 @@ pub(crate) fn builtin_str_has_nth(
             .expect("pre-materialized by pos_strictness[0]=Seq")
             .clone();
         let (source, str_start, str_end) = match s_val {
-            Value::String { source, start, end } => (source, start, end),
+            Value::String {
+                source, start, end, ..
+            } => (source, start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
@@ -451,14 +479,20 @@ pub(crate) fn builtin_str_has_nth(
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
         {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
 
         if idx < 0 {
-            return ok_val(Value::Int(0), call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            );
         }
 
         let s = &source[str_start..str_end];
@@ -467,7 +501,13 @@ pub(crate) fn builtin_str_has_nth(
         } else {
             0i64
         };
-        ok_val(Value::Int(exists), call_span)
+        ok_val(
+            Value::Int {
+                n: exists,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -501,7 +541,9 @@ pub(crate) fn builtin_str_nth_char(
             .expect("pre-materialized by pos_strictness[0]=Seq")
             .clone();
         let (source, str_start, str_end) = match s_val {
-            Value::String { source, start, end } => (source, start, end),
+            Value::String {
+                source, start, end, ..
+            } => (source, start, end),
             other => {
                 return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
@@ -512,7 +554,7 @@ pub(crate) fn builtin_str_nth_char(
             .expect("pre-materialized by pos_strictness[1]=Seq")
             .clone()
         {
-            Value::Int(n) => n,
+            Value::Int { n, .. } => n,
             other => {
                 return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
@@ -535,6 +577,7 @@ pub(crate) fn builtin_str_nth_char(
                         source,
                         start: str_start + byte_start,
                         end: str_start + byte_end,
+                        type_val: crate::value::unknown_type_val(),
                     },
                     call_span,
                 )
@@ -571,7 +614,9 @@ pub(crate) fn builtin_char_code(
         let val = expect_one_arg("char-code", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         let (input_source, input_start, input_end) = match val {
-            Value::String { source, start, end } => (source, start, end),
+            Value::String {
+                source, start, end, ..
+            } => (source, start, end),
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "char-code".to_string(),
@@ -586,7 +631,13 @@ pub(crate) fn builtin_char_code(
         let input_str = &input_source[input_start..input_end];
 
         if let Some(ch) = input_str.chars().next() {
-            ok_val(Value::Int(ch as u32 as i64), call_span)
+            ok_val(
+                Value::Int {
+                    n: ch as u32 as i64,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span,
+            )
         } else {
             Err(EvalError::internal("char-code: empty string".to_string(), call_span).into())
         }
@@ -613,7 +664,7 @@ pub(crate) fn builtin_chr(
         let val = expect_one_arg("chr", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         match val {
-            Value::Int(n) => {
+            Value::Int { n, .. } => {
                 if let Some(ch) = char::from_u32(n as u32) {
                     ok_val(string_val(&ch.to_string()), call_span)
                 } else {
@@ -736,7 +787,13 @@ pub(crate) fn builtin_str_index_of(
             None => -1,
         };
 
-        ok_val(Value::Int(index), call_span)
+        ok_val(
+            Value::Int {
+                n: index,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -964,7 +1021,7 @@ pub(crate) fn builtin_str_map_chars(
                     })
                     .await?
                 }
-                Value::Builtin(def) => {
+                Value::Builtin { def, .. } => {
                     let builtin_args = BuiltinArgs {
                         args: vec![Arc::clone(&char_thunk)],
                         named: None,
@@ -1023,7 +1080,7 @@ pub(crate) fn builtin_int_to_string(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match materialized {
-            Value::Int(n) => ok_val(string_val(&n.to_string()), call_span),
+            Value::Int { n, .. } => ok_val(string_val(&n.to_string()), call_span),
             other => Err(EvalError::type_mismatch_ctx(
                 "int->string".to_string(),
                 "Int",
@@ -1062,7 +1119,7 @@ pub(crate) fn builtin_float_to_string(
             .expect("pre-materialized by force_count/pos_strictness")
             .clone();
         match materialized {
-            Value::Float(n) => ok_val(string_val(&n.to_string()), call_span),
+            Value::Float { n, .. } => ok_val(string_val(&n.to_string()), call_span),
             other => Err(EvalError::type_mismatch_ctx(
                 "float->string".to_string(),
                 "Float",
@@ -1113,7 +1170,10 @@ pub(crate) fn builtin_regex_match(
 
         match regex::Regex::new(&pattern) {
             Ok(re) => ok_val(
-                Value::Int(if re.is_match(&haystack) { 1 } else { 0 }),
+                Value::Int {
+                    n: if re.is_match(&haystack) { 1 } else { 0 },
+                    type_val: crate::value::unknown_type_val(),
+                },
                 call_span,
             ),
             Err(e) => Err(EvalError::internal(

@@ -454,14 +454,26 @@ pub(crate) async fn bind_args_thunks(
             for (i, thunk) in bucket_args.into_iter().enumerate() {
                 dict.insert(crate::value::HashableValue::Int(i as i64), thunk);
             }
-            param_slots[slot] = Some(Arc::new(Thunk::value(Value::Dict(dict), call_span.clone())));
+            param_slots[slot] = Some(Arc::new(Thunk::value(
+                Value::Dict {
+                    entries: dict,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            )));
         }
 
         // BIND-RESULT: Bind the untyped rest bucket as a Dict (if present).
         // Use rest_param.slot (resolver-assigned) directly.
         if let Some(rp) = rest_param {
             let rest_slot = rp.slot as usize;
-            let rest_thunk = Arc::new(Thunk::value(Value::Dict(rest_dict), call_span.clone()));
+            let rest_thunk = Arc::new(Thunk::value(
+                Value::Dict {
+                    entries: rest_dict,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                call_span.clone(),
+            ));
             param_slots[rest_slot] = Some(rest_thunk);
         }
     }

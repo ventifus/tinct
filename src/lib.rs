@@ -155,8 +155,8 @@ pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
 pub use env::Env;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue, NetCapEntry,
-    Thunk, Value,
+    string_val, unknown_type_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue,
+    NetCapEntry, Thunk, Value,
 };
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
@@ -263,7 +263,7 @@ pub async fn run_loader_pipeline(
                 .await
                 .map_err(|e| format!("type-stage materialization failed: {e}"))?;
             match ts_val {
-                crate::value::Value::Dict(entries) => {
+                crate::value::Value::Dict { entries, .. } => {
                     // Force all thunks and classify them into TypeStageEntry variants.
                     let mut map: std::collections::HashMap<
                         String,
@@ -559,21 +559,22 @@ where
             return limit_result;
         }
         match val {
-            value::Value::Int(n) => Ok(visitor.visit_int(*n)),
+            value::Value::Int { n, .. } => Ok(visitor.visit_int(*n)),
             // U64 values: for serialization, emit as Int when they fit in i64,
             // otherwise serialize as BigInt equivalent. The visitor uses visit_bigint.
-            value::Value::U64(n) => {
+            value::Value::U64 { n, .. } => {
                 if let Ok(i) = i64::try_from(*n) {
                     Ok(visitor.visit_int(i))
                 } else {
                     Ok(visitor.visit_bigint(&num_bigint::BigInt::from(*n)))
                 }
             }
-            value::Value::Float(f) => visitor.visit_float(*f, span),
+            value::Value::Float { n, .. } => visitor.visit_float(*n, span),
             value::Value::String {
                 ref source,
                 start,
                 end,
+                ..
             } => {
                 let s = &source[*start..*end];
                 Ok(visitor.visit_str(s))
@@ -582,11 +583,12 @@ where
                 ref source,
                 start,
                 end,
+                ..
             } => {
                 let bytes = &source[*start..*end];
                 Ok(visitor.visit_bytes(bytes))
             }
-            value::Value::Dict(map) => {
+            value::Value::Dict { entries: map, .. } => {
                 let mut entries = Vec::with_capacity(map.len());
                 for (key, thunk) in map {
                     let v = eval::materialize(thunk, None, ctx).await?;
@@ -599,28 +601,24 @@ where
                 Ok(visitor.visit_dict(entries))
             }
             value::Value::Function { params, .. } => visitor.visit_function(params, span),
-            value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),
+            value::Value::Builtin { def, .. } => visitor.visit_builtin(def.name, span),
             value::Value::Proxy { .. } => visitor.visit_proxy(span),
             value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
                 "DirCap".to_string(),
                 span,
             ))),
-            value::Value::NetCap(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::NetCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
                 "NetCap".to_string(),
                 span,
             ))),
-            value::Value::File(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::File { .. } => Err(Box::new(error::EvalError::value_not_serializable(
                 "File".to_string(),
                 span,
             ))),
             value::Value::RevocableDirCap { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("RevocableDirCap".to_string(), span),
             )),
-            value::Value::Variant {
-                tycon,
-                ctor,
-                payload,
-            } => {
+            value::Value::Variant { ctor, payload, .. } => {
                 let payload_output = match payload {
                     Some(thunk_id) => {
                         let thunk = Arc::clone(thunk_id);
@@ -630,77 +628,75 @@ where
                     }
                     None => visitor.visit_null(),
                 };
-                Ok(visitor.visit_variant(format!("{}.{}", tycon, ctor), payload_output))
+                Ok(visitor.visit_variant(ctor.as_ref().to_string(), payload_output))
             }
-            value::Value::Decimal(d) => Ok(visitor.visit_decimal(*d)),
-            value::Value::BigInt(n) => Ok(visitor.visit_bigint(n)),
+            value::Value::Decimal { n: d, .. } => Ok(visitor.visit_decimal(*d)),
+            value::Value::BigInt { n, .. } => Ok(visitor.visit_bigint(n)),
             value::Value::Uri { .. } => Err(Box::new(error::EvalError::value_not_serializable(
                 "Uri".to_string(),
                 span,
             ))),
-            value::Value::Timestamp(ts) => visitor.visit_timestamp(ts.as_nanosecond() as i64, span),
-            value::Value::Duration(nanos) => Ok(visitor.visit_duration(*nanos)),
-            value::Value::ClockCap(_) => visitor.visit_clock_cap(span),
-            value::Value::Timezone(_) => visitor.visit_timezone(span),
-            value::Value::QuicSession(_) => Err(Box::new(
+            value::Value::Timestamp { ts, .. } => {
+                visitor.visit_timestamp(ts.as_nanosecond() as i64, span)
+            }
+            value::Value::Duration { nanos, .. } => Ok(visitor.visit_duration(*nanos)),
+            value::Value::ClockCap { .. } => visitor.visit_clock_cap(span),
+            value::Value::Timezone { .. } => visitor.visit_timezone(span),
+            value::Value::QuicSession { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("QuicSession".to_string(), span),
             )),
             value::Value::Http2Session { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("Http2Session".to_string(), span),
             )),
-            value::Value::Http3Session(_) => Err(Box::new(
+            value::Value::Http3Session { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("Http3Session".to_string(), span),
             )),
-            value::Value::QuicDatagramHandle(_) => Err(Box::new(
+            value::Value::QuicDatagramHandle { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("QuicDatagramHandle".to_string(), span),
             )),
             value::Value::Program { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("Program".to_string(), span),
             )),
-            value::Value::Document(_) => Err(Box::new(error::EvalError::value_not_serializable(
-                "Document".to_string(),
-                span,
-            ))),
+            value::Value::Document { .. } => Err(Box::new(
+                error::EvalError::value_not_serializable("Document".to_string(), span),
+            )),
             // Expr.* variants (Value::Variant) are handled by the Variant arm above.
-            value::Value::Task(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::Task { .. } => Err(Box::new(error::EvalError::value_not_serializable(
                 "Task".to_string(),
                 span,
             ))),
-            value::Value::Channel(_) => Err(Box::new(error::EvalError::value_not_serializable(
-                "Channel".to_string(),
-                span,
-            ))),
-            value::Value::Context(_) => Err(Box::new(error::EvalError::value_not_serializable(
-                "Context".to_string(),
-                span,
-            ))),
-            value::Value::ReactiveCell(_) => Err(Box::new(
+            value::Value::Channel { .. } => Err(Box::new(
+                error::EvalError::value_not_serializable("Channel".to_string(), span),
+            )),
+            value::Value::Context { .. } => Err(Box::new(
+                error::EvalError::value_not_serializable("Context".to_string(), span),
+            )),
+            value::Value::ReactiveCell { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("ReactiveCell".to_string(), span),
             )),
             value::Value::Builder(_) => Err(Box::new(error::EvalError::value_not_serializable(
                 "Builder".to_string(),
                 span,
             ))),
-            value::Value::BroadcastChannel(_) => Err(Box::new(
+            value::Value::BroadcastChannel { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("BroadcastChannel".to_string(), span),
             )),
-            value::Value::OneshotSender(_) => Err(Box::new(
+            value::Value::OneshotSender { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("OneshotSender".to_string(), span),
             )),
-            value::Value::OneshotReceiver(_) => Err(Box::new(
+            value::Value::OneshotReceiver { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("OneshotReceiver".to_string(), span),
             )),
             // Annotated is transparent — delegate to inner value serialization.
             value::Value::Annotated { inner, .. } => {
                 visit_value(inner, ctx, depth, visitor, span).await
             }
-            value::Value::TypeContext(_) => Err(Box::new(
+            value::Value::TypeContext { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("TypeContext".to_string(), span),
             )),
-            value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
-                "Expression".to_string(),
-                span,
-            ))),
+            value::Value::Expression { .. } => Err(Box::new(
+                error::EvalError::value_not_serializable("Expression".to_string(), span),
+            )),
             value::Value::Arena { .. } => Err(Box::new(error::EvalError::value_not_serializable(
                 "Arena".to_string(),
                 span,
@@ -1168,8 +1164,8 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Red"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Red"),
             payload: None,
         };
         assert_eq!(format!("{v}"), "Color.Red");
@@ -1186,13 +1182,13 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Red"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Red"),
             payload: None,
         };
         let green_val = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Green"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Green"),
             payload: None,
         };
 
@@ -1215,8 +1211,8 @@ mod tests {
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-            tycon: Arc::from("MyBool"),
-            ctor: Arc::from("Yes"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("MyBool.Yes"),
             payload: None,
         };
         let user_display = value_to_display_string(&user_val, &ctx, rust_span!())
@@ -1231,9 +1227,16 @@ mod tests {
     #[tokio::test]
     async fn test_display_proxy() {
         let ctx = test_ctx().await;
-        let handler_thunk = Arc::new(Thunk::value(Value::Int(42), test_span(1, 1, 1, 1)));
+        let handler_thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val(),
+            },
+            test_span(1, 1, 1, 1),
+        ));
         let proxy = Value::Proxy {
             handler: handler_thunk,
+            type_val: crate::value::unknown_type_val(),
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await

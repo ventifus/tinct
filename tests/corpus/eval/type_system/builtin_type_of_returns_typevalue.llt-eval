@@ -1,0 +1,7 @@
+# builtin-type-of returns the value's type_val.
+# During bootstrap, all values carry unknown_type_val() — an empty Dict — so llt-repr
+# formats it as []. Once repr: declarations wire up real TypeValues in S-1002+, the
+# output will be the TypeValue dict for the concrete type.
+[builtin-type-of 42]
+=== out
+[]

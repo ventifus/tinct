@@ -39,9 +39,11 @@ fn value_to_surface_node(
     use crate::ast::{SurfaceExpression, SurfaceNode};
     let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
     match value {
-        Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
-        Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
-        Value::String { source, start, end } => Ok(make_node(SurfaceExpression::StringLiteral {
+        Value::Int { n, .. } => Ok(make_node(SurfaceExpression::Int(*n))),
+        Value::Float { n, .. } => Ok(make_node(SurfaceExpression::Float(*n))),
+        Value::String {
+            source, start, end, ..
+        } => Ok(make_node(SurfaceExpression::StringLiteral {
             prefix: String::new(),
             delimiter: "\"".to_string(),
             content: source[*start..*end].to_string(),
@@ -56,7 +58,7 @@ fn value_to_surface_node(
                 .into()
             })
         }
-        Value::Dict(dict) => {
+        Value::Dict { entries: dict, .. } => {
             // Check if this is an AST dict (has a "type" field)
             if dict.contains_key(&HashableValue::Str("type".into())) {
                 // It's an AST dict — convert via surface bridge
@@ -94,7 +96,9 @@ async fn collect_seq_elements(
     let current = value.clone();
 
     match current {
-        Value::Dict(ref dict) => {
+        Value::Dict {
+            entries: ref dict, ..
+        } => {
             // Integer-keyed Dict (from macro variadic args) — collect elements in key order
             // Validate that all keys are integers and sequential from 0
             let mut int_entries: Vec<(i64, Arc<crate::value::Thunk>)> = Vec::new();
@@ -214,7 +218,9 @@ fn eval_quote_preprocess<'a>(
 
                         // Value must be Dict or Seq for splicing
                         match value {
-                            Value::Dict(ref dict) => {
+                            Value::Dict {
+                                entries: ref dict, ..
+                            } => {
                                 // Splice dict entries into the current dict
                                 for (key, value_thunk) in dict {
                                     // Convert the thunk to a Value, then to a SurfaceNode
@@ -619,8 +625,14 @@ pub(crate) async fn extract_fn_annotation_extra(
         let val = match &e.node.value.expr {
             // Literals extract directly without evaluation
             crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
-            crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
-            crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
+            crate::ast::SurfaceExpression::Int(n) => Value::Int {
+                n: *n,
+                type_val: crate::value::unknown_type_val(),
+            },
+            crate::ast::SurfaceExpression::Float(f) => Value::Float {
+                n: *f,
+                type_val: crate::value::unknown_type_val(),
+            },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             crate::ast::SurfaceExpression::VarRef {
@@ -667,9 +679,27 @@ pub(crate) fn eval_core_expr<'a>(
         let span = expr.span.clone();
         match &expr.node {
             // Fast path: literals materialize directly without wrapping in Unevaluated
-            CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(Value::Int(*n), span.clone()))),
-            CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(Value::U64(*n), span.clone()))),
-            CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(Value::Float(*f), span.clone()))),
+            CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(
+                Value::Int {
+                    n: *n,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                span.clone(),
+            ))),
+            CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(
+                Value::U64 {
+                    n: *n,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                span.clone(),
+            ))),
+            CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(
+                Value::Float {
+                    n: *f,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                span.clone(),
+            ))),
             CoreExpr::Str(s) => Ok(Arc::new(Thunk::value(string_val(s), span.clone()))),
 
             // Variable lookup via EvalFrame closure-conversion.
@@ -712,36 +742,33 @@ pub(crate) fn eval_core_expr<'a>(
             // Unit variants materialize directly; payload variants evaluate their inner expression,
             // materialize it, and store as an Arc<Thunk> — preserving the laziness invariant that
             // the payload dict's fields remain as thunks until accessed.
-            CoreExpr::Variant { tag, payload } => {
-                let (tycon, ctor) = tag.split_once('.').unwrap_or((tag.as_str(), ""));
-                match payload {
-                    None => Ok(Arc::new(Thunk::value(
+            CoreExpr::Variant { tag, payload } => match payload {
+                None => Ok(Arc::new(Thunk::value(
+                    Value::Variant {
+                        type_val: crate::value::unknown_type_val(),
+                        ctor: Arc::from(tag.as_str()),
+                        payload: None,
+                    },
+                    span.clone(),
+                ))),
+                Some(inner_expr) => {
+                    let payload_thunk = eval_core_expr(inner_expr, frame, ctx).await?;
+                    let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                    Ok(Arc::new(Thunk::value(
                         Value::Variant {
-                            tycon: Arc::from(tycon),
-                            ctor: Arc::from(ctor),
-                            payload: None,
+                            type_val: crate::value::unknown_type_val(),
+                            ctor: Arc::from(tag.as_str()),
+                            payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
                         },
                         span.clone(),
-                    ))),
-                    Some(inner_expr) => {
-                        let payload_thunk = eval_core_expr(inner_expr, frame, ctx).await?;
-                        let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                        Ok(Arc::new(Thunk::value(
-                            Value::Variant {
-                                tycon: Arc::from(tycon),
-                                ctor: Arc::from(ctor),
-                                payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
-                            },
-                            span.clone(),
-                        )))
-                    }
+                    )))
                 }
-            }
+            },
 
             CoreExpr::UnitVariant { tycon, ctor } => Ok(Arc::new(Thunk::value(
                 Value::Variant {
-                    tycon: Arc::from(tycon.as_str()),
-                    ctor: Arc::from(ctor.as_str()),
+                    type_val: crate::value::unknown_type_val(),
+                    ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
                     payload: None,
                 },
                 span.clone(),
@@ -879,6 +906,7 @@ pub(crate) fn eval_core_expr<'a>(
                         body: Arc::clone(body),
                         closure_env: Arc::new(closure_env_vec),
                         annotation,
+                        type_val: crate::value::unknown_type_val(),
                     },
                     span.clone(),
                 )))
@@ -982,7 +1010,13 @@ pub(crate) fn eval_core_expr<'a>(
                     );
                     i += 2;
                 }
-                Ok(Arc::new(Thunk::value(Value::Dict(dict), span.clone())))
+                Ok(Arc::new(Thunk::value(
+                    Value::Dict {
+                        entries: dict,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    span.clone(),
+                )))
             }
 
             CoreExpr::Placeholder => Err(EvalError::unimplemented(
@@ -990,6 +1024,106 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
+
+            // ReprDecl: evaluate the inner constructor dict, register in ctx.repr_registry,
+            // and return the inner dict thunk. The dict IS the TypeValue — ReprDecl is
+            // transparent to callers; they see the same value as a plain [type ...] declaration.
+            //
+            // The `repr` string is validated against the Value variant allowlist before
+            // insertion. If the `is:` predicate is present it is evaluated and registered
+            // in ctx.is_predicates under the same key.
+            CoreExpr::ReprDecl {
+                repr,
+                is_pred,
+                inner,
+            } => {
+                // Validate repr string against the allowlist of known Value variant names.
+                const VALID_REPRS: &[&str] = &[
+                    "Value::Int",
+                    "Value::U64",
+                    "Value::Float",
+                    "Value::String",
+                    "Value::Bytes",
+                    "Value::Dict",
+                    "Value::Function",
+                    "Value::Builtin",
+                    "Value::Proxy",
+                    "Value::Variant",
+                    "Value::Decimal",
+                    "Value::BigInt",
+                    "Value::Duration",
+                    "Value::Uri",
+                    "Value::Timestamp",
+                    "Value::Timezone",
+                    "Value::ClockCap",
+                    "Value::DirCap",
+                    "Value::NetCap",
+                    "Value::File",
+                    "Value::RevocableDirCap",
+                    "Value::QuicSession",
+                    "Value::Http2Session",
+                    "Value::Http3Session",
+                    "Value::QuicDatagramHandle",
+                    "Value::Task",
+                    "Value::Channel",
+                    "Value::BroadcastChannel",
+                    "Value::OneshotSender",
+                    "Value::OneshotReceiver",
+                    "Value::Context",
+                    "Value::ReactiveCell",
+                    "Value::Arena",
+                    "Value::TypeContext",
+                    "Value::Program",
+                    "Value::Document",
+                    "Value::Expression",
+                    "Value::CoreDocument",
+                ];
+                if !VALID_REPRS.contains(&repr.as_str()) {
+                    return Err(EvalError::user_error(
+                        format!("repr: {:?} is not a known Value variant", repr),
+                        span.clone(),
+                    )
+                    .into());
+                }
+
+                // Evaluate the inner constructor dict.
+                let inner_thunk = eval_core_expr(inner, frame, ctx).await?;
+
+                // Materialize to get the constructor dict Value for registration.
+                // This is a necessary strictness point: we need the concrete Value to store
+                // in repr_registry. The thunk is returned as the expression result so callers
+                // still see a lazy thunk (already-settled at this point).
+                let inner_val = materialize(&inner_thunk, Some(&span), ctx).await?;
+
+                // Register in repr_registry: repr_string → Arc<Value> (the constructor dict).
+                ctx.repr_registry
+                    .lock()
+                    .map_err(|e| {
+                        EvalError::internal(
+                            format!("repr_registry mutex poisoned: {e}"),
+                            span.clone(),
+                        )
+                    })?
+                    .insert(repr.clone(), Arc::new(inner_val));
+
+                // If an is: predicate is present, evaluate and register it.
+                if let Some(is_expr) = is_pred {
+                    let is_thunk = eval_core_expr(is_expr, frame, ctx).await?;
+                    let is_val = materialize(&is_thunk, Some(&span), ctx).await?;
+                    ctx.is_predicates
+                        .lock()
+                        .map_err(|e| {
+                            EvalError::internal(
+                                format!("is_predicates mutex poisoned: {e}"),
+                                span.clone(),
+                            )
+                        })?
+                        .insert(repr.clone(), Arc::new(is_val));
+                }
+
+                // Return the inner dict thunk — ReprDecl is transparent.
+                Ok(inner_thunk)
+            }
         }
         // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
         // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.
@@ -1030,7 +1164,10 @@ mod tests {
         let val = eval_and_materialize(CoreExpr::Int(42), &ctx).await.unwrap();
         assert_eq!(
             val,
-            Value::Int(42),
+            Value::Int {
+                n: 42,
+                type_val: crate::value::unknown_type_val()
+            },
             "CoreExpr::Int(42) must evaluate to Int(42)"
         );
     }
@@ -1064,7 +1201,13 @@ mod tests {
         let ctx = test_ctx();
 
         // Build an EvalFrame with the known thunk in group[0].
-        let known_thunk = Arc::new(Thunk::value(Value::Int(77), span.clone()));
+        let known_thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 77,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        ));
         let frame = Arc::new(EvalFrame {
             closure_env: GroupSpine::empty(),
             group: GroupSpine::from_flat(vec![Arc::clone(&known_thunk)]),
@@ -1091,7 +1234,10 @@ mod tests {
 
         assert_eq!(
             val,
-            Value::Int(77),
+            Value::Int {
+                n: 77,
+                type_val: crate::value::unknown_type_val()
+            },
             "CoreExpr::Var with VarAddr::LetrecGroupMember(0) must resolve to the injected Int(77)"
         );
     }

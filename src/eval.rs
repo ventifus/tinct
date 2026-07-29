@@ -37,7 +37,10 @@ thread_local! {
     /// Cached empty dict thunk used as the default `%` when no stdin is provided.
     /// Avoids allocating a fresh `Arc<Thunk>` on every `eval_surface_file` call for empty programs.
     static EMPTY_DICT_THUNK: Arc<Thunk> = Arc::new(Thunk::value(
-        Value::Dict(IndexMap::new()),
+        Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
         rust_span!(),
     ));
 }
@@ -58,7 +61,10 @@ pub(crate) async fn eval_document_exprs_with_env(
 ) -> EvalResult<Arc<Thunk>> {
     if expr_nodes.is_empty() {
         return Ok(Arc::new(Thunk::value(
-            Value::Dict(IndexMap::new()),
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
             rust_span!(),
         )));
     }
@@ -120,7 +126,10 @@ pub(crate) async fn eval_document_exprs_with_env(
         // Reject non-Dict intermediate values with a clear error rather than
         // silently dropping them (which would misalign subsequent LGM slot references).
         let dict_map = match val {
-            Value::Dict(ref dict_map) => dict_map.clone(),
+            Value::Dict {
+                entries: ref dict_map,
+                ..
+            } => dict_map.clone(),
             other => {
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
@@ -176,7 +185,10 @@ pub(crate) async fn eval_core_document_exprs(
 ) -> EvalResult<Arc<Thunk>> {
     if core_entries.is_empty() {
         return Ok(Arc::new(Thunk::value(
-            Value::Dict(IndexMap::new()),
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
             rust_span!(),
         )));
     }
@@ -210,7 +222,10 @@ pub(crate) async fn eval_core_document_exprs(
         // Extend accumulated_group with string-keyed thunks from this dict.
         // Reject non-Dict values.
         let dict_map = match val {
-            Value::Dict(ref dict_map) => dict_map.clone(),
+            Value::Dict {
+                entries: ref dict_map,
+                ..
+            } => dict_map.clone(),
             other => {
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
@@ -557,6 +572,31 @@ pub struct EvalContext {
     /// `None` (OnceLock not set) in bootstrap/test contexts where the full loader pipeline
     /// has not run. All callers must gracefully fall back when `get()` returns `None`.
     pub init_accumulated_group: Arc<std::sync::OnceLock<std::sync::Arc<crate::value::GroupSpine>>>,
+    /// Bootstrap TypeValue metatype. Represents the "type of all types." Initialized as an empty
+    /// Dict since the self-referential fixed-point requires `Weak<Value>` semantics: constructing
+    /// `Type.type_val == Type` needs a back-pointer into an already-constructed `Arc<Value>`, which
+    /// plain `Arc` cannot express. During bootstrap, all TypeValues carry the unknown sentinel.
+    ///
+    /// Allocated once per root context and propagated to all child contexts via `Arc::clone` so
+    /// that pointer-identity checks against it are consistent.
+    pub type_metatype: Arc<Value>,
+    /// Registry mapping repr strings to their runtime TypeValue dict (constructor dict).
+    ///
+    /// Keyed by the `repr: "Value::X"` string from a type declaration. Populated by the
+    /// `CoreExpr::ReprDecl` evaluator (T-1949) when the type declaration is first forced.
+    ///
+    /// Shared across all child contexts via `Arc` so that registrations made during prelude
+    /// evaluation are visible to all subsequent evaluation contexts. Interior mutability via
+    /// `Mutex` allows writes through `Arc<EvalContext>`.
+    pub repr_registry: Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
+    /// Registry mapping repr strings to their `is:` predicate Value (a Function).
+    ///
+    /// Keyed by the same repr string as `repr_registry`. Populated alongside `repr_registry`
+    /// by the `CoreExpr::ReprDecl` evaluator (T-1950) when the type declaration is first forced.
+    ///
+    /// Shared across all child contexts via `Arc<Mutex<...>>` — same sharing model as
+    /// `repr_registry`.
+    pub is_predicates: Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
 }
 
 impl EvalContext {
@@ -587,7 +627,10 @@ impl EvalContext {
             .into_iter()
             .map(|def| {
                 Arc::new(Thunk::value(
-                    crate::value::Value::Builtin(def),
+                    crate::value::Value::Builtin {
+                        def,
+                        type_val: crate::value::unknown_type_val(),
+                    },
                     crate::rust_span!(),
                 ))
             })
@@ -623,6 +666,12 @@ impl EvalContext {
             root_group,
             root_spine,
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
+            type_metatype: Arc::new(Value::Dict {
+                entries: indexmap::IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }),
+            repr_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            is_predicates: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -652,6 +701,12 @@ impl EvalContext {
             root_group,
             root_spine,
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
+            type_metatype: Arc::new(Value::Dict {
+                entries: indexmap::IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }),
+            repr_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            is_predicates: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -689,6 +744,9 @@ impl EvalContext {
             root_group: Arc::clone(&self.root_group),
             root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
+            type_metatype: Arc::clone(&self.type_metatype),
+            repr_registry: Arc::clone(&self.repr_registry),
+            is_predicates: Arc::clone(&self.is_predicates),
         });
         (child_ctx, child_token)
     }
@@ -730,6 +788,9 @@ impl EvalContext {
             root_group: Arc::clone(&self.root_group),
             root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
+            type_metatype: Arc::clone(&self.type_metatype),
+            repr_registry: Arc::clone(&self.repr_registry),
+            is_predicates: Arc::clone(&self.is_predicates),
         })
     }
 
@@ -774,6 +835,9 @@ impl EvalContext {
             root_group: Arc::clone(&self.root_group),
             root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
+            type_metatype: Arc::clone(&self.type_metatype),
+            repr_registry: Arc::clone(&self.repr_registry),
+            is_predicates: Arc::clone(&self.is_predicates),
         })
     }
 
@@ -813,6 +877,9 @@ impl EvalContext {
             root_group: Arc::clone(&self.root_group),
             root_spine: Arc::clone(&self.root_spine),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
+            type_metatype: Arc::clone(&self.type_metatype),
+            repr_registry: Arc::clone(&self.repr_registry),
+            is_predicates: Arc::clone(&self.is_predicates),
         })
     }
 
@@ -866,6 +933,9 @@ impl EvalContext {
             root_group: Arc::new(new_group),
             root_spine,
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
+            type_metatype: Arc::clone(&self.type_metatype),
+            repr_registry: Arc::clone(&self.repr_registry),
+            is_predicates: Arc::clone(&self.is_predicates),
         })
     }
 
@@ -887,7 +957,7 @@ impl EvalContext {
                 // Capability thunks carry name in their span.
                 let name = if let Some(val) = thunk.try_get_value() {
                     match val {
-                        Value::Builtin(def) => Some(def.name.to_string()),
+                        Value::Builtin { def, .. } => Some(def.name.to_string()),
                         _ => thunk.definition_span().name.as_ref().map(|n| n.to_string()),
                     }
                 } else {
@@ -1040,13 +1110,13 @@ fn eval_context_is_send_sync() {
 /// lazy evaluation guarantees.
 pub fn ground_type_of(v: &Value) -> Type {
     match v {
-        Value::Int(_) => Type::Int,
+        Value::Int { .. } => Type::Int,
         // U64 values have Int ground type — no dedicated Type::U64 yet (see typecheck.rs).
-        Value::U64(_) => Type::Int,
-        Value::Float(_) => Type::Float,
+        Value::U64 { .. } => Type::Int,
+        Value::Float { .. } => Type::Float,
         Value::String { .. } => Type::Str,
         Value::Bytes { .. } => Type::Bytes,
-        Value::Dict(map) => Type::Dict(extract_row(map)),
+        Value::Dict { entries: map, .. } => Type::Dict(extract_row(map)),
         // Populate fixed params, typed variadics, and rest from CoreParam.resolved_type.
         // Classification mirrors bind_args_thunks BIND-SPLIT:
         //   - variadic + concrete resolved_type (not None/Unknown) → typed_variadics bucket
@@ -1089,12 +1159,12 @@ pub fn ground_type_of(v: &Value) -> Type {
         }
         // Capability types: Unknown → is_consistent_subtype accepts against any annotation.
         // Preserves current accept-all behavior while capability-runtime-validation sprint is pending.
-        Value::File(_) => Type::Unknown,
+        Value::File { .. } => Type::Unknown,
         Value::DirCap { .. } | Value::RevocableDirCap { .. } => Type::Unknown,
-        Value::NetCap(_) => Type::Unknown,
+        Value::NetCap { .. } => Type::Unknown,
         // Variant payload types erased (payload ThunkId has no static type without the schema).
-        Value::Variant { tycon, ctor, .. } => Type::NominalVariant {
-            tycon: tycon.as_ref().to_string(),
+        Value::Variant { ctor, .. } => Type::NominalVariant {
+            tycon: crate::value::tycon_name_from_ctor(ctor.as_ref()).to_string(),
             ctor: ctor.as_ref().to_string(),
             fields: Row {
                 fields: indexmap::IndexMap::new(),
@@ -1103,9 +1173,9 @@ pub fn ground_type_of(v: &Value) -> Type {
         },
         // Decimal/BigInt: no Type::Decimal/Type::BigInt in the type system yet.
         // Unknown preserves current behavior (matches @Number) until those variants are added.
-        Value::Decimal(_) | Value::BigInt(_) => Type::Unknown,
+        Value::Decimal { .. } | Value::BigInt { .. } => Type::Unknown,
         // Builtin functions and Proxy values: Unknown accepts any function/type annotation.
-        Value::Builtin(..) | Value::Proxy { .. } => Type::Unknown,
+        Value::Builtin { .. } | Value::Proxy { .. } => Type::Unknown,
         // Builder is a transient construction artifact — produce Top (type mismatch error)
         // rather than panicking; Builder can reach TypeAssert via e.g. [@Int [make-builder]].
         Value::Builder(..) => Type::Any,
@@ -1178,13 +1248,13 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                 if let Some(discriminant) = &def.builtin_type {
                     // Builtin type: map discriminant string to a Value variant check.
                     match discriminant.as_str() {
-                        "Int" => matches!(value, Value::Int(_)),
+                        "Int" => matches!(value, Value::Int { .. }),
                         "Str" => matches!(value, Value::String { .. }),
-                        "Float" => matches!(value, Value::Float(_)),
+                        "Float" => matches!(value, Value::Float { .. }),
                         "Bytes" => matches!(value, Value::Bytes { .. }),
-                        "Dict" => matches!(value, Value::Dict(_)),
-                        "Fn" => matches!(value, Value::Function { .. } | Value::Builtin(_)),
-                        "File" => matches!(value, Value::File(_)),
+                        "Dict" => matches!(value, Value::Dict { .. }),
+                        "Fn" => matches!(value, Value::Function { .. } | Value::Builtin { .. }),
+                        "File" => matches!(value, Value::File { .. }),
                         // Opaque builtin types. Discriminant strings must match the entries
                         // registered in build_builtin_core_envs_inner (imports.rs) and the
                         // TypeNode tags in typenode_leaf_to_type (type_normalize.rs).
@@ -1192,34 +1262,34 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                         // returns "Builder" but the TyCon is "BuilderHandle" — see value_tycon_name).
                         // Note: Value::Uri covers both Uri and Urn; there is no separate Value::Urn.
                         "Program" => matches!(value, Value::Program { .. }),
-                        "Document" => matches!(value, Value::Document(_)),
-                        "TypeContext" => matches!(value, Value::TypeContext(_)),
+                        "Document" => matches!(value, Value::Document { .. }),
+                        "TypeContext" => matches!(value, Value::TypeContext { .. }),
                         "DirCap" => {
                             matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. })
                         }
-                        "NetCap" => matches!(value, Value::NetCap(_)),
+                        "NetCap" => matches!(value, Value::NetCap { .. }),
                         "BuilderHandle" => matches!(value, Value::Builder(_)),
-                        "Task" => matches!(value, Value::Task(_)),
-                        "Channel" => matches!(value, Value::Channel(_)),
-                        "Context" => matches!(value, Value::Context(_)),
-                        "ReactiveCell" => matches!(value, Value::ReactiveCell(_)),
-                        "ClockCap" => matches!(value, Value::ClockCap(_)),
-                        "Timezone" => matches!(value, Value::Timezone(_)),
-                        "Timestamp" => matches!(value, Value::Timestamp(_)),
-                        "Duration" => matches!(value, Value::Duration(_)),
-                        "Decimal" => matches!(value, Value::Decimal(_)),
-                        "BigInt" => matches!(value, Value::BigInt(_)),
-                        "QuicSession" => matches!(value, Value::QuicSession(_)),
-                        "QuicDatagramHandle" => matches!(value, Value::QuicDatagramHandle(_)),
+                        "Task" => matches!(value, Value::Task { .. }),
+                        "Channel" => matches!(value, Value::Channel { .. }),
+                        "Context" => matches!(value, Value::Context { .. }),
+                        "ReactiveCell" => matches!(value, Value::ReactiveCell { .. }),
+                        "ClockCap" => matches!(value, Value::ClockCap { .. }),
+                        "Timezone" => matches!(value, Value::Timezone { .. }),
+                        "Timestamp" => matches!(value, Value::Timestamp { .. }),
+                        "Duration" => matches!(value, Value::Duration { .. }),
+                        "Decimal" => matches!(value, Value::Decimal { .. }),
+                        "BigInt" => matches!(value, Value::BigInt { .. }),
+                        "QuicSession" => matches!(value, Value::QuicSession { .. }),
+                        "QuicDatagramHandle" => matches!(value, Value::QuicDatagramHandle { .. }),
                         "Http2Session" => matches!(value, Value::Http2Session { .. }),
-                        "Http3Session" => matches!(value, Value::Http3Session(_)),
+                        "Http3Session" => matches!(value, Value::Http3Session { .. }),
                         "Uri" | "Urn" => matches!(value, Value::Uri { .. }),
                         // Unknown discriminant: conservative false.
                         _ => false,
                     }
                 } else if !def.constructors.is_empty() {
-                    // Nominal (user-defined) type: value must be a Variant with tycon matching name.
-                    matches!(value, Value::Variant { tycon, .. } if tycon.as_ref() == name)
+                    // Nominal (user-defined) type: value must be a Variant with ctor prefix matching name.
+                    matches!(value, Value::Variant { ctor, .. } if crate::value::tycon_name_from_ctor(ctor.as_ref()) == name)
                 } else {
                     // TyCon found but no builtin_type and no constructors yet (T-1003/T-1018).
                     // Conservative: unknown structure, return false.
@@ -1242,42 +1312,6 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
 /// record types, pretty-printing nested structures).
 pub(crate) fn format_type_for_assert(ty: &Type) -> String {
     format!("{}", ty)
-}
-
-/// Build the "expected" label for a TypeAssert failure message.
-///
-/// For TyCon types, appends "(defined at X:L:C)" when the definition span is
-/// available in the eval context, so the source of the type declaration is clear.
-pub(crate) fn format_expected_label(expected: &Type, ctx: &EvalContext) -> String {
-    let base = format_type_for_assert(expected);
-    if let Type::TyCon(name) = expected {
-        if let Some(span) = ctx
-            .tycon_env()
-            .and_then(|e| e.get(name.as_str()))
-            .and_then(|def| def.definition_span.as_ref())
-        {
-            return format!(
-                "{} (defined at {}:{}:{})",
-                base, span.file, span.start_line, span.start_col
-            );
-        }
-    }
-    base
-}
-
-/// Build the "got" label for a TypeAssert failure message.
-///
-/// When the value's runtime type_name matches the expected TyCon name but the value is
-/// NOT a tinct Variant, prefixes with "Value::" so the Rust enum origin is unambiguous
-/// without needing a file path — "Value::Program" is IDE-navigable as-is.
-pub(crate) fn format_got_label(value: &crate::value::Value, expected: &Type) -> String {
-    let base = value.type_name();
-    if let Type::TyCon(name) = expected {
-        if name.as_str() == base && !matches!(value, crate::value::Value::Variant { .. }) {
-            return format!("Value::{}", base);
-        }
-    }
-    base.to_string()
 }
 
 /// Extract a merged Record row from a type for eval-time validation.
@@ -1537,7 +1571,7 @@ async fn call_to_match_by_name(
     let result_thunk = invoke_function(&call_ctx).await?;
     // Step 8: materialize the call result and check if it is a nonzero Int.
     match materialize(&result_thunk, Some(span), ctx).await? {
-        Value::Int(n) => Ok(n != 0),
+        Value::Int { n, .. } => Ok(n != 0),
         other => Err(EvalError::type_mismatch_ctx(
             format!("call_to_match_by_name({name}) result"),
             "Int",
@@ -1836,12 +1870,12 @@ pub(crate) fn match_pattern<'a>(
                         // This bridges the current TypeNode system to the future bind-primitive
                         // protocol (see doc/whatif/matchable-patterns.md).
                         if let Value::Variant {
-                            tycon,
                             ctor,
                             payload: None,
+                            ..
                         } = &pinned_val
                         {
-                            if tycon.as_ref() == "TypeNode" {
+                            if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "TypeNode" {
                                 return Ok(match_typenode_pattern(ctor.as_ref(), &value));
                             }
                         }
@@ -1867,7 +1901,7 @@ pub(crate) fn match_pattern<'a>(
 
             // Literal patterns: Int, U64, Float, StringLiteral
             SurfaceExpression::Int(n) => {
-                let matches = matches!(value, Value::Int(v) if v == *n);
+                let matches = matches!(value, Value::Int { n: v, .. } if v == *n);
                 if matches {
                     Ok(true)
                 } else {
@@ -1876,7 +1910,7 @@ pub(crate) fn match_pattern<'a>(
             }
 
             SurfaceExpression::U64(n) => {
-                let matches = matches!(value, Value::U64(v) if v == *n);
+                let matches = matches!(value, Value::U64 { n: v, .. } if v == *n);
                 if matches {
                     Ok(true)
                 } else {
@@ -1885,7 +1919,7 @@ pub(crate) fn match_pattern<'a>(
             }
 
             SurfaceExpression::Float(f) => {
-                let matches = matches!(value, Value::Float(v) if v == *f);
+                let matches = matches!(value, Value::Float { n: v, .. } if v == *f);
                 if matches {
                     Ok(true)
                 } else {
@@ -1899,6 +1933,7 @@ pub(crate) fn match_pattern<'a>(
                         ref source,
                         start,
                         end,
+                        ..
                     } => content == &source[*start..*end],
                     _ => false,
                 };
@@ -1915,9 +1950,8 @@ pub(crate) fn match_pattern<'a>(
                 if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&pattern.expr) {
                     // Check if scrutinee is a Variant with matching tag
                     match &value {
-                        Value::Variant { tycon, ctor, .. } => {
-                            let variant_tag = format!("{}.{}", tycon, ctor);
-                            if tag == variant_tag {
+                        Value::Variant { ctor, .. } => {
+                            if tag == ctor.as_ref() {
                                 Ok(true)
                             } else {
                                 Ok(false)
@@ -1945,13 +1979,8 @@ pub(crate) fn match_pattern<'a>(
                 match crate::ast::flatten_dot_access_to_tag(&func.expr) {
                     Some(tag) => {
                         match &value {
-                            Value::Variant {
-                                tycon,
-                                ctor,
-                                payload,
-                            } => {
-                                let variant_tag = format!("{}.{}", tycon, ctor);
-                                if tag != variant_tag {
+                            Value::Variant { ctor, payload, .. } => {
+                                if tag != ctor.as_ref() {
                                     return Ok(false);
                                 }
                                 if args.is_empty() {
@@ -2053,16 +2082,10 @@ pub(crate) fn match_pattern<'a>(
                 match crate::ast::flatten_dot_access_to_tag(&func.expr) {
                     Some(tag) => {
                         // Check if scrutinee is a Variant with the right tag
-                        let Value::Variant {
-                            tycon,
-                            ctor,
-                            payload,
-                        } = &value
-                        else {
+                        let Value::Variant { ctor, payload, .. } = &value else {
                             return Ok(false);
                         };
-                        let variant_tag = format!("{}.{}", tycon, ctor);
-                        if tag != variant_tag {
+                        if tag != ctor.as_ref() {
                             return Ok(false);
                         }
                         let Some(payload_id) = payload else {
@@ -2071,7 +2094,11 @@ pub(crate) fn match_pattern<'a>(
                         let payload_thunk = Arc::clone(payload_id);
                         let payload_val =
                             materialize(&payload_thunk, Some(value_span), ctx).await?;
-                        let Value::Dict(payload_map) = &payload_val else {
+                        let Value::Dict {
+                            entries: payload_map,
+                            ..
+                        } = &payload_val
+                        else {
                             return Ok(false);
                         };
                         // For each named arg, extract the field from the payload dict and
@@ -2108,7 +2135,10 @@ pub(crate) fn match_pattern<'a>(
             // Dict pattern: match dict structure
             SurfaceExpression::Dict(entries) => {
                 match &value {
-                    Value::Dict(dict_thunk_ids) => {
+                    Value::Dict {
+                        entries: dict_thunk_ids,
+                        ..
+                    } => {
                         // Check each pattern field
                         for entry in entries {
                             // Extract the key — should be a string key
@@ -2221,12 +2251,12 @@ pub(crate) fn match_pattern<'a>(
 /// `bind-opaque` protocol described in doc/whatif/matchable-patterns.md.
 fn match_typenode_pattern(typenode_ctor: &str, scrutinee: &Value) -> bool {
     match typenode_ctor {
-        "Int" => matches!(scrutinee, Value::Int(_)),
-        "Float" => matches!(scrutinee, Value::Float(_)),
+        "Int" => matches!(scrutinee, Value::Int { .. }),
+        "Float" => matches!(scrutinee, Value::Float { .. }),
         "String" => matches!(scrutinee, Value::String { .. }),
         "Bytes" => matches!(scrutinee, Value::Bytes { .. }),
-        "Dict" => matches!(scrutinee, Value::Dict(_)),
-        "Callable" => matches!(scrutinee, Value::Function { .. } | Value::Builtin(_)),
+        "Dict" => matches!(scrutinee, Value::Dict { .. }),
+        "Callable" => matches!(scrutinee, Value::Function { .. } | Value::Builtin { .. }),
         "Proxy" => matches!(scrutinee, Value::Proxy { .. }),
         // Unknown TypeNode constructor — does not match
         _ => false,
@@ -2241,37 +2271,39 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
     let b = peel_annotated(b);
 
     match (&a, &b) {
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x == y,
+        (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => x == y,
         (
             Value::String {
                 source: s1,
                 start: start1,
                 end: end1,
+                ..
             },
             Value::String {
                 source: s2,
                 start: start2,
                 end: end2,
+                ..
             },
         ) => s1[*start1..*end1] == s2[*start2..*end2],
         // Nullary variants: tag equality (covers unit constructors)
         (
             Value::Variant {
-                tycon: tycon1,
                 ctor: ctor1,
                 payload: None,
+                ..
             },
             Value::Variant {
-                tycon: tycon2,
                 ctor: ctor2,
                 payload: None,
+                ..
             },
-        ) => tycon1 == tycon2 && ctor1 == ctor2,
+        ) => ctor1 == ctor2,
         // Dict shallow equality: same keys and same thunk Arc pointers (no value materialization).
         // This covers null equality ([] == []) and self-equality for Dicts,
         // without deep structural comparison of values.
-        (Value::Dict(a), Value::Dict(b)) => {
+        (Value::Dict { entries: a, .. }, Value::Dict { entries: b, .. }) => {
             if a.len() != b.len() {
                 return false;
             }
@@ -2447,14 +2479,26 @@ mod tests {
     async fn test_eval_int() {
         let thunk = eval_str("42", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn test_eval_float() {
         let thunk = eval_str("2.5", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Float(2.5));
+        assert_eq!(
+            val,
+            Value::Float {
+                n: 2.5,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2479,10 +2523,16 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 2);
                 let x_id = map.get(&HashableValue::Str("x".into())).unwrap();
-                assert_eq!(mat_id(x_id, &ctx).await.unwrap(), Value::Int(1));
+                assert_eq!(
+                    mat_id(x_id, &ctx).await.unwrap(),
+                    Value::Int {
+                        n: 1,
+                        type_val: unknown_type_val()
+                    }
+                );
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
                 assert_eq!(mat_id(y_id, &ctx).await.unwrap(), string_val("hello"));
             }
@@ -2497,25 +2547,34 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 3);
                 assert_eq!(
                     mat_id(map.get(&HashableValue::Int(0)).unwrap(), &ctx)
                         .await
                         .unwrap(),
-                    Value::Int(10)
+                    Value::Int {
+                        n: 10,
+                        type_val: unknown_type_val()
+                    }
                 );
                 assert_eq!(
                     mat_id(map.get(&HashableValue::Int(1)).unwrap(), &ctx)
                         .await
                         .unwrap(),
-                    Value::Int(20)
+                    Value::Int {
+                        n: 20,
+                        type_val: unknown_type_val()
+                    }
                 );
                 assert_eq!(
                     mat_id(map.get(&HashableValue::Int(2)).unwrap(), &ctx)
                         .await
                         .unwrap(),
-                    Value::Int(30)
+                    Value::Int {
+                        n: 30,
+                        type_val: unknown_type_val()
+                    }
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -2530,9 +2589,15 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).await.unwrap(), Value::Int(5));
+                assert_eq!(
+                    mat_id(y_id, &ctx).await.unwrap(),
+                    Value::Int {
+                        n: 5,
+                        type_val: unknown_type_val()
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2546,9 +2611,15 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).await.unwrap(), Value::Int(10));
+                assert_eq!(
+                    mat_id(y_id, &ctx).await.unwrap(),
+                    Value::Int {
+                        n: 10,
+                        type_val: unknown_type_val()
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2564,7 +2635,7 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let x_id = map.get(&HashableValue::Str("x".into())).unwrap();
                 let err = mat_id(x_id, &ctx).await.unwrap_err();
                 assert!(
@@ -2588,7 +2659,9 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match val {
-            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
+            Value::Dict { entries: map, .. } => {
+                get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap())
+            }
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -2644,7 +2717,9 @@ mod tests {
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
-            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
+            Value::Dict { entries: map, .. } => {
+                get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap())
+            }
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -2676,13 +2751,23 @@ mod tests {
         let outer = materialize(&thunk, None, &ctx).await.unwrap();
 
         match outer {
-            Value::Dict(outer_map) => {
+            Value::Dict {
+                entries: outer_map, ..
+            } => {
                 let inner_id = outer_map.get(&HashableValue::Str("inner".into())).unwrap();
                 let inner_val = mat_id(inner_id, &ctx).await.unwrap();
                 match inner_val {
-                    Value::Dict(inner_map) => {
+                    Value::Dict {
+                        entries: inner_map, ..
+                    } => {
                         let y_id = inner_map.get(&HashableValue::Str("y".into())).unwrap();
-                        assert_eq!(mat_id(y_id, &ctx).await.unwrap(), Value::Int(42));
+                        assert_eq!(
+                            mat_id(y_id, &ctx).await.unwrap(),
+                            Value::Int {
+                                n: 42,
+                                type_val: unknown_type_val()
+                            }
+                        );
                     }
                     other => panic!("expected inner Dict, got {other:?}"),
                 }
@@ -2817,7 +2902,13 @@ mod tests {
         // [@Integer 42] -> 42
         let thunk = eval_str("[@Integer 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2833,7 +2924,13 @@ mod tests {
         // [@Number 42] -> 42 (Number accepts Int)
         let thunk = eval_str("[@Number 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2841,7 +2938,13 @@ mod tests {
         // [@Number 2.5] -> 2.5 (Number accepts Float)
         let thunk = eval_str("[@Number 2.5]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Float(2.5));
+        assert_eq!(
+            val,
+            Value::Float {
+                n: 2.5,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2904,7 +3007,13 @@ mod tests {
         // [@[type: Int] 42] -> 42
         let thunk = eval_str("[@[type: Int] 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2963,7 +3072,13 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -2998,7 +3113,13 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(0));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 0,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3071,7 +3192,13 @@ mod tests {
         let ctx = test_ctx();
         let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
-        assert_eq!(val, Value::Int(0));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 0,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3171,7 +3298,7 @@ mod tests {
         let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let name_thunk = map
                     .get(&HashableValue::Str("name".into()))
                     .expect("name field missing");
@@ -3222,7 +3349,9 @@ mod tests {
 
         // Extract x's thunk from the dict
         let x_thunk = match &dict_val {
-            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
+            Value::Dict { entries: map, .. } => {
+                get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap())
+            }
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -3249,7 +3378,7 @@ mod tests {
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 let x_id = map.get(&HashableValue::Str("x".into())).unwrap();
                 let x_thunk = get_thunk_arc(x_id);
                 let mat_span = test_span(10, 1, 10, 5);
@@ -3280,12 +3409,18 @@ mod tests {
         let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 1);
                 let key = HashableValue::Float(1.5f64.to_bits());
                 let entry_thunk = map.get(&key).expect("Float(1.5) key must exist");
                 let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
-                assert_eq!(inner, Value::Int(42));
+                assert_eq!(
+                    inner,
+                    Value::Int {
+                        n: 42,
+                        type_val: unknown_type_val()
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3308,12 +3443,18 @@ mod tests {
         let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 1);
                 let key = HashableValue::Float(2.5f64.to_bits());
                 let entry_thunk = map.get(&key).expect("Float(2.5) key must exist");
                 let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
-                assert_eq!(inner, Value::Int(1));
+                assert_eq!(
+                    inner,
+                    Value::Int {
+                        n: 1,
+                        type_val: unknown_type_val()
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3464,34 +3605,60 @@ mod tests {
                 let a = materialize(&ctx.args[0], None, &ctx.ctx).await?;
                 let b = materialize(&ctx.args[1], None, &ctx.ctx).await?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::value(
-                        Value::Int(x * y),
-                        test_span(1, 1, 1, 1),
-                    ))),
+                    (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => {
+                        Ok(Arc::new(Thunk::value(
+                            Value::Int {
+                                n: x * y,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            test_span(1, 1, 1, 1),
+                        )))
+                    }
                     _ => panic!("test expects Int args"),
                 }
             })
         }
 
         let func_thunk = Arc::new(Thunk::value(
-            Value::Builtin(crate::value::BuiltinDef {
-                func: multiply_builtin,
-                name: "*",
-                pos_strictness: &[],
-                force_count: 0,
-                needs_caller_env: false,
-            }),
+            Value::Builtin {
+                def: crate::value::BuiltinDef {
+                    func: multiply_builtin,
+                    name: "*",
+                    pos_strictness: &[],
+                    force_count: 0,
+                    needs_caller_env: false,
+                },
+                type_val: crate::value::unknown_type_val(),
+            },
             test_span(1, 1, 1, 5),
         ));
-        let arg1 = Arc::new(Thunk::value(Value::Int(5), test_span(1, 6, 1, 7)));
-        let arg2 = Arc::new(Thunk::value(Value::Int(6), test_span(1, 8, 1, 9)));
+        let arg1 = Arc::new(Thunk::value(
+            Value::Int {
+                n: 5,
+                type_val: unknown_type_val(),
+            },
+            test_span(1, 6, 1, 7),
+        ));
+        let arg2 = Arc::new(Thunk::value(
+            Value::Int {
+                n: 6,
+                type_val: unknown_type_val(),
+            },
+            test_span(1, 8, 1, 9),
+        ));
         let call_span = test_span(2, 1, 2, 10);
         let ctx_builtin = test_ctx();
         let pending = make_pending_call(&ctx_builtin, func_thunk, vec![arg1, arg2], call_span);
 
         // Materialize should call the builtin directly and return the result
         let result = materialize(&pending, None, &ctx_builtin).await.unwrap();
-        assert_eq!(result, Value::Int(30));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 30,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3515,34 +3682,62 @@ mod tests {
             })),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            type_val: unknown_type_val(),
         };
 
         let func_thunk = Arc::new(Thunk::value(identity_fn, test_span(1, 1, 1, 10)));
-        let arg = Arc::new(Thunk::value(Value::Int(42), test_span(1, 11, 1, 13)));
+        let arg = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val(),
+            },
+            test_span(1, 11, 1, 13),
+        ));
         let call_span = test_span(2, 1, 2, 10);
         let ctx_memo = test_ctx();
         let pending = make_pending_call(&ctx_memo, func_thunk, vec![arg], call_span);
 
         // First materialization
         let result1 = materialize(&pending, None, &ctx_memo).await.unwrap();
-        assert_eq!(result1, Value::Int(42));
+        assert_eq!(
+            result1,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
 
         // Check that the thunk is now in Materialized state
         assert_eq!(
             pending.try_get_value(),
-            Some(&Value::Int(42)),
+            Some(&Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }),
             "expected Materialized after first call"
         );
 
         // Second materialization should return cached value
         let result2 = materialize(&pending, None, &ctx_memo).await.unwrap();
-        assert_eq!(result2, Value::Int(42));
+        assert_eq!(
+            result2,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
     async fn test_pending_call_non_function_error() {
         // PendingCall with a non-Function/Builtin value should error
-        let not_a_function = Arc::new(Thunk::value(Value::Int(123), test_span(1, 1, 1, 4)));
+        let not_a_function = Arc::new(Thunk::value(
+            Value::Int {
+                n: 123,
+                type_val: unknown_type_val(),
+            },
+            test_span(1, 1, 1, 4),
+        ));
         let call_span = test_span(2, 1, 2, 10);
 
         let ctx_nonfn = test_ctx();
@@ -3576,6 +3771,7 @@ mod tests {
             })),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            type_val: unknown_type_val(),
         };
 
         let ctx_unevarg = test_ctx();
@@ -3595,7 +3791,13 @@ mod tests {
 
         // Materialize should evaluate the arg thunk and return the result
         let result = materialize(&pending, None, &ctx_unevarg).await.unwrap();
-        assert_eq!(result, Value::Int(99));
+        assert_eq!(
+            result,
+            Value::Int {
+                n: 99,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     // T-1557: test_pending_call_with_named_args deleted. The function body called $+ via
@@ -3632,7 +3834,9 @@ mod tests {
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
-            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
+            Value::Dict { entries: map, .. } => {
+                get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap())
+            }
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -3734,7 +3938,9 @@ mod tests {
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
-            Value::Dict(map) => get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap()),
+            Value::Dict { entries: map, .. } => {
+                get_thunk_arc(map.get(&HashableValue::Str("x".into())).unwrap())
+            }
             other => panic!("expected Dict, got {other:?}"),
         };
 
@@ -3781,7 +3987,13 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(42));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3867,7 +4079,13 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(99));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 99,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -3928,7 +4146,7 @@ mod tests {
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         // Should be a Dict with the expected fields
         match &val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert!(map.contains_key(&HashableValue::Str("name".into())));
                 assert!(map.contains_key(&HashableValue::Str("age".into())));
             }
@@ -4037,7 +4255,7 @@ mod tests {
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match &val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert!(map.contains_key(&HashableValue::Str("x".into())));
                 assert!(
                     map.contains_key(&HashableValue::Str("extra".into())),
@@ -4086,7 +4304,7 @@ mod tests {
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match &val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 1);
                 assert!(map.contains_key(&HashableValue::Str("x".into())));
             }
@@ -4133,7 +4351,13 @@ mod tests {
         // (This ensures the existing nominal path is preserved alongside the new structural path.)
         let thunk = eval_str("[@Integer 7]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int(7));
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 7,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     // ── annotation_has_structural_fields unit tests ────────────────────
@@ -4253,7 +4477,7 @@ mod tests {
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert!(
-            matches!(val, Value::Dict(_)),
+            matches!(val, Value::Dict { .. }),
             "Structural annotation with Dict value should pass tag check"
         );
     }
@@ -4301,7 +4525,7 @@ mod tests {
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert!(
-            matches!(val, Value::Dict(_)),
+            matches!(val, Value::Dict { .. }),
             "Should use default when record shape check fails; got: {val:?}"
         );
     }
@@ -4324,36 +4548,102 @@ mod tests {
     #[tokio::test]
     async fn test_value_matches_type_int() {
         let ctx = test_ctx();
-        assert!(value_matches_type(&Value::Int(42), &Type::Int, &ctx));
+        assert!(value_matches_type(
+            &Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            },
+            &Type::Int,
+            &ctx
+        ));
         assert!(!value_matches_type(&string_val("x"), &Type::Int, &ctx));
-        assert!(!value_matches_type(&Value::Float(1.0), &Type::Int, &ctx));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            },
+            &Type::Int,
+            &ctx
+        ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_str() {
         let ctx = test_ctx();
         assert!(value_matches_type(&string_val("hello"), &Type::Str, &ctx));
-        assert!(!value_matches_type(&Value::Int(1), &Type::Str, &ctx));
-        assert!(!value_matches_type(&Value::Float(0.0), &Type::Str, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &Type::Str,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 0.0,
+                type_val: unknown_type_val()
+            },
+            &Type::Str,
+            &ctx
+        ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_float() {
         let ctx = test_ctx();
-        assert!(value_matches_type(&Value::Float(2.5), &Type::Float, &ctx));
-        assert!(!value_matches_type(&Value::Int(3), &Type::Float, &ctx));
+        assert!(value_matches_type(
+            &Value::Float {
+                n: 2.5,
+                type_val: unknown_type_val()
+            },
+            &Type::Float,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 3,
+                type_val: unknown_type_val()
+            },
+            &Type::Float,
+            &ctx
+        ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_any() {
         let ctx = test_ctx();
         // Type::Any accepts all value kinds
-        assert!(value_matches_type(&Value::Int(1), &Type::Any, &ctx));
-        assert!(value_matches_type(&Value::Float(1.0), &Type::Any, &ctx));
-        assert!(value_matches_type(&string_val("s"), &Type::Any, &ctx));
-        assert!(value_matches_type(&Value::Float(1.0), &Type::Any, &ctx));
         assert!(value_matches_type(
-            &Value::Dict(IndexMap::new()),
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &Type::Any,
+            &ctx
+        ));
+        assert!(value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            },
+            &Type::Any,
+            &ctx
+        ));
+        assert!(value_matches_type(&string_val("s"), &Type::Any, &ctx));
+        assert!(value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            },
+            &Type::Any,
+            &ctx
+        ));
+        assert!(value_matches_type(
+            &Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
             &Type::Any,
             &ctx,
         ));
@@ -4368,12 +4658,18 @@ mod tests {
         // Literal types are static-only constraints (the type checker uses them for
         // exhaustiveness); at runtime, ground_type_of produces the base type, not a literal.
         assert!(!value_matches_type(
-            &Value::Int(5),
+            &Value::Int {
+                n: 5,
+                type_val: unknown_type_val()
+            },
             &Type::IntLiteral(5),
             &ctx
         ));
         assert!(!value_matches_type(
-            &Value::Int(6),
+            &Value::Int {
+                n: 6,
+                type_val: unknown_type_val()
+            },
             &Type::IntLiteral(5),
             &ctx
         ));
@@ -4409,7 +4705,10 @@ mod tests {
             &ctx,
         ));
         assert!(!value_matches_type(
-            &Value::Int(0),
+            &Value::Int {
+                n: 0,
+                type_val: unknown_type_val()
+            },
             &Type::StringLiteral("foo".into()),
             &ctx,
         ));
@@ -4426,7 +4725,10 @@ mod tests {
         let ctx = test_ctx();
         // Type::Var is treated as Any (residual polymorphic instantiation)
         assert!(value_matches_type(
-            &Value::Int(1),
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
             &Type::Var("a".into(), 0),
             &ctx,
         ));
@@ -4436,7 +4738,10 @@ mod tests {
             &ctx,
         ));
         assert!(value_matches_type(
-            &Value::Dict(IndexMap::new()),
+            &Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
             &Type::Var("a".into(), 0),
             &ctx,
         ));
@@ -4464,10 +4769,20 @@ mod tests {
             tail: crate::type_def::RowTail::Empty,
         });
         // Non-Dict value: ground_type_of(Int) = Type::Int, not a subtype of Record.
-        assert!(!value_matches_type(&Value::Int(99), &record_type, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 99,
+                type_val: unknown_type_val()
+            },
+            &record_type,
+            &ctx
+        ));
         // Empty Dict: ground_type_of(Dict({})) = Record({}), missing required field "x".
         assert!(!value_matches_type(
-            &Value::Dict(IndexMap::new()),
+            &Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
             &record_type,
             &ctx,
         ));
@@ -4487,8 +4802,17 @@ mod tests {
         // statically; at runtime, Unknown passes through any annotation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let handler = Arc::new(Thunk::value(Value::Int(42), span));
-        let proxy_val = Value::Proxy { handler };
+        let handler = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val(),
+            },
+            span,
+        ));
+        let proxy_val = Value::Proxy {
+            handler,
+            type_val: crate::value::unknown_type_val(),
+        };
 
         // Unknown ~<: any type, so Proxy values pass all annotations at runtime.
         assert!(value_matches_type(&proxy_val, &Type::Proxy, &ctx));
@@ -4505,8 +4829,22 @@ mod tests {
         let ctx = test_ctx(); // no tycon_env set
         let tycon = Type::TyCon("MyType".to_string());
         // Int value against unknown TyCon → false (conservative)
-        assert!(!value_matches_type(&Value::Int(42), &tycon, &ctx));
-        assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4533,8 +4871,22 @@ mod tests {
         );
         ctx.set_tycon_env(env);
         let tycon = Type::TyCon("MyInt".to_string());
-        assert!(value_matches_type(&Value::Int(1), &tycon, &ctx));
-        assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
+        assert!(value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
         assert!(!value_matches_type(&string_val("x"), &tycon, &ctx));
     }
 
@@ -4564,13 +4916,30 @@ mod tests {
         let tycon = Type::TyCon("MyDict".to_string());
         // Dict values match
         assert!(value_matches_type(
-            &Value::Dict(IndexMap::new()),
+            &Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
             &tycon,
             &ctx
         ));
         // Non-Dict values do not match
-        assert!(!value_matches_type(&Value::Int(1), &tycon, &ctx));
-        assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4599,20 +4968,27 @@ mod tests {
         let tycon = Type::TyCon("Color".to_string());
         // Variant with matching tycon matches
         let red = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Red"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Red"),
             payload: None,
         };
         assert!(value_matches_type(&red, &tycon, &ctx));
         // Variant with different tycon does not match
         let wrong = Value::Variant {
-            tycon: Arc::from("Shape"),
-            ctor: Arc::from("Circle"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Shape.Circle"),
             payload: None,
         };
         assert!(!value_matches_type(&wrong, &tycon, &ctx));
         // Non-Variant values do not match a nominal TyCon
-        assert!(!value_matches_type(&Value::Int(1), &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &tycon,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4645,7 +5021,14 @@ mod tests {
             Box::new(Type::Int),
         );
         assert!(value_matches_type(&string_val("hello"), &app_type, &ctx));
-        assert!(!value_matches_type(&Value::Int(1), &app_type, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &app_type,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4689,8 +5072,8 @@ mod tests {
 
         // Color.Red variant must pass @Color check.
         let color_red = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Red"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Red"),
             payload: None,
         };
         assert!(
@@ -4700,8 +5083,8 @@ mod tests {
 
         // Color.Green variant must also pass.
         let color_green = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Green"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Green"),
             payload: None,
         };
         assert!(
@@ -4711,8 +5094,8 @@ mod tests {
 
         // A value from a different TyCon must not pass — no cross-TyCon confusion.
         let other = Value::Variant {
-            tycon: Arc::from("Shape"),
-            ctor: Arc::from("Circle"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Shape.Circle"),
             payload: None,
         };
         assert!(
@@ -4722,7 +5105,14 @@ mod tests {
 
         // A non-variant value must not pass.
         assert!(
-            !value_matches_type(&Value::Int(1), &tycon, &ctx),
+            !value_matches_type(
+                &Value::Int {
+                    n: 1,
+                    type_val: unknown_type_val()
+                },
+                &tycon,
+                &ctx
+            ),
             "Int must not match @Color"
         );
     }
@@ -4735,17 +5125,29 @@ mod tests {
         // Structural values (Int, String, Dict, Variant) return None from value_tycon_name,
         // falling through to the TyConDef discriminant/constructor path.
         assert_eq!(
-            Value::Int(1).value_tycon_name(),
+            Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            }
+            .value_tycon_name(),
             None,
             "Int is a primitive type, not an opaque builtin TyCon"
         );
         assert_eq!(
-            Value::Float(1.0).value_tycon_name(),
+            Value::Float {
+                n: 1.0,
+                type_val: unknown_type_val()
+            }
+            .value_tycon_name(),
             None,
             "Float is a primitive type"
         );
         assert_eq!(
-            Value::Dict(IndexMap::new()).value_tycon_name(),
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            }
+            .value_tycon_name(),
             None,
             "Dict is structural, not an opaque TyCon"
         );
@@ -4755,8 +5157,8 @@ mod tests {
             "String is a primitive type"
         );
         let color_variant = Value::Variant {
-            tycon: Arc::from("Color"),
-            ctor: Arc::from("Red"),
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from("Color.Red"),
             payload: None,
         };
         assert_eq!(
@@ -4769,7 +5171,14 @@ mod tests {
         let ctx = test_ctx(); // no tycon_env
         let unknown_tycon = Type::TyCon("Program".to_string()); // opaque, not in env
                                                                 // Int has no value_tycon_name and no TyConDef entry → false.
-        assert!(!value_matches_type(&Value::Int(1), &unknown_tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: unknown_type_val()
+            },
+            &unknown_tycon,
+            &ctx
+        ));
         // Variant has no value_tycon_name → false (no TyConDef for "Program").
         assert!(!value_matches_type(&color_variant, &unknown_tycon, &ctx));
     }
@@ -4859,11 +5268,23 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Str("x".into()),
-            Arc::new(Thunk::value(Value::Int(1), span.clone())),
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n: 1,
+                    type_val: unknown_type_val(),
+                },
+                span.clone(),
+            )),
         );
         entries.insert(
             HashableValue::Str("z".into()),
-            Arc::new(Thunk::value(Value::Int(99), span)),
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n: 99,
+                    type_val: unknown_type_val(),
+                },
+                span,
+            )),
         );
 
         let mut field_path = vec!["config".to_string()];
@@ -5044,7 +5465,13 @@ mod tests {
         // Previously, the depth check fired BEFORE the Materialized early-return,
         // causing spurious depth errors when accessing cached values at high depth.
         let span = test_span(1, 1, 1, 5);
-        let thunk = Arc::new(Thunk::value(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val(),
+            },
+            span,
+        ));
         let ctx = test_ctx();
 
         // Materialize at high depth (CEK continuation stack) should succeed
@@ -5054,7 +5481,13 @@ mod tests {
             "Expected success for cached thunk at high depth, got error: {:?}",
             result.unwrap_err()
         );
-        assert_eq!(result.unwrap(), Value::Int(42));
+        assert_eq!(
+            result.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
     }
 
     #[tokio::test]
@@ -5068,7 +5501,13 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a materialized Int(42) — passes the Int guard.
-        let inner = Arc::new(Thunk::value(Value::Int(42), span.clone()));
+        let inner = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val(),
+            },
+            span.clone(),
+        ));
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Arc::new(Thunk::guarded(
@@ -5088,12 +5527,21 @@ mod tests {
         // First materialization: triggers guard, validates Int(42) against Type::Int → pass.
         let result1 = materialize(&guarded, None, &ctx).await;
         assert!(result1.is_ok(), "first materialization should succeed");
-        assert_eq!(result1.unwrap(), Value::Int(42));
+        assert_eq!(
+            result1.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
 
         // After successful validation, thunk must be in Materialized state (memoized).
         assert_eq!(
             guarded.try_get_value(),
-            Some(&Value::Int(42)),
+            Some(&Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }),
             "after first materialization thunk should be Materialized(Int(42))"
         );
 
@@ -5103,12 +5551,21 @@ mod tests {
             result2.is_ok(),
             "second materialization should succeed (cached)"
         );
-        assert_eq!(result2.unwrap(), Value::Int(42));
+        assert_eq!(
+            result2.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }
+        );
 
         // State is still Materialized (not changed by second access).
         assert_eq!(
             guarded.try_get_value(),
-            Some(&Value::Int(42)),
+            Some(&Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            }),
             "state should still be Materialized after second access"
         );
     }
@@ -5261,7 +5718,9 @@ mod tests {
 
         // Access one of the cyclic keys to trigger cycle detection
         let err = match dict_val {
-            Value::Dict(ref map) => {
+            Value::Dict {
+                entries: ref map, ..
+            } => {
                 let a_thunk = map
                     .get(&HashableValue::Str("a".into()))
                     .expect("dict should have 'a' key");
@@ -5333,14 +5792,20 @@ mod tests {
 
         // Extract the dict
         match val {
-            Value::Dict(map) => {
+            Value::Dict { entries: map, .. } => {
                 // Access only the "used" key
                 let used_key = HashableValue::Str("used".into());
                 let used_thunk = map.get(&used_key).expect("used key should exist");
                 let used_val = mat_id(used_thunk, &ctx)
                     .await
                     .expect("used should materialize");
-                assert_eq!(used_val, Value::Int(1));
+                assert_eq!(
+                    used_val,
+                    Value::Int {
+                        n: 1,
+                        type_val: unknown_type_val()
+                    }
+                );
 
                 // Verify the "unused" key exists but is NOT materialized
                 let unused_key = HashableValue::Str("unused".into());
@@ -5388,7 +5853,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
 
         // Build an unevaluated thunk that evaluates to an empty dict.
-        // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict(IndexMap::new())`.
+        // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict { entries: IndexMap::new(), type_val: unknown_type_val() }`.
         let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
@@ -5435,7 +5900,7 @@ mod tests {
         // The result should be an empty dict (keys of empty dict = empty dict).
         let val = result.unwrap();
         assert!(
-            matches!(val, Value::Dict(ref m) if m.is_empty()),
+            matches!(val, Value::Dict { entries: ref m, .. } if m.is_empty()),
             "expected empty dict from builtin_keys on empty dict, got {:?}",
             val
         );
@@ -5481,7 +5946,13 @@ mod tests {
             force_count: 1,
             needs_caller_env: false,
         };
-        let func_thunk = Arc::new(Thunk::value(Value::Builtin(keys_def), span.clone()));
+        let func_thunk = Arc::new(Thunk::value(
+            Value::Builtin {
+                def: keys_def,
+                type_val: crate::value::unknown_type_val(),
+            },
+            span.clone(),
+        ));
 
         // Create a PendingCall thunk using Arc<Thunk> directly.
         let outer = make_pending_call(&ctx, func_thunk, vec![unevaluated_arg], span);
@@ -5498,7 +5969,7 @@ mod tests {
         // The result should be an empty dict (keys of empty dict = empty dict).
         let val = result.unwrap();
         assert!(
-            matches!(val, Value::Dict(ref m) if m.is_empty()),
+            matches!(val, Value::Dict { entries: ref m, .. } if m.is_empty()),
             "expected empty dict from builtin_keys on empty dict, got {:?}",
             val
         );
@@ -5542,7 +6013,10 @@ mod tests {
             .expect("Placeholder wildcard must materialize without error");
         assert_eq!(
             val,
-            Value::Int(99),
+            Value::Int {
+                n: 99,
+                type_val: unknown_type_val()
+            },
             "Placeholder wildcard arm must produce 99; got: {:?}",
             val
         );
@@ -5584,7 +6058,7 @@ mod tests {
         let val = materialize(&thunk, None, &test_ctx())
             .await
             .expect("materialize must succeed");
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
         let r = d
@@ -5598,7 +6072,8 @@ mod tests {
             Value::String {
                 source: Arc::from("hit"),
                 start: 0,
-                end: 3
+                end: 3,
+                type_val: crate::value::unknown_type_val(),
             },
             "pin pattern $x=42 should match scrutinee 42; got: {r_val:?}"
         );
@@ -5616,7 +6091,7 @@ mod tests {
         let val = materialize(&thunk, None, &test_ctx())
             .await
             .expect("materialize must succeed");
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
         let r = d
@@ -5630,7 +6105,8 @@ mod tests {
             Value::String {
                 source: Arc::from("miss"),
                 start: 0,
-                end: 4
+                end: 4,
+                type_val: crate::value::unknown_type_val(),
             },
             "pin pattern $x=42 should NOT match scrutinee 99; got: {r_val:?}"
         );
@@ -5654,7 +6130,13 @@ mod tests {
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
 
         // Build a thunk for initial_input: Int(777).
-        let input_thunk = Arc::new(Thunk::value(Value::Int(777), rust_span!()));
+        let input_thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 777,
+                type_val: unknown_type_val(),
+            },
+            rust_span!(),
+        ));
 
         let result_thunk = super::eval_surface_file_with_input(&program, &ctx, Some(input_thunk))
             .await
@@ -5662,7 +6144,7 @@ mod tests {
         let val = super::materialize(&result_thunk, None, &ctx)
             .await
             .expect("materialize must succeed");
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
         let result_thunk_ref = d
@@ -5673,7 +6155,10 @@ mod tests {
             .expect("result must materialize");
         assert_eq!(
             result_val,
-            Value::Int(777),
+            Value::Int {
+                n: 777,
+                type_val: unknown_type_val()
+            },
             "% should resolve to initial_input Int(777); got: {result_val:?}"
         );
     }
@@ -5691,7 +6176,7 @@ mod tests {
         let thunk = eval_str("[type MyType Int]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
-            Value::Dict(map) => assert!(
+            Value::Dict { entries: map, .. } => assert!(
                 map.is_empty(),
                 "B-430: standalone [type MyType Int] must produce {{}} (empty dict), got {} entries",
                 map.len()
@@ -5715,7 +6200,7 @@ mod tests {
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
-            Value::Dict(map) => assert!(
+            Value::Dict { entries: map, .. } => assert!(
                 map.is_empty(),
                 "B-430: standalone [type Color Red Green Blue] must produce {{}} (empty dict), got {} entries",
                 map.len()
@@ -5755,6 +6240,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            type_val: unknown_type_val(),
         };
         match ground_type_of(&non_variadic) {
             Type::Function {
@@ -5794,6 +6280,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            type_val: unknown_type_val(),
         };
         match ground_type_of(&variadic_fn) {
             Type::Function {
@@ -5829,6 +6316,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             closure_env: Arc::new(vec![]),
             annotation: None,
+            type_val: unknown_type_val(),
         };
         match ground_type_of(&only_variadic) {
             Type::Function {
@@ -5876,7 +6364,7 @@ mod tests {
         let val = materialize(&thunk, None, &ctx)
             .await
             .expect("materialize must succeed");
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
         let r = d
@@ -5887,7 +6375,10 @@ mod tests {
             .expect("r must materialize");
         assert_eq!(
             r_val,
-            Value::Int(42),
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            },
             "B-598: case arm binding v should be 42; got: {r_val:?}"
         );
     }
@@ -5913,7 +6404,7 @@ mod tests {
         let val = materialize(&thunk, None, &ctx)
             .await
             .expect("materialize must succeed");
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
         let r = d
@@ -5924,7 +6415,10 @@ mod tests {
             .expect("r must materialize");
         assert_eq!(
             r_val,
-            Value::Int(42),
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            },
             "B-598: v=41, body [builtin-int-add v 1] should be 42; got: {r_val:?}"
         );
     }
@@ -5949,7 +6443,7 @@ mod tests {
         let val = materialize(&thunk, None, &ctx)
             .await
             .expect("materialize must succeed");
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
         let r = d
@@ -5960,7 +6454,10 @@ mod tests {
             .expect("r must materialize");
         assert_eq!(
             r_val,
-            Value::Int(99),
+            Value::Int {
+                n: 99,
+                type_val: unknown_type_val()
+            },
             "B-598: non-matching case arm must fall through to wildcard; got: {r_val:?}"
         );
     }
@@ -6032,7 +6529,7 @@ mod tests {
             .await
             .expect("materialize must succeed");
 
-        let Value::Dict(ref d) = val else {
+        let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
 
@@ -6045,7 +6542,10 @@ mod tests {
             .expect("result must materialize");
         assert_eq!(
             result_val,
-            Value::Int(42),
+            Value::Int {
+                n: 42,
+                type_val: unknown_type_val()
+            },
             "B-637: dot-access must resolve builtin-dict-get via root_group; got: {result_val:?}"
         );
     }
