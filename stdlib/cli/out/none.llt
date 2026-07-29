@@ -15,7 +15,7 @@
     [seq [ch: %emit-channel  handler: [fn [let v] []]] []]
     identity]]]
 
-# Force % (for side effects) and return %stdout as the handle to flush.
+# Materialize % (for side effects) and produce %stdout as the handle for flush.
 [forced: [if [seq? %]
   [reduce [fn [let h _] h] %stdout %]
   [match [materialize %] ...: %stdout]]]
