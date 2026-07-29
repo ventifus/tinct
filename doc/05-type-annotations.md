@@ -623,21 +623,19 @@ The type-stage Env is discarded after type-checking; it does not exist at runtim
 
 All types — including builtins — are declared in prelude using the unified `[type ...]` syntax. This makes `TyConEnv` the complete and authoritative registry of all types and their runtime representations.
 
-**Builtin type declarations** in prelude use `[builtin-type "X"]` to associate a type name with its Rust-level discriminant:
+**Builtin type declarations** in `stdlib/builtin_core.llt` use `[type repr: "Value::X"]` to associate a type name with its Rust-level Value variant discriminant. The `repr:` key inside a `[type ...]` body triggers `CoreExpr::ReprDecl`, which registers the type in the `repr_registry` and validates the discriminant string against the allowlist of known `Value` enum arms:
 
 ```tinct
---- stage: type
-Int:    [type [builtin-type "Int"]]     # Value::Int
-Str:    [type [builtin-type "Str"]]     # Value::String
-Bool:   [type [builtin-type "Bool"]]    # Value::Bool
-Float:  [type [builtin-type "Float"]]   # Value::Float
-Bytes:  [type [builtin-type "Bytes"]]   # Value::Bytes
-Dict:   [type [builtin-type "Dict"]]    # Value::Dict
-Fn:     [type [builtin-type "Fn"]]      # Value::Function | Value::Builtin
-Handle: [type [builtin-type "Handle"]]  # Value::Handle
-
-Number: [type [or Int Float]]           # transparent alias — union of numeric primitives
+NativeInt:  [type repr: "Value::Int"]       # 64-bit signed integer
+Float64:    [type repr: "Value::Float"]     # 64-bit IEEE 754 float
+String:     [type repr: "Value::String"]    # UTF-8 string
+Bytes:      [type repr: "Value::Bytes"]     # raw byte sequence
+Dict:       [type repr: "Value::Dict"]      # dict / record
+Fn:         [type repr: "Value::Function"]  # user-defined function
+Builtin:    [type repr: "Value::Builtin"]   # Rust builtin function
 ```
+
+`repr:` is validated at declaration time against the `VALID_REPRS` allowlist in `eval_core.rs`. An unrecognized discriminant string is a runtime error at the point of declaration, not at use. A phantom type with no Rust backing uses an empty body instead: `Row: [type]`.
 
 **Nominal and structural type declarations** in prelude:
 
@@ -719,10 +717,10 @@ This follows the same pattern as `tmpl`/`unindent` for string interpolation (D-3
 
 1. **`[let ...]` is the only way to introduce type parameters** — same as `[fn [let x y] body]`. Without `[let ...]`, lowercase names in type bodies resolve from the enclosing scope as existing types; they are not created as new TypeVars.
 2. **Unit constructors are bare uppercase words.** `Red`, `SIGTERM`, `Nil` — no brackets.
-3. **`builtin-type` bodies** mark a type as Rust-backed with a runtime discriminant string.
+3. **`repr:` bodies** (`[type repr: "Value::X"]`) mark a type as Rust-backed with a runtime discriminant string; the repr: string must match a known `Value` variant in the VALID_REPRS allowlist.
 4. **Dict-entry form is the binding form.** `Name: [type ...]` — the name is the dict key.
 
-**Five visually distinct forms:**
+**Six visually distinct forms:**
 
 | Body content | Kind | Nominal? |
 |---|---|---|
@@ -730,7 +728,8 @@ This follows the same pattern as `tmpl`/`unindent` for string interpolation (D-3
 | `[let ...]` + structural body | parameterized transparent alias | no |
 | Uppercase bare words and `Name: [fields]` keyed entries | nominal ADT | yes |
 | `[let ...]` + constructors | parameterized nominal ADT | yes |
-| `[builtin-type "X"]` | opaque, Rust-backed | yes |
+| `repr: "Value::X"` | opaque, Rust-backed | yes |
+| `[type]` (empty body) | phantom type | yes |
 
 Three forms in the nominal ADT body:
 - **Unit constructor** — bare uppercase word: `Red`, `None`, `Noop`
@@ -752,10 +751,34 @@ Color:  [type Red Green Blue]
 # Parameterized with variance annotations
 Tree:   [type [let a@Covariant]  Leaf  Node: [value: a  left: [Tree a]  right: [Tree a]]]
 
-# Builtin-type declarations (Rust Value variants)
-Int:    [type [builtin-type "Int"]]
-Handle: [type [let a] [builtin-type "Handle"]]
+# Opaque repr: declarations (Rust Value variants — see §13 and §19)
+NativeInt: [type repr: "Value::Int"]
+Float64:   [type repr: "Value::Float"]
+
+# Phantom types — no constructors, no runtime payload, type-level only
+Row:        [type]   # kind marker for row-kinded type variables
 ```
+
+**§15-repr: Opaque `repr:` types**
+
+`[type repr: "Value::X"]` declares a nominal type that is identity-matched by its Rust `Value` enum discriminant at runtime. The `repr:` key inside the `[type ...]` body is not a type-stage expression — it is metadata consumed by the lowerer (`lower.rs`) and evaluated by `CoreExpr::ReprDecl`. The declaration is validated at load time against an allowlist of known `Value` variants (`VALID_REPRS` in `eval_core.rs`); an unrecognized discriminant string is an immediate runtime error.
+
+`repr:` in `[type ...]` body position is distinct from `repr:` in `@[...]` parameter annotations (where it constrains integer bit width — see §19). The `repr:` key has two independent uses that do not interact:
+
+1. `[type repr: "Value::X"]` — type body: declares a Rust-backed nominal type
+2. `@[type: Int  repr: "u8"]` — parameter annotation: constrains numeric bit width
+
+**§15-phantom: Phantom types**
+
+`[type]` (empty body, no constructors) declares a phantom type. A phantom type has no constructors and cannot be instantiated at runtime — it exists only at the type level as a kind marker or tag. The type dict value at runtime is an empty `Dict({})`.
+
+Phantom types are used as kind sentinels for type-system machinery:
+
+```tinct
+Row: [type]   # marks row-kinded variables; never appears as a runtime value
+```
+
+`[@PhantomT x]` type assertions pass during bootstrap (the unknown sentinel is consistent with every type). In a fully wired system, phantom type assertions are rejected at runtime because no value can satisfy the phantom type.
 
 **Variance annotations** on type parameters use `name@VarianceName`:
 
@@ -1009,9 +1032,24 @@ Both mechanisms store `TypeScheme.param_narrowings[0] = Some(T)` during type che
 
 **`is:` fires at materialization boundary** — when the value is first accessed, not at binding time.
 
-### 19. Numeric Representation (`repr:`)
+### 19. The Two Uses of `repr:`
 
-`repr:` constrains the integer bit width and signedness of a numeric parameter. Used for FFI, binary protocol parsing, and performance-sensitive numeric code.
+The `repr:` key has two independent and non-interacting roles in tinct:
+
+**Use 1: `repr:` in `[type ...]` body — Rust-backed nominal type declaration**
+
+When `repr:` appears as the sole entry inside a `[type ...]` body, it declares that the type is backed by a specific Rust `Value` enum variant. This is consumed by the lowerer as `CoreExpr::ReprDecl` and validated at load time. See §13 and §15-repr for the full specification.
+
+```tinct
+NativeInt: [type repr: "Value::Int"]    # matched by Value::Int at runtime
+Float64:   [type repr: "Value::Float"]  # matched by Value::Float at runtime
+```
+
+This use of `repr:` is a lowerer directive — it is not evaluated as a tinct expression and does not contribute to the type's payload structure.
+
+**Use 2: `repr:` in `@[...]` parameter annotation — numeric bit-width constraint**
+
+`repr:` in a parameter annotation dict constrains the integer bit width and signedness of a numeric parameter. Used for FFI, binary protocol parsing, and performance-sensitive numeric code.
 
 ```tinct
 encode-byte: [fn@Null [value@[type: Int  repr: "u8"]] ...]
@@ -1025,9 +1063,11 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |            ^
 ```
 
-Accepted `repr:` values: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`.
+Accepted `repr:` values for parameter annotations: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`.
 
-`repr:` fires at materialization boundary alongside `is:`.
+`repr:` in parameter annotations fires at materialization boundary alongside `is:`.
+
+**Disambiguation:** The parser and lowerer distinguish these two uses by position. `repr:` inside a `[type ...]` body is a type-declaration directive. `repr:` inside `@[...]` is a parameter annotation key. They are syntactically unambiguous.
 
 ---
 

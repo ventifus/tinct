@@ -524,7 +524,7 @@ Checklist:
 1. `src/value.rs` — add `Value` variant with Rust representation
 2. `src/type_def.rs` — add `Type` variant (or use `Type::TyCon("Name")` for opaque types)
 3. `src/type_normalize.rs` — add arm to `typenode_leaf_to_type`
-4. `stdlib/builtin_core.llt` — add constructor to `TypeNode: [type ...]` and export name (`MyType: TypeNode.MyType`)
+4. `stdlib/builtin_core.llt` — add `[type repr: "Value::X"]` declaration in the runtime section; also add the variant name to `VALID_REPRS` in `src/eval_core.rs`
 5. `src/imports.rs` — if opaque: the auto-derivation pass in `build_builtin_core_envs_inner` will pick it up automatically from the type-stage scope
 6. `src/eval.rs` — add `value_matches_type` dispatch arm if runtime type-checking is needed
 

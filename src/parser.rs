@@ -211,21 +211,21 @@ fn skip_whitespace_tokens(
 /// Handles:
 /// - `@Name` → `Annotation::Simple("Name")` (via expression_to_annotation)
 /// - `@Expr` → `Annotation::Quote` (via expression_to_annotation)
-/// - `@Name@Inner` → `Annotation::Annotated(Simple("Name"), inner)` (T-1618: outer is Box<Annotation>)
+/// - `@Name@Inner` → `Annotation::Annotated(Simple("Name"), inner)` (outer is Box<Annotation>)
 /// - `@[key: val ...]` → `Annotation::PropertyDict(entries)` (via expression_to_annotation)
-/// - `@[key: val ...]@Next` → `Annotation::Annotated(PropertyDict(...), Next)` (T-1618)
+/// - `@[key: val ...]@Next` → `Annotation::Annotated(PropertyDict(...), Next)`
 ///
 /// The `@Name` and `@[...]` cases build a `SurfaceNode` (VarRef or Dict) and delegate to
 /// `expression_to_annotation` for the actual annotation conversion — the same function used
 /// in the main body annotation path. Bracket parsing for `@[...]` delegates to the extracted
-/// `parse_bracket_annotation_dict` helper (T-1778) to avoid duplication. This function is
+/// `parse_bracket_annotation_dict` helper to avoid duplication. This function is
 /// necessary because header parsing occurs outside the main iterative parser's bracket-nesting
 /// stack machine; there is no mechanism to invoke the main Dict frame as a sub-routine from
 /// header context.
 
 /// Parse a bracket annotation dict `[key: val ...]` starting from the `[` token.
 ///
-/// Extracted from `parse_annotation_direct` to eliminate token-scanning loop duplication (T-1778).
+/// Extracted from `parse_annotation_direct` to eliminate token-scanning loop duplication.
 /// This function parses the contents of `@[...]` annotations, handling a restricted subset of
 /// tokens suitable for property dict annotations (Identifier, StringLiteral, Int, Float, Colon).
 ///
@@ -509,7 +509,7 @@ fn parse_annotation_direct(
             let name_span = tokens[i].span.clone();
             i += 1;
 
-            // T-1617: Unify with main body AnnotationCollect path via expression_to_annotation.
+            // Unify with main body AnnotationCollect path via expression_to_annotation.
             // Build a VarRef SurfaceNode and check for chaining, then delegate conversion.
 
             // Check for chained annotation: @Name@Inner
@@ -561,14 +561,14 @@ fn parse_annotation_direct(
         }
         Token::OpenBracket => {
             // @[key: val ...] property dict annotation — delegate to extracted bracket parser.
-            // T-1778: Extracted token-scanning loop to eliminate duplication.
+            // Token-scanning loop extracted to eliminate duplication.
             let bracket_start_span = tokens[i].span.clone();
             let (entries, ann_span, final_i) =
                 parse_bracket_annotation_dict(tokens, i, leading_comments, blank_before)?;
 
-            // T-1617: Route through expression_to_annotation for unification
+            // Route through expression_to_annotation for unification
             // with the main body AnnotationCollect path.
-            // T-1618: Annotation::Annotated now takes Box<Annotation> as outer,
+            // Annotation::Annotated takes Box<Annotation> as outer,
             // so @[...]@Next is representable. Check for a chained annotation.
             if final_i < tokens.len() && matches!(&tokens[final_i].node, Token::ImmediateAt) {
                 let (inner_ann, final_i) =
@@ -581,7 +581,7 @@ fn parse_annotation_direct(
                     Arc::clone(&bracket_start_span.file),
                 );
                 // Build outer Dict annotation, then chain via Annotated.
-                // T-1617: outer uses expression_to_annotation for consistency.
+                // Outer uses expression_to_annotation for consistency.
                 let outer_dict_node = Arc::new(SurfaceNode::new(
                     SurfaceExpression::Dict(entries),
                     ann_span.clone(),
@@ -595,7 +595,7 @@ fn parse_annotation_direct(
                     final_i,
                 ));
             }
-            // T-1617: Build a Dict SurfaceNode and convert via expression_to_annotation.
+            // Build a Dict SurfaceNode and convert via expression_to_annotation.
             let dict_node = Arc::new(SurfaceNode::new(
                 SurfaceExpression::Dict(entries),
                 ann_span.clone(),
@@ -2251,60 +2251,58 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         if let Some(key_node) = pending_key {
                             let key_name = match &key_node.expr {
                                 SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                _ => "Constructor".to_string(),
+                                SurfaceExpression::StringLiteral { content, .. } => content.clone(),
+                                _ => "key".to_string(),
                             };
                             close_bracket_recover!(ParseError {
-                                message: format!(
-                                    "constructor `{key_name}:` requires a payload value (e.g. `{key_name}: [field: Type]`)"
-                                ),
+                                message: format!("`{key_name}:` requires a value before `]`"),
                                 span: Some(span.clone()),
                                 help: None,
                             });
                         }
-                        if type_exprs.is_empty() {
-                            close_bracket_recover!(ParseError {
-                                message: "type-alias form requires at least one type expression"
-                                    .to_string(),
-                                span: Some(span.clone()),
-                                help: None,
-                            });
+                        // Build the body.
+                        //
+                        // Empty type_exprs → empty dict body (phantom type).
+                        //   - `[PhantomT: [type]]` — phantom type with no constructors or structure
+                        //
+                        // Single positional entry (no key) → use the entry value directly as body.
+                        //   - `[type [port: Int]]` — structural alias body
+                        //   - `[type Int]` — simple alias
+                        //
+                        // Multiple entries, or a single named entry → wrap in a Dict.
+                        let body = if type_exprs.is_empty() {
+                            // Phantom type — empty dict body
+                            mk(
+                                SurfaceExpression::Dict(vec![]),
+                                dict_span(span_start.clone()),
+                            )
+                        } else if type_exprs.len() == 1 && type_exprs[0].node.key.is_none() {
+                            // Single positional entry — use the value directly as the body.
+                            Arc::clone(&type_exprs.into_iter().next().unwrap().node.value)
                         } else {
-                            // Build the body.
-                            //
-                            // Single positional entry (no key) → use the entry value directly as body.
-                            //   - `[type [port: Int]]` — structural alias body
-                            //   - `[type Int]` — simple alias
-                            //
-                            // Multiple entries, or a single named entry → wrap in a Dict.
-                            let body = if type_exprs.len() == 1 && type_exprs[0].node.key.is_none()
+                            // Multi-entry or named-entry — wrap entries in a Dict.
+                            // type_exprs already contains Spanned<SurfaceEntry> with correct key info.
+                            mk(
+                                SurfaceExpression::Dict(type_exprs),
+                                dict_span(span_start.clone()),
+                            )
+                        };
+                        let decl = SurfaceDeclaration::TypeAlias { params, body };
+                        let spanned_decl = Spanned::new(decl, dict_span(span_start));
+                        if stack.is_empty() {
+                            current_document_items.push(SurfaceItem::Decl(spanned_decl));
+                        } else {
+                            // Declaration appears inside an expression (e.g., dict value).
+                            // Preserve the full declaration via SurfaceExpression::Decl so
+                            // it remains traversable in expression position.
+                            let node = mk(
+                                SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                spanned_decl.span,
+                            );
+                            if let Err(push_err) =
+                                push_value(&mut stack, &mut current_document_items, node)
                             {
-                                // Single positional entry — use the value directly as the body.
-                                Arc::clone(&type_exprs.into_iter().next().unwrap().node.value)
-                            } else {
-                                // Multi-entry or named-entry — wrap entries in a Dict.
-                                // type_exprs already contains Spanned<SurfaceEntry> with correct key info.
-                                mk(
-                                    SurfaceExpression::Dict(type_exprs),
-                                    dict_span(span_start.clone()),
-                                )
-                            };
-                            let decl = SurfaceDeclaration::TypeAlias { params, body };
-                            let spanned_decl = Spanned::new(decl, dict_span(span_start));
-                            if stack.is_empty() {
-                                current_document_items.push(SurfaceItem::Decl(spanned_decl));
-                            } else {
-                                // Declaration appears inside an expression (e.g., dict value).
-                                // Preserve the full declaration via SurfaceExpression::Decl so
-                                // it remains traversable in expression position.
-                                let node = mk(
-                                    SurfaceExpression::Decl(Box::new(spanned_decl.node)),
-                                    spanned_decl.span,
-                                );
-                                if let Err(push_err) =
-                                    push_value(&mut stack, &mut current_document_items, node)
-                                {
-                                    close_bracket_recover!(push_err);
-                                }
+                                close_bracket_recover!(push_err);
                             }
                         }
                     }
@@ -2442,7 +2440,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             // Match arms take exactly one body expression per arm.
                             // After discarding, fall through to construct and push the match
                             // node — previously this arm exited without pushing, silently
-                            // dropping the entire match expression (B-628).
+                            // dropping the entire match expression.
                             pending_pattern_expr.take();
                             if arms.is_empty() {
                                 close_bracket_recover!(ParseError {
@@ -3140,17 +3138,17 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         ref mut type_exprs,
                         ..
                     }) => {
-                        // Named constructor form: `File: [path: String]` inside [type ...].
-                        // The last pushed type expression must be a bare uppercase VarRef (the
-                        // constructor name). Pop it from type_exprs and store as pending_key.
+                        // Named entry form inside [type ...]:
+                        //   - Uppercase constructor: `File: [path: String]`
+                        //     The last pushed type expression is a bare uppercase VarRef; pop it
+                        //     from type_exprs and store as pending_key.
+                        //   - Lowercase key: `repr: "Value::Int"`
+                        //     The Token::Identifier colon-ahead handler already stored a StringLiteral
+                        //     as pending_key before this colon was processed — just return None.
                         if pending_key.is_some() {
-                            // Already have a pending key — double colon error.
-                            Some(ParseError {
-                                message: "`:` without a value (expected constructor payload after `Name:`)"
-                                    .to_string(),
-                                span: Some(span.clone()),
-                                help: None,
-                            })
+                            // pending_key was set by the colon-ahead handler (lowercase key path).
+                            // The colon is the expected key-value separator — proceed to collect the value.
+                            None
                         } else if let Some(last_entry) = type_exprs.last() {
                             if last_entry.node.key.is_none() {
                                 match &last_entry.node.value.expr {
@@ -3519,6 +3517,84 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 span.clone(),
                             );
                             *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::TypeAlias {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Lowercase key inside [type ...] body (e.g., `repr: "Value::Int"`).
+                            // Store a StringLiteral as pending_key so that when Token::Colon fires
+                            // it finds pending_key already set and proceeds to collect the value.
+                            // Uppercase identifiers are not handled here — they fall through to the
+                            // `_` arm so they are pushed as VarRefs and handled by Token::Colon.
+                            let first_char = s.chars().next();
+                            if first_char.is_some_and(|c| c.is_lowercase()) {
+                                let key_expr = mk(
+                                    SurfaceExpression::StringLiteral {
+                                        prefix: String::new(),
+                                        delimiter: "\"".to_string(),
+                                        content: s.clone(),
+                                    },
+                                    span.clone(),
+                                );
+                                *pending_key = Some(key_expr);
+                                last_significant_span = Some(span);
+                                i += 1;
+                                continue;
+                            }
+                            // Uppercase identifier: fall through to `_` arm to push as VarRef.
+                            // Token::Colon will pop it from type_exprs and promote it to pending_key.
+                            let expr = Arc::new(SurfaceNode::new(
+                                SurfaceExpression::VarRef {
+                                    name: s.clone(),
+                                    escaped: false,
+                                    resolution: crate::ast::Resolution::new(),
+                                    call_dispatch: crate::ast::CallDispatch::new(),
+                                    annotation: None,
+                                    do_infer_placeholder: false,
+                                },
+                                span.clone(),
+                            ));
+                            if let Err(push_err) =
+                                push_value(&mut stack, &mut current_document_items, expr)
+                            {
+                                if !stack.is_empty() {
+                                    i = recover_from_bracket_error(
+                                        push_err,
+                                        span,
+                                        &token_vec,
+                                        i + 1,
+                                        &mut stack,
+                                        &mut current_document_items,
+                                        &mut diagnostics,
+                                    );
+                                    continue;
+                                }
+                                return Err(push_err.into());
+                            }
+                            if let Err(drain_err) = drain_annotation_frames(
+                                &mut stack,
+                                &mut current_document_items,
+                                &token_vec,
+                                i + 1,
+                            ) {
+                                if !stack.is_empty() {
+                                    i = recover_from_bracket_error(
+                                        drain_err,
+                                        span,
+                                        &token_vec,
+                                        i + 1,
+                                        &mut stack,
+                                        &mut current_document_items,
+                                        &mut diagnostics,
+                                    );
+                                    continue;
+                                }
+                                return Err(drain_err.into());
+                            }
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -5625,7 +5701,7 @@ fn push_expr_to_parent(
                     });
                 }
 
-                // T-1539: Detect multiple positional structural dict bodies.
+                // Detect multiple positional structural dict bodies.
                 // A structural alias must have exactly one body (single positional dict with
                 // lowercase-keyed entries). Multiple positional dicts are ambiguous and invalid.
                 let is_positional_struct_dict = match &node.expr {
@@ -5857,7 +5933,7 @@ fn push_expr_to_parent(
                             help: None,
                         });
                     }
-                    let _discarded = pending_pattern_expr.take();
+                    pending_pattern_expr.take();
                     *pending_pattern_expr = Some(node);
                     Ok(())
                 }
@@ -7286,19 +7362,26 @@ mod tests {
 
     #[test]
     fn test_type_alias_empty() {
+        // Empty type bodies are valid (phantom types)
         let src = "[type]";
-        let output = parse(src, test_file(src)).expect("recovery should succeed");
+        let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
-            !output.diagnostics.is_empty(),
-            "expected recovered error for empty type-alias"
+            output.diagnostics.is_empty(),
+            "empty type body should parse without error (phantom type)"
         );
-        assert!(
-            output.diagnostics[0]
-                .message
-                .contains("type-alias form requires"),
-            "expected error about type-alias requiring a type expression, got: {}",
-            output.diagnostics[0].message
-        );
+        match &output.program.documents[0].node.items[0] {
+            SurfaceItem::Decl(decl) => match &decl.node {
+                SurfaceDeclaration::TypeAlias { params, body } => {
+                    assert!(params.is_empty(), "phantom type should have no params");
+                    assert!(
+                        matches!(&body.expr, SurfaceExpression::Dict(entries) if entries.is_empty()),
+                        "phantom type body should be empty dict"
+                    );
+                }
+                other => panic!("expected TypeAlias declaration, got {other:?}"),
+            },
+            other => panic!("expected Decl item, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7564,6 +7647,123 @@ mod tests {
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
             other => panic!("expected Decl item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_type_alias_lowercase_keys_accepted() {
+        // [type repr: "Value::Int"] — lowercase keys in type body should be accepted
+        let output = parse(
+            "[MyType: [type repr: \"Value::Int\"]]",
+            test_file("[MyType: [type repr: \"Value::Int\"]]"),
+        )
+        .expect("parse should succeed");
+        assert!(
+            output.diagnostics.is_empty(),
+            "type body with lowercase keys should parse without error, got: {:?}",
+            output.diagnostics
+        );
+        let items = &output.program.documents[0].node.items;
+        match &items[0] {
+            SurfaceItem::Expr(node) => match &node.expr {
+                SurfaceExpression::Dict(entries) => {
+                    assert_eq!(entries.len(), 1, "expected 1 dict entry");
+                    let first_entry = &entries[0].node;
+                    assert!(first_entry.key.is_some(), "entry should have a key");
+                    match &first_entry.value.expr {
+                        SurfaceExpression::Decl(decl_box) => match decl_box.as_ref() {
+                            SurfaceDeclaration::TypeAlias { params, body } => {
+                                assert!(params.is_empty(), "type should have no params");
+                                // Body should be a Dict with one entry: repr: "Value::Int"
+                                match &body.expr {
+                                    SurfaceExpression::Dict(body_entries) => {
+                                        assert_eq!(
+                                            body_entries.len(),
+                                            1,
+                                            "expected 1 entry in type body"
+                                        );
+                                        let repr_entry = &body_entries[0].node;
+                                        assert!(
+                                            repr_entry.key.is_some(),
+                                            "repr entry should have key"
+                                        );
+                                        match &repr_entry.key.as_ref().unwrap().expr {
+                                            SurfaceExpression::StringLiteral {
+                                                content, ..
+                                            } => {
+                                                assert_eq!(content, "repr", "key should be 'repr'");
+                                            }
+                                            other => {
+                                                panic!("expected StringLiteral key, got {other:?}")
+                                            }
+                                        }
+                                        match &repr_entry.value.expr {
+                                            SurfaceExpression::StringLiteral {
+                                                content, ..
+                                            } => {
+                                                assert_eq!(
+                                                    content, "Value::Int",
+                                                    "value should be 'Value::Int'"
+                                                );
+                                            }
+                                            other => panic!(
+                                                "expected StringLiteral value, got {other:?}"
+                                            ),
+                                        }
+                                    }
+                                    other => panic!("expected Dict body, got {other:?}"),
+                                }
+                            }
+                            other => panic!("expected TypeAlias, got {other:?}"),
+                        },
+                        other => panic!("expected Decl, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Dict, got {other:?}"),
+            },
+            other => panic!("expected Expr item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_type_alias_phantom_type() {
+        // [PhantomT: [type]] — empty type body (phantom type) should parse successfully
+        let output = parse("[PhantomT: [type]]", test_file("[PhantomT: [type]]"))
+            .expect("parse should succeed");
+        assert!(
+            output.diagnostics.is_empty(),
+            "phantom type should parse without error, got: {:?}",
+            output.diagnostics
+        );
+        let items = &output.program.documents[0].node.items;
+        match &items[0] {
+            SurfaceItem::Expr(node) => match &node.expr {
+                SurfaceExpression::Dict(entries) => {
+                    assert_eq!(entries.len(), 1, "expected 1 dict entry");
+                    let first_entry = &entries[0].node;
+                    assert!(first_entry.key.is_some(), "entry should have a key");
+                    match &first_entry.value.expr {
+                        SurfaceExpression::Decl(decl_box) => match decl_box.as_ref() {
+                            SurfaceDeclaration::TypeAlias { params, body } => {
+                                assert!(params.is_empty(), "phantom type should have no params");
+                                match &body.expr {
+                                    SurfaceExpression::Dict(body_entries) => {
+                                        assert!(
+                                            body_entries.is_empty(),
+                                            "phantom type body should be empty dict"
+                                        );
+                                    }
+                                    other => panic!("expected empty Dict body, got {other:?}"),
+                                }
+                            }
+                            other => panic!("expected TypeAlias, got {other:?}"),
+                        },
+                        other => panic!("expected Decl, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Dict, got {other:?}"),
+            },
+            other => panic!("expected Expr item, got {other:?}"),
         }
     }
 
@@ -9862,16 +10062,16 @@ mod tests {
         );
     }
 
-    /// B-628: fn as call argument with match body and trailing extra expression.
+    /// fn as call argument with match body and trailing extra expression.
     ///
     /// `[call [fn [let x] [match x 0: [a: 1] [b: 2]]] arg]` previously produced
     /// "fn requires body expression" because the Match close-bracket discarded
     /// pending_pattern_expr ([b: 2]) but never pushed the match node to the Fn body.
     /// After the fix the match is correctly pushed as the fn's body expression.
     #[test]
-    fn test_b628_fn_in_call_arg_with_match_and_trailing_expr() {
+    fn test_fn_in_call_arg_with_match_and_trailing_expr() {
         let src = "[call [fn [let x] [match x 0: [a: 1] [b: 2]]] arg]";
-        let output = parse(src, test_file(src)).expect("parse should succeed (B-628)");
+        let output = parse(src, test_file(src)).expect("parse should succeed");
         assert!(
             output.diagnostics.is_empty(),
             "expected no parse diagnostics, got: {:?}",
@@ -9898,10 +10098,10 @@ mod tests {
         }
     }
 
-    /// B-628 regression: a trailing expression inside match that IS the only content
+    /// A trailing expression inside match that IS the only content
     /// (no completed arms) should still produce an error.
     #[test]
-    fn test_b628_match_no_arms_trailing_expr_is_error() {
+    fn test_match_no_arms_trailing_expr_is_error() {
         // [match x [b: 2]] — no `0:` arm; [b: 2] is not an arm body.
         // The match still has no arms → "match form requires at least one pattern: body pair".
         let src = "[match x [b: 2]]";

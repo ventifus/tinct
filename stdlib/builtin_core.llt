@@ -208,25 +208,25 @@
   # ── Arithmetic — monomorphic typed variants ───────────────────────────────
   # Each variant handles exactly one type combination. Cross-type arithmetic
   # (Integer+Float) is handled in tinct by explicit conversion + float variant.
-  builtin-int-add:      [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-add:    [fn@Float   [let a@Float   b@Float  ] ...]
-  builtin-int-sub:      [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-sub:    [fn@Float   [let a@Float   b@Float  ] ...]
-  builtin-int-mul:      [fn@Integer [let a@Integer b@Integer] ...]
-  builtin-float-mul:    [fn@Float   [let a@Float   b@Float  ] ...]
-  builtin-int-to-float: [fn@Float   [let n@Integer] ...]
+  builtin-int-add:      [fn@NativeInt [let a@NativeInt b@NativeInt] ...]
+  builtin-float-add:    [fn@Float64   [let a@Float64   b@Float64  ] ...]
+  builtin-int-sub:      [fn@NativeInt [let a@NativeInt b@NativeInt] ...]
+  builtin-float-sub:    [fn@Float64   [let a@Float64   b@Float64  ] ...]
+  builtin-int-mul:      [fn@NativeInt [let a@NativeInt b@NativeInt] ...]
+  builtin-float-mul:    [fn@Float64   [let a@Float64   b@Float64  ] ...]
+  builtin-int-to-float: [fn@Float64   [let n@NativeInt] ...]
 
   # ── Comparison — monomorphic typed variants ───────────────────────────────
   # Rust returns 1 (true) or 0 (false) as Integer — typed as [or 0 1] for precision.
-  builtin-lt:        [fn@[or 0 1] [let a@Integer b@Integer] ...]
-  builtin-int-gt:    [fn@[or 0 1] [let a@Integer b@Integer] ...]
-  builtin-float-gt:  [fn@[or 0 1] [let a@Float   b@Float  ] ...]
-  builtin-str-gt:    [fn@[or 0 1] [let a@String  b@String ] ...]
-  builtin-int-gte:   [fn@[or 0 1] [let a@Integer b@Integer] ...]
-  builtin-float-gte: [fn@[or 0 1] [let a@Float   b@Float  ] ...]
-  builtin-str-gte:   [fn@[or 0 1] [let a@String  b@String ] ...]
-  builtin-eq-int:    [fn@[or 0 1] [let a@Integer b@Integer] ...]
-  builtin-eq-string: [fn@[or 0 1] [let a@String  b@String]  ...]
+  builtin-lt:        [fn@[or 0 1] [let a@NativeInt b@NativeInt] ...]
+  builtin-int-gt:    [fn@[or 0 1] [let a@NativeInt b@NativeInt] ...]
+  builtin-float-gt:  [fn@[or 0 1] [let a@Float64   b@Float64  ] ...]
+  builtin-str-gt:    [fn@[or 0 1] [let a@String    b@String   ] ...]
+  builtin-int-gte:   [fn@[or 0 1] [let a@NativeInt b@NativeInt] ...]
+  builtin-float-gte: [fn@[or 0 1] [let a@Float64   b@Float64  ] ...]
+  builtin-str-gte:   [fn@[or 0 1] [let a@String    b@String   ] ...]
+  builtin-eq-int:    [fn@[or 0 1] [let a@NativeInt b@NativeInt] ...]
+  builtin-eq-string: [fn@[or 0 1] [let a@String    b@String  ] ...]
 
   # ── Dict primitives ───────────────────────────────────────────────────────
   builtin-keys:              [fn@Dict    [let xs@Dict] ...]
@@ -261,7 +261,7 @@
   # ── String primitives ─────────────────────────────────────────────────────
   builtin-str-bytes:     [fn@Bytes   [let s@String] ...]
   builtin-str-hash:      [fn@Integer [let s@String] ...]
-  builtin-int->string:   [fn@String  [let n@Integer] ...]
+  builtin-int->string:   [fn@String  [let n@NativeInt] ...]
   builtin-str-slice:     [fn@String  [let s@String start@Integer end@Integer] ...]
   builtin-bytes-str:     [fn@String  [let b@Bytes] ...]
   builtin-str-index-of:  [fn@Integer [let needle@String s@String] ...]
@@ -273,7 +273,7 @@
 
   # ── Type introspection ─────────────────────────────────────────────────────
   # These accept any value — the Any is genuine (type dispatch happens in Rust).
-  builtin-type-of:         [fn@Any     [let x@Any] ...]
+  builtin-type-of:         [fn@TypeValue [let x@Any] ...]
   builtin-check-type:      [fn@Any     [let type-name@String x@Any] ...]
   builtin-variant-payload: [fn@Any     [let variant@Any] ...]
   builtin-tag-of:          [fn@String  [let x@Any] ...]
@@ -314,9 +314,8 @@
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Required third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.
-  # tc is typed @Any (opaque TypeContext object) to avoid Type::TyCon("TypeContext")
-  # propagating into test-loader.llt's type inference through letrec group sharing.
-  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@Any doc-env@Dict] ...]
+  # tc: the TypeContext carrying accumulated type-stage state for this document.
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@Dict] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
@@ -335,11 +334,9 @@
   builtin-module:         [fn@Dict    [let name@String] ...]
 
   # ── TypeContext bootstrap ──────────────────────────────────────────────────
-  # TypeContext is opaque — typed @Any to prevent Type::TyCon("TypeContext") from
-  # propagating into letrec group type inference in init programs (test-loader.llt).
-  builtin-get-type-context: [fn@Any [] ...]
-  builtin-make-type-ctx:    [fn@Any [] ...]
-  builtin-tc-update-type-stage-env: [fn@Any [let tc@Any env@Dict] ...]
+  builtin-get-type-context: [fn@TypeContext [] ...]
+  builtin-make-type-ctx:    [fn@TypeContext [] ...]
+  builtin-tc-update-type-stage-env: [fn@TypeContext [let tc@TypeContext env@Dict] ...]
 
   # ── Sequences (core collection ops) ───────────────────────────────────────
   builtin-take:    [fn@Dict [let n@Integer xs@Dict] ...]
@@ -352,4 +349,107 @@
   # ── Async ─────────────────────────────────────────────────────────────────
   builtin-channel: [fn@[Channel Any] [] ...]
   builtin-send:    [fn@Any [let ch@[Channel Any] val@Any] ...]
+]
+
+---
+# Runtime type declarations — mirror the type system's representation.
+# These types are accessible to user code at runtime for type introspection,
+# reflection, and metaprogramming. They correspond to Rust's Type/RowTail enums.
+[
+  # ── Type system representation types ─────────────────────────────────────
+
+  # TypeValue: runtime representation of types in the type system.
+  # Corresponds to src/types.rs Type enum.
+  TypeValue: [type
+    Repr:         [repr: String  is: [or [] Fn]]
+    Phantom:      []
+    Var:          [name: String]
+    Fn:           [params: Dict  return: TypeValue]
+    App:          [op: TypeValue  arg: TypeValue]
+    Op:           [name: String]
+    Record:       [fields: Dict  tail: [or [] TypeValue]]
+    Union:        [members: Dict]
+    Inter:        [members: Dict]
+    Neg:          [of: TypeValue]
+    Scheme:       [vars: Dict  constraints: Dict  body: TypeValue]
+    IntLit:       [value: Integer]
+    FloatLit:     [value: Float64]
+    StrLit:       [value: String]
+    Recursive:    [body: TypeValue]
+    RecursiveRef: [depth: Integer]
+    Unknown
+    Never
+    Top]
+
+  # RowTail: tail of a record type row (extensible or closed).
+  # Corresponds to src/types.rs RowTail enum.
+  RowTail: [type
+    Closed
+    Var:     [name: String]
+    Uniform: [key: [or [] TypeValue]  value-type: TypeValue]]
+
+  # Row: phantom type for row kinds. Not instantiated at runtime.
+  Row: [type]
+
+  # VarDecl: a single type variable binding in a polymorphic scheme.
+  # Used as values in TypeValue.Scheme.vars (a Dict mapping var name → VarDecl).
+  VarDecl: [type
+    name: String
+    kind: TypeValue]
+
+  # ConstraintDecl: a typeclass constraint in a polymorphic scheme.
+  # Used as values in TypeValue.Scheme.constraints (a Dict).
+  ConstraintDecl: [type
+    class: TypeValue
+    args:  Dict]
+
+  # Type: abstract typeclass for type-level operations.
+  Type: [class [let t]]
+
+  # ── Native runtime types (repr: declarations) ─────────────────────────────
+  # These shadow the type-stage aliases above. The repr: key triggers the
+  # CoreExpr::ReprDecl mechanism — these are nominal types that match specific
+  # Value enum variants by their Rust discriminant string.
+
+  NativeInt:         [type repr: "Value::Int"]
+  NativeUInt:        [type repr: "Value::U64"]
+  Float64:           [type repr: "Value::Float"]
+  String:            [type repr: "Value::String"]
+  Bytes:             [type repr: "Value::Bytes"]
+  Decimal:           [type repr: "Value::Decimal"]
+  BigInt:            [type repr: "Value::BigInt"]
+  Fn:                [type repr: "Value::Function"]
+  Builtin:           [type repr: "Value::Builtin"]
+  Dict:              [type repr: "Value::Dict"]
+  DirCap:            [type repr: "Value::DirCap"]
+  RevocableDirCap:   [type repr: "Value::RevocableDirCap"]
+  NetCap:            [type repr: "Value::NetCap"]
+  File:              [type repr: "Value::File"]
+  ClockCap:          [type repr: "Value::ClockCap"]
+  Task:              [type repr: "Value::Task"]
+  Channel:           [type repr: "Value::Channel"]
+  BroadcastChannel:  [type repr: "Value::BroadcastChannel"]
+  OneshotSender:     [type repr: "Value::OneshotSender"]
+  OneshotReceiver:   [type repr: "Value::OneshotReceiver"]
+  Context:           [type repr: "Value::Context"]
+  ReactiveCell:      [type repr: "Value::ReactiveCell"]
+  QuicSession:       [type repr: "Value::QuicSession"]
+  Http2Session:      [type repr: "Value::Http2Session"]
+  Http3Session:      [type repr: "Value::Http3Session"]
+  QuicDatagramHandle: [type repr: "Value::QuicDatagramHandle"]
+  Uri:               [type repr: "Value::Uri"]
+  Timestamp:         [type repr: "Value::Timestamp"]
+  Duration:          [type repr: "Value::Duration"]
+  Timezone:          [type repr: "Value::Timezone"]
+  Program:           [type repr: "Value::Program"]
+  Document:          [type repr: "Value::Document"]
+  Expression:        [type repr: "Value::Expression"]
+  CoreDocument:      [type repr: "Value::CoreDocument"]
+  TypeContext:       [type repr: "Value::TypeContext"]
+
+  # ── Callable typeclass ────────────────────────────────────────────────────
+  # Abstracts over function-like values (Fn and Builtin).
+  Callable: [class [let a]]
+  [instance Callable [let k@Fn]:      []]
+  [instance Callable [let k@Builtin]: []]
 ]

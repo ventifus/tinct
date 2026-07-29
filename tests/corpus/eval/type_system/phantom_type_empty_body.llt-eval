@@ -1,0 +1,11 @@
+# [type] with no body declares a phantom type — a type with no constructors.
+# The empty-body form parses as a structural alias with an empty dict body,
+# producing Value::Dict{ entries: {} } at runtime — an empty constructor dict.
+# In DisplayVisitor format: Dict({})
+#
+# [@PhantomT 42] is a TypeAssert. During bootstrap, all TypeAssert checks pass
+# because the unknown sentinel is consistent with every type.
+[PhantomT: [type]
+ val:       [@PhantomT 42]]
+=== out
+Dict({"PhantomT": Dict({}), "val": Int(42)})

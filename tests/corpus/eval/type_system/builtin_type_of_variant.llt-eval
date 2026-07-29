@@ -1,0 +1,13 @@
+# builtin-type-of on a variant constructor returns its type_val.
+# During bootstrap all variants share unknown_type_val() — the same frozen-Builder Arc.
+# Two constructors of the same type therefore return equal type_vals.
+# [builtin-ptr-eq] (or builtin-eq-int on length) is used to avoid the Equatable
+# catch-all on dict arguments (prelude = for dicts always returns Boolean.False).
+#
+# Both red-len and blue-len are 0: unknown_type_val() is an empty Dict.
+# The lengths are equal, which is the observable proxy for type_val equality.
+[Color: [type Red Blue]
+ red-len:  [builtin-dict-length [builtin-type-of Color.Red]]
+ blue-len: [builtin-dict-length [builtin-type-of Color.Blue]]]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Blue": Variant(Color.Blue, Null)}), "red-len": Int(0), "blue-len": Int(0)})
