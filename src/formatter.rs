@@ -128,6 +128,7 @@ pub async fn format_source_tinct_with_dir(
             ref source,
             start,
             end,
+            ..
         } => Ok(source[start..end].to_string()),
 
         _ => {
