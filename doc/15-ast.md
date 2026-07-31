@@ -104,7 +104,7 @@ enum SurfaceDeclaration {
 The Surface AST is the parser's native output and the authoritative representation before lowering. Key characteristics:
 
 - **Arc-wrapped nodes:** `Arc<SurfaceNode>` enables shared ownership across multiple references without copying the AST.
-- **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately. This replaces the old `RefCell<Option<...>>` in-node mutation pattern. `TypeAnnotationTable` is `HashMap<NodeId, Type>` — keyed by `NodeId` (derived from `Arc` raw pointer), used for `SurfaceExpression::TypeAssert` annotation nodes resolved during type checking. The `drain_into()` method transfers entries between tables.
+- **Side-table design:** Variable resolution (`ResolutionTable`) is stored separately. This replaces the old `RefCell<Option<...>>` in-node mutation pattern. Type annotation results are stored inline as `OnceLock<Option<Arc<Value>>>` (TypeValue) on `SurfaceExpression::TypeAssert` nodes — there is no separate `TypeAnnotationTable` side table.
 - **Pipe is preserved:** `SurfaceExpression::Pipe` remains in the Surface AST. The **lowering pass** (`src/lower.rs`) eliminates Pipe by rewriting it to `Call` before evaluation (see §Pipe Desugaring below).
 - **Expr/Decl separation:** Documents contain `SurfaceItem` entries, which are either expressions (`SurfaceItem::Expr`) or declarations (`SurfaceItem::Decl`). This separates top-level declarations (TypeAlias, ClassDecl, etc.) from expressions at the type level.
 - **ParseOutput returns SurfaceProgram:** `parse()` returns `ParseOutput { program: SurfaceProgram, ... }`. The `.program` field is the native Surface AST.
@@ -119,7 +119,7 @@ After the Surface AST is resolved and type-checked, the **lowering pass** (`src/
 
 - **Pipe eliminated:** `SurfaceExpression::Pipe` is rewritten to nested `Call` expressions.
 - **Resolution baked in:** Variable references are resolved to de Bruijn indices or environment lookups.
-- **Type assertions preserved with resolved types:** `TypeAssert` carries a `resolved_type: Type` from the `TypeAnnotationTable` set during type checking. The evaluator checks the resolved type at force time via `value_matches_type`. When typecheck is skipped, the lowerer falls back to `Type::Unknown` (accept-all).
+- **Type assertions preserved with resolved types:** `TypeAssert` carries a `resolved_type: Arc<Value>` (TypeValue) written by the type checker via an inline OnceLock on the `SurfaceExpression::TypeAssert` node, then transferred to `CoreExpr::TypeAssert` by the lowering pass. The evaluator checks the resolved TypeValue at force time via `value_matches_type`.
 - **Match arm patterns pass through as `Arc<SurfaceNode>`:** `SurfaceMatchArm.pattern` is stored as an `Arc<SurfaceNode>` and passed through to the evaluator unchanged — no lowering step converts match arm patterns into a separate pattern representation.
 
 ```rust
@@ -174,12 +174,13 @@ pub enum CoreExpr {
         // user-written `[fn [let ...] body]` forms.
         desugared: bool,
     },
-    // Statically type-checked TypeAssert — resolved_type set from TypeAnnotationTable during lowering.
-    // Runtime behavior: structural check against resolved_type at force time.
+    // Statically type-checked TypeAssert — resolved_type is an Arc<Value> TypeValue written
+    // by the type checker into a SurfaceExpression::TypeAssert OnceLock, then transferred
+    // here by the lowering pass. Runtime behavior: structural check via value_matches_type.
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
-        resolved_type: Type,  // Type::Unknown for macro-synthesized/error cases
+        resolved_type: Arc<Value>,  // TypeValue (Arc<Value>); TypeValue.Unknown for macro-synthesized/error cases
         pipeline_blame: Option<PipelineBlame>,  // None for user-written [@T expr]; Some only at --- expects: boundaries
     },
     Annotated {

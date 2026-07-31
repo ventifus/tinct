@@ -1,7 +1,6 @@
 //! AST types: `Param`, `Annotation`, `Spanned<T>`.
 //! Also: `SurfaceExpression`, `SurfaceNode`, `SurfaceProgram`, `CoreExpr` (runtime-v2 types).
 
-use crate::types::Type;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -164,9 +163,9 @@ pub struct Param {
     pub variadic: bool,
     /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
     pub slot: u32,
-    /// Type resolved by the type checker from the parameter annotation.
+    /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
-    pub resolved_type: Option<crate::type_def::Type>,
+    pub resolved_type: Option<Arc<crate::value::Value>>,
 }
 
 impl std::fmt::Display for Param {
@@ -981,15 +980,15 @@ pub struct SurfaceProgram {
 
 /// Inline type annotation — written once by the type checker, read by the lowerer/evaluator.
 /// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
-pub struct TypeAnnotation(std::sync::OnceLock<Option<crate::type_def::Type>>);
+pub struct TypeAnnotation(std::sync::OnceLock<Option<Arc<crate::value::Value>>>);
 impl TypeAnnotation {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    pub fn get(&self) -> Option<&crate::type_def::Type> {
+    pub fn get(&self) -> Option<&Arc<crate::value::Value>> {
         self.0.get().and_then(|o| o.as_ref())
     }
-    pub fn set(&self, val: Option<crate::type_def::Type>) {
+    pub fn set(&self, val: Option<Arc<crate::value::Value>>) {
         // First write wins: shared AST nodes may be visited multiple times.
         self.0.get_or_init(|| val);
     }
@@ -1347,7 +1346,9 @@ pub enum CoreExpr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
-        resolved_type: Type,
+        /// TypeValue resolved by the type checker. Arc<Value> with ctor tag like "TypeValue.Repr",
+        /// "TypeValue.Var", "TypeValue.Fn", etc. (see builtin_core.llt TypeValue type).
+        resolved_type: Arc<crate::value::Value>,
         /// Pipeline blame for `--- expects: @Type` contract assertions.
         /// Set when a document's `--- expects:` annotation is resolved for pipeline type validation.
         /// None for all other TypeAssert sites (user-written `[@Type expr]` annotations).
@@ -1411,9 +1412,9 @@ pub struct CoreParam {
     pub variadic: bool,
     /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
     pub slot: u32,
-    /// Type resolved by the type checker from the parameter annotation.
+    /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
-    pub resolved_type: Option<crate::type_def::Type>,
+    pub resolved_type: Option<Arc<crate::value::Value>>,
 }
 
 /// A match arm in a CoreExpr::Match.

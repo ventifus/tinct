@@ -2,17 +2,21 @@
 //! into a single `Env` struct used by both.
 //!
 //! After T-1557, `Env` is **type-metadata only**. Runtime values are stored exclusively
-//! in `FlatEnv` (arena-complete). Each slot holds an optional type scheme (populated at
+//! in `FlatEnv` (arena-complete). Each slot holds an optional TypeValue (populated at
 //! typecheck time). De Bruijn (level, slot) indices address the Vec-based `slots`
 //! directly — no coordinate-system mismatch.
+//!
+//! After S-1003 T-2004: `TypeScheme` is deleted. Slots now store `TypeValue` directly
+//! (an `Arc<Value>`). Monomorphic types are stored as their TypeValue directly;
+//! polymorphic types are `TypeValue.Scheme` variants.
 //!
 //! Parent chain uses `Arc<RwLock<Env>>` (no `Rc` anywhere).
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::type_class::{ClassDecl, InstanceDecl};
-use crate::types::TypeScheme;
+use crate::ast::Span;
+use crate::type_class::{ClassDecl, InstanceDecl, TypeValue};
 
 // ---------------------------------------------------------------------------
 // EnvSlot
@@ -22,13 +26,21 @@ use crate::types::TypeScheme;
 ///
 /// After T-1557, runtime values are stored exclusively in `FlatEnv` (arena-complete).
 /// `Env` is type-metadata only.
+///
+/// After S-1003: `scheme` holds a `TypeValue` (`Arc<Value>`) directly.
+/// Monomorphic bindings store their TypeValue as-is; polymorphic bindings
+/// store a `TypeValue.Scheme` variant.
 #[derive(Debug, Clone)]
 pub struct EnvSlot {
-    pub scheme: Option<TypeScheme>,
+    pub scheme: Option<TypeValue>,
     /// Whether this binding has been referenced during type checking.
     /// Set to `true` by `mark_extras_referenced` when a VarRef resolves to this slot.
     /// Used by lost-binding warnings to detect unreferenced intermediate dict bindings.
     pub referenced: bool,
+    /// Source span where this binding was defined.
+    /// Used by lost-binding warnings to point to the binding site in error messages.
+    /// `None` for injected builtins and other bindings without a user-visible definition site.
+    pub definition_span: Option<Span>,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,23 +101,14 @@ impl Env {
 
     /// Insert a name-only typed entry (no de Bruijn slot) for an injected runtime value.
     /// Used by the CLI to register capability types (%programs, %cwd, etc.) so the
-    /// type-checker can see them. The `ty` is wrapped in a monomorphic TypeScheme.
-    pub fn insert_injected(&mut self, name: String, ty: crate::types::Type) {
+    /// type-checker can see them. The TypeValue is stored directly as a monomorphic scheme.
+    pub fn insert_injected(&mut self, name: String, tv: TypeValue) {
         self.extras.insert(
             name,
             EnvSlot {
-                scheme: Some(crate::types::TypeScheme {
-                    type_vars: vec![],
-                    constraints: vec![],
-                    body: ty,
-                    label_vars: vec![],
-                    kind_vars: vec![],
-                    doc: None,
-                    inner_schemes: None,
-                    param_narrowings: Vec::new(),
-                    definition_span: None,
-                }),
+                scheme: Some(tv),
                 referenced: false,
+                definition_span: None, // injected builtins have no user-visible definition site
             },
         );
     }
@@ -213,6 +216,7 @@ impl Env {
             EnvSlot {
                 scheme: None,
                 referenced: false,
+                definition_span: None,
             },
         )));
         self.slot_index.insert(name, pos);
@@ -228,12 +232,22 @@ impl Env {
         self.slot_index.clear();
     }
 
-    /// Insert a TypeScheme at a specific resolver-assigned slot position.
+    /// Insert a TypeValue at a specific resolver-assigned slot position.
     ///
     /// The slot index comes from the resolver's name→slot mapping for this scope
     /// frame. If the slot is beyond the current Vec length, the Vec is extended
     /// with `None` entries.
-    pub fn insert_at_slot(&mut self, slot: usize, name: String, scheme: TypeScheme) {
+    ///
+    /// `definition_span` is `Some(span)` when the binding has a user-visible definition
+    /// site (function parameters, sequential intermediate dict entries). Pass `None` for
+    /// synthetic/injected bindings that should not participate in lost-binding tracking.
+    pub fn insert_at_slot(
+        &mut self,
+        slot: usize,
+        name: String,
+        scheme: TypeValue,
+        definition_span: Option<Span>,
+    ) {
         if slot >= self.slots.len() {
             self.slots.resize_with(slot + 1, || None);
         }
@@ -243,11 +257,81 @@ impl Env {
             EnvSlot {
                 scheme: Some(scheme),
                 referenced: false,
+                definition_span,
             },
         ));
     }
 
-    /// Insert a TypeScheme into the extras HashMap (name-only, no slot).
+    /// Mark the slot entry at `(level, slot)` as referenced, walking `level` parent frames.
+    ///
+    /// Returns `true` if the slot was found and marked, `false` if not found.
+    /// Called by `infer_var_ref` when a resolver-assigned address resolves successfully,
+    /// to record that the binding has been used (for lost-binding warning tracking).
+    pub fn mark_slot_referenced(&mut self, level: u32, slot: u32) -> bool {
+        if level == 0 {
+            if let Some(Some((_, ref mut slot_entry))) = self.slots.get_mut(slot as usize) {
+                slot_entry.referenced = true;
+                return true;
+            }
+            return false;
+        }
+        if let Some(ref parent) = self.parent {
+            let mut guard = parent.write().unwrap();
+            return guard.mark_slot_referenced(level - 1, slot);
+        }
+        false
+    }
+
+    /// Return the `definition_span` of the slot entry at `(level, slot)`, walking `level`
+    /// parent frames.
+    ///
+    /// Returns `None` if the slot is not found or has no definition span (synthetic binding).
+    /// Used by `infer_var_ref` to build a span-keyed `BindingId` for use_def edge recording.
+    pub fn get_slot_def_span(&self, level: u32, slot: u32) -> Option<Span> {
+        if level == 0 {
+            return self
+                .slots
+                .get(slot as usize)
+                .and_then(|s| s.as_ref())
+                .and_then(|(_, slot_entry)| slot_entry.definition_span.clone());
+        }
+        if let Some(ref parent) = self.parent {
+            let guard = parent.read().unwrap();
+            return guard.get_slot_def_span(level - 1, slot);
+        }
+        None
+    }
+
+    /// Find the `definition_span` for a binding by name, walking slots then extras
+    /// through the full parent chain. Returns the first `definition_span` found.
+    ///
+    /// Used by `apply_narrowings` to build a `BindingId` for `narrowing_map` insertion
+    /// without needing a resolver-assigned slot address.
+    pub fn find_def_span_by_name(
+        env: &Arc<std::sync::RwLock<Env>>,
+        name: &str,
+    ) -> Option<Span> {
+        let guard = env.read().unwrap();
+        // Check slots by name
+        if let Some(&pos) = guard.slot_index.get(name) {
+            if let Some(Some((_, ref slot_entry))) = guard.slots.get(pos) {
+                if let Some(ref span) = slot_entry.definition_span {
+                    return Some(span.clone());
+                }
+            }
+        }
+        // Check extras
+        if let Some(ref slot_entry) = guard.extras.get(name) {
+            if let Some(ref span) = slot_entry.definition_span {
+                return Some(span.clone());
+            }
+        }
+        let parent = guard.parent.clone();
+        drop(guard);
+        parent.as_ref().and_then(|p| Self::find_def_span_by_name(p, name))
+    }
+
+    /// Insert a TypeValue into the extras HashMap (name-only, no slot).
     ///
     /// Use this for entries NOT assigned a slot by the resolver:
     /// - ADT constructor type information
@@ -256,7 +340,7 @@ impl Env {
     /// - Builtin bindings
     ///
     /// These entries are visible via `get_scheme` but never reached via `get_scheme_at`.
-    pub fn insert_scheme_named_only(&mut self, name: String, scheme: TypeScheme) {
+    pub fn insert_scheme_named_only(&mut self, name: String, scheme: TypeValue) {
         if let Some(slot) = self.extras.get_mut(&name) {
             slot.scheme = Some(scheme);
         } else {
@@ -265,19 +349,46 @@ impl Env {
                 EnvSlot {
                     scheme: Some(scheme),
                     referenced: false,
+                    definition_span: None,
                 },
             );
         }
     }
 
-    /// Look up a type scheme by name, walking slots then extras then the parent chain.
+    /// Insert a TypeValue into the extras HashMap with a definition span for lost-binding detection.
+    ///
+    /// Like `insert_scheme_named_only` but stores the source span where the binding was declared.
+    /// Use this when the binding has a user-visible definition site (function params, let bindings,
+    /// case arm bindings). Use `insert_scheme_named_only` for injected/synthetic bindings.
+    pub fn insert_scheme_with_span(
+        &mut self,
+        name: String,
+        scheme: TypeValue,
+        definition_span: Span,
+    ) {
+        if let Some(slot) = self.extras.get_mut(&name) {
+            slot.scheme = Some(scheme);
+            slot.definition_span = Some(definition_span);
+        } else {
+            self.extras.insert(
+                name,
+                EnvSlot {
+                    scheme: Some(scheme),
+                    referenced: false,
+                    definition_span: Some(definition_span),
+                },
+            );
+        }
+    }
+
+    /// Look up a TypeValue by name, walking slots then extras then the parent chain.
     ///
     /// Scans the Vec-based slots for a matching name (O(n) per frame), then checks
     /// extras, then walks the parent chain.
     ///
-    /// Returns a cloned `TypeScheme` because the parent chain is behind
+    /// Returns a cloned `TypeValue` because the parent chain is behind
     /// `Arc<RwLock<Env>>` — references cannot outlive the lock guard.
-    pub fn get_scheme(&self, name: &str) -> Option<TypeScheme> {
+    pub fn get_scheme(&self, name: &str) -> Option<TypeValue> {
         // Check slots in current frame via slot_index (O(1))
         if let Some(&pos) = self.slot_index.get(name) {
             if let Some(Some((_, ref slot))) = self.slots.get(pos) {
@@ -313,11 +424,11 @@ impl Env {
         None
     }
 
-    /// Look up a type scheme by name in extras ONLY (not slots), walking the parent chain.
+    /// Look up a TypeValue by name in extras ONLY (not slots), walking the parent chain.
     ///
     /// Used for narrowing overrides and class dispatch injections that have no
     /// resolver-assigned slot.
-    pub fn get_extras_scheme(&self, name: &str) -> Option<TypeScheme> {
+    pub fn get_extras_scheme(&self, name: &str) -> Option<TypeValue> {
         // Check extras in current frame
         if let Some(slot) = self.extras.get(name) {
             if let Some(ref s) = slot.scheme {
@@ -363,18 +474,18 @@ impl Env {
         }
     }
 
-    /// Slot-indexed scheme lookup: walk `level` parent frames (0 = current),
+    /// Slot-indexed TypeValue lookup: walk `level` parent frames (0 = current),
     /// look up `slot` in the target frame's `slots` Vec, and return the
-    /// TypeScheme.
+    /// TypeValue.
     ///
     /// **NO name check, NO expected_name parameter.** This is intentional — the
     /// old `get_type_at(level, slot, expected_name)` name check was the bug causing
     /// class method type-warning false positives (slot key is the i-prefixed
     /// instance binding name, VarRef source name is the method name).
     ///
-    /// Returns a cloned TypeScheme because the parent chain is behind
+    /// Returns a cloned TypeValue because the parent chain is behind
     /// `Arc<RwLock<Env>>`.
-    pub fn get_scheme_at(&self, level: u32, slot: u32) -> Option<TypeScheme> {
+    pub fn get_scheme_at(&self, level: u32, slot: u32) -> Option<TypeValue> {
         if level == 0 {
             return self
                 .slots
@@ -405,8 +516,8 @@ impl Env {
 
     /// Look up a binding in the CURRENT frame only (does not walk the parent chain).
     ///
-    /// Returns a reference to the scheme since no lock traversal is needed.
-    pub fn get_own_scheme(&self, name: &str) -> Option<&TypeScheme> {
+    /// Returns a reference to the TypeValue since no lock traversal is needed.
+    pub fn get_own_scheme(&self, name: &str) -> Option<&TypeValue> {
         if let Some(&pos) = self.slot_index.get(name) {
             if let Some(Some((_, ref slot))) = self.slots.get(pos) {
                 if let Some(ref scheme) = slot.scheme {
@@ -754,12 +865,15 @@ impl std::fmt::Debug for Env {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use crate::type_def::{TyConDef, Type};
+    use crate::type_def::TyConDef;
 
     use super::Env;
 
     fn make_def(name: &str) -> Arc<TyConDef> {
-        Arc::new(TyConDef::new_with_body(name, Type::Unknown))
+        Arc::new(TyConDef::new_with_body(
+            name,
+            crate::value::unknown_type_val(),
+        ))
     }
 
     #[test]
@@ -968,11 +1082,11 @@ mod tests {
         dst_raw.insert_slot_name_only("foo".to_string());
         let dst = Arc::new(RwLock::new(dst_raw));
 
-        // src (child of dst) has slot "foo" with a TypeScheme (populated by the type checker)
+        // src (child of dst) has slot "foo" with a TypeValue (populated by the type checker)
         let mut src_raw = Env::with_parent(Arc::clone(&dst));
         src_raw.insert_scheme_named_only(
             "foo".to_string(),
-            crate::types::TypeScheme::mono(crate::type_def::Type::Unknown),
+            crate::type_infer::make_typevalue_unknown(),
         );
         let src = Arc::new(RwLock::new(src_raw));
 

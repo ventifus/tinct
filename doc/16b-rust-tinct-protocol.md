@@ -138,7 +138,7 @@ Callable: TypeNode.Callable
 
 **`@[Fn@ReturnType [ParamType1 ParamType2 ...]]` — specific function signature**
 
-This is not a declared type — it is a structural annotation form detected by the type checker. A two-entry positional dict where the first entry is `Fn@ReturnType` (a VarRef with return-type annotation) and the second is the parameter list resolves to a concrete `Type::Function`:
+This is not a declared type — it is a structural annotation form detected by the type checker. A two-entry positional dict where the first entry is `Fn@ReturnType` (a VarRef with return-type annotation) and the second is the parameter list resolves to a concrete `TypeValue.Fn`:
 
 ```tinct
 f@[Fn@String [Integer Boolean]]        # function taking Integer and Boolean, returning String
@@ -265,66 +265,64 @@ Additionally, `Value::U64(u64)` (unsigned 64-bit, from `42u` literals), `Value::
 
 ## 3. Primitive Type Concepts
 
-The type checker operates on `Type` variants (Rust enum). The tinct type-stage represents these as `TypeNode` constructors declared in `stdlib/builtin_core.llt`. The canonical mapping is `typenode_leaf_to_type` in `src/type_normalize.rs` — **the single authoritative function for this mapping; no other Rust code may hardcode TypeNode names**.
+The type checker operates on `TypeValue` values (`Arc<Value>` with `TypeValue.*` constructor tags). The tinct type-stage represents these as `TypeNode` constructors declared in `stdlib/builtin_core.llt`. The canonical mapping is `typenode_value_to_type` in `src/typecheck_annot.rs` — **the single authoritative function for this mapping; no other Rust code may hardcode TypeNode names**.
 
 The three-way binding below defines the contract. Any deviation — in the annotation name, the TypeNode constructor, or the Rust variant — breaks it.
 
-| Tinct annotation | `builtin_core.llt` type-stage declaration | Rust `Type` variant |
+| Tinct annotation | `builtin_core.llt` type-stage declaration | Rust `TypeValue` constructor |
 |---|---|---|
-| `@Integer` | `Integer: TypeNode.Int` | `Type::Int` |
-| `@Float` | `Float: TypeNode.Float` | `Type::Float` |
-| `@String` | `String: TypeNode.String` | `Type::Str` |
-| `@Bytes` | `Bytes: TypeNode.Bytes` | `Type::Bytes` |
-| `@Any` | `Any: TypeNode.Top` | `Type::Any` |
-| `@Unknown` | `Unknown: TypeNode.Unknown` | `Type::Unknown` |
-| `@Never` | `Never: TypeNode.Never` | `Type::Never` |
-| `@Absent` | `Absent: TypeNode.Absent` | `Type::Dict(Row { fields: {}, tail: RowTail::Empty })` — the empty closed dict; the static type of the null/absent sentinel `[]` |
-| `@Proxy` | `Proxy: TypeNode.Proxy` | `Type::Proxy` |
-| `@Callable` | `builtin_core.llt` declares `TypeNode.Callable` constructor; `prelude.llt` exports `Callable: TypeNode.Callable` | `Type::Function { params:[], rest:Some(..), ret:Any, .. }` |
-| `@Dict` | `Dict: [TypeNode.Dict fields:[] open:1 ..]` | `Type::Dict(open row)` |
+| `@Integer` | `Integer: TypeNode.Int` | `TypeValue.Repr("Value::Int")` |
+| `@Float` | `Float: TypeNode.Float` | `TypeValue.Repr("Value::Float")` |
+| `@String` | `String: TypeNode.String` | `TypeValue.Repr("Value::String")` |
+| `@Bytes` | `Bytes: TypeNode.Bytes` | `TypeValue.Repr("Value::Bytes")` |
+| `@Any` | `Any: TypeNode.Top` | `TypeValue.Top` |
+| `@Unknown` | `Unknown: TypeNode.Unknown` | `TypeValue.Unknown` |
+| `@Never` | `Never: TypeNode.Never` | `TypeValue.Never` |
+| `@Absent` | `Absent: TypeNode.Absent` | `TypeValue.Record { fields: {}, tail: closed }` — the empty closed record; the static type of the null/absent sentinel `[]` |
+| `@Proxy` | `Proxy: TypeNode.Proxy` | `TypeValue.Repr("Value::Proxy")` |
+| `@Callable` | `builtin_core.llt` declares `TypeNode.Callable` constructor; `prelude.llt` exports `Callable: TypeNode.Callable` | `TypeValue.Fn { params: [], variadic: true, return: Unknown }` |
+| `@Dict` | `Dict: [TypeNode.Dict fields:[] open:1 ..]` | `TypeValue.Record { fields: {}, tail: Uniform(Top) }` — open record |
 
-**Opaque types** — map to `Type::TyCon(name)`, matched only by tag. Tinct definition is the annotation name; Rust definition is the `Value` variant.
+**Opaque types** — map to `TypeValue.Op(name)`, matched only by tag. Tinct definition is the annotation name; Rust definition is the `Value` variant.
 
-| Tinct annotation | `builtin_core.llt` declaration | Rust `Type` variant |
+| Tinct annotation | `builtin_core.llt` declaration | Rust `TypeValue` constructor |
 |---|---|---|
-| `@DirCap` | `DirCap: TypeNode.DirCap` | `Type::TyCon("DirCap")` |
-| `@NetCap` | `NetCap: TypeNode.NetCap` | `Type::TyCon("NetCap")` |
-| `@Handle` | `Handle: TypeNode.Handle` | `Type::TyCon("Handle")` |
-| `@File` | `File: TypeNode.File` | `Type::TyCon("File")` |
-| `@BuilderHandle` | `BuilderHandle: TypeNode.BuilderHandle` | `Type::TyCon("BuilderHandle")` |
-| `@Task` | `Task: TypeNode.Task` | `Type::TyCon("Task")` |
-| `@Channel` | `Channel: TypeNode.Channel` | `Type::TyCon("Channel")` |
-| `@Context` | `Context: TypeNode.Context` | `Type::TyCon("Context")` |
-| `@ReactiveCell` | `ReactiveCell: TypeNode.ReactiveCell` | `Type::TyCon("ReactiveCell")` |
-| `@ClockCap` | `ClockCap: TypeNode.ClockCap` | `Type::TyCon("ClockCap")` |
-| `@Timezone` | `Timezone: TypeNode.Timezone` | `Type::TyCon("Timezone")` |
-| `@Decimal` | `Decimal: TypeNode.Decimal` | `Type::TyCon("Decimal")` |
-| `@BigInt` | `BigInt: TypeNode.BigInt` | `Type::TyCon("BigInt")` |
-| `@Program` | `Program: TypeNode.Program` | `Type::TyCon("Program")` |
-| `@Document` | `Document: TypeNode.Document` | `Type::TyCon("Document")` |
-| `@CoreDocument` | `CoreDocument: TypeNode.CoreDocument` | `Type::TyCon("CoreDocument")` |
-| `@TypeContext` | `TypeContext: TypeNode.TypeContext` | `Type::TyCon("TypeContext")` |
-| `@QuicSession` | `QuicSession: TypeNode.QuicSession` | `Type::TyCon("QuicSession")` |
-| `@QuicDatagramHandle` | `QuicDatagramHandle: TypeNode.QuicDatagramHandle` | `Type::TyCon("QuicDatagramHandle")` |
-| `@Http2Session` | `Http2Session: TypeNode.Http2Session` | `Type::TyCon("Http2Session")` |
-| `@Http3Session` | `Http3Session: TypeNode.Http3Session` | `Type::TyCon("Http3Session")` |
-| `@Uri` | `Uri: TypeNode.Uri` | `Type::TyCon("Uri")` |
-| `@Urn` | `Urn: TypeNode.Urn` | `Type::TyCon("Urn")` |
+| `@DirCap` | `DirCap: TypeNode.DirCap` | `TypeValue.Op("DirCap")` |
+| `@NetCap` | `NetCap: TypeNode.NetCap` | `TypeValue.Op("NetCap")` |
+| `@Handle` | `Handle: TypeNode.Handle` | `TypeValue.Op("Handle")` |
+| `@File` | `File: TypeNode.File` | `TypeValue.Op("File")` |
+| `@BuilderHandle` | `BuilderHandle: TypeNode.BuilderHandle` | `TypeValue.Op("BuilderHandle")` |
+| `@Task` | `Task: TypeNode.Task` | `TypeValue.Op("Task")` |
+| `@Channel` | `Channel: TypeNode.Channel` | `TypeValue.Op("Channel")` |
+| `@Context` | `Context: TypeNode.Context` | `TypeValue.Op("Context")` |
+| `@ReactiveCell` | `ReactiveCell: TypeNode.ReactiveCell` | `TypeValue.Op("ReactiveCell")` |
+| `@ClockCap` | `ClockCap: TypeNode.ClockCap` | `TypeValue.Op("ClockCap")` |
+| `@Timezone` | `Timezone: TypeNode.Timezone` | `TypeValue.Op("Timezone")` |
+| `@Decimal` | `Decimal: TypeNode.Decimal` | `TypeValue.Op("Decimal")` |
+| `@BigInt` | `BigInt: TypeNode.BigInt` | `TypeValue.Op("BigInt")` |
+| `@Program` | `Program: TypeNode.Program` | `TypeValue.Op("Program")` |
+| `@Document` | `Document: TypeNode.Document` | `TypeValue.Op("Document")` |
+| `@CoreDocument` | `CoreDocument: TypeNode.CoreDocument` | `TypeValue.Op("CoreDocument")` |
+| `@TypeContext` | `TypeContext: TypeNode.TypeContext` | `TypeValue.Op("TypeContext")` |
+| `@QuicSession` | `QuicSession: TypeNode.QuicSession` | `TypeValue.Op("QuicSession")` |
+| `@QuicDatagramHandle` | `QuicDatagramHandle: TypeNode.QuicDatagramHandle` | `TypeValue.Op("QuicDatagramHandle")` |
+| `@Http2Session` | `Http2Session: TypeNode.Http2Session` | `TypeValue.Op("Http2Session")` |
+| `@Http3Session` | `Http3Session: TypeNode.Http3Session` | `TypeValue.Op("Http3Session")` |
+| `@Uri` | `Uri: TypeNode.Uri` | `TypeValue.Op("Uri")` |
+| `@Urn` | `Urn: TypeNode.Urn` | `TypeValue.Op("Urn")` |
 
 ### The canonical mapping functions
 
-Two functions in `src/type_normalize.rs` and `src/typecheck_annot.rs` translate TypeNode variant values to `Type` variants:
+One function in `src/typecheck_annot.rs` translates TypeNode variant values to `TypeValue` (`Arc<Value>`):
 
-- `typenode_leaf_to_type(val: &Value) -> Option<Type>` — handles leaf (no-payload or opaque) TypeNode constructors: `Int`, `String`, `Float`, `Bytes`, `Never`, `Top`, `Unknown`, `Absent`, `Proxy`, `Callable`, and all opaque Rust types.
-- `typenode_value_to_type(val: &Value, ...) -> Result<Option<Type>>` in `src/typecheck_annot.rs` — handles both leaf constructors (`Unknown`, `Top`, `Never`, `Bytes`, `Absent`, `Proxy`, `Callable`) and complex (payload-carrying) TypeNode constructors: `Dict`, `TypeConstructor`, `TypeApplication`, `TypeVar`, `IntLiteral`, `StringLiteral`, `Union`, `Intersect`, `Negation`, `Arrow`, `Recursive`, and `RecursiveRef`. Each arm reads specific payload field names that are part of the protocol (documented in §7).
+- `typenode_value_to_type(val: &Value, ...) -> Result<Option<TypeValue>>` in `src/typecheck_annot.rs` — handles all TypeNode constructors: leaf (no-payload or opaque) constructors (`Int`, `String`, `Float`, `Bytes`, `Never`, `Top`, `Unknown`, `Absent`, `Proxy`, `Callable`, and all opaque Rust types) as well as complex (payload-carrying) constructors: `Dict`, `TypeConstructor`, `TypeApplication`, `TypeVar`, `IntLiteral`, `StringLiteral`, `Union`, `Intersect`, `Negation`, `Arrow`, `Recursive`, and `RecursiveRef`. Each arm reads specific payload field names that are part of the protocol (documented in §7).
 
 No other Rust code may hardcode TypeNode constructor names.
 
 If a new primitive type is added:
 1. Add a `Value` variant in `src/value.rs`
-2. Add a `Type` variant in `src/type_def.rs`
-3. Declare a `TypeNode` constructor in `stdlib/builtin_core.llt`
-4. Add an arm to `typenode_leaf_to_type` (leaf types) or `typenode_value_to_type` (complex types) in the appropriate file
+2. Declare a `TypeNode` constructor in `stdlib/builtin_core.llt`
+3. Add an arm to `typenode_value_to_type` in `src/typecheck_annot.rs`
 
 These changes must happen together. Nothing else in Rust should know TypeNode names.
 
@@ -334,9 +332,9 @@ These changes must happen together. Nothing else in Rust should know TypeNode na
 
 **Rust owns:**
 - The primitive value representations (`Value` variants)
-- The primitive type concepts (`Type` variants)
+- The primitive type concepts (TypeValue constructors)
 - The evaluator, memory management, and built-in function implementations
-- The canonical mapping: `typenode_leaf_to_type`
+- The canonical mapping: `typenode_value_to_type`
 - The list of opaque Rust types
 
 **Tinct (prelude and user code) owns:**
@@ -494,18 +492,18 @@ These are names that Rust unconditionally references by string in its source —
 | `builtin-dict-get` | `src/resolve.rs` | The resolver pre-resolves `builtin-dict-get` for field access desugaring (`.x` syntax lowers to `[builtin-dict-get "x" val]`) |
 | `builtin-make-annotated` | `src/lower.rs` | Wraps variant/constructor values with annotation metadata dict |
 | `to-match` | `src/eval.rs` | Match signal dispatch — called when pattern matching needs to test whether a value matches a given arm. Injected by class declaration lowering. |
-| `Fn` | `src/typecheck_annot.rs` | Function type annotation syntax: `@[Fn@ReturnType [Params]]` — the `Fn` identifier in bracket-head position is detected structurally to produce a concrete `Type::Function`. Any prelude that provides the function type annotation form must use this name. |
+| `Fn` | `src/typecheck_annot.rs` | Function type annotation syntax: `@[Fn@ReturnType [Params]]` — the `Fn` identifier in bracket-head position is detected structurally to produce a concrete `TypeValue.Fn`. Any prelude that provides the function type annotation form must use this name. |
 | `RecursiveRef`, `Union`, `Intersect`, `types` | `src/builtins_meta.rs` (`is_contractive_value`) | Contractiveness check for recursive types (`builtin-is-contractive`). A `Value::Variant` whose `ctor` field is `"RecursiveRef"` is non-contractive (bare recursive reference). Variants with `ctor` `"Union"` or `"Intersect"` are non-guarding combinators: their contractiveness is determined by recursing into every element of their `types` payload field (an integer-keyed Dict of child TypeNode values). Any conforming prelude `TypeNode` declaration must use these exact constructor names and the `types` field name for the recursive-type contractiveness feature to work correctly. |
 | `do-infer-placeholder: 1` | `src/surface_convert.rs` (`dict_to_surface_node_inner`) | Do-notation inferred monad sentinel. When prelude's do-desugar produces an `Expr.VarRef` for the inferred monad placeholder, it must include `do-infer-placeholder: 1` (an integer `1`) in the `Expr.VarRef` payload dict. `surface_convert.rs` reads this field and sets `SurfaceExpression::VarRef::do_infer_placeholder = true` on the resulting AST node. The type checker (`src/typecheck_cek.rs`) returns `Type::Unknown` for any call whose function head is a Field node whose target is such a VarRef, deferring monad-type resolution to the evaluator. Any custom prelude implementing do-notation with inferred monads must emit this field; omitting it will cause the type checker to attempt full inference on an unresolvable call. |
 
 | `each` | `src/typecheck_annot.rs` | Constraint annotation list syntax: `@[constraint: [each Cls1 Cls2]]` — the `each` identifier in bracket-head position in a constraint list is detected to expand multiple class names. Analogous to `Fn` for function type annotations. |
 | `=`, `and`, `has?`, `type-of` | `src/typecheck_narrow.rs` | Structural narrowing protocol entries (D-8). Rust dispatches path-sensitive type narrowing when it detects these specific function names as the condition in a guard expression. Documented in `doc/feature/narrowing.md §Structural Narrowing Protocol Entries`. |
-| `IntLiteral` (payload field `n: Int`), `StringLiteral` (payload field `s: String`) | `src/type_normalize.rs` (`type_to_typenode`), `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructors for integer and string literal types. `type_to_typenode` produces `Value::Variant { tycon: "TypeNode", ctor: "IntLiteral", payload: Dict { "n": i64 } }` from `Type::IntLiteral(i64)` and `Value::Variant { tycon: "TypeNode", ctor: "StringLiteral", payload: Dict { "s": String } }` from `Type::StringLiteral(String)`. `typenode_value_to_type` reads the `"n"` field from an `IntLiteral` payload and the `"s"` field from a `StringLiteral` payload to reconstruct `Type::IntLiteral` / `Type::StringLiteral`. A conforming custom prelude must declare `TypeNode.IntLiteral` with payload field `n: Int` and `TypeNode.StringLiteral` with payload field `s: String` for literal integer and string types to work correctly. |
-| `Union` (payload field `types: Dict`), `Intersect` (payload field `types: Dict`) | `src/type_normalize.rs` (`type_to_typenode`), `src/typecheck_annot.rs` (`typenode_value_to_type`), `src/builtins_meta.rs` (`is_contractive_value`) | TypeNode constructors for union and intersection types. `type_to_typenode` produces `Value::Variant { tycon: "TypeNode", ctor: "Union"/"Intersect", payload: Dict { "types": integer-keyed Dict of child TypeNode values } }` from `Type::Union`/`Type::Intersection`. `typenode_value_to_type` reads the `"types"` field (an integer-keyed dict of child TypeNode values) to reconstruct the corresponding `Type` variant. `is_contractive_value` recurses into the `"types"` field to check contractiveness of recursive types. A conforming custom prelude must declare `TypeNode.Union` and `TypeNode.Intersect` each with payload field `types: Any` (an integer-keyed dict of child TypeNode values) for union/intersection types and recursive-type contractiveness checking to work correctly. |
-| `Negation` (payload field `inner: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for negation types. `typenode_value_to_type` reads the `"inner"` field (a single child TypeNode value) from a `Negation` payload to reconstruct `Type::Negation`. A conforming custom prelude must declare `TypeNode.Negation` with payload field `inner: Any` for negation type annotations to work correctly. |
-| `Arrow` (payload fields `params: Any`, `result: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for arrow (function) types. `typenode_value_to_type` reads the `"params"` field (an integer-keyed dict of parameter TypeNode values) and `"result"` field (the return TypeNode value) from an `Arrow` payload to reconstruct `Type::Function`. A conforming custom prelude must declare `TypeNode.Arrow` with payload fields `params: Any` and `result: Any` for arrow type annotations to work correctly. |
-| `Recursive` (payload fields `var: Any`, `body: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for recursive (mu) types. `typenode_value_to_type` reads the `"var"` field (a string type variable name) and `"body"` field (the body TypeNode value) from a `Recursive` payload to reconstruct `Type::Recursive`. A conforming custom prelude must declare `TypeNode.Recursive` with payload fields `var: Any` and `body: Any` for recursive type annotations to work correctly. |
-| `RecursiveRef` (payload field `name: Any`), `types` (field name on `Union`/`Intersect` payloads) | `src/typecheck_annot.rs` (`typenode_value_to_type`), `src/builtins_meta.rs` (`is_contractive_value`) | TypeNode constructor for recursive type variable references (the bound variable inside a `Recursive` type body). `typenode_value_to_type` reads the `"name"` field (a string type variable name) from a `RecursiveRef` payload to reconstruct `Type::RecursiveRef`. `is_contractive_value` treats a `Value::Variant` with `ctor == "RecursiveRef"` as non-contractive (a bare recursive reference with no guarding constructor). A conforming custom prelude must declare `TypeNode.RecursiveRef` with payload field `name: Any` for recursive type references to work correctly. |
+| `IntLiteral` (payload field `n: Int`), `StringLiteral` (payload field `s: String`) | `src/type_normalize.rs` (`type_to_typenode`), `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructors for integer and string literal types. `type_to_typenode` produces `Value::Variant { tycon: "TypeNode", ctor: "IntLiteral", payload: Dict { "n": i64 } }` and `Value::Variant { tycon: "TypeNode", ctor: "StringLiteral", payload: Dict { "s": String } }`. `typenode_value_to_type` reads the `"n"` field from an `IntLiteral` payload and the `"s"` field from a `StringLiteral` payload to produce `TypeValue.IntLit { value: Int }` / `TypeValue.StrLit { value: String }`. A conforming custom prelude must declare `TypeNode.IntLiteral` with payload field `n: Int` and `TypeNode.StringLiteral` with payload field `s: String` for literal integer and string types to work correctly. |
+| `Union` (payload field `types: Dict`), `Intersect` (payload field `types: Dict`) | `src/type_normalize.rs` (`type_to_typenode`), `src/typecheck_annot.rs` (`typenode_value_to_type`), `src/builtins_meta.rs` (`is_contractive_value`) | TypeNode constructors for union and intersection types. `type_to_typenode` produces `Value::Variant { tycon: "TypeNode", ctor: "Union"/"Intersect", payload: Dict { "types": integer-keyed Dict of child TypeNode values } }`. `typenode_value_to_type` reads the `"types"` field (an integer-keyed dict of child TypeNode values) to produce the corresponding `TypeValue.Union { members: Dict }` / `TypeValue.Inter { members: Dict }`. `is_contractive_value` recurses into the `"types"` field to check contractiveness of recursive types. A conforming custom prelude must declare `TypeNode.Union` and `TypeNode.Intersect` each with payload field `types: Any` (an integer-keyed dict of child TypeNode values) for union/intersection types and recursive-type contractiveness checking to work correctly. |
+| `Negation` (payload field `inner: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for negation types. `typenode_value_to_type` reads the `"inner"` field (a single child TypeNode value) from a `Negation` payload to produce `TypeValue.Neg { of: TypeValue }`. A conforming custom prelude must declare `TypeNode.Negation` with payload field `inner: Any` for negation type annotations to work correctly. |
+| `Arrow` (payload fields `params: Any`, `result: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for arrow (function) types. `typenode_value_to_type` reads the `"params"` field (an integer-keyed dict of parameter TypeNode values) and `"result"` field (the return TypeNode value) from an `Arrow` payload to produce `TypeValue.Fn`. A conforming custom prelude must declare `TypeNode.Arrow` with payload fields `params: Any` and `result: Any` for arrow type annotations to work correctly. |
+| `Recursive` (payload field `body: Any`) | `src/typecheck_annot.rs` (`typenode_value_to_type`) | TypeNode constructor for recursive (mu) types. `typenode_value_to_type` reads the `"body"` field (the body TypeNode value) from a `Recursive` payload to produce `TypeValue.Recursive { body: TypeValue }`. The de Bruijn representation has no bound variable name — there is no `var` field. A conforming custom prelude must declare `TypeNode.Recursive` with payload field `body: Any` for recursive type annotations to work correctly. |
+| `RecursiveRef` (payload field `depth: Int`), `types` (field name on `Union`/`Intersect` payloads) | `src/typecheck_annot.rs` (`typenode_value_to_type`), `src/builtins_meta.rs` (`is_contractive_value`) | TypeNode constructor for de Bruijn recursive type references (the self-reference inside a `Recursive` type body). `typenode_value_to_type` reads the `"depth"` field (an integer de Bruijn index) from a `RecursiveRef` payload to produce `TypeValue.RecursiveRef { depth: Integer }`. `is_contractive_value` treats a `Value::Variant` with `ctor == "RecursiveRef"` as non-contractive (a bare recursive reference with no guarding constructor). A conforming custom prelude must declare `TypeNode.RecursiveRef` with payload field `depth: Int` for recursive type references to work correctly. |
 | `Closed` (tycon `"Closed"`, ctor `"Closed"`) | `src/builtins_async.rs` (`builtin_recv`, `builtin_send`, `builtin_select_once`) | Channel-closed sentinel variant. `builtin-recv` returns `Value::Variant { tycon: "Closed", ctor: "Closed", payload: None }` when the underlying channel is closed (MPSC channel: sender dropped; broadcast channel: all senders dropped; oneshot receiver: sender dropped). `builtin-send` returns the same variant in the `TrySendError::Closed` arm. Any conforming prelude must declare a type `Closed: [type Closed]` and export `Closed.Closed` as the channel-closed constructor to correctly match these return values. The `builtin_async.llt` declaration annotates the channel-closed path with this return type. |
 | `"ch"`, `"handler"` (input dict keys), `"ok"`, `"closed"` (output dict keys) | `src/builtins_async.rs` (`builtin_select_once`) | `builtin-select-once` reads input source entries as dicts with two required keys: `"ch"` (the channel value: Channel, BroadcastChannel, or OneshotReceiver) and `"handler"` (a single-argument function called with the received value). On success, `builtin-select-once` returns `Value::Dict { "ok": handler_result }`. When all channels are closed, it returns `Value::Dict { "closed": Value::Dict {} }` (the empty dict as the closed-sentinel value). These four field names are part of the Rust-tinct protocol: any conforming prelude wrapper for `select-once` must structure its source entries with `ch:` and `handler:` fields, and must discriminate the return by checking for the `"ok"` vs `"closed"` key. |
 
@@ -525,10 +523,9 @@ Note: `class == "Indexable"` dispatch in `src/type_unify.rs` and `"get"`/`"get?"
 
 Checklist:
 1. `src/value.rs` — add `Value` variant with Rust representation
-2. `src/type_def.rs` — add `Type` variant (or use `Type::TyCon("Name")` for opaque types)
-3. `src/type_normalize.rs` — add arm to `typenode_leaf_to_type`
-4. `stdlib/builtin_core.llt` — add `[type repr: "Value::X"]` declaration in the runtime section; also update `is_valid_repr_string()` in `src/eval_core.rs` (add a new `matches!` arm)
-5. `src/imports.rs` — if opaque: the auto-derivation pass in `build_builtin_core_envs_inner` will pick it up automatically from the type-stage scope
-6. `src/eval.rs` — add `value_matches_type` dispatch arm if runtime type-checking is needed
+2. `stdlib/builtin_core.llt` — add `[type repr: "Value::X"]` declaration in the runtime section; also update `is_valid_repr_string()` in `src/eval_core.rs` (add a new `matches!` arm)
+3. `src/typecheck_annot.rs` — add arm to `typenode_value_to_type`
+4. `src/imports.rs` — if opaque: the auto-derivation pass in `build_builtin_core_envs_inner` will pick it up automatically from the type-stage scope
+5. `src/eval.rs` — add `value_matches_type` dispatch arm if runtime type-checking is needed
 
-Steps 1–4 are mandatory for every new primitive. Steps 5–6 apply only to opaque Rust types.
+Steps 1–3 are mandatory for every new primitive. Steps 4–5 apply only to opaque Rust types.

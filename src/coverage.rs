@@ -37,7 +37,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ast::{SurfaceExpression, SurfaceNode};
-use crate::types::{TyConEnv, Type};
+use crate::type_tags::*;
+use crate::value::Value;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Coverage pattern representation
@@ -150,192 +152,6 @@ pub struct ConstructorSignature {
 }
 
 impl ConstructorSignature {
-    /// Build a constructor signature from a `Type::Union`.
-    ///
-    /// Returns `None` if any union member is a type that cannot be represented
-    /// as a finite constructor set (e.g., `Function`, `Unknown`, `TypeVar`, `Top`).
-    /// Callers should treat `None` as "skip coverage checking" — not as exhaustive.
-    ///
-    /// `tycon_env` is used to resolve `Type::TyCon(name)` and `Type::App(TyCon(name), _)`
-    /// union members — parameterized or plain type constructors. Builtin TyCons
-    /// with `builtin_type` set produce a `Variant` constructor; user-defined TyCons with
-    /// declared constructors produce `Variant` constructors for each. If `constructors` is empty
-    /// (pending population) and `builtin_type` is None, the member is treated as
-    /// unrepresentable (skipped, returns `None`).
-    pub fn from_union(members: &[Type], tycon_env: &TyConEnv) -> Option<Self> {
-        let mut constructors = Vec::new();
-        let mut skipped_any = false;
-        for member in members {
-            match member {
-                Type::Dict(row) => {
-                    // Structural variant — discriminated by the key set.
-                    // Each key in the record becomes the constructor tag.
-                    // For single-key records (the common case for discriminated unions),
-                    // the constructor has arity 1 (the payload).
-                    if row.fields.len() == 1 {
-                        let (key, _) = row.fields.iter().next().unwrap();
-                        constructors.push((ConstructorTag::DictKey(key.clone()), 1));
-                    } else {
-                        // Multi-key record — use the sorted key set as a combined tag.
-                        // Arity = number of fields (each field is a sub-pattern).
-                        let mut keys: Vec<&String> = row.fields.keys().collect();
-                        keys.sort();
-                        let combined = keys
-                            .iter()
-                            .map(|k| k.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\x00");
-                        constructors.push((ConstructorTag::DictKey(combined), row.fields.len()));
-                    }
-                }
-                Type::Int => constructors.push((ConstructorTag::Variant("Int".into()), 0)),
-                Type::Float | Type::FloatLiteral(_) => {
-                    constructors.push((ConstructorTag::Variant("Float".into()), 0))
-                }
-                Type::Str => constructors.push((ConstructorTag::Variant("String".into()), 0)),
-                Type::StringLiteral(s) => {
-                    constructors.push((ConstructorTag::LiteralStr(s.clone()), 0));
-                }
-                Type::IntLiteral(n) => {
-                    constructors.push((ConstructorTag::LiteralInt(*n), 0));
-                }
-                Type::NominalVariant {
-                    tycon,
-                    ctor,
-                    fields,
-                } => {
-                    let qualified_tag = if tycon.is_empty() {
-                        ctor.clone()
-                    } else {
-                        format!("{}.{}", tycon, ctor)
-                    };
-                    let arity = if fields.fields.is_empty() { 0 } else { 1 };
-                    constructors.push((ConstructorTag::Variant(qualified_tag), arity));
-                }
-                // TyCon / App(TyCon, _) handling. Look up the type constructor in tycon_env:
-                //   - Builtin TyCon with declared builtin_type: emit Variant.
-                //   - User-defined TyCon with declared constructors: emit Variant for each.
-                //   - User-defined TyCon with no constructors (open type, B-344): skip.
-                //   - Unknown TyCon (not in tycon_env): skip (open type, unrepresentable).
-                member
-                    if matches!(member, Type::TyCon(_))
-                        || matches!(member, Type::App(f, _) if matches!(f.as_ref(), Type::TyCon(_))) =>
-                {
-                    let name = match member {
-                        Type::TyCon(n) => n.as_str(),
-                        Type::App(f, _) => match f.as_ref() {
-                            Type::TyCon(n) => n.as_str(),
-                            _ => unreachable!(),
-                        },
-                        _ => unreachable!(),
-                    };
-                    match tycon_env.get(name) {
-                        Some(def) if !def.constructors.is_empty() => {
-                            // User-defined type with known constructors — emit Variant for each.
-                            // Arity is clamped to 0/1 (same as NominalVariant) until
-                            // Constructor patterns support per-field bindings (T-1003).
-                            for (tag, arity) in &def.constructors {
-                                let clamped = if *arity == 0 { 0 } else { 1 };
-                                constructors.push((ConstructorTag::Variant(tag.clone()), clamped));
-                            }
-                        }
-                        Some(def) if def.builtin_type.is_some() => {
-                            // Builtin TyCon with no declared constructors (opaque Rust-backed type).
-                            // Emit a Variant so Variant patterns can match it.
-                            let tag_name = def.builtin_type.as_deref().unwrap();
-                            constructors.push((ConstructorTag::Variant(tag_name.to_string()), 0));
-                        }
-                        Some(_) => {
-                            // TyCon found but constructors empty (open type or nested dict type, see B-344)
-                            // and no builtin_type — cannot enumerate; treat as unrepresentable.
-                            skipped_any = true;
-                        }
-                        None => {
-                            // Unknown TyCon — not in tycon_env, open/external type.
-                            skipped_any = true;
-                        }
-                    }
-                }
-                _ => {
-                    // Type has no finite constructor set (Function, Handle, Unknown, TypeVar,
-                    // Top, Error, Intersection, etc.) — cannot verify exhaustiveness statically.
-                    skipped_any = true;
-                }
-            }
-        }
-        // S-RcdTop regression guard: if two DictKey constructors have the same
-        // combined field tag, the union has collapsed to Top (two Record members
-        // with identical field sets should unify before reaching coverage).  A
-        // duplicate tag means the signature is unsound — coverage would see the
-        // same constructor twice and report false exhaustiveness.
-        {
-            let mut seen_dict_keys: std::collections::HashMap<&str, usize> =
-                std::collections::HashMap::new();
-            for (tag, _) in &constructors {
-                if let ConstructorTag::DictKey(key) = tag {
-                    let count = seen_dict_keys.entry(key.as_str()).or_insert(0);
-                    *count += 1;
-                    if *count > 1 {
-                        panic!(
-                            "coverage::ConstructorSignature::from_union: duplicate DictKey \
-                             constructor {:?} — union contains two Record members with the same \
-                             field set; the type system should have collapsed them to Top before \
-                             coverage checking reaches here (S-RcdTop regression)",
-                            key
-                        );
-                    }
-                }
-            }
-        }
-
-        if skipped_any {
-            // At least one member was unrepresentable. Returning a partial signature
-            // would cause false exhaustiveness: the algorithm would think all
-            // constructors are covered when some are invisible to it.
-            None
-        } else {
-            Some(ConstructorSignature { constructors })
-        }
-    }
-
-    /// Create a signature from a bare NominalVariant (not wrapped in Union).
-    /// Extracts a single constructor from the NominalVariant's tag and fields.
-    /// Used when coverage checking a match on a bare variant type.
-    ///
-    /// `tycon_env` is used to qualify the tag (e.g., `"Ok"` → `"Result.Ok"`) so it matches
-    /// the elaborated pattern tags produced by `elaborate_pattern`. This mirrors the B-341
-    /// fix applied to `from_union`'s NominalVariant arm.
-    pub fn from_nominal_variant(
-        tycon: &str,
-        ctor: &str,
-        fields: &crate::type_def::Row,
-        tycon_env: &TyConEnv,
-    ) -> Self {
-        let qualified_tag = if tycon.is_empty() {
-            ctor.to_string()
-        } else {
-            format!("{}.{}", tycon, ctor)
-        };
-
-        if let Some(def) = tycon_env.get(tycon) {
-            if !def.constructors.is_empty() {
-                let constructors = def
-                    .constructors
-                    .iter()
-                    .map(|(ctor_tag, arity)| {
-                        let clamped = if *arity == 0 { 0 } else { 1 };
-                        (ConstructorTag::Variant(ctor_tag.clone()), clamped)
-                    })
-                    .collect();
-                return ConstructorSignature { constructors };
-            }
-        }
-
-        let arity = if fields.fields.is_empty() { 0 } else { 1 };
-        let constructors = vec![(ConstructorTag::Variant(qualified_tag), arity)];
-        ConstructorSignature { constructors }
-    }
-
     /// Return the arity of a constructor, or 0 if unknown.
     pub fn arity(&self, tag: &ConstructorTag) -> usize {
         self.constructors
@@ -348,6 +164,155 @@ impl ConstructorSignature {
     /// The complete set of constructor tags (excluding ⊥).
     pub fn tags(&self) -> BTreeSet<ConstructorTag> {
         self.constructors.iter().map(|(t, _)| t.clone()).collect()
+    }
+
+    /// Build a `ConstructorSignature` from a list of TypeValue union members.
+    ///
+    /// Each member is mapped to a `ConstructorTag`:
+    /// - `TypeValue.Record` with a single field `k` → `DictKey(k)` with arity 1
+    /// - `TypeValue.Repr { repr: "Value::X" }` → `Variant("X")` with arity 0
+    /// - `TypeValue.StrLit { value: s }` → `LiteralStr(s)` with arity 0
+    /// - `TypeValue.IntLit { value: n }` → `LiteralInt(n)` with arity 0
+    ///
+    /// Returns `None` if any member cannot be represented as a finite constructor
+    /// (e.g., `TypeValue.Fn` — function types have no finite constructor set).
+    ///
+    /// The `_tycon_env` parameter is reserved for future nominal type constructor lookups.
+    #[cfg(test)]
+    pub fn from_union(
+        members: &[Arc<crate::value::Value>],
+        _tycon_env: &crate::type_def::TyConEnv,
+    ) -> Option<Self> {
+        use crate::type_infer::typevalue_ctor;
+        let mut constructors: Vec<(ConstructorTag, usize)> = Vec::with_capacity(members.len());
+        for member in members {
+            let ctor_tag = typevalue_ctor(member)?;
+            let entry = match ctor_tag {
+                TV_REPR => {
+                    // Extract repr string: "Value::X" → strip "Value::" prefix → "X"
+                    let repr_str = extract_string_payload_field(member, FIELD_REPR)?;
+                    let short = repr_str
+                        .strip_prefix("Value::")
+                        .unwrap_or(&repr_str)
+                        .to_string();
+                    (ConstructorTag::Variant(short), 0)
+                }
+                TV_STR_LIT => {
+                    let s = extract_string_payload_field(member, FIELD_VALUE)?;
+                    (ConstructorTag::LiteralStr(s), 0)
+                }
+                TV_INT_LIT => {
+                    let n = extract_int_payload_field(member, FIELD_VALUE)?;
+                    (ConstructorTag::LiteralInt(n), 0)
+                }
+                TV_RECORD => {
+                    // Single-field record: the field name becomes the DictKey constructor.
+                    let fields = extract_record_fields(member)?;
+                    if fields.len() == 1 {
+                        let field_name = fields.into_iter().next().unwrap();
+                        (ConstructorTag::DictKey(field_name), 1)
+                    } else {
+                        // Multi-field records don't map cleanly to a single constructor tag.
+                        return None;
+                    }
+                }
+                // TypeValue.NominalVariant, TypeValue.Var, TypeValue.Unknown etc. — unrepresentable.
+                _ => return None,
+            };
+            constructors.push(entry);
+        }
+        Some(ConstructorSignature { constructors })
+    }
+}
+
+/// Extract a string field from a TypeValue's settled Dict payload.
+///
+/// Returns `None` if the TypeValue has no settled payload, the payload is not a Dict,
+/// or the requested field is not a String.
+#[cfg(test)]
+fn extract_string_payload_field(tv: &Arc<Value>, field: &str) -> Option<String> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let key = HashableValue::Str(Arc::from(field));
+                let val_thunk = entries.get(&key)?;
+                match val_thunk.peek_result()? {
+                    Ok(Value::String {
+                        source, start, end, ..
+                    }) => Some(source[*start..*end].to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract an integer field from a TypeValue's settled Dict payload.
+#[cfg(test)]
+fn extract_int_payload_field(tv: &Arc<Value>, field: &str) -> Option<i64> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let key = HashableValue::Str(Arc::from(field));
+                let val_thunk = entries.get(&key)?;
+                match val_thunk.peek_result()? {
+                    Ok(Value::Int { n, .. }) => Some(*n),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract the field names from a TypeValue.Record's `fields` Dict payload.
+///
+/// Returns the list of string field names, or `None` if the payload is unreadable.
+#[cfg(test)]
+fn extract_record_fields(tv: &Arc<Value>) -> Option<Vec<String>> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
+                let fields_thunk = entries.get(&fields_key)?;
+                match fields_thunk.peek_result()? {
+                    Ok(Value::Dict {
+                        entries: field_entries,
+                        ..
+                    }) => {
+                        let names: Vec<String> = field_entries
+                            .keys()
+                            .filter_map(|k| {
+                                if let HashableValue::Str(s) = k {
+                                    Some(s.as_ref().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        Some(names)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -503,79 +468,111 @@ pub fn ast_pattern_to_coverage(
             }
         }
 
-        // TypeAssert pattern — extract resolved type from inline TypeAnnotation
+        // TypeAssert pattern — extract resolved TypeValue from inline TypeAnnotation
         SurfaceExpression::TypeAssert {
             expr,
             resolved_type,
             ..
         } => {
-            let resolved = resolved_type
+            // TypeAnnotation::get() now returns Option<&Arc<Value>> after S-1003 migration.
+            let resolved_tv = resolved_type
                 .get()
                 .cloned()
-                .unwrap_or(crate::type_def::Type::Unknown);
+                .unwrap_or_else(crate::value::unknown_type_val);
 
             let inner_sub = vec![ast_pattern_to_coverage(expr, tycon_env)];
 
-            match &resolved {
-                crate::type_def::Type::Int | crate::type_def::Type::IntLiteral(_) => {
-                    CoveragePattern::Constructor {
-                        tag: ConstructorTag::Variant("Int".into()),
-                        sub_patterns: inner_sub,
-                    }
-                }
-                crate::type_def::Type::Float | crate::type_def::Type::FloatLiteral(_) => {
-                    CoveragePattern::Constructor {
-                        tag: ConstructorTag::Variant("Float".into()),
-                        sub_patterns: inner_sub,
-                    }
-                }
-                crate::type_def::Type::Str | crate::type_def::Type::StringLiteral(_) => {
-                    CoveragePattern::Constructor {
-                        tag: ConstructorTag::Variant("String".into()),
-                        sub_patterns: inner_sub,
-                    }
-                }
-                crate::type_def::Type::Bytes => CoveragePattern::Constructor {
-                    tag: ConstructorTag::Variant("Bytes".into()),
-                    sub_patterns: inner_sub,
-                },
-                crate::type_def::Type::Proxy => CoveragePattern::Constructor {
-                    tag: ConstructorTag::Variant("Proxy".into()),
-                    sub_patterns: inner_sub,
-                },
-                ty => {
-                    // Nominal type expansion
-                    let tycon_name = match ty {
-                        crate::type_def::Type::TyCon(name) => Some(name.as_str()),
-                        crate::type_def::Type::App(f, _) => {
-                            if let crate::type_def::Type::TyCon(name) = f.as_ref() {
-                                Some(name.as_str())
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-                    if let (Some(name), Some(env)) = (tycon_name, tycon_env) {
-                        if let Some(def) = env.get(name) {
-                            if !def.constructors.is_empty() {
-                                let branches: Vec<CoveragePattern> = def
-                                    .constructors
-                                    .iter()
-                                    .map(|(ctor, _arity)| CoveragePattern::Constructor {
-                                        tag: ConstructorTag::Variant(ctor.clone()),
-                                        sub_patterns: inner_sub.clone(),
+            // Determine the constructor tag from the TypeValue's ctor string.
+            let tag_opt: Option<&str> = match resolved_tv.as_ref() {
+                Value::Variant { ctor, payload, .. } => match ctor.as_ref() {
+                    TV_REPR => {
+                        // Extract repr string from payload
+                        use crate::value::HashableValue;
+                        let repr = payload
+                            .as_ref()
+                            .and_then(|t| t.peek_result())
+                            .and_then(|r| {
+                                if let Ok(Value::Dict { entries, .. }) = r {
+                                    let k = HashableValue::Str(Arc::from(FIELD_REPR));
+                                    entries.get(&k).and_then(|t| t.peek_result()).and_then(|r| {
+                                        if let Ok(Value::String {
+                                            source, start, end, ..
+                                        }) = r
+                                        {
+                                            Some(source[*start..*end].to_string())
+                                        } else {
+                                            None
+                                        }
                                     })
-                                    .collect();
-                                if branches.len() == 1 {
-                                    return branches.into_iter().next().unwrap();
+                                } else {
+                                    None
                                 }
-                                return CoveragePattern::Wildcard;
-                            }
+                            });
+                        match repr.as_deref() {
+                            Some(REPR_INT) => Some("Int"),
+                            Some(REPR_FLOAT) => Some("Float"),
+                            Some(REPR_STRING) => Some("String"),
+                            Some(REPR_BYTES) => Some("Bytes"),
+                            _ => None,
                         }
                     }
-                    CoveragePattern::Wildcard
+                    TV_INT_LIT => Some("Int"),
+                    TV_FLOAT_LIT => Some("Float"),
+                    TV_STR_LIT => Some("String"),
+                    TV_OP => {
+                        // Named type constructor — look up in tycon_env.
+                        use crate::value::HashableValue;
+                        let name = payload
+                            .as_ref()
+                            .and_then(|t| t.peek_result())
+                            .and_then(|r| {
+                                if let Ok(Value::Dict { entries, .. }) = r {
+                                    let k = HashableValue::Str(Arc::from(FIELD_NAME));
+                                    entries.get(&k).and_then(|t| t.peek_result()).and_then(|r| {
+                                        if let Ok(Value::String {
+                                            source, start, end, ..
+                                        }) = r
+                                        {
+                                            Some(source[*start..*end].to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else {
+                                    None
+                                }
+                            });
+                        if let (Some(name), Some(env)) = (name, tycon_env) {
+                            if let Some(def) = env.get(&name) {
+                                if !def.constructors.is_empty() {
+                                    let branches: Vec<CoveragePattern> = def
+                                        .constructors
+                                        .iter()
+                                        .map(|(ctor, _arity)| CoveragePattern::Constructor {
+                                            tag: ConstructorTag::Variant(ctor.clone()),
+                                            sub_patterns: inner_sub.clone(),
+                                        })
+                                        .collect();
+                                    if branches.len() == 1 {
+                                        return branches.into_iter().next().unwrap();
+                                    }
+                                    return CoveragePattern::Wildcard;
+                                }
+                            }
+                        }
+                        None
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(tag_str) = tag_opt {
+                CoveragePattern::Constructor {
+                    tag: ConstructorTag::Variant(tag_str.into()),
+                    sub_patterns: inner_sub,
                 }
+            } else {
+                CoveragePattern::Wildcard
             }
         }
 
@@ -995,7 +992,7 @@ pub fn format_witnesses(witnesses: &[CoveragePattern]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Row;
+    use crate::type_infer::{make_typevalue_repr, make_typevalue_str_lit};
 
     // Helper: create a constructor pattern
     fn con(tag: ConstructorTag, sub_patterns: Vec<CoveragePattern>) -> CoveragePattern {
@@ -1403,19 +1400,57 @@ mod tests {
 
     // AST pattern conversion tests deleted — Pattern enum deleted, patterns are now SurfaceNode.
 
-    // ===== Constructor signature from Type::Union tests =====
+    // ===== Constructor signature from TypeValue union tests =====
+
+    fn make_record_typevalue_test(fields: &[(&str, Arc<Value>)]) -> Arc<Value> {
+        use crate::value::{HashableValue, Thunk};
+        let mut field_entries = indexmap::IndexMap::new();
+        for (name, tv) in fields {
+            field_entries.insert(
+                HashableValue::Str(Arc::from(*name)),
+                Arc::new(Thunk::value(Value::clone(tv.as_ref()), crate::rust_span!())),
+            );
+        }
+        let fields_dict = Value::Dict {
+            entries: field_entries,
+            type_val: crate::value::unknown_type_val(),
+        };
+        let mut payload_entries = indexmap::IndexMap::new();
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_FIELDS)),
+            Arc::new(Thunk::value(fields_dict, crate::rust_span!())),
+        );
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_TAIL)),
+            Arc::new(Thunk::value(
+                Value::Dict {
+                    entries: indexmap::IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                crate::rust_span!(),
+            )),
+        );
+        let payload = Value::Dict {
+            entries: payload_entries,
+            type_val: crate::value::unknown_type_val(),
+        };
+        Arc::new(Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_RECORD),
+            payload: Some(Arc::new(crate::value::Thunk::value(
+                payload,
+                crate::rust_span!(),
+            ))),
+        })
+    }
 
     #[test]
     fn test_sig_from_union_record_variants() {
+        let unknown_tv = crate::value::unknown_type_val();
+        let str_tv = make_typevalue_repr(REPR_STRING);
         let union_members = vec![
-            Type::Dict(Row {
-                fields: [("ok".to_string(), Type::Unknown)].into_iter().collect(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-            Type::Dict(Row {
-                fields: [("err".to_string(), Type::Str)].into_iter().collect(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
+            make_record_typevalue_test(&[("ok", unknown_tv)]),
+            make_record_typevalue_test(&[("err", str_tv)]),
         ];
         let sig =
             ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
@@ -1428,7 +1463,10 @@ mod tests {
 
     #[test]
     fn test_sig_from_union_primitive_types() {
-        let union_members = vec![Type::Int, Type::Str];
+        let union_members = vec![
+            make_typevalue_repr(REPR_INT),
+            make_typevalue_repr(REPR_STRING),
+        ];
         let sig =
             ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
                 .expect("all members are representable");
@@ -1440,10 +1478,7 @@ mod tests {
 
     #[test]
     fn test_sig_from_union_string_literals() {
-        let union_members = vec![
-            Type::StringLiteral("ok".to_string()),
-            Type::StringLiteral("err".to_string()),
-        ];
+        let union_members = vec![make_typevalue_str_lit("ok"), make_typevalue_str_lit("err")];
         let sig =
             ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
                 .expect("all members are representable");
@@ -1452,23 +1487,19 @@ mod tests {
 
     #[test]
     fn test_sig_from_union_with_unrepresentable_type_returns_none() {
-        // Function types cannot be expressed as a finite constructor set.
+        // TypeValue.Fn types cannot be expressed as a finite constructor set.
         // from_union must return None rather than a partial (unsound) signature.
-        let union_members = vec![
-            Type::Int,
-            Type::Function {
-                params: vec![],
-                ret: Box::new(Type::Int),
-                typed_variadics: vec![],
-                rest: None,
-                required_count: 0,
-            },
-        ];
+        let fn_tv = Arc::new(Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_FN),
+            payload: None,
+        });
+        let union_members = vec![make_typevalue_repr(REPR_INT), fn_tv];
         let sig =
             ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new());
         assert!(
             sig.is_none(),
-            "union containing Function must return None — cannot verify exhaustiveness"
+            "union containing TypeValue.Fn must return None — cannot verify exhaustiveness"
         );
     }
 

@@ -1,0 +1,4 @@
+# Self-referential function: f calls itself (infinite loop potential, but type-checks).
+[f: [fn [let x] [call $f $x]]]
+=== out
+["f": [fn [let x] ...]]

@@ -1,0 +1,5 @@
+# Dot-access and builtin-dict-get produce the same field type.
+[person: [name: "Alice"  age: 30]]
+[result: $person.name]
+=== out
+["result": "Alice"]

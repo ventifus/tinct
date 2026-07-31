@@ -17,10 +17,12 @@
 //!    When the predicate is called with a single variable argument and returns true,
 //!    that variable is narrowed to `TypeName`.
 //!
-//! Both mechanisms store `TypeScheme.param_narrowings[0] = Some(T)` during Pass 4 of
-//! `run_typecheck_dict`. `extract_narrowings` looks up the called function in the
-//! type environment and reads `param_narrowings`. Any function — not just prelude
-//! predicates — can participate in narrowing by using these annotations.
+//! Both mechanisms produce a `Vec<Option<TypeValue>>` derived locally in `typecheck_cek.rs`
+//! from `@[narrows: T]` / `@[is: T]` annotations during Pass 4 of `run_typecheck_dict`.
+//! `extract_narrowings` looks up the called function in the type environment and reads
+//! the narrowings from the callee's TypeValue.Scheme `narrowings` payload field. Any
+//! function — not just prelude predicates — can participate in narrowing by using these
+//! annotations.
 //!
 //! **Predicate narrowing** (`@[is: T]`, `@[narrows: T]`) is entirely annotation-driven — no
 //! predicate names are hardcoded in Rust. A custom prelude can name predicates anything.
@@ -37,16 +39,73 @@ use super::typecheck_annot;
 use crate::ast::{Span, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
-use crate::types::{Constraint, InferState, Row, Type, TypeScheme};
+use crate::type_infer::{
+    make_typevalue_float_lit, make_typevalue_int_lit, make_typevalue_repr, make_typevalue_str_lit,
+    make_typevalue_unknown,
+};
+use crate::type_tags::*;
+use crate::types::InferState;
+use crate::value::Value;
+
+/// Extract the first parameter narrowing type from a TypeValue.Scheme's narrowings payload.
+///
+/// TypeValue.Scheme has an optional `narrowings` field (an indexed dict: `{ 0: TypeValue | [] }`).
+/// Returns `Some(narrowing_ty)` if `narrowings[0]` is a TypeValue (non-empty dict/variant).
+/// Returns `None` if the scheme has no narrowings, or if `narrowings[0]` is `[]` (absent/null).
+fn extract_scheme_narrowings_first(
+    scheme: &Arc<crate::value::Value>,
+) -> Option<Arc<crate::value::Value>> {
+    use crate::value::{HashableValue, Value};
+    // The scheme must be a TypeValue.Scheme variant.
+    let payload = match scheme.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_SCHEME => match thunk.peek_result() {
+            Some(Ok(v)) => v,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // Extract the `narrowings` dict from the Scheme payload.
+    let narrowings_dict = if let Value::Dict { entries, .. } = payload {
+        let key = HashableValue::Str(Arc::from(FIELD_NARROWINGS));
+        let thunk = entries.get(&key)?;
+        match thunk.peek_result() {
+            Some(Ok(Value::Dict { entries, .. })) => entries.clone(),
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+    // Read narrowings[0].
+    let first_thunk = narrowings_dict.get(&HashableValue::Int(0))?;
+    let first_val = match first_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        _ => return None,
+    };
+    // An absent/null narrowing is represented as `[]` (empty Dict).
+    match first_val {
+        Value::Dict { entries, .. } if entries.is_empty() => None,
+        other => Some(Arc::new(other.clone())),
+    }
+}
 
 /// Narrowing constraints extracted from conditional expressions.
 /// Each constraint refines the type of a variable in the true branch of an `if`.
 #[derive(Debug, Clone)]
 pub(crate) enum Narrowing {
     /// `[= var literal]` narrows `var` to the literal type.
-    EqLiteral { var: String, ty: Type },
+    EqLiteral {
+        var: String,
+        ty: Arc<crate::value::Value>,
+    },
     /// `[= [type-of var] "TypeName"]` narrows `var` to the named type.
-    TypeOf { var: String, ty: Type },
+    TypeOf {
+        var: String,
+        ty: Arc<crate::value::Value>,
+    },
     /// `[has? var "key"]` narrows `var` to a record with at least that key.
     HasKey { var: String, key: String },
 }
@@ -55,9 +114,9 @@ pub(crate) enum Narrowing {
 /// Returns an empty vec for unrecognized patterns.
 ///
 /// `env` is the type environment at the call site, used to look up annotation-based
-/// narrowing declarations (`param_narrowings` on the callee's TypeScheme). When a
-/// function is annotated with `@[narrows: T]` or has a first parameter annotated with
-/// `@[is: T]`, calling it with a single variable argument narrows that variable to `T`
+/// narrowing declarations (the `narrowings` payload field in the callee's TypeValue.Scheme).
+/// When a function is annotated with `@[narrows: T]` or has a first parameter annotated
+/// with `@[is: T]`, calling it with a single variable argument narrows that variable to `T`
 /// in the true branch. Any function registered in `env` can participate in narrowing —
 /// not just hardcoded prelude predicates.
 pub(crate) fn extract_narrowings(
@@ -112,18 +171,21 @@ pub(crate) fn extract_narrowings(
                         return narrowings;
                     }
                     // Annotation-based narrowing (T-1761): look up the function in env.
-                    // If its TypeScheme has `param_narrowings[0] = Some(T)`, then
+                    // If its TypeValue.Scheme has `narrowings[0] = Some(T)`, then
                     // `[foo? x]` being true narrows `x` to `T`. This is the general
                     // mechanism — any function can declare narrowing via `@[narrows: T]`
                     // or `@[is: T]` on its first parameter.
                     _ if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             let scheme = env.read().expect("env RwLock poisoned").get_scheme(name);
-                            if let Some(scheme) = scheme {
-                                if let Some(Some(narrow_ty)) = scheme.param_narrowings.first() {
+                            if let Some(ref scheme_tv) = scheme {
+                                // Extract narrowings[0] from TypeValue.Scheme payload if present.
+                                if let Some(narrowing_ty) =
+                                    extract_scheme_narrowings_first(scheme_tv)
+                                {
                                     return vec![Narrowing::TypeOf {
                                         var: var_name.clone(),
-                                        ty: narrow_ty.clone(),
+                                        ty: narrowing_ty,
                                     }];
                                 }
                             }
@@ -147,15 +209,15 @@ pub(crate) fn try_eq_literal(
         match &right.expr {
             SurfaceExpression::Int(n) => Some(Narrowing::EqLiteral {
                 var: name.clone(),
-                ty: Type::IntLiteral(*n),
+                ty: make_typevalue_int_lit(*n),
             }),
             SurfaceExpression::Float(f) => Some(Narrowing::EqLiteral {
                 var: name.clone(),
-                ty: Type::FloatLiteral(*f),
+                ty: make_typevalue_float_lit(*f),
             }),
             SurfaceExpression::StringLiteral { content: s, .. } => Some(Narrowing::EqLiteral {
                 var: name.clone(),
-                ty: Type::StringLiteral(s.clone()),
+                ty: make_typevalue_str_lit(s),
             }),
             // true/false are plain identifiers in tinct — no native boolean type.
             // No narrowing: x retains its original type. Emitting Unknown would
@@ -190,10 +252,10 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                             content: type_name, ..
                         } = &right.expr
                         {
-                            let ty = match type_name.as_str() {
-                                "Int" => Some(Type::Int),
-                                "Float" => Some(Type::Float),
-                                "String" => Some(Type::Str),
+                            let tv = match type_name.as_str() {
+                                "Int" => Some(make_typevalue_repr(REPR_INT)),
+                                "Float" => Some(make_typevalue_repr(REPR_FLOAT)),
+                                "String" => Some(make_typevalue_repr(REPR_STRING)),
                                 // Only the three primitive types above produce narrowing from
                                 // type-of. All other type names (including prelude-defined types
                                 // such as Bool and Seq) fall through to None — no narrowing —
@@ -202,7 +264,7 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 // internals (Axiom 4), so the wildcard handles all remaining cases.
                                 _ => None,
                             };
-                            return ty.map(|t| Narrowing::TypeOf {
+                            return tv.map(|t| Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: t,
                             });
@@ -215,69 +277,51 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
     None
 }
 
-/// Apply narrowings to a type environment, creating a refined environment for the true branch.
+/// Apply narrowings for a branch by inserting refined types into `state.narrowing_map`.
+///
+/// Narrowing is a TYPE REFINEMENT of an existing slot binding, not a new binding.
+/// The env is unchanged — callers no longer need the return value.
+/// Scoping is handled by AfterBlock: `saved_narrowing_map` is stored in the continuation
+/// and restored when AfterBlock fires, exactly like `saved_use_def`.
 pub(crate) fn apply_narrowings(
     env: &Arc<RwLock<Env>>,
     narrowings: &[Narrowing],
-    state: &mut InferState,
-) -> Arc<RwLock<Env>> {
-    if narrowings.is_empty() {
-        return Arc::clone(env);
-    }
-
-    let mut new_env_inner = Env::with_parent(Arc::clone(env));
-
+    state: &mut crate::type_infer::InferState,
+) {
     for narrowing in narrowings {
-        match narrowing {
-            Narrowing::EqLiteral { var, ty } => {
-                // BAS: all tails are Empty — no row var registration needed.
-                // Use insert_scheme_named_only: narrowing frames are not resolver scopes,
-                // so their entries must not occupy slotted positions.
-                new_env_inner.insert_scheme_named_only(var.clone(), TypeScheme::mono(ty.clone()));
-            }
-            Narrowing::TypeOf { var, ty } => {
-                // BAS: all tails are Empty — no row var registration needed.
-                new_env_inner.insert_scheme_named_only(var.clone(), TypeScheme::mono(ty.clone()));
-            }
+        let (var, refined_tv) = match narrowing {
+            Narrowing::EqLiteral { var, ty } => (var, Arc::clone(ty)),
+            Narrowing::TypeOf { var, ty } => (var, Arc::clone(ty)),
             Narrowing::HasKey { var, key } => {
-                // Get the current type of the variable (if any)
-                let current_ty = env
-                    .read()
-                    .unwrap()
-                    .get_scheme(var)
-                    .map(|scheme| scheme.body);
-
-                // Create a record type with at least the given key
-                let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-                let fresh_type_var = state.fresh_type_var(&crate::rust_span!());
-                fields.insert(key.clone(), fresh_type_var);
-
-                // BAS: all tails are Empty. Merge existing record fields if present.
-                // Width subtyping handles the openness — the record is known to have the
-                // key at runtime, and may have additional fields beyond those annotated.
-                let new_ty = if let Some(Type::Dict(current_row)) = current_ty {
-                    // Merge existing fields with the new constraint
-                    for (k, v) in current_row.fields {
-                        fields.insert(k, v);
+                let fresh_field_tv = state.fresh_type_var(&crate::rust_span!());
+                let mut fields: indexmap::IndexMap<String, Arc<Value>> = indexmap::IndexMap::new();
+                fields.insert(key.clone(), fresh_field_tv);
+                let current_tv = env.read().unwrap().get_scheme(var);
+                if let Some(existing_tv) = current_tv {
+                    if let Some(existing_fields) =
+                        crate::typecheck::extract_record_fields_pub(&existing_tv)
+                    {
+                        for (k, v) in existing_fields {
+                            fields.entry(k).or_insert(v);
+                        }
                     }
-                    Type::Dict(Row {
-                        fields,
-                        tail: crate::type_def::RowTail::Empty,
-                    })
-                } else {
-                    // Create a fresh record with just the key constraint
-                    Type::Dict(Row {
-                        fields,
-                        tail: crate::type_def::RowTail::Empty,
-                    })
-                };
-
-                new_env_inner.insert_scheme_named_only(var.clone(), TypeScheme::mono(new_ty));
+                }
+                (var, crate::typecheck::make_typevalue_record_pub(fields, None))
             }
-        }
-    }
+        };
 
-    Arc::new(RwLock::new(new_env_inner))
+        // Find the binding's BindingId via its definition span, then insert the refinement.
+        if let Some(def_span) = Env::find_def_span_by_name(env, var) {
+            let id = crate::type_infer::BindingId {
+                def_span,
+                name: var.clone(),
+            };
+            state.narrowing_map.insert(id, refined_tv);
+        }
+        // If no definition_span found: the binding has no tinct source (e.g. a builtin
+        // injected without a span). Narrowings on such bindings are silently dropped —
+        // they cannot be tracked via BindingId.
+    }
 }
 
 /// Extract type parameters from an instance pattern declaration.
@@ -292,7 +336,7 @@ pub(crate) async fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-) -> Result<Vec<Type>, Vec<TypeDiagnostic>> {
+) -> Result<Vec<Arc<crate::value::Value>>, Vec<TypeDiagnostic>> {
     match &pattern_node.expr {
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             let mut types = Vec::new();
@@ -323,7 +367,7 @@ pub(crate) fn extract_binding_types<'a>(
     binding: &'a Arc<SurfaceNode>,
     env: &'a Arc<RwLock<Env>>,
     state: &'a mut InferState,
-    types: &'a mut Vec<Type>,
+    types: &'a mut Vec<Arc<crate::value::Value>>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<TypeDiagnostic>>> + Send + 'a>>
 {
     Box::pin(async move {
@@ -339,6 +383,7 @@ pub(crate) fn extract_binding_types<'a>(
                     }
                 } else {
                     // Named-key dict: single compound type (structural/record type)
+                    // After migration, fresh_type_var returns Arc<Value> (TypeValue.Var).
                     types.push(state.fresh_type_var(&binding.span));
                 }
             }
@@ -354,8 +399,8 @@ pub(crate) fn extract_binding_types<'a>(
             // with no arguments. Try to resolve the func name as a type annotation via
             // `resolve_annotation`. If the name is registered in `type_stage_scope` or
             // `tycon_env` (e.g. `Int`, `String`, `Boolean`), we get the concrete type back.
-            // This enables `[pattern [Int]]` to resolve to `Type::Int` rather than a fresh
-            // TypeVar, making the instance pattern concrete.
+            // This enables `[pattern [Int]]` to resolve to TypeValue.Repr{repr:"Value::Int"}
+            // rather than a fresh TypeVar, making the instance pattern concrete.
             //
             // Multi-arg case `[Result String]`, `[Channel Int]` — parametric type application.
             // Full resolution of these is future work; use a fresh TypeVar so that unification
@@ -374,10 +419,10 @@ pub(crate) fn extract_binding_types<'a>(
                 } = &func.expr
                 {
                     let ann = crate::ast::Annotation::Simple(name.clone());
-                    let mut constraints: Vec<Constraint> = Vec::new();
+                    let mut constraints: Vec<Arc<crate::value::Value>> = Vec::new();
                     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
                     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
-                    let ty = typecheck_annot::resolve_annotation(
+                    let tv = typecheck_annot::resolve_annotation(
                         &ann,
                         func.span.clone(),
                         &mut *state,
@@ -388,15 +433,14 @@ pub(crate) fn extract_binding_types<'a>(
                     )
                     .await
                     .map_err(|e| vec![e])?;
-                    Some(ty)
+                    Some(tv)
                 } else {
                     None
                 };
                 types.push(resolved.unwrap_or_else(|| state.fresh_type_var(&binding.span)));
             }
             SurfaceExpression::Call { .. } => {
-                // Multi-arg parametric call: use a fresh TypeVar so unification can still
-                // find the correct type and T017 does not fire.
+                // Multi-arg parametric call: use a fresh TypeVar.
                 types.push(state.fresh_type_var(&binding.span));
             }
             // a@Type form: VarRef with annotation — resolve via typecheck_annot::resolve_annotation.
@@ -404,10 +448,10 @@ pub(crate) fn extract_binding_types<'a>(
                 annotation: Some(ann),
                 ..
             } => {
-                let mut constraints: Vec<Constraint> = Vec::new();
+                let mut constraints: Vec<Arc<crate::value::Value>> = Vec::new();
                 let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
                 let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
-                let ty = typecheck_annot::resolve_annotation(
+                let tv = typecheck_annot::resolve_annotation(
                     &ann.node,
                     ann.span.clone(),
                     &mut *state,
@@ -418,19 +462,16 @@ pub(crate) fn extract_binding_types<'a>(
                 )
                 .await
                 .map_err(|e| vec![e])?;
-                types.push(ty);
+                types.push(tv);
             }
             // Bare identifier in pattern position: represents a type variable (any type).
-            // Use a fresh TypeVar rather than Unknown so that:
-            // - T017 ("contains Unknown types") doesn't fire for intentional type variables
-            // - T016 coverage violations are still correctly detected (TypeVars in determined
-            //   positions that don't appear in determining positions still trigger T016)
+            // Use a fresh TypeVar rather than Unknown.
             SurfaceExpression::VarRef { .. } => {
                 types.push(state.fresh_type_var(&binding.span));
             }
             // Gradual: wildcard placeholder
             SurfaceExpression::Placeholder(..) => {
-                types.push(Type::Unknown);
+                types.push(make_typevalue_unknown());
             }
             _ => {
                 return Err(vec![TypeDiagnostic::error(
@@ -444,17 +485,17 @@ pub(crate) fn extract_binding_types<'a>(
     })
 }
 
-/// Shared probe helper: attempt to unify each pair of types from `types_a` and `types_b`.
+/// Shared probe helper: attempt to unify each pair of TypeValues from `types_a` and `types_b`.
 ///
-/// Saves all 8 mutable InferState fields that `unify` may touch, runs the probe, then
+/// Saves all mutable InferState fields that `unify` may touch, runs the probe, then
 /// restores them unconditionally — so this function is always side-effect-free.
 ///
 /// Returns `Ok(true)` if every pair unified, `Ok(false)` if any pair failed to unify or
 /// the slices have different lengths, and `Err` only on an internal diagnostic that cannot
 /// be represented as a simple bool result (currently unreachable in practice).
 async fn try_unify_probe(
-    types_a: &[Type],
-    types_b: &[Type],
+    types_a: &[Arc<crate::value::Value>],
+    types_b: &[Arc<crate::value::Value>],
     state: &mut InferState,
 ) -> Result<bool, TypeDiagnostic> {
     if types_a.len() != types_b.len() {
@@ -462,32 +503,33 @@ async fn try_unify_probe(
     }
 
     // Save every field that unify() may touch so this probe is side-effect-free.
-    let saved_levels = state.levels.clone();
     let saved_constraints = state.constraints.clone();
-    let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
-    let saved_subst = state.subst.clone();
-    let saved_type_vars = state.type_vars.clone();
-    let saved_bounds = state.bounds.clone();
+    let saved_ctx = state.ctx.clone();
     let saved_dispatch_obligations = state.dispatch_obligations.clone();
     let saved_diagnostics = state.diagnostics.clone();
 
-    // Attempt actual unification for each type pair.
+    // Attempt actual unification for each TypeValue pair.
     let mut unified = true;
     let span = crate::rust_span!();
-    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
+    for (tv_a, tv_b) in types_a.iter().zip(types_b.iter()) {
         let mut temp_constraints = Vec::new();
-        match crate::types::unify(ty_a, ty_b, state, &mut temp_constraints, span.clone(), 0).await {
+        match crate::types::unify(
+            tv_a,
+            tv_b,
+            &mut state.ctx,
+            &mut temp_constraints,
+            span.clone(),
+            0,
+        )
+        .await
+        {
             Ok(()) => {
                 // This pair can unify — continue.
             }
             Err(_td) => {
-                // Probe unification failure: the TypeDiagnostic in _td means these two types
-                // cannot unify — there is no overlap. This is the expected signal, not an
-                // internal error. The InferState is restored unconditionally below, so
-                // _td (which would only be relevant in that transient state) need not propagate.
-                // Binding to _td (not _) confirms at compile time that the discarded type is
-                // TypeDiagnostic and not some other error kind.
+                // Probe unification failure: the TypeDiagnostic means these two TypeValues
+                // cannot unify — there is no overlap. State is restored unconditionally below.
                 unified = false;
                 break;
             }
@@ -495,27 +537,21 @@ async fn try_unify_probe(
     }
 
     // Restore all mutated fields unconditionally.
-    state.levels = saved_levels;
     state.constraints = saved_constraints;
-    state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
-    state.subst = saved_subst;
-    state.type_vars = saved_type_vars;
-    state.bounds = saved_bounds;
+    state.ctx = saved_ctx;
     state.dispatch_obligations = saved_dispatch_obligations;
     state.diagnostics = saved_diagnostics;
 
     Ok(unified)
 }
 
-/// Check if two pattern type lists could overlap (unify).
+/// Check if two pattern TypeValue lists could overlap (unify).
 ///
-/// Delegates to `try_unify_probe`, which is always side-effect-free: it saves and
-/// restores all mutable InferState fields that `unify` touches so overlap testing
-/// never leaks side-effects into the global inference state.
+/// Delegates to `try_unify_probe`, which is always side-effect-free.
 pub(crate) async fn patterns_overlap(
-    types_a: &[Type],
-    types_b: &[Type],
+    types_a: &[Arc<crate::value::Value>],
+    types_b: &[Arc<crate::value::Value>],
     state: &mut InferState,
 ) -> Result<bool, Vec<TypeDiagnostic>> {
     try_unify_probe(types_a, types_b, state)
@@ -523,13 +559,13 @@ pub(crate) async fn patterns_overlap(
         .map_err(|e| vec![e])
 }
 
-/// Probe whether two type slices can unify (for consistency checks).
+/// Probe whether two TypeValue slices can unify (for consistency checks).
 /// Returns true if all pairs successfully unify. Side-effect-free — restores state after probe.
 ///
 /// Delegates to `try_unify_probe`, which is always side-effect-free.
 pub(crate) async fn types_can_unify(
-    types_a: &[Type],
-    types_b: &[Type],
+    types_a: &[Arc<crate::value::Value>],
+    types_b: &[Arc<crate::value::Value>],
     state: &mut InferState,
 ) -> Result<bool, Vec<TypeDiagnostic>> {
     try_unify_probe(types_a, types_b, state)

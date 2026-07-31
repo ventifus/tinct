@@ -6,1490 +6,909 @@
 
 use std::collections::{HashMap, HashSet};
 
-use std::sync::Arc;
-
-use crate::ast::Span;
-
 use super::*;
+use crate::type_tags::*;
 
-/// Instantiate a type by creating fresh type variables at the current level.
-/// Used for CALL-POLY: when calling a polymorphic function, instantiate its type
-/// at the current level to enable proper generalization (Kiselyov 2013).
+// T-2004: Old Type-enum-based functions (instantiate_at_level, instantiate_scheme,
+// generalize, generalize_with_doc) deleted. All callers now use the TypeValue-based
+// functions below (instantiate_scheme_tv, generalize_tv).
+//
+// The old functions used Type, TypeScheme, Substitution, Kind, Row, RowTail — all
+// deleted from type_def.rs in T-1986/T-1995/T-2001.
+
+// ── TypeValue-based scheme operations (S-1003 migration) ─────────────────────
+//
+// These functions operate on `Arc<Value>` TypeValues (see type_infer.rs for the TypeValue
+// type alias and helper constructors). They coexist with the Type-enum-based functions above
+// during the incremental migration. Once all callers are migrated, the Type-enum functions
+// above will be deleted.
+
+/// Instantiate a TypeValue scheme by substituting fresh TypeVars for quantified variables.
 ///
-/// This function registers fresh variables in `state.levels` so they participate in
-/// level-based generalization. Without this, fresh variables would default to level 0
-/// and be permanently excluded from generalization by [U-VAR-LEVEL].
+/// The scheme is a `TypeValue.Scheme` variant with payload `{ vars: Dict, constraints: Dict, body: TypeValue }`.
+/// Each var in `vars` is replaced by a fresh TypeValue.Var created via `ctx.fresh_typevar(name)`.
+/// The substitution is applied to the body via structural TypeValue walking.
 ///
-/// **Design note:** This function intentionally freshens ALL type variables in the input type,
-/// not just quantified ones (unlike `instantiate_scheme`). This is correct for CALL-POLY because
-/// the input `func_ty` is a raw type from `infer_expr(func, ...)`, not a type scheme body.
-/// Any type variables in `func_ty` at this point are either:
-/// - Fresh variables from the function's own inference (e.g., from type annotations)
-/// - Unbound inference variables that need fresh instances for this call site
+/// `level` is the enclosing let-binding level at the instantiation site — the caller captures
+/// `state.ctx.current_level` before entering the binding and passes it here. Fresh TypeVars
+/// are registered at this level in `ctx.levels` so that level-lowering during unification
+/// behaves correctly.
 ///
-/// Free variables from the enclosing scope would already be bound in `state.subst` and would
-/// not appear as TypeVars in the input type. Per Algorithm W, instantiation only applies to
-/// the syntactic type variables present in the type expression, which are all treated uniformly here.
-pub fn instantiate_at_level(ty: &Type, state: &mut InferState, span: &crate::ast::Span) -> Type {
-    // Use Vec instead of HashSet to avoid hash computation overhead for small types.
-    // Deduplication is handled by the contains_key guard below: only the first occurrence
-    // of each type/row var generates a fresh variable. Subsequent occurrences are skipped.
-    let mut type_vars = Vec::new();
-    ty.collect_all_vars_vec(&mut type_vars);
-
-    // Monomorphic fast-path: if no type vars, return ty directly (saves HashMap allocation)
-    if type_vars.is_empty() {
-        return ty.clone();
-    }
-
-    // Collect all Operator names from the original type to preserve their kind
-    let mut operator_names = HashSet::new();
-    ty.collect_operator_names(&mut operator_names);
-
-    // Use with_capacity so the HashMap internal array is allocated exactly once,
-    // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
-    // Note: capacity hint may be larger than actual unique count if there are duplicates,
-    // but this wastes at most a few slots and is cheaper than deduplicating first.
-    // Build source-name frequency map: if two vars share the same source name, we must use
-    // the full concrete name as the instantiation source to avoid InferState collisions.
-    // Build source-name frequency counts (owned to avoid borrow conflicts).
-    let source_counts: HashMap<String, usize> = {
-        let mut m: HashMap<String, usize> = HashMap::new();
-        for var in &type_vars {
-            let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
-            *m.entry(src).or_insert(0) += 1;
-        }
-        m
-    };
-
-    let renaming = Substitution {
-        type_map: std::cell::RefCell::new(HashMap::with_capacity(type_vars.len())),
-    };
-    for var in type_vars {
-        // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
-        if !renaming.type_map.borrow().contains_key(&var) {
-            // Use the abstract source name when unique; fall back to full concrete name on collision.
-            let src = crate::type_infer::InferState::typevar_source_only(&var).to_owned();
-            let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
-                src
-            } else {
-                var.clone() // collision: preserve full concrete name for within-scope uniqueness
-            };
-            let kind = if operator_names.contains(&var) {
-                Kind::Operator
-            } else {
-                Kind::Type
-            };
-            let fresh_name =
-                crate::type_infer::InferState::typevar_name(&effective_src, &kind, span);
-            let lvl = state.level;
-            state.levels.insert(fresh_name.clone(), lvl);
-            state.type_vars.insert(
-                fresh_name.clone(),
-                crate::type_infer::TypeVarEntry::blank(lvl, kind.clone()),
-            );
-
-            if matches!(kind, Kind::Operator) {
-                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
-                renaming
-                    .type_map
-                    .borrow_mut()
-                    .insert(var, Type::Operator(fresh_name));
-            } else {
-                renaming
-                    .type_map
-                    .borrow_mut()
-                    .insert(var, Type::Var(fresh_name, lvl));
-            }
-        }
-    }
-
-    renaming.apply(ty)
-}
-
-/// Rename a single type variable `old_name -> Type::Var(fresh_name, level)` inline.
+/// Returns the instantiated body TypeValue (with fresh vars replacing quantified ones).
+/// Returns the scheme body unchanged if the vars dict is empty (monomorphic scheme).
 ///
-/// Used only in tests — verifies that the general path's substitution produces correct
-/// results for single-variable schemes. Not called from production code.
-#[cfg(test)]
-fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u32) -> Type {
-    use crate::type_def::Row;
-    fn rename_row(row: &Row, old_name: &str, fresh_name: &str, level: u32) -> Row {
-        Row {
-            fields: row
-                .fields
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        rename_single_type_var(v, old_name, fresh_name, level),
-                    )
-                })
-                .collect(),
-            tail: row.tail.clone(),
-        }
-    }
-    match ty {
-        Type::Var(name, _) if name == old_name => Type::Var(fresh_name.to_owned(), level),
-        Type::Var(_, _) => ty.clone(),
-        Type::Dict(row) => Type::Dict(rename_row(row, old_name, fresh_name, level)),
-        Type::Function {
-            params,
-            ret,
-            typed_variadics,
-            rest,
-            required_count,
-        } => Type::Function {
-            params: params
-                .iter()
-                .map(|(name, p_ty)| {
-                    (
-                        name.clone(),
-                        rename_single_type_var(p_ty, old_name, fresh_name, level),
-                    )
-                })
-                .collect(),
-            ret: Box::new(rename_single_type_var(ret, old_name, fresh_name, level)),
-            typed_variadics: typed_variadics
-                .iter()
-                .map(|(n, t)| {
-                    (
-                        n.clone(),
-                        rename_single_type_var(t, old_name, fresh_name, level),
-                    )
-                })
-                .collect(),
-            rest: rest.as_ref().map(|b| {
-                Box::new((
-                    b.0.clone(),
-                    rename_single_type_var(&b.1, old_name, fresh_name, level),
-                ))
-            }),
-            required_count: *required_count,
-        },
-        Type::Union(members) => Type::Union(
-            members
-                .iter()
-                .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
-                .collect(),
-        ),
-        Type::Intersection(members) => Type::Intersection(
-            members
-                .iter()
-                .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
-                .collect(),
-        ),
-        Type::App(f, a) => Type::App(
-            Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
-            Box::new(rename_single_type_var(a, old_name, fresh_name, level)),
-        ),
-        Type::Operator(name) if name == old_name => Type::Operator(fresh_name.to_owned()),
-        Type::Operator(_) => ty.clone(),
-        Type::Negation(inner) => Type::Negation(Box::new(rename_single_type_var(
-            inner, old_name, fresh_name, level,
-        ))),
-        Type::StageApp { fn_name, args } => Type::StageApp {
-            fn_name: fn_name.clone(),
-            args: args
-                .iter()
-                .map(|arg| rename_single_type_var(arg, old_name, fresh_name, level))
-                .collect(),
-        },
-        Type::NominalVariant {
-            tycon,
+/// # Errors
+/// Returns `None` if the scheme is not a well-formed TypeValue.Scheme (wrong ctor, missing payload,
+/// or non-Dict payload). Callers should fall back gracefully (treat as unknown/opaque).
+pub fn instantiate_scheme_tv(
+    scheme: &crate::type_class::TypeValue,
+    ctx: &mut crate::type_infer::InferenceContext,
+    level: u32,
+) -> Option<crate::type_class::TypeValue> {
+    use crate::value::{HashableValue, Value};
+    use std::sync::Arc;
+
+    // Match TypeValue.Scheme { vars, constraints, body }
+    let (vars_thunk, body_thunk) = match scheme.as_ref() {
+        Value::Variant {
             ctor,
-            fields,
-        } => Type::NominalVariant {
-            tycon: tycon.clone(),
-            ctor: ctor.clone(),
-            fields: rename_row(fields, old_name, fresh_name, level),
-        },
-        Type::Recursive { var, body } => Type::Recursive {
-            var: var.clone(),
-            body: Box::new(rename_single_type_var(body, old_name, fresh_name, level)),
-        },
-        _ => ty.clone(),
-    }
-}
-
-/// Instantiate a type scheme by creating fresh type variables at the given level.
-/// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
-///
-/// Variables in `scheme.type_vars` are instantiated as `Type::Var(fresh, level)`.
-/// Variables in `scheme.kind_vars` with `Kind::Operator` are instantiated as
-/// `Type::Operator(fresh)` and registered in `state.kind_env` with `Kind::Operator`,
-/// enabling them to unify with type constructor applications via UNIFY-OPERATOR.
-/// Variables in `scheme.kind_vars` with `Kind::Label` are treated identically to
-/// label_vars (registered in `state.kind_env` with `Kind::Label`).
-pub fn instantiate_scheme(
-    scheme: &TypeScheme,
-    level: u32,
-    state: &mut InferState,
-    origin_name: Option<&str>,
-    origin_span: Option<Span>,
-    span: &Span,
-) -> Type {
-    if scheme.type_vars.is_empty() && scheme.kind_vars.is_empty() {
-        // Monomorphic scheme: return body directly
-        return scheme.body.clone();
-    }
-
-    // Build variable renaming map (old names -> fresh names)
-    let mut var_renaming: HashMap<String, String> = HashMap::new();
-
-    // General path: handles all cases including single-variable schemes.
-    // Total capacity is type_vars + kind_vars (each kind_var also gets a renaming entry).
-    let total_vars = scheme.type_vars.len() + scheme.kind_vars.len();
-    let renaming = Substitution {
-        type_map: std::cell::RefCell::new(HashMap::with_capacity(total_vars)),
-    };
-
-    // Build source-name frequency map across all scheme vars (type_vars + kind_vars).
-    // Vars sharing a source name must fall back to the full concrete name to avoid collisions.
-    let source_counts: HashMap<String, usize> = {
-        let mut m: HashMap<String, usize> = HashMap::new();
-        for var in scheme
-            .type_vars
-            .iter()
-            .chain(scheme.kind_vars.iter().map(|(v, _)| v))
-        {
-            let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
-            *m.entry(src).or_insert(0) += 1;
-        }
-        m
-    };
-
-    // Instantiate regular type variables as Type::Var.
-    for var in &scheme.type_vars {
-        let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
-        let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
-            src.as_str()
-        } else {
-            var.as_str()
-        };
-        let label = scheme.label_vars.contains(var);
-        let kind = if label { Kind::Label } else { Kind::Type };
-        let fresh_name = crate::type_infer::InferState::typevar_name(effective_src, &kind, span);
-        state.levels.insert(fresh_name.clone(), level);
-        state.type_vars.insert(
-            fresh_name.clone(),
-            crate::type_infer::TypeVarEntry::blank(level, kind.clone()),
-        );
-        var_renaming.insert(var.clone(), fresh_name.clone());
-        renaming
-            .type_map
-            .borrow_mut()
-            .insert(var.clone(), Type::Var(fresh_name.clone(), level));
-        if label {
-            state.kind_env.insert(fresh_name, Kind::Label);
-        }
-    }
-
-    // Instantiate kinded variables according to their kind.
-    // Kind::Operator → Type::Operator(fresh_name), registered in kind_env.
-    // Kind::Label    → Type::Var(fresh_name, level), registered in kind_env as Label.
-    // Kind::Type     → Type::Var(fresh_name, level) (same as a regular type_var).
-    for (var, kind) in &scheme.kind_vars {
-        let src = crate::type_infer::InferState::typevar_source_only(var).to_owned();
-        let effective_src = if source_counts.get(&src).copied().unwrap_or(0) == 1 {
-            src.as_str()
-        } else {
-            var.as_str()
-        };
-        let fresh_name = crate::type_infer::InferState::typevar_name(effective_src, kind, span);
-        state.levels.insert(fresh_name.clone(), level);
-        state.type_vars.insert(
-            fresh_name.clone(),
-            crate::type_infer::TypeVarEntry::blank(level, kind.clone()),
-        );
-        var_renaming.insert(var.clone(), fresh_name.clone());
-
-        let instantiated_type = match kind {
-            Kind::Operator => {
-                // Register in kind_env so that resolve_type_expr and UNIFY-OPERATOR
-                // recognise the fresh variable as a type constructor, not a type.
-                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
-                Type::Operator(fresh_name.clone())
-            }
-            Kind::Label => {
-                state.kind_env.insert(fresh_name.clone(), Kind::Label);
-                Type::Var(fresh_name.clone(), level)
-            }
-            Kind::Type => Type::Var(fresh_name.clone(), level),
-            Kind::Arrow(_, _) => {
-                // Higher-kinded type constructors: treated as Operator for instantiation purposes.
-                state.kind_env.insert(fresh_name.clone(), kind.clone());
-                Type::Operator(fresh_name.clone())
-            }
-        };
-
-        renaming
-            .type_map
-            .borrow_mut()
-            .insert(var.clone(), instantiated_type);
-    }
-
-    // Copy constraints with renamed variables (from both type_vars and kind_vars)
-    for constraint in &scheme.constraints {
-        match constraint {
-            Constraint::Class {
-                class,
-                vars,
-                origin_name: constraint_origin_name,
-                origin_span: constraint_origin_span,
-            } => {
-                let fresh_vars: Vec<crate::type_class::ConstraintArg> = vars
-                    .iter()
-                    .map(|v| match v {
-                        crate::type_class::ConstraintArg::Var(name) => {
-                            if let Some(fresh) = var_renaming.get(name.as_str()) {
-                                crate::type_class::ConstraintArg::Var(fresh.clone())
-                            } else {
-                                v.clone()
-                            }
-                        }
-                        crate::type_class::ConstraintArg::Ground(_) => v.clone(),
-                    })
-                    .collect();
-                // Use constraint's origin info if present, otherwise use call-site origin
-                let final_origin_name = constraint_origin_name
-                    .clone()
-                    .or_else(|| origin_name.map(Arc::from));
-                let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
-
-                state.constraints.push(Constraint::Class {
-                    class: Arc::clone(class),
-                    vars: fresh_vars,
-                    origin_name: final_origin_name,
-                    origin_span: final_origin_span,
-                });
-            }
-            Constraint::HasField {
-                label,
-                dict_var,
-                field_var,
-            } => {
-                // Rename both dict_var and field_var
-                if let (Some(fresh_dict_var), Some(fresh_field_var)) =
-                    (var_renaming.get(dict_var), var_renaming.get(field_var))
-                {
-                    // Rename label variable if it's a Label::Var
-                    let fresh_label = match label {
-                        Label::Concrete(s) => Label::Concrete(s.clone()),
-                        Label::Var(var_name) => {
-                            if let Some(fresh_name) = var_renaming.get(var_name) {
-                                Label::Var(fresh_name.clone())
-                            } else {
-                                // Label::Var not in var_renaming must be a free variable
-                                // from an outer scope or registered in kind_env with Kind::Label
-                                Label::Var(var_name.clone())
-                            }
-                        }
-                    };
-
-                    state.constraints.push(Constraint::HasField {
-                        label: fresh_label,
-                        dict_var: fresh_dict_var.clone(),
-                        field_var: fresh_field_var.clone(),
-                    });
+            payload: Some(payload_thunk),
+            ..
+        } if ctor.as_ref() == TV_SCHEME => {
+            // Force the payload dict synchronously (it must be settled — we constructed it).
+            match payload_thunk.peek_result()? {
+                Ok(Value::Dict { entries, .. }) => {
+                    let vars_key = HashableValue::Str(Arc::from(FIELD_VARS));
+                    let body_key = HashableValue::Str(Arc::from(FIELD_BODY));
+                    let vars_thunk = entries.get(&vars_key)?.clone();
+                    let body_thunk = entries.get(&body_key)?.clone();
+                    (vars_thunk, body_thunk)
                 }
+                _ => return None,
             }
         }
+        _ => return None,
+    };
+
+    // Extract vars dict: maps var-name-string → VarDecl (we only need the names here).
+    let var_names: Vec<String> = match vars_thunk.peek_result()? {
+        Ok(Value::Dict { entries, .. }) => entries
+            .keys()
+            .filter_map(|k| match k {
+                HashableValue::Str(s) => Some(s.as_ref().to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+
+    // Extract body TypeValue.
+    let body: crate::type_class::TypeValue = match body_thunk.peek_result()? {
+        Ok(v) => Arc::new(v.clone()),
+        _ => return None,
+    };
+
+    // Monomorphic fast path: no vars → return body directly.
+    if var_names.is_empty() {
+        return Some(body);
     }
 
-    renaming.apply(&scheme.body)
+    // Build substitution: old_var_name → fresh TypeValue.Var
+    // Temporarily set ctx.current_level to the caller's enclosing level so that
+    // instantiated TypeVars are created at the correct level. We save and restore
+    // current_level because instantiate_scheme_tv may be called from within a
+    // save/restore context where current_level already reflects some inner scope;
+    // the `level` argument is the enclosing let-level captured by the caller.
+    let saved_level = ctx.current_level;
+    ctx.current_level = level;
+    let mut renaming: HashMap<String, crate::type_class::TypeValue> = HashMap::new();
+    for var_name in &var_names {
+        let fresh = ctx.fresh_typevar(var_name);
+        renaming.insert(var_name.clone(), fresh);
+    }
+    ctx.current_level = saved_level;
+
+    // Apply the renaming to the body TypeValue.
+    Some(apply_typevalue_renaming(&body, &renaming))
 }
 
-/// Simplify a set of constraints by removing redundant constraints.
+/// Apply a name-to-TypeValue renaming to a TypeValue, substituting TypeValue.Var names.
 ///
-/// A constraint C is redundant if it is entailed by another constraint in the set.
-/// For example, if both `Comparable a` and `Equatable a` are present, `Equatable a`
-/// is redundant because Comparable has Equatable as a superclass.
+/// This is the TypeValue equivalent of `Substitution::apply()` for the migration period.
+/// Only substitutes `TypeValue.Var` nodes whose name appears in `renaming`. Other variants
+/// and non-settled payloads are returned as-is (Arc::clone or best-effort structural walk).
 ///
-/// This implements the constraint simplification step from Jones (1992)
-/// "Type Classes: Exploring the Design Space".
-pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<Constraint>) {
-    // Snapshot the constraints so retain's closure can read from a separate copy
-    let snapshot = constraints.clone();
-    constraints.retain(|target| {
-        // Keep the target if no other constraint entails it
-        !snapshot.iter().any(|other| {
-            // Don't compare a constraint with itself
-            other != target && entails(class_env, std::slice::from_ref(other), target)
-        })
-    });
-}
+/// NOTE: This does a shallow walk — it does NOT recursively descend into unsettled thunks.
+/// Complex TypeValues with unsettled payloads are treated as opaque (returned as-is).
+/// In practice, TypeValues constructed by the type checker are always settled synchronously.
+pub fn apply_typevalue_renaming(
+    ty: &crate::type_class::TypeValue,
+    renaming: &HashMap<String, crate::type_class::TypeValue>,
+) -> crate::type_class::TypeValue {
+    // typevalue_var_name is in scope via `use super::*`
+    use crate::value::Value;
+    use std::sync::Arc;
 
-/// Generalize a type at a binding boundary by quantifying free type variables
-/// whose level is strictly greater than the enclosing scope level.
-/// Used for let-generalization: ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ
-///
-/// Defense-in-depth: applies the current substitution first, per Damas & Milner (1982).
-/// Generalization must operate over the image of the substitution, not the raw type.
-///
-/// Diagnostics are pushed to `state.diagnostics`. Uses a synthetic span (0:0) for warnings.
-/// Prefer `generalize_with_doc` when a real span is available.
-pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
-    generalize_with_doc(
-        level,
-        ty,
-        state,
-        None,
-        crate::ast::Span::rust_source(file!(), line!()),
-    )
-}
-
-/// Emit T013 diagnostics for constraints whose type variables are ambiguous (appear in
-/// the constraint but not in the surrounding type, so the constraint will be silently
-/// dropped at generalization time).
-///
-/// Only `Label::Var` label positions are checked — a `Label::Concrete` string like `"host"`
-/// is never present in the substitution map, so checking it would unconditionally return
-/// `false` and produce a spurious warning for every HasField constraint with a literal label.
-///
-/// `subst_snapshot` is a read-only clone of the substitution map taken before this call.
-/// A variable is considered "discharged" (already satisfied during unification) when it
-/// is bound in the snapshot to a non-TypeVar, non-Operator type.
-///
-/// `source_names` maps internal TypeVar names to user-visible source names (e.g., `"_t42"` → `"x"`).
-/// When present, diagnostics report "ambiguous type variable 'x'" (without the internal name noise).
-///
-/// `emitted` deduplicates warnings: tracks (TypeVar name, Span) pairs already warned about.
-//
-// Task 4: DONE — constraint origin_span is updated to per-argument span in check_call_with_scheme
-// (typecheck.rs) by collecting (param type vars → arg span) pairs during the argument loop and
-// patching state.constraints[constraints_start..] after unification.
-//
-// Task 5: DONE — origin_name/origin_span are now used when present (see match arm below).
-// Emits "argument to `{name}` has unconstrained type — {class} constraint will be silently dropped"
-// and uses origin_span as the diagnostic span when available.
-//
-// Task 6: DONE — format_var_name now shows just the source name (e.g., 'a') without the
-// "(internal: _tN)" suffix — the internal name is noise for users.
-//
-// Task 7: DONE — unit tests added in test_t013_origin_name_message_format and
-// test_t013_fallback_message_format; corpus test in
-// tests/corpus/typecheck/warnings/t013_origin_name_call.llt-eval.
-fn emit_ambiguous_constraint_diagnostics(
-    constraints: &[Constraint],
-    subst_snapshot: &HashMap<String, Type>,
-    source_names: &HashMap<String, String>,
-    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
-    span: crate::ast::Span,
-    emitted: &mut std::collections::HashSet<(String, crate::ast::Span)>,
-) {
-    let is_discharged = |var_name: &str| -> bool {
-        subst_snapshot
-            .get(var_name)
-            .map(|t| !matches!(t, Type::Var(_, _) | Type::Operator(_)))
-            .unwrap_or(false)
-    };
-
-    // Format a variable name with source name if available.
-    // When a source name is known (e.g., the scheme's quantified name 'a'), show just
-    // that name — the internal _tN name is noise for users. When no source name is
-    // available, show the internal name as a last resort.
-    let format_var_name = |var: &str| -> String {
-        if let Some(source_name) = source_names.get(var) {
-            format!("'{}'", source_name)
-        } else {
-            format!("'{}'", var)
-        }
-    };
-    for c in constraints {
-        match c {
-            Constraint::Class {
-                class,
-                vars,
-                origin_name,
-                origin_span,
-            } => {
-                for var_arg in vars {
-                    // Only process Var positions — Ground types are concrete and never ambiguous.
-                    let var = match var_arg {
-                        crate::type_class::ConstraintArg::Var(name) => name.as_str(),
-                        crate::type_class::ConstraintArg::Ground(_) => continue,
+    match ty.as_ref() {
+        Value::Variant {
+            ctor,
+            payload,
+            type_val,
+        } => {
+            match ctor.as_ref() {
+                TV_VAR => {
+                    // If this var is in the renaming, substitute.
+                    if let Some(name) = typevalue_var_name(ty) {
+                        if let Some(replacement) = renaming.get(&name) {
+                            return Arc::clone(replacement);
+                        }
+                    }
+                    // Not in renaming — return as-is.
+                    Arc::clone(ty)
+                }
+                // Unit variants — no substitution positions.
+                TV_UNKNOWN | TV_NEVER | TV_TOP => Arc::clone(ty),
+                // Leaf variants with opaque payloads — no TypeVar positions to substitute.
+                TV_REPR | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT | TV_OP => Arc::clone(ty),
+                // Structural variants: recursively apply to settled payload dict fields.
+                _ => {
+                    let Some(payload_thunk) = payload else {
+                        return Arc::clone(ty);
                     };
-                    if !is_discharged(var) {
-                        // Use argument-level span when available (Task 4: origin_span set during
-                        // instantiate_scheme at argument type-checking sites). Fall back to the
-                        // call-site span passed to this function.
-                        let diag_span = origin_span.clone().unwrap_or_else(|| span.clone());
-                        // Deduplicate: only emit if this (var, diag_span) pair hasn't been seen
-                        if emitted.insert((var.to_owned(), diag_span.clone())) {
-                            let message = if let Some(name) = origin_name {
-                                // Better message: cite the origin function and constraint class.
-                                // Drops the internal TypeVar name — user doesn't know/care about _tN.
-                                format!(
-                                    "argument to `{}` has unconstrained type — {} constraint will be silently dropped",
-                                    name, class
-                                )
-                            } else {
-                                format!(
-                                    "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                    format_var_name(var), class
-                                )
+                    // If payload is settled, apply renaming to each TypeValue-shaped field.
+                    // TypeValue payloads are Dicts whose values may be:
+                    //   - Variant: a direct TypeValue field (e.g., Fn.return, Neg.inner)
+                    //   - Dict: a nested Dict of TypeValues (e.g., Record.fields, Union.members,
+                    //           Fn.params, Fn.param-names)
+                    // We recurse into both layers so TypeVars inside Record.fields etc. are found.
+                    match payload_thunk.peek_result() {
+                        Some(Ok(Value::Dict { entries, .. })) => {
+                            // Rebuild the payload dict with renamed fields.
+                            let mut new_entries = indexmap::IndexMap::new();
+                            let mut changed = false;
+                            for (key, val_thunk) in entries.iter() {
+                                match val_thunk.peek_result() {
+                                    Some(Ok(v)) if matches!(v, Value::Variant { .. }) => {
+                                        // Direct TypeValue field.
+                                        let field_tv: crate::type_class::TypeValue =
+                                            Arc::new(v.clone());
+                                        let renamed = apply_typevalue_renaming(&field_tv, renaming);
+                                        if !Arc::ptr_eq(&renamed, &field_tv) {
+                                            changed = true;
+                                        }
+                                        new_entries.insert(
+                                            key.clone(),
+                                            Arc::new(crate::value::Thunk::value(
+                                                renamed.as_ref().clone(),
+                                                crate::rust_span!(),
+                                            )),
+                                        );
+                                    }
+                                    Some(Ok(Value::Dict {
+                                        entries: inner_entries,
+                                        ..
+                                    })) => {
+                                        // Nested Dict of TypeValues (Record.fields, Union.members, etc.).
+                                        // Rebuild the inner dict with renamed TypeValue entries.
+                                        let mut new_inner = indexmap::IndexMap::new();
+                                        let mut inner_changed = false;
+                                        for (ikey, ithunk) in inner_entries.iter() {
+                                            match ithunk.peek_result() {
+                                                Some(Ok(iv))
+                                                    if matches!(iv, Value::Variant { .. }) =>
+                                                {
+                                                    let inner_tv: crate::type_class::TypeValue =
+                                                        Arc::new(iv.clone());
+                                                    let renamed = apply_typevalue_renaming(
+                                                        &inner_tv, renaming,
+                                                    );
+                                                    if !Arc::ptr_eq(&renamed, &inner_tv) {
+                                                        inner_changed = true;
+                                                        changed = true;
+                                                    }
+                                                    new_inner.insert(
+                                                        ikey.clone(),
+                                                        Arc::new(crate::value::Thunk::value(
+                                                            renamed.as_ref().clone(),
+                                                            crate::rust_span!(),
+                                                        )),
+                                                    );
+                                                }
+                                                Some(Ok(iv)) => {
+                                                    new_inner.insert(
+                                                        ikey.clone(),
+                                                        Arc::new(crate::value::Thunk::value(
+                                                            iv.clone(),
+                                                            crate::rust_span!(),
+                                                        )),
+                                                    );
+                                                }
+                                                _ => {
+                                                    new_inner
+                                                        .insert(ikey.clone(), Arc::clone(ithunk));
+                                                }
+                                            }
+                                        }
+                                        let new_inner_dict = if inner_changed {
+                                            Value::Dict {
+                                                entries: new_inner,
+                                                type_val: crate::value::unknown_type_val(),
+                                            }
+                                        } else {
+                                            // Inner dict unchanged — reconstruct from original.
+                                            match val_thunk.peek_result() {
+                                                Some(Ok(v)) => v.clone(),
+                                                _ => unreachable!(),
+                                            }
+                                        };
+                                        new_entries.insert(
+                                            key.clone(),
+                                            Arc::new(crate::value::Thunk::value(
+                                                new_inner_dict,
+                                                crate::rust_span!(),
+                                            )),
+                                        );
+                                    }
+                                    Some(Ok(v)) => {
+                                        // Non-Variant, non-Dict field (String, Int, etc.) — copy as-is.
+                                        new_entries.insert(
+                                            key.clone(),
+                                            Arc::new(crate::value::Thunk::value(
+                                                v.clone(),
+                                                crate::rust_span!(),
+                                            )),
+                                        );
+                                    }
+                                    _ => {
+                                        // Unsettled — copy the original thunk.
+                                        new_entries.insert(key.clone(), Arc::clone(val_thunk));
+                                    }
+                                }
+                            }
+                            if !changed {
+                                // Nothing changed — return original.
+                                return Arc::clone(ty);
+                            }
+                            // Reconstruct the Variant with the new payload dict.
+                            let new_payload_dict = Value::Dict {
+                                entries: new_entries,
+                                type_val: crate::value::unknown_type_val(),
                             };
-                            diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                "ambiguous-constraint",
-                                message,
-                                diag_span,
-                            ));
+                            Arc::new(Value::Variant {
+                                // type_val is always unknown_type_val() for TypeValues — not semantic.
+                                type_val: Arc::clone(type_val),
+                                ctor: Arc::clone(ctor),
+                                payload: Some(Arc::new(crate::value::Thunk::value(
+                                    new_payload_dict,
+                                    crate::rust_span!(),
+                                ))),
+                            })
                         }
-                    }
-                }
-            }
-            Constraint::HasField {
-                dict_var,
-                label,
-                field_var,
-            } => {
-                if !is_discharged(dict_var) {
-                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                    if emitted.insert((dict_var.clone(), span.clone())) {
-                        diagnostics.push(crate::error::TypeDiagnostic::warn(
-                            "ambiguous-constraint",
-                            format!(
-                                "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                                format_var_name(dict_var)
-                            ),
-                            span.clone(),
-                        ));
-                    }
-                }
-                // Only Label::Var positions can be ambiguous. Label::Concrete strings
-                // are never present in the substitution map, so checking them would
-                // unconditionally fire a spurious T013 for every HasField with a
-                // literal label (false-positive).
-                if let Label::Var(label_var) = label {
-                    if !is_discharged(label_var) {
-                        // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                        if emitted.insert((label_var.clone(), span.clone())) {
-                            diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                "ambiguous-constraint",
-                                format!(
-                                    "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                                    format_var_name(label_var)
-                                ),
-                                span.clone(),
-                            ));
+                        _ => {
+                            // Payload not settled or not a Dict — return as-is.
+                            Arc::clone(ty)
                         }
-                    }
-                }
-                if !is_discharged(field_var) {
-                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                    if emitted.insert((field_var.clone(), span.clone())) {
-                        diagnostics.push(crate::error::TypeDiagnostic::warn(
-                            "ambiguous-constraint",
-                            format!(
-                                "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                                format_var_name(field_var)
-                            ),
-                            span.clone(),
-                        ));
                     }
                 }
             }
         }
+        _ => Arc::clone(ty),
     }
 }
 
-/// Generalize a type into a TypeScheme with optional documentation.
+/// Generalize a TypeValue into a TypeValue.Scheme by quantifying free TypeVars.
 ///
-/// This is the core generalization function used by the type inference engine.
-/// The `doc` parameter allows threading documentation strings from source annotations
-/// into the TypeScheme for LSP hover display.
+/// Collects all free TypeVars in `ty` whose level in `ctx.levels` is strictly greater
+/// than `enclosing_level`. These are the variables introduced inside the let-binding being
+/// generalized. Variables at level ≤ enclosing_level are free in the enclosing scope and
+/// must NOT be quantified.
 ///
-/// Ambiguous type variables (appearing in constraints but not in the type) trigger
-/// diagnostic warnings pushed to `state.diagnostics`. The `span` parameter provides
-/// source location for these warnings.
+/// The result is a `TypeValue.Scheme` variant with:
+/// - `vars` dict: each quantified var name → `VarDecl { name, kind: TypeValue.Unknown }`
+/// - `constraints` dict: empty (constraint integration is future work)
+/// - `body`: the original `ty` TypeValue
+/// - `narrowings`: optional per-param narrowing type hints (stored as indexed dict)
+/// - `doc`: optional docstring (stored as String value)
 ///
-/// **Constraint scoping contract**: Callers must manually save and restore `state.constraints`
-/// around generalize calls when constraint scoping is required. This function does NOT manage
-/// constraint scoping itself — it filters constraints by TypeVar membership but does not
-/// preserve or restore the original constraint set. If the caller needs to isolate constraints
-/// for a nested scope (e.g., a let-binding that should not leak constraints to the outer scope),
-/// the caller must use `std::mem::take(&mut state.constraints)` before generalize and restore
-/// afterward. See dict inference passes 1-4 for the canonical pattern.
-pub fn generalize_with_doc(
-    level: u32,
-    ty: &Type,
-    state: &mut InferState,
-    doc: Option<String>,
-    span: crate::ast::Span,
-) -> TypeScheme {
-    // Apply substitution first -- defense-in-depth per Damas & Milner (1982).
-    // Generalization must operate over the image of the substitution.
-    // Without this, a bound TypeVar would be generalized incorrectly.
-    let ty = &state.subst.apply(ty);
+/// Returns a monomorphic scheme (bare TypeValue) if no free vars are generalizable,
+/// to avoid wrapping non-polymorphic types in unnecessary Scheme variants.
+///
+/// `narrowings`: per-parameter narrowing types extracted from `@[narrows: T]` annotations.
+///   Pass `&[]` when not available. Only stored when non-empty.
+/// `doc`: docstring from `@[doc: "..."]` annotation. Pass `None` when not available.
+pub fn generalize_tv(
+    enclosing_level: u32,
+    ty: &crate::type_class::TypeValue,
+    ctx: &crate::type_infer::InferenceContext,
+) -> crate::type_class::TypeValue {
+    generalize_tv_with_meta(enclosing_level, ty, ctx, &[], None)
+}
 
-    // Early exit for monomorphic types (common case: all-concrete config dicts)
-    if !ty.has_inference_vars() {
-        // No type variables to generalize, but we may still have constraints.
-        // Any constraint when there are no TypeVars is ambiguous (constraint variable
-        // appears in constraint but not in the type).
-        // Guard: skip constraints already discharged (bound to concrete type) during unification.
-        if !state.constraints.is_empty() {
-            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
-            emit_ambiguous_constraint_diagnostics(
-                &state.constraints,
-                &subst_snapshot,
-                &state.type_var_source_names,
-                &mut state.diagnostics,
-                span.clone(),
-                &mut state.t013_emitted,
-            );
-        }
-        return TypeScheme {
-            type_vars: Vec::new(),
-            constraints: Vec::new(),
-            body: ty.clone(),
-            label_vars: Vec::new(),
-            kind_vars: Vec::new(),
-            doc,
-            inner_schemes: None,
-            param_narrowings: Vec::new(),
-            definition_span: Some(span),
-        };
-    }
+/// Full-fidelity generalize_tv that stores narrowing hints and docstring in the Scheme payload.
+pub fn generalize_tv_with_meta(
+    enclosing_level: u32,
+    ty: &crate::type_class::TypeValue,
+    ctx: &crate::type_infer::InferenceContext,
+    narrowings: &[Option<crate::type_class::TypeValue>],
+    doc: Option<&str>,
+) -> crate::type_class::TypeValue {
+    // make_typevalue_unknown and TypeValue are in scope via `use super::*`
+    use crate::value::{HashableValue, Value};
+    use std::sync::Arc;
 
-    let mut all_type_vars = Vec::new();
-    ty.collect_all_vars_vec(&mut all_type_vars);
-
-    // Filter: keep only vars where levels[var] > level.
-    // collect_all_vars_vec may produce duplicates; deduplicate during filter using seen set.
+    // Collect free TypeVars and filter by level > enclosing_level.
+    let free = ctx.free_vars(ty);
     let mut seen = HashSet::new();
-    let generalizable_type_vars: Vec<String> = all_type_vars
+    let generalizable: Vec<String> = free
         .into_iter()
-        .filter(|var| {
-            let var_level = state.levels.get(var).copied().unwrap_or(0);
-            let is_generalizable = var_level > level;
-            // Deduplicate: only include var if we haven't seen it and it's generalizable
-            is_generalizable && seen.insert(var.clone())
+        .filter(|name| {
+            let level = ctx.get_level(name);
+            level > enclosing_level && seen.insert(name.clone())
         })
         .collect();
 
-    if generalizable_type_vars.is_empty() {
-        // No type variables to generalize, but we may still have constraints.
-        // Any constraint on a TypeVar when there are no generalizable TypeVars is ambiguous
-        // (the TypeVar appears in the constraint but not in the type).
-        // Guard: skip constraints already discharged (bound to concrete type) during unification.
-        if !state.constraints.is_empty() {
-            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
-            emit_ambiguous_constraint_diagnostics(
-                &state.constraints,
-                &subst_snapshot,
-                &state.type_var_source_names,
-                &mut state.diagnostics,
-                span.clone(),
-                &mut state.t013_emitted,
+    // Monomorphic fast path: no generalizable vars → return ty directly.
+    if generalizable.is_empty() {
+        return Arc::clone(ty);
+    }
+
+    // Build vars dict: var_name → VarDecl { name: String, kind: TypeValue.Unknown }
+    let vars_dict = {
+        let mut entries = indexmap::IndexMap::new();
+        for var_name in &generalizable {
+            // VarDecl payload dict: { name: String, kind: TypeValue.Unknown }
+            let var_decl_payload = {
+                let mut d = indexmap::IndexMap::new();
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_NAME)),
+                    Arc::new(crate::value::Thunk::value(
+                        Value::String {
+                            source: Arc::from(var_name.as_str()),
+                            start: 0,
+                            end: var_name.len(),
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        crate::rust_span!(),
+                    )),
+                );
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_KIND)),
+                    Arc::new(crate::value::Thunk::value(
+                        make_typevalue_unknown().as_ref().clone(),
+                        crate::rust_span!(),
+                    )),
+                );
+                Value::Dict {
+                    entries: d,
+                    type_val: crate::value::unknown_type_val(),
+                }
+            };
+            let var_decl = Value::Variant {
+                type_val: crate::value::unknown_type_val(),
+                ctor: Arc::from(TV_VAR_DECL),
+                payload: Some(Arc::new(crate::value::Thunk::value(
+                    var_decl_payload,
+                    crate::rust_span!(),
+                ))),
+            };
+            entries.insert(
+                HashableValue::Str(Arc::from(var_name.as_str())),
+                Arc::new(crate::value::Thunk::value(var_decl, crate::rust_span!())),
             );
         }
-
-        TypeScheme {
-            type_vars: Vec::new(),
-            constraints: Vec::new(),
-            body: ty.clone(),
-            label_vars: Vec::new(),
-            kind_vars: Vec::new(),
-            doc,
-            inner_schemes: None,
-            param_narrowings: Vec::new(),
-            definition_span: Some(span),
+        Value::Dict {
+            entries,
+            type_val: crate::value::unknown_type_val(),
         }
+    };
+
+    // Build constraints dict: empty (future work: include typeclass constraints).
+    let constraints_dict = Value::Dict {
+        entries: indexmap::IndexMap::new(),
+        type_val: crate::value::unknown_type_val(),
+    };
+
+    // Build narrowings dict: { 0: TypeValue | [], 1: TypeValue | [], ... }
+    // Only stored when narrowings is non-empty to avoid bloating simple schemes.
+    let narrowings_dict_opt = if narrowings.is_empty() {
+        None
     } else {
-        // Filter constraints: keep only those on generalized variables
-        let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
-
-        // Snapshot the substitution map so the filter closure can look up TypeVar→TypeVar
-        // bindings without borrowing `state` during `state.constraints.iter()`.
-        //
-        // When a fresh var "_bt0" from `instantiate_scheme` is bound to "_label_0"
-        // (the actual label TypeVar from the function param) in `state.subst`, the HasField
-        // constraint records "_bt0" as the label var. But "_bt0" is not in `generalizable_vars`
-        // (it's a bound intermediate). We must resolve through one substitution level to find
-        // the effective free variable "_label_0" before checking generalizable membership.
-        let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
-
-        // Helper: resolve a type variable name through the full substitution chain.
-        // T5 FIX: Follow chains like α→β→γ to the end (was only doing one hop).
-        let resolve_var_name = |var_name: &str| -> String {
-            let mut current = var_name.to_string();
-            let mut visited = HashSet::new();
-            loop {
-                if !visited.insert(current.clone()) {
-                    // Cycle detected — return current
-                    return current;
-                }
-                match subst_snapshot.get(&current) {
-                    Some(Type::Var(resolved_name, _)) => {
-                        current = resolved_name.clone();
-                    }
-                    Some(Type::Operator(resolved_name)) => {
-                        current = resolved_name.clone();
-                    }
-                    _ => return current,
-                }
-            }
-        };
-
-        // Helper: check if a variable was already discharged (bound to concrete type).
-        // Returns true if the constraint was satisfied during unification.
-        let is_discharged = |var_name: &str| -> bool {
-            subst_snapshot
-                .get(var_name)
-                .map(|t| !matches!(t, Type::Var(_, _) | Type::Operator(_)))
-                .unwrap_or(false)
-        };
-
-        // Helper: format a variable name with source name if available.
-        // Show just the source name — the internal _tN name is noise for users.
-        let format_var_name = |var: &str| -> String {
-            if let Some(source_name) = state.type_var_source_names.get(var) {
-                format!("'{}'", source_name)
-            } else {
-                format!("'{}'", var)
-            }
-        };
-
-        // Build generalizable constraints. For each constraint, resolve TypeVar names through one
-        // level of substitution before checking generalizable membership AND before storing into
-        // the TypeScheme. This handles the case where instantiate_scheme generates fresh vars
-        // (e.g., "_bt0") that are immediately bound to the actual free vars (e.g., "_label_0");
-        // the raw constraint names "_bt0" would not match generalizable_vars, and would not be
-        // correctly renamed by instantiate_scheme at future call sites.
-        let mut generalizable_constraints: Vec<Constraint> = Vec::new();
-        for c in &state.constraints {
-            match c {
-                Constraint::Class {
-                    class,
-                    vars,
-                    origin_name,
-                    origin_span,
-                } => {
-                    // Resolve Var positions through substitution; keep Ground positions as-is.
-                    let resolved_args: Vec<crate::type_class::ConstraintArg> = vars
-                        .iter()
-                        .map(|v| match v {
-                            crate::type_class::ConstraintArg::Var(name) => {
-                                crate::type_class::ConstraintArg::Var(resolve_var_name(name))
-                            }
-                            crate::type_class::ConstraintArg::Ground(_) => v.clone(),
-                        })
-                        .collect();
-                    // For generalizable check, extract resolved Var names only
-                    let resolved_vars: Vec<String> = resolved_args
-                        .iter()
-                        .filter_map(|a| match a {
-                            crate::type_class::ConstraintArg::Var(name) => Some(name.clone()),
-                            crate::type_class::ConstraintArg::Ground(_) => None,
-                        })
-                        .collect();
-                    // Keep constraint if ALL resolved Var positions are generalizable
-                    if resolved_vars.iter().all(|v| generalizable_vars.contains(v)) {
-                        generalizable_constraints.push(Constraint::Class {
-                            class: Arc::clone(class),
-                            vars: resolved_args,
-                            origin_name: origin_name.clone(),
-                            origin_span: origin_span.clone(),
-                        });
-                    } else {
-                        // Diagnostic: ambiguous type variable in constraint
-                        // (appears in constraint but not in the type — constraint will be silently dropped)
-                        // T2 FIX: For MPTC constraints with FDs, only flag vars that are non-generalizable
-                        // AND not covered by a FD whose determining positions are all generalizable.
-                        for (var_idx, var) in resolved_vars.iter().enumerate() {
-                            if !generalizable_vars.contains(var) && !is_discharged(var) {
-                                // Check if this var is covered by a FD with all determining positions generalizable
-                                let is_fd_covered = class.determines.iter().any(
-                                    |(det_positions, ded_positions)| {
-                                        // Is this var in a determined position?
-                                        if !ded_positions.contains(&var_idx) {
-                                            return false;
-                                        }
-                                        // Are ALL determining positions generalizable?
-                                        det_positions.iter().all(|&det_idx| {
-                                            resolved_vars
-                                                .get(det_idx)
-                                                .map(|v| generalizable_vars.contains(v))
-                                                .unwrap_or(false)
-                                        })
-                                    },
-                                );
-
-                                if !is_fd_covered {
-                                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                    if state.t013_emitted.insert((var.clone(), span.clone())) {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                            "ambiguous-constraint",
-                                            format!(
-                                                "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                                format_var_name(var),
-                                                class.name
-                                            ),
-                                            span.clone(),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Constraint::HasField {
-                    label,
-                    dict_var,
-                    field_var,
-                } => {
-                    let effective_dict = resolve_var_name(dict_var);
-                    let effective_field = resolve_var_name(field_var);
-                    let effective_label = match label {
-                        Label::Concrete(s) => Some(Label::Concrete(s.clone())),
-                        Label::Var(var_name) => {
-                            let resolved = resolve_var_name(var_name);
-                            if generalizable_vars.contains(&resolved) {
-                                Some(Label::Var(resolved))
-                            } else {
-                                // Diagnostic: ambiguous label variable
-                                if !is_discharged(&resolved) {
-                                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                    if state.t013_emitted.insert((resolved.clone(), span.clone())) {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                            "ambiguous-constraint",
-                                            format!(
-                                                "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                                format_var_name(&resolved)
-                                            ),
-                                            span.clone(),
-                                        ));
-                                    }
-                                }
-                                None // label not generalizable
-                            }
-                        }
-                    };
-                    if let Some(eff_label) = effective_label {
-                        if generalizable_vars.contains(&effective_dict)
-                            && generalizable_vars.contains(&effective_field)
-                        {
-                            generalizable_constraints.push(Constraint::HasField {
-                                label: eff_label,
-                                dict_var: effective_dict,
-                                field_var: effective_field,
-                            });
-                        } else {
-                            // Diagnostic: ambiguous dict or field variable
-                            let dict_ambiguous = !generalizable_vars.contains(&effective_dict);
-                            let field_ambiguous = !generalizable_vars.contains(&effective_field);
-
-                            if dict_ambiguous && field_ambiguous {
-                                // Emit one aggregated warning for both vars if at least one is not discharged
-                                let dict_discharged = is_discharged(&effective_dict);
-                                let field_discharged = is_discharged(&effective_field);
-
-                                if !dict_discharged || !field_discharged {
-                                    // For aggregated warnings, deduplicate on dict (the first var mentioned)
-                                    if state
-                                        .t013_emitted
-                                        .insert((effective_dict.clone(), span.clone()))
-                                    {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                            "ambiguous-constraint",
-                                            format!(
-                                                "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
-                                                format_var_name(&effective_dict),
-                                                format_var_name(&effective_field)
-                                            ),
-                                            span.clone(),
-                                        ));
-                                    }
-                                }
-                            } else if dict_ambiguous && !is_discharged(&effective_dict) {
-                                // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                if state
-                                    .t013_emitted
-                                    .insert((effective_dict.clone(), span.clone()))
-                                {
-                                    state.diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                        "ambiguous-constraint",
-                                        format!(
-                                            "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                            format_var_name(&effective_dict)
-                                        ),
-                                        span.clone(),
-                                    ));
-                                }
-                            } else if field_ambiguous && !is_discharged(&effective_field) {
-                                // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                if state
-                                    .t013_emitted
-                                    .insert((effective_field.clone(), span.clone()))
-                                {
-                                    state.diagnostics.push(crate::error::TypeDiagnostic::warn(
-                                        "ambiguous-constraint",
-                                        format!(
-                                            "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                            format_var_name(&effective_field)
-                                        ),
-                                        span.clone(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        let mut narrowing_entries = indexmap::IndexMap::new();
+        for (i, tv_opt) in narrowings.iter().enumerate() {
+            let tv_val = match tv_opt {
+                Some(tv) => tv.as_ref().clone(),
+                None => Value::Dict {
+                    entries: indexmap::IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+            };
+            narrowing_entries.insert(
+                HashableValue::Int(i as i64),
+                Arc::new(crate::value::Thunk::value(tv_val, crate::rust_span!())),
+            );
         }
+        Some(Value::Dict {
+            entries: narrowing_entries,
+            type_val: crate::value::unknown_type_val(),
+        })
+    };
 
-        // Simplify constraints: remove redundant constraints entailed by others
-        // For example, if both `Comparable a` and `Equatable a` are present,
-        // remove `Equatable a` (it's entailed via Comparable's superclass).
-        let class_env_snapshot = state.build_class_env_snapshot().clone();
-        simplify_constraints(&class_env_snapshot, &mut generalizable_constraints);
-
-        // Collect label vars: TypeVars that are label-kinded (Kind::Label in kind_env)
-        let label_vars: Vec<String> = generalizable_type_vars
-            .iter()
-            .filter(|var| state.kind_env.get(var.as_str()) == Some(&Kind::Label))
-            .cloned()
-            .collect();
-
-        TypeScheme {
-            type_vars: generalizable_type_vars,
-            constraints: generalizable_constraints,
-            body: ty.clone(),
-            label_vars,
-            kind_vars: Vec::new(),
-            doc,
-            inner_schemes: None,
-            param_narrowings: Vec::new(),
-            definition_span: Some(span),
+    // Build TypeValue.Scheme payload dict: { vars, constraints, body, narrowings?, doc? }
+    let scheme_payload = {
+        let mut entries = indexmap::IndexMap::new();
+        entries.insert(
+            HashableValue::Str(Arc::from(FIELD_VARS)),
+            Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!())),
+        );
+        entries.insert(
+            HashableValue::Str(Arc::from(FIELD_CONSTRAINTS)),
+            Arc::new(crate::value::Thunk::value(
+                constraints_dict,
+                crate::rust_span!(),
+            )),
+        );
+        entries.insert(
+            HashableValue::Str(Arc::from(FIELD_BODY)),
+            Arc::new(crate::value::Thunk::value(
+                ty.as_ref().clone(),
+                crate::rust_span!(),
+            )),
+        );
+        if let Some(narrowings_dict) = narrowings_dict_opt {
+            entries.insert(
+                HashableValue::Str(Arc::from(FIELD_NARROWINGS)),
+                Arc::new(crate::value::Thunk::value(
+                    narrowings_dict,
+                    crate::rust_span!(),
+                )),
+            );
         }
-    }
+        if let Some(doc_str) = doc {
+            let doc_val = Value::String {
+                source: Arc::from(doc_str),
+                start: 0,
+                end: doc_str.len(),
+                type_val: crate::value::unknown_type_val(),
+            };
+            entries.insert(
+                HashableValue::Str(Arc::from(FIELD_DOC)),
+                Arc::new(crate::value::Thunk::value(doc_val, crate::rust_span!())),
+            );
+        }
+        Value::Dict {
+            entries,
+            type_val: crate::value::unknown_type_val(),
+        }
+    };
+
+    Arc::new(Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_SCHEME),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            scheme_payload,
+            crate::rust_span!(),
+        ))),
+    })
 }
 
-// Display impl for Type moved to type_normalize.rs
-
-// ClassDecl, InstanceDecl, ClassEnv, InstanceEnv moved to type_class.rs (chr-module-split)
-// Imported via façade: use super::* resolves through types.rs → type_class.rs
-
-// TypeEnv struct was deleted in S-921 (env-merge). The unified Env (src/env.rs) replaces it.
-// Pure functions (instantiate_at_level, instantiate_scheme, generalize, etc.) remain above.
-
-// (TypeEnv struct and impl deleted in S-921 — all methods were dead code in production)
-
-// Tests for type_error_note helper function deleted with the TypeError struct.
-// The function was removed as part of TypeError → TypeDiagnostic migration.
+// ── TypeValue-based function tests (S-1003 migration) ────────────────────────
 
 #[cfg(test)]
-mod help_suggestion_tests {
+mod typevalue_scheme_tests {
     use super::*;
+    use crate::type_infer::{
+        make_typevalue_unknown, make_typevar_value, typevalue_ctor, typevalue_var_name,
+        InferenceContext,
+    };
 
-    #[tokio::test]
-    async fn test_resolve_instance_freshens_type_vars() {
-        use crate::types::{InferState, InstanceDecl};
+    /// generalize_tv with a TypeValue.Var at level > enclosing_level produces a
+    /// TypeValue.Scheme that quantifies over that variable.
+    ///
+    /// Mutation resistance: if generalize_tv failed to filter by level, it would either
+    /// include all vars (even low-level ones) or no vars (even high-level ones).
+    #[test]
+    fn test_generalize_tv_creates_scheme() {
+        let mut ctx = InferenceContext::new();
+        ctx.current_level = 2;
+
+        // Create a TypeVar at level 2
+        let tv = ctx.fresh_typevar("a");
+        assert!(
+            typevalue_var_name(&tv).is_some(),
+            "fresh_typevar must have a name"
+        );
+
+        // Generalize at enclosing_level = 1: level 2 > 1, so this var IS generalized
+        let scheme = generalize_tv(1, &tv, &ctx);
+
+        // Result must be a TypeValue.Scheme
+        assert_eq!(
+            typevalue_ctor(&scheme),
+            Some(TV_SCHEME),
+            "generalize_tv must produce TypeValue.Scheme when vars are generalizable"
+        );
+    }
+
+    /// generalize_tv with a TypeValue.Var at level ≤ enclosing_level returns the
+    /// bare TypeValue (monomorphic, no scheme wrapper).
+    ///
+    /// Mutation resistance: if generalize_tv ignored levels and always wrapped,
+    /// the ctor check below would return Scheme instead of Var.
+    #[test]
+    fn test_generalize_tv_monomorphic_no_scheme() {
+        let mut ctx = InferenceContext::new();
+        ctx.current_level = 0;
+
+        // Create a TypeVar at level 0
+        let tv = ctx.fresh_typevar("a");
+
+        // Generalize at enclosing_level = 0: level 0 is NOT > 0, so NOT generalized
+        let result = generalize_tv(0, &tv, &ctx);
+
+        // Must be returned as-is (not wrapped in Scheme)
+        assert_ne!(
+            typevalue_ctor(&result),
+            Some(TV_SCHEME),
+            "generalize_tv must not wrap non-generalizable vars in Scheme"
+        );
+        // Must still be a TypeValue.Var (same as input)
+        assert_eq!(
+            typevalue_ctor(&result),
+            Some(TV_VAR),
+            "generalize_tv must return the bare TypeValue for monomorphic types"
+        );
+    }
+
+    /// generalize_tv on Unknown (no vars) returns Unknown unchanged.
+    #[test]
+    fn test_generalize_tv_unknown_passthrough() {
+        let ctx = InferenceContext::new();
+        let unknown = make_typevalue_unknown();
+
+        let result = generalize_tv(0, &unknown, &ctx);
+        assert_eq!(
+            typevalue_ctor(&result),
+            Some(TV_UNKNOWN),
+            "generalize_tv must return Unknown unchanged"
+        );
+    }
+
+    /// instantiate_scheme_tv on a well-formed TypeValue.Scheme creates fresh TypeVars.
+    ///
+    /// We manually construct a TypeValue.Scheme and verify that the instantiated result
+    /// has a fresh TypeVar where the quantified var was.
+    #[test]
+    fn test_instantiate_scheme_tv_creates_fresh_vars() {
+        use crate::value::{HashableValue, Value};
+        use std::sync::Arc;
+
+        let mut ctx = InferenceContext::new();
+
+        // Manually construct: TypeValue.Scheme { vars: {"a": VarDecl{name:"a", kind:Unknown}}, constraints: {}, body: TypeValue.Var{name:"a"} }
+        let var_decl_payload = Value::Dict {
+            entries: {
+                let mut d = indexmap::IndexMap::new();
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_NAME)),
+                    Arc::new(crate::value::Thunk::value(
+                        Value::String {
+                            source: Arc::from("a"),
+                            start: 0,
+                            end: 1,
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        crate::rust_span!(),
+                    )),
+                );
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_KIND)),
+                    Arc::new(crate::value::Thunk::value(
+                        make_typevalue_unknown().as_ref().clone(),
+                        crate::rust_span!(),
+                    )),
+                );
+                d
+            },
+            type_val: crate::value::unknown_type_val(),
+        };
+        let var_decl = Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_VAR_DECL),
+            payload: Some(Arc::new(crate::value::Thunk::value(
+                var_decl_payload,
+                crate::rust_span!(),
+            ))),
+        };
+
+        let vars_dict = Value::Dict {
+            entries: {
+                let mut d = indexmap::IndexMap::new();
+                d.insert(
+                    HashableValue::Str(Arc::from("a")),
+                    Arc::new(crate::value::Thunk::value(var_decl, crate::rust_span!())),
+                );
+                d
+            },
+            type_val: crate::value::unknown_type_val(),
+        };
+        let constraints_dict = Value::Dict {
+            entries: indexmap::IndexMap::new(),
+            type_val: crate::value::unknown_type_val(),
+        };
+        let body_var = make_typevar_value("a"); // body is TypeValue.Var{name:"a"}
+
+        let scheme_payload = Value::Dict {
+            entries: {
+                let mut d = indexmap::IndexMap::new();
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_VARS)),
+                    Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!())),
+                );
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_CONSTRAINTS)),
+                    Arc::new(crate::value::Thunk::value(
+                        constraints_dict,
+                        crate::rust_span!(),
+                    )),
+                );
+                d.insert(
+                    HashableValue::Str(Arc::from(FIELD_BODY)),
+                    Arc::new(crate::value::Thunk::value(
+                        body_var.as_ref().clone(),
+                        crate::rust_span!(),
+                    )),
+                );
+                d
+            },
+            type_val: crate::value::unknown_type_val(),
+        };
+
+        let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_SCHEME),
+            payload: Some(Arc::new(crate::value::Thunk::value(
+                scheme_payload,
+                crate::rust_span!(),
+            ))),
+        });
+
+        // Instantiate
+        let instantiated = instantiate_scheme_tv(&scheme, &mut ctx, 0);
+        assert!(
+            instantiated.is_some(),
+            "instantiate_scheme_tv must succeed on well-formed Scheme"
+        );
+        let result = instantiated.unwrap();
+
+        // Result should be a TypeValue.Var (the body was a TypeValue.Var, substituted with fresh)
+        assert_eq!(
+            typevalue_ctor(&result),
+            Some(TV_VAR),
+            "instantiated body must be a TypeValue.Var"
+        );
+
+        // The fresh var name must be DIFFERENT from "a" (it was freshened by ctx)
+        let fresh_name = typevalue_var_name(&result).unwrap();
+        assert_ne!(
+            fresh_name, "a",
+            "instantiated var must have a fresh name, not the original 'a'"
+        );
+    }
+
+    /// apply_typevalue_renaming on a TypeValue.Unknown (no vars) returns the original unchanged.
+    #[test]
+    fn test_apply_typevalue_renaming_passthrough() {
         use std::collections::HashMap;
 
-        // Test that resolve_instance freshens type variables in the instance type
-        // and applies the unification substitution to method types.
+        let unknown = make_typevalue_unknown();
+        let renaming: HashMap<String, crate::type_class::TypeValue> = HashMap::new();
 
-        let mut state = InferState::new();
+        let result = apply_typevalue_renaming(&unknown, &renaming);
 
-        // Create an instance: Appendable [Seq b]
-        // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
-        let seq_b = Type::App(
-            Box::new(Type::TyCon("Seq".to_string())),
-            Box::new(Type::Var("b".to_string(), 0)),
+        assert_eq!(
+            typevalue_ctor(&result),
+            Some(TV_UNKNOWN),
+            "apply_typevalue_renaming on Unknown must return Unknown"
         );
-        let instance = InstanceDecl {
-            class_name: "Appendable".to_string(),
-            instance_type: seq_b.clone(),
-            det_positions: vec![], // Single-parameter class, no FDs
-            method_types: {
-                let mut methods = HashMap::new();
-                methods.insert(
-                    "append".to_string(),
-                    Type::Function {
-                        params: vec![(None, seq_b.clone()), (None, seq_b.clone())],
-                        ret: Box::new(seq_b.clone()),
-                        typed_variadics: vec![],
-                        rest: None,
-                        required_count: 2,
-                    },
-                );
-                methods
-            },
-        };
-
-        // Register the instance in state.env
-        let mangled = format!(
-            "ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽",
-            instance.class_name, instance.instance_type
-        );
-        state
-            .env
-            .write()
-            .unwrap()
-            .insert_instance(mangled, instance.clone());
-        state.invalidate_env_caches();
-
-        // Resolve against Seq[Int]
-        let target = Type::App(
-            Box::new(Type::TyCon("Seq".to_string())),
-            Box::new(Type::Int),
-        );
-        // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict
-        let inst_env = state.get_working_instance_env();
-        let resolved = inst_env
-            .resolve_instance("Appendable", &target, &mut state)
-            .await;
-
-        assert!(resolved.is_ok(), "resolve_instance should not error");
-        let resolved = resolved.unwrap();
-        assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");
-        let resolved = resolved.unwrap();
-
-        // The method types should have Int substituted for b
-        let append_ty = resolved.method_types.get("append");
-        assert!(append_ty.is_some(), "append method should exist");
-
-        // Check that the method signature has Seq[Int], not Seq[b]
-        if let Type::Function { params, ret, .. } = append_ty.unwrap() {
-            assert_eq!(params.len(), 2);
-            // Both params should be Seq[Int] or Seq[_tN] (freshened)
-            match &params[0].1 {
-                Type::App(head, elem) if matches!(head.as_ref(), Type::TyCon(n) if n == "Seq") => {
-                    // Should be Int or a fresh type var that got unified with Int
-                    assert!(
-                        matches!(elem.as_ref(), Type::Int | Type::Var(..)),
-                        "first param should be Seq[Int] or Seq[fresh], got {:?}",
-                        elem
-                    );
-                }
-                other => panic!("expected Seq type for first param, got {:?}", other),
-            }
-
-            match ret.as_ref() {
-                Type::App(head, elem) if matches!(head.as_ref(), Type::TyCon(n) if n == "Seq") => {
-                    assert!(
-                        matches!(elem.as_ref(), Type::Int | Type::Var(..)),
-                        "return should be Seq[Int] or Seq[fresh], got {:?}",
-                        elem
-                    );
-                }
-                other => panic!("expected Seq type for return, got {:?}", other),
-            }
-        } else {
-            panic!("append should have Function type, got {:?}", append_ty);
-        }
     }
 
+    /// apply_typevalue_renaming substitutes matching TypeValue.Var names.
     #[test]
-    fn test_instantiate_at_level_preserves_operator_kind() {
-        use crate::types::{InferState, Kind, Type};
-
-        // Create a type containing an Operator variable: App(Operator("m"), Int)
-        let original_ty = Type::App(
-            Box::new(Type::Operator("m".to_string())),
-            Box::new(Type::Int),
-        );
-
-        let mut state = InferState::new();
-        state.kind_env.insert("m".to_string(), Kind::Operator);
-
-        // Instantiate at level 1
-        state.level = 1;
-        let instantiated = instantiate_at_level(&original_ty, &mut state, &crate::rust_span!());
-
-        // The result should be App(Operator(fresh_name), Int), not App(TypeVar(fresh_name), Int)
-        match instantiated {
-            Type::App(f, a) => {
-                // f should be Operator, not TypeVar
-                match f.as_ref() {
-                    Type::Operator(fresh_name) => {
-                        // Check that the fresh name was registered in kind_env with Kind::Operator
-                        assert_eq!(
-                            state.kind_env.get(fresh_name.as_str()),
-                            Some(&Kind::Operator)
-                        );
-                    }
-                    other => panic!("Expected Operator after instantiation, got {:?}", other),
-                }
-                // a should still be Int
-                assert_eq!(a.as_ref(), &Type::Int);
-            }
-            other => panic!("Expected App type, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_rename_single_type_var_handles_operator() {
-        use crate::types::Type;
-
-        // Test renaming an Operator variable
-        let original_ty = Type::App(
-            Box::new(Type::Operator("m".to_string())),
-            Box::new(Type::Int),
-        );
-
-        let renamed = rename_single_type_var(&original_ty, "m", "fresh_m", 1);
-
-        match renamed {
-            Type::App(f, a) => {
-                match f.as_ref() {
-                    Type::Operator(name) => {
-                        assert_eq!(name, "fresh_m");
-                    }
-                    other => panic!("Expected Operator(fresh_m), got {:?}", other),
-                }
-                assert_eq!(a.as_ref(), &Type::Int);
-            }
-            other => panic!("Expected App type, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_rename_single_type_var_handles_app() {
-        use crate::types::Type;
-
-        // Test that App recurses into both children
-        let original_ty = Type::App(
-            Box::new(Type::Var("a".to_string(), 0)),
-            Box::new(Type::Var("a".to_string(), 0)),
-        );
-
-        let renamed = rename_single_type_var(&original_ty, "a", "b", 1);
-
-        match renamed {
-            Type::App(f, arg) => {
-                match f.as_ref() {
-                    Type::Var(name, level) => {
-                        assert_eq!(name, "b");
-                        assert_eq!(*level, 1);
-                    }
-                    other => panic!("Expected TypeVar(b, 1), got {:?}", other),
-                }
-                match arg.as_ref() {
-                    Type::Var(name, level) => {
-                        assert_eq!(name, "b");
-                        assert_eq!(*level, 1);
-                    }
-                    other => panic!("Expected TypeVar(b, 1), got {:?}", other),
-                }
-            }
-            other => panic!("Expected App type, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_rename_single_type_var_handles_negation() {
-        use crate::types::Type;
-
-        // Test that Negation recurses into inner type
-        let original_ty = Type::Negation(Box::new(Type::Var("a".to_string(), 0)));
-
-        let renamed = rename_single_type_var(&original_ty, "a", "b", 1);
-
-        match renamed {
-            Type::Negation(inner) => match inner.as_ref() {
-                Type::Var(name, level) => {
-                    assert_eq!(name, "b");
-                    assert_eq!(*level, 1);
-                }
-                other => panic!("Expected TypeVar(b, 1), got {:?}", other),
-            },
-            other => panic!("Expected Negation type, got {:?}", other),
-        }
-    }
-
-    // T013 Task 5: emit_ambiguous_constraint_diagnostics origin_name path.
-    // When a Constraint::Class carries origin_name, the diagnostic message should cite
-    // the function name rather than the internal TypeVar name.
-    #[test]
-    fn test_t013_origin_name_message_format() {
-        use crate::ast::Span;
-        use crate::error::DiagnosticLevel;
-        use crate::type_class::{ClassDecl, Constraint};
-        use std::collections::{HashMap, HashSet};
+    fn test_apply_typevalue_renaming_substitutes_var() {
+        use std::collections::HashMap;
         use std::sync::Arc;
 
-        // Build a minimal ClassDecl for "Castable" (params=[] follows Constraint::new_by_name pattern)
-        let class = Arc::new(ClassDecl {
-            name: "Castable".to_string(),
-            params: vec![],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            structural_discharge: crate::type_class::StructuralDischarge::None,
-            method_signatures: vec![],
-        });
+        let var_a = make_typevar_value("a");
+        let replacement = make_typevalue_unknown();
 
-        // Constraint with origin_name="cast" (as would be set by instantiate_scheme at a VarRef)
-        let arg_span = Span {
-            file: crate::rust_span!().file,
-            start_line: 1,
-            start_col: 11,
-            end_line: 1,
-            end_col: 15,
-            name: None,
-        };
-        let constraint_with_origin = Constraint::Class {
-            class: Arc::clone(&class),
-            vars: vec![crate::type_class::ConstraintArg::Var("_t42".to_string())],
-            origin_name: Some(Arc::from("cast")),
-            origin_span: Some(arg_span.clone()),
-        };
+        let mut renaming: HashMap<String, crate::type_class::TypeValue> = HashMap::new();
+        renaming.insert("a".to_string(), Arc::clone(&replacement));
 
-        // _t42 is NOT in the substitution map → not discharged → T013 fires
-        let subst_snapshot: HashMap<String, Type> = HashMap::new();
-        let source_names: HashMap<String, String> = HashMap::new();
-        let mut diagnostics: Vec<crate::error::TypeDiagnostic> = Vec::new();
-        let fallback_span = Span {
-            file: crate::rust_span!().file,
-            start_line: 1,
-            start_col: 1,
-            end_line: 1,
-            end_col: 6,
-            name: None,
-        };
-        let mut emitted: HashSet<(String, Span)> = HashSet::new();
+        let result = apply_typevalue_renaming(&var_a, &renaming);
 
-        emit_ambiguous_constraint_diagnostics(
-            &[constraint_with_origin],
-            &subst_snapshot,
-            &source_names,
-            &mut diagnostics,
-            fallback_span,
-            &mut emitted,
-        );
-
-        assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
-        let diag = &diagnostics[0];
-        assert_eq!(diag.kind, "ambiguous-constraint");
-        assert_eq!(diag.level, DiagnosticLevel::Warn);
-        // Message must cite the origin function, not the internal TypeVar name
-        assert!(
-            diag.message.contains("argument to `cast`"),
-            "expected message to cite origin function 'cast'; got: {}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("Castable"),
-            "expected message to cite constraint class 'Castable'; got: {}",
-            diag.message
-        );
-        assert!(
-            !diag.message.contains("_t42"),
-            "expected message to omit internal TypeVar name '_t42'; got: {}",
-            diag.message
-        );
-        // When origin_span is provided, the diagnostic span should be the argument span
+        // Should be Unknown (the replacement)
         assert_eq!(
-            diag.primary_span(),
-            &arg_span,
-            "expected diagnostic span to use origin_span (argument location)"
+            typevalue_ctor(&result),
+            Some(TV_UNKNOWN),
+            "apply_typevalue_renaming must substitute matching var 'a' with Unknown"
         );
     }
 
-    // T013 Task 5: when origin_name is absent, the fallback message format is preserved.
+    /// Fix 3: generalize_tv on a TypeValue.Record with a TypeVar field must produce a Scheme
+    /// that quantifies over the TypeVar in the field.
+    ///
+    /// Previously collect_free_vars_inner only walked one level deep and missed TypeVars
+    /// inside Record.fields (which is a Dict-valued field, not a Variant-valued field).
     #[test]
-    fn test_t013_fallback_message_format() {
-        use crate::ast::Span;
-        use crate::error::DiagnosticLevel;
-        use crate::type_class::{ClassDecl, Constraint};
-        use std::collections::{HashMap, HashSet};
+    fn test_generalize_tv_on_record_with_typevar_field() {
+        use crate::type_infer::{make_typevalue_record, InferenceContext};
         use std::sync::Arc;
 
-        let class = Arc::new(ClassDecl {
-            name: "Comparable".to_string(),
-            params: vec![],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            structural_discharge: crate::type_class::StructuralDischarge::None,
-            method_signatures: vec![],
-        });
+        let mut ctx = InferenceContext::new();
+        ctx.current_level = 2;
 
-        // Constraint WITHOUT origin info (annotation-driven, as in existing tests)
-        let constraint_no_origin = Constraint::Class {
-            class,
-            vars: vec![crate::type_class::ConstraintArg::Var("_t7".to_string())],
-            origin_name: None,
-            origin_span: None,
-        };
+        // Create a TypeVar "a" at level 2.
+        let tv_a = ctx.fresh_typevar("a");
+        let var_name = typevalue_var_name(&tv_a).expect("fresh_typevar must produce a named var");
 
-        let subst_snapshot: HashMap<String, Type> = HashMap::new();
-        let source_names: HashMap<String, String> = HashMap::new();
-        let mut diagnostics: Vec<crate::error::TypeDiagnostic> = Vec::new();
-        let call_span = Span {
-            file: crate::rust_span!().file,
-            start_line: 1,
-            start_col: 1,
-            end_line: 1,
-            end_col: 6,
-            name: None,
-        };
-        let mut emitted: HashSet<(String, Span)> = HashSet::new();
-
-        emit_ambiguous_constraint_diagnostics(
-            &[constraint_no_origin],
-            &subst_snapshot,
-            &source_names,
-            &mut diagnostics,
-            call_span.clone(),
-            &mut emitted,
+        // Build TypeValue.Record { fields: { x: TypeValue.Var("a") } }
+        let record = make_typevalue_record(
+            indexmap::IndexMap::from([(var_name.clone(), Arc::clone(&tv_a))]),
+            None,
         );
 
-        assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
-        let diag = &diagnostics[0];
-        assert_eq!(diag.kind, "ambiguous-constraint");
-        assert_eq!(diag.level, DiagnosticLevel::Warn);
-        // Fallback: must still contain "ambiguous type variable" and the constraint class
-        assert!(
-            diag.message.contains("ambiguous type variable"),
-            "expected fallback message to contain 'ambiguous type variable'; got: {}",
-            diag.message
-        );
-        assert!(
-            diag.message.contains("Comparable"),
-            "expected fallback message to cite 'Comparable'; got: {}",
-            diag.message
-        );
-        // Fallback: span should be the call_span, not any argument span
+        // generalize at level 1: "a" is at level 2 > 1, so it MUST be quantified.
+        let scheme = generalize_tv(1, &record, &ctx);
+
+        // Result must be TypeValue.Scheme (not bare Record).
         assert_eq!(
-            diag.primary_span(),
-            &call_span,
-            "expected fallback span to be call_span"
+            typevalue_ctor(&scheme),
+            Some(TV_SCHEME),
+            "generalize_tv on Record with TypeVar field must produce TypeValue.Scheme — \
+             collect_free_vars_inner must recurse into Record.fields Dict"
         );
     }
 
-    /// A TypeScheme with a `kind_vars` entry of `Kind::Operator` must instantiate
-    /// to `Type::Operator(fresh_name)`, not `Type::Var(fresh_name, level)`.
+    /// Fix 4: apply_typevalue_renaming on a TypeValue.Record with a TypeVar field must
+    /// substitute the TypeVar inside Record.fields.
     ///
-    /// Concretely: the scheme `∀(f: Operator) a. f a` should produce
-    /// `App(Operator("_t0"), TypeVar("_t1", 1))` when instantiated at level 1,
-    /// and the fresh Operator name must be registered in `state.kind_env` so that
-    /// subsequent UNIFY-OPERATOR and KIND-OPERATOR rules can recognise it as a
-    /// type constructor rather than a monomorphic type variable.
-    ///
-    /// Mutation resistance: if `instantiate_scheme` treated `kind_vars` variables
-    /// like regular `type_vars`, it would produce `TypeVar("_t0", 1)` instead of
-    /// `Operator("_t0")`, and the `kind_env` entry would be absent — both
-    /// assertions below would fail.
+    /// Previously only the outer payload Dict's Variant entries were visited; Dict entries
+    /// (like Record.fields) were not recursed into.
     #[test]
-    fn test_instantiate_scheme_kind_var_operator_produces_type_operator() {
-        use crate::types::{InferState, Kind, Type};
+    fn test_apply_typevalue_renaming_substitutes_into_record_field() {
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        use crate::type_tags::REPR_INT;
+        use std::collections::HashMap;
+        use std::sync::Arc;
 
-        let mut state = InferState::new();
-        state.level = 1;
+        let var_a = make_typevar_value("a");
 
-        // Build the scheme body: App(Operator("f"), TypeVar("a", 0))
-        // representing the type `f a` where f is Operator-kinded.
-        let scheme_body = Type::App(
-            Box::new(Type::Operator("f".to_string())),
-            Box::new(Type::Var("a".to_string(), 0)),
+        // TypeValue.Record { fields: { x: TypeValue.Var("a") } }
+        let record = make_typevalue_record(
+            indexmap::IndexMap::from([("x".to_string(), Arc::clone(&var_a))]),
+            None,
         );
 
-        // Construct a scheme: ∀(f: Operator) a. f a
-        let scheme = TypeScheme {
-            type_vars: vec!["a".to_string()],
-            kind_vars: vec![("f".to_string(), Kind::Operator)],
-            constraints: vec![],
-            body: scheme_body,
-            label_vars: vec![],
-            doc: None,
-            inner_schemes: None,
-            param_narrowings: Vec::new(),
-            definition_span: None,
-        };
+        // Rename "a" → TypeValue.Repr(Int)
+        let replacement = make_typevalue_repr(REPR_INT);
+        let renaming: HashMap<String, crate::type_class::TypeValue> =
+            [("a".to_string(), Arc::clone(&replacement))]
+                .into_iter()
+                .collect();
 
-        let instantiated = instantiate_scheme(
-            &scheme,
-            state.level,
-            &mut state,
-            None,
-            None,
-            &crate::rust_span!(),
+        let result = apply_typevalue_renaming(&record, &renaming);
+
+        // Result must be a TypeValue.Record (outer Variant unchanged).
+        assert_eq!(
+            typevalue_ctor(&result),
+            Some(TV_RECORD),
+            "apply_typevalue_renaming must preserve the Record wrapper"
         );
 
-        // The instantiated type must be App(Operator(fresh_f), TypeVar(fresh_a, 1)).
-        match instantiated {
-            Type::App(ref f_ty, ref a_ty) => {
-                // f must instantiate to Type::Operator, not Type::Var.
-                match f_ty.as_ref() {
-                    Type::Operator(fresh_f) => {
-                        // The fresh Operator name must be registered in kind_env with Kind::Operator.
-                        assert_eq!(
-                            state.kind_env.get(fresh_f.as_str()),
-                            Some(&Kind::Operator),
-                            "fresh Operator name '{}' must be in kind_env with Kind::Operator",
-                            fresh_f
-                        );
-                        // Levels map should contain the fresh name so level-based
-                        // generalization can track it.
-                        assert!(
-                            state.levels.contains_key(fresh_f.as_str()),
-                            "fresh Operator name '{}' must be registered in state.levels",
-                            fresh_f
-                        );
-                    }
-                    other => panic!("expected Type::Operator for kind_var 'f', got {:?}", other),
-                }
-                // a must instantiate to Type::Var.
-                match a_ty.as_ref() {
-                    Type::Var(fresh_a, lv) => {
-                        assert_eq!(*lv, 1, "TypeVar level must match instantiation level");
-                        // a must NOT be in kind_env as Operator (it's a regular type var).
-                        assert_ne!(
-                            state.kind_env.get(fresh_a.as_str()),
-                            Some(&Kind::Operator),
-                            "regular type_var 'a' must not be Kind::Operator in kind_env"
-                        );
-                    }
-                    other => panic!(
-                        "expected Type::Var for regular type_var 'a', got {:?}",
-                        other
-                    ),
-                }
-            }
-            other => panic!("expected App(Operator, TypeVar), got {:?}", other),
-        }
+        // Extract the field "x" and verify it was renamed to Repr(Int).
+        let fields = crate::type_infer::typevalue_record_fields_pub(&result);
+        let x_field = fields
+            .get("x")
+            .expect("renamed Record must still have field 'x'");
+        assert_eq!(
+            typevalue_ctor(x_field),
+            Some(TV_REPR),
+            "field 'x' in renamed Record must be TypeValue.Repr — \
+             apply_typevalue_renaming must recurse into Record.fields Dict"
+        );
     }
 
-    /// A monomorphic TypeScheme (both `type_vars` and `kind_vars` empty) must return
-    /// its body directly without incrementing the name counter.
+    /// Round-trip test: generalize_tv then instantiate_scheme_tv on a TypeValue.Fn.
     ///
-    /// Mutation resistance: if the early-exit check in `instantiate_scheme` only tested
-    /// `type_vars.is_empty()` (not `kind_vars.is_empty()`), a scheme with only `kind_vars`
-    /// would incorrectly skip freshening. Conversely, an empty scheme must skip allocation.
+    /// This test verifies the complete generalization/instantiation cycle:
+    /// 1. Create a TypeValue.Fn whose return type is a free TypeValue.Var.
+    /// 2. Call generalize_tv — result must be TypeValue.Scheme containing the Var in its vars dict.
+    /// 3. Call instantiate_scheme_tv — result must be a TypeValue.Fn whose return type is a
+    ///    fresh TypeValue.Var with a different name than the original.
     #[test]
-    fn test_instantiate_scheme_empty_kind_vars_monomorphic_no_freshening() {
-        use crate::types::{InferState, Type};
+    fn test_generalize_instantiate_round_trip_fn() {
+        use crate::type_infer::{
+            make_typevalue_fn, make_typevalue_repr, typevalue_fn_params_and_ret, InferenceContext,
+        };
+        use crate::type_tags::REPR_INT;
+        use std::sync::Arc;
 
-        let mut state = InferState::new();
-        let type_vars_before = state.type_vars.len();
+        let mut ctx = InferenceContext::new();
+        ctx.current_level = 1;
 
-        let scheme = TypeScheme::mono(Type::Int);
+        // Create a free TypeValue.Var "a" at level 1.
+        let tv_a = ctx.fresh_typevar("a");
+        let original_name =
+            typevalue_var_name(&tv_a).expect("fresh_typevar must produce a named var");
 
-        let result = instantiate_scheme(
-            &scheme,
-            state.level,
-            &mut state,
-            None,
-            None,
-            &crate::rust_span!(),
-        );
+        // Build TypeValue.Fn { params: [TypeValue.Repr(Int)], return: TypeValue.Var("a") }
+        let int_repr = make_typevalue_repr(REPR_INT);
+        let params = vec![(None, Arc::clone(&int_repr))];
+        let fn_ty = make_typevalue_fn(params, Arc::clone(&tv_a));
+
+        // Step 1: generalize at level 0 — "a" at level 1 > 0, so it must be quantified.
+        let scheme = generalize_tv(0, &fn_ty, &ctx);
 
         assert_eq!(
-            result,
-            Type::Int,
-            "monomorphic scheme must return body unchanged"
+            typevalue_ctor(&scheme),
+            Some(TV_SCHEME),
+            "generalize_tv on TypeValue.Fn with free TypeVar must produce TypeValue.Scheme"
         );
+
+        // Step 2: verify the scheme's vars dict contains the original TypeVar name.
+        let scheme_payload = match scheme.as_ref() {
+            crate::value::Value::Variant {
+                payload: Some(p), ..
+            } => match p.peek_result() {
+                Some(Ok(crate::value::Value::Dict { entries, .. })) => entries.clone(),
+                _ => panic!("scheme payload must be a settled Dict"),
+            },
+            _ => panic!("scheme must be a Variant"),
+        };
+        let vars_key = crate::value::HashableValue::Str(Arc::from(FIELD_VARS));
+        let vars_thunk = scheme_payload
+            .get(&vars_key)
+            .expect("TypeValue.Scheme must have 'vars' field");
+        let vars_dict = match vars_thunk.peek_result() {
+            Some(Ok(crate::value::Value::Dict { entries, .. })) => entries.clone(),
+            _ => panic!("vars must be a settled Dict"),
+        };
+        let var_key = crate::value::HashableValue::Str(Arc::from(original_name.clone()));
+        assert!(
+            vars_dict.contains_key(&var_key),
+            "TypeValue.Scheme vars dict must contain the original TypeVar name '{}'",
+            original_name
+        );
+
+        // Step 3: instantiate the scheme — must produce a TypeValue.Fn with a fresh return TypeVar.
+        let mut ctx2 = InferenceContext::new();
+        let instantiated = instantiate_scheme_tv(&scheme, &mut ctx2, 0);
+        assert!(
+            instantiated.is_some(),
+            "instantiate_scheme_tv must succeed on well-formed scheme"
+        );
+        let inst_fn = instantiated.unwrap();
+
+        // The instantiated type must still be a TypeValue.Fn.
         assert_eq!(
-            state.type_vars.len(),
-            type_vars_before,
-            "monomorphic instantiation must not create new type variables"
+            typevalue_ctor(&inst_fn),
+            Some(TV_FN),
+            "instantiate_scheme_tv of a TypeValue.Fn scheme must produce TypeValue.Fn"
+        );
+
+        // Extract the return type from the instantiated Fn and verify it is a fresh TypeVar.
+        let (_, ret_ty) = typevalue_fn_params_and_ret(&inst_fn)
+            .expect("instantiated TypeValue.Fn must have params and return type");
+        assert_eq!(
+            typevalue_ctor(&ret_ty),
+            Some(TV_VAR),
+            "return type of instantiated Fn must be a TypeValue.Var"
+        );
+        let fresh_name = typevalue_var_name(&ret_ty).expect("return TypeVar must have a name");
+        assert_ne!(
+            fresh_name, original_name,
+            "instantiated return TypeVar must have a fresh name different from '{}'",
+            original_name
         );
     }
 }

@@ -1,0 +1,12 @@
+# Same name 'env' appears at two different scopes.
+# The outer intermediate binding 'env' is referenced by 'result'.
+# 'result' is the final expression — so 'env' is transitively live.
+# T-2071: BindingId (def_span + name) prevents the outer 'env' from being
+# falsely flagged as lost when an inner dict also binds 'env'.
+[call [fn [let x]
+  [env: x]
+  [result: [if true env "fallback"]]
+  result]
+"hello"]
+=== out
+String("hello")

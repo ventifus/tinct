@@ -472,7 +472,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **Interaction with inference.** Explicit constraints compose with inferred constraints. If `constraint: [a: Comparable]` is declared and the body also uses `a` in an `Equatable` context, both register; constraint simplification removes `Equatable a` since `Comparable` entails it via the superclass relation.
 
-**`doc:` and LSP hover.** The doc string is stored in `TypeScheme.doc` and displayed below the inferred signature in LSP hover:
+**`doc:` and LSP hover.** The doc string is stored in the `TypeValue.Scheme` payload field `doc:` (stored via `FIELD_DOC` in `type_tags.rs`) and displayed below the inferred signature in LSP hover:
 
 ```text
 min: Comparable a => Fn@a [[Seq a]]
@@ -876,11 +876,9 @@ Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rath
 
 ### 16. TypeNode: The Type-Stage Value Representation
 
-`TypeNode` is the tinct-level value representation of types — produced by the type-stage evaluator and used by type-stage expressions. The type checker's internal representation is the `Type` Rust enum (defined in `src/type_def.rs`). The bridge between the two is `typenode_value_to_type`, which converts a `TypeNode` tinct value to a `Type` enum value for use by the type checker.
+`TypeNode` is the tinct-level value representation of types — produced by the type-stage evaluator and used by type-stage expressions. The type checker's internal representation is `TypeValue` (`Arc<Value>`, defined in `src/type_def.rs`). The bridge between the two is `typenode_value_to_type`, which converts a `TypeNode` tinct value to a `TypeValue` for use by the type checker.
 
-Note: A `CheckerType` newtype wrapping `TypeNode` values as the type checker's primary representation is a planned future refactor (see `doc/whatif/equirecursive-types.md`) but is not yet implemented. Until then, `Type` is the authoritative representation inside the type checker. See [Type Inference](06-type-inference.md) for the canonical description of the `Type` enum and its role.
-
-**TypeVar in type-stage.** `TypeNode.TypeVar { name: String  level: Int }` is the tinct-level representation of an inference variable. After conversion via `typenode_value_to_type`, it becomes `Type::Var(name, level)` inside the type checker. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_bas` / `is_atom_subtype`, `unify`, `Substitution::apply`, `PartialEq`) require explicit Rust arms for TypeVar.
+**TypeVar in type-stage.** `TypeNode.TypeVar { name: String  level: Int }` is the tinct-level representation of an inference variable. After conversion via `typenode_value_to_type`, it becomes `TypeValue.Var { name: String }` inside the type checker; the level is tracked separately in `InferenceContext.levels` (authoritative), not embedded in the TypeValue. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_bas` / `is_atom_subtype`, `unify`, `InferenceContext::apply_subst`, `PartialEq`) require explicit Rust arms for TypeVar.
 
 **TypeNode constructors** (all declared in the prelude `--- stage: type` section):
 
@@ -1026,7 +1024,7 @@ type errors:
 - **`@[narrows: T]` key annotation** — e.g., `my-int?@[narrows: Int]:`. When `[my-int? x]` is true, `x` is narrowed to `T`.
 - **`@[is: T]` parameter annotation** — e.g., `[fn [let x@[is: Int]] ...]`. When the predicate is called with a single variable argument and returns true, that variable is narrowed to `T`.
 
-Both mechanisms store `TypeScheme.param_narrowings[0] = Some(T)` during type checking. `extract_narrowings` looks up the called function in the type environment and reads `param_narrowings`. Any function — not just prelude predicates — can participate in narrowing. The predicate narrowing mechanism is fully annotation-driven: no predicate names are hardcoded in Rust.
+Both mechanisms store narrowing info in the callee's `TypeValue.Scheme` payload under the `narrowings` key (an indexed Dict, field `FIELD_NARROWINGS` in `type_tags.rs`). `extract_scheme_narrowings_first` (in `src/typecheck_narrow.rs`) looks up the called function's `TypeValue.Scheme` in the type environment and reads `narrowings[0]`. Any function — not just prelude predicates — can participate in narrowing. The predicate narrowing mechanism is fully annotation-driven: no predicate names are hardcoded in Rust.
 
 **Narrowing only applies to AST control flow constructs.** Type narrowing fires only for `if`, `cond`, and `match` expressions (AST special forms with dedicated type checking rules). Prelude functions like `when` and `unless` (defined in `stdlib/prelude.llt` as calls to `builtin-if`) do NOT trigger narrowing because the type checker does not analyze function bodies — narrowing requires AST-level inspection. To narrow a value with a type predicate, use `if` directly: `[if [fn? x] ...]` instead of `[when [fn? x] ...]`.
 
@@ -1246,15 +1244,15 @@ Processing order within a `fn@[...]` metadata bracket (fixed; source key order i
 | 3 | `constraint:` keyed entries | Class constraints per entry | `state.constraints` |
 | 4 | `constraint:` MPTC positional | Relate TypeVars via ClassEnv | `state.constraints` |
 | 5 | `return:` / `type:` | Resolve as type-stage expression | Return type |
-| 6 | `doc:` | Store documentation string | `TypeScheme.doc` |
+| 6 | `doc:` | Store documentation string | `TypeValue.Scheme` payload field `doc:` (via `FIELD_DOC`) |
 | 7 | `default:`, `is:`, `repr:`, arbitrary | Deferred to runtime | Runtime metadata |
 
 Mixed-stage routing for annotation brackets in general:
 
 | Annotation form | Stage | Destination |
 |-----------------|-------|-------------|
-| `x@Integer` | Type | `Type::Int` (via `expand_named` → `typenode_value_to_type`) |
-| `x@[or Int Null]` | Type-stage eval | `Type::Union(...)` (via `eval_type_stage_expr` → `typenode_value_to_type`) |
+| `x@Integer` | Type | `TypeValue.Repr { repr: "Value::Int" }` (via `expand_named` → `typenode_value_to_type`) |
+| `x@[or Int Null]` | Type-stage eval | `TypeValue.Union { members: Dict }` (via `eval_type_stage_expr` → `typenode_value_to_type`) |
 | `x@[type: Int  default: 0]` | Split | `type:` → type-stage, `default:` → runtime |
 | `fn@[bind: [a]  return: a  constraint: ...]` | Split | Per step table above |
 | `[@Integer expr]` | Type + runtime | Type assertion at materialization |
@@ -1265,17 +1263,17 @@ Mixed-stage routing for annotation brackets in general:
 
 Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-generalization (Kiselyov 2013).
 
-**TypeVar levels.** Each TypeVar carries an integer level representing the nesting depth of its binding scope. In the `Type` enum, this is `Type::Var(name: String, level: u32)`; in the tinct-stage value representation it is `TypeNode.TypeVar { name: String  level: Int }`. `state.levels` maps TypeVar name to its authoritative current level (updated by level lowering); the level carried in the variant is the creation-time level only. Let-generalization uses `state.levels[name] > enclosing_level` — always use `state.levels`, never the creation-time level. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
+**TypeVar levels.** Each TypeVar carries an integer level representing the nesting depth of its binding scope. In the TypeValue representation, this is `TypeValue.Var { name: String }` — the level is NOT embedded in the TypeValue; in the tinct-stage annotation representation it is `TypeNode.TypeVar { name: String  level: Int }`. `InferenceContext.levels` maps TypeVar name to its authoritative current level (updated by level lowering); any level in the TypeNode variant is the creation-time level only. Let-generalization uses `state.levels[name] > enclosing_level` — always use `InferenceContext.levels`, never the creation-time level. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
 
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
 
 1. **Pass 0:** Resolve key names (literal keys extracted; computed keys resolved via type inference in parent scope)
-2. **Pass 1:** Bind all non-alias key names to fresh TypeVar placeholders. For `[fn ...]` entries, the placeholder is `Type::Function { params: [(name, fresh TypeVar)...], ret: fresh TypeVar, variadic, required_count }` — enabling recursive calls to resolve the function shape without a return annotation. For non-fn entries, the placeholder is a bare fresh TypeVar as before.
+2. **Pass 1:** Bind all non-alias key names to fresh TypeVar placeholders. For `[fn ...]` entries, the placeholder is `TypeValue.Fn { params: Dict, return: TypeValue, variadic: Bool }` — enabling recursive calls to resolve the function shape without a return annotation. For non-fn entries, the placeholder is a bare fresh TypeVar as before.
 3. **Pass 2:** Register type aliases sequentially (each alias sees previously registered siblings)
 4. **Pass 3:** Infer actual value types and bind Pass 1 placeholders in the substitution. For fn entries, the pre-bound ret TypeVar is directly inserted into `subst.type_map` (not unified — `infer_dict` is sync; `unify` is async), resolving recursive references to the concrete return type.
 5. **Pass 4:** Generalize field types into polymorphic schemes
 
-**Substitution idempotence invariant.** `Substitution::apply()` is idempotent — applying the same substitution twice yields the same result. Achieved by transitive chaining in `apply_inner()` (Robinson 1965).
+**Substitution idempotence invariant.** `InferenceContext::apply_subst()` (in `src/type_infer.rs`) is idempotent — applying the same substitution twice yields the same result. Achieved by transitive chaining through the `subst` HashMap (Robinson 1965).
 
 **Alpha-equivalence.** Variable names are significant at the source level but irrelevant for principal types. `instantiate()` performs alpha-renaming (generating fresh `_t0`, `_t1`, ...) at each call site to prevent unintended unification between independent uses of the same polymorphic function.
 
@@ -1378,7 +1376,7 @@ This eliminates all `*->int`/`int->*` lookup functions — the constants travel 
 
 ## Reference
 
-- **Kiselyov, O. (2013).** "Efficient and Insightful Generalization." — [levels-based let-generalization; TypeVar level assignment; `state.levels` is authoritative current level, payload carries creation-time level]
+- **Kiselyov, O. (2013).** "Efficient and Insightful Generalization." — [levels-based let-generalization; TypeVar level assignment; `state.ctx.levels` is authoritative current level, payload carries creation-time level]
 - **Robinson, J.A. (1965).** "A Machine-Oriented Logic Based on the Resolution Principle." _JACM_, 12(1), 23–41. — [unification; substitution idempotence]
 - **Gaster, B.R. & Jones, M.P. (1996).** "A Polymorphic Type System for Extensible Records and Variants." — [named parameters in calling convention; names not part of principal type]
 - **Amadio, R.M. & Cardelli, L. (1993).** "Subtyping Recursive Types." _ACM TOPLAS_, 15(4), 575–631. — [foundational coinductive subtype algorithm; S-Assum/S-Hyp rules; equirecursive type equality]

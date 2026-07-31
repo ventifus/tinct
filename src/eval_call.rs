@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::type_def::Type;
+use crate::type_tags::*;
 use crate::value::{EvalFrame, HashableValue, Thunk, Value};
 use indexmap::IndexMap;
 
@@ -15,6 +15,17 @@ use indexmap::IndexMap;
 // initialization depends on the other.
 use crate::eval::{materialize, value_matches_type, EvalContext};
 use crate::eval_core::eval_core_expr;
+
+/// Return `true` if `tv` is a TypeValue.Unknown — either the bootstrap sentinel (empty dict)
+/// or a proper `Value::Variant { ctor: "TypeValue.Unknown" }` after the repr protocol runs.
+fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
+    match tv.as_ref() {
+        Value::Variant { ctor, .. } => ctor.as_ref() == TV_UNKNOWN,
+        // Bootstrap sentinel: unknown_type_val() is an empty dict before repr protocol runs.
+        Value::Dict { entries, .. } => entries.is_empty(),
+        _ => false,
+    }
+}
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -205,9 +216,11 @@ pub(crate) async fn bind_args_thunks(
     for p in params.iter() {
         if p.variadic {
             match &p.resolved_type {
-                Some(ty) if !matches!(ty, Type::Unknown) => {
+                // Typed variadic: has a concrete TypeValue (not Unknown) → typed bucket
+                Some(tv) if !is_typevalue_unknown(tv) => {
                     typed_variadic_params.push(p);
                 }
+                // Unknown or None: untyped rest bucket
                 _ => rest_param = Some(p),
             }
         } else {
@@ -377,12 +390,16 @@ pub(crate) async fn bind_args_thunks(
     if has_any_variadic {
         let extra_positionals = &positional[max_positional.min(positional.len())..];
 
-        // Collect typed bucket Types for dispatch.
+        // Collect typed bucket TypeValues for dispatch.
         // Use p.resolved_type (set by the type checker) rather than re-parsing the annotation.
         // Empty when there are no typed variadics (single unannotated rest case).
-        let bucket_types: Vec<Type> = typed_variadic_params
+        let bucket_types: Vec<Arc<Value>> = typed_variadic_params
             .iter()
-            .map(|p| p.resolved_type.clone().unwrap_or(Type::Unknown))
+            .map(|p| {
+                p.resolved_type
+                    .clone()
+                    .unwrap_or_else(crate::value::unknown_type_val)
+            })
             .collect();
 
         // Accumulate Arc<Thunk> for each typed bucket (in declaration order).
@@ -567,21 +584,43 @@ mod tests {
         }
     }
 
-    fn typed_variadic_param(name: &str, type_name: &str, slot: u32) -> Param {
-        use crate::type_def::Type;
-        let resolved_type = match type_name {
-            "Int" | "Integer" => Some(Type::Int),
-            "Float" => Some(Type::Float),
-            "String" | "Str" => Some(Type::Str),
-            "Bytes" => Some(Type::Bytes),
-            _ => None,
-        };
+    fn make_repr_typevalue(repr: &str) -> Arc<Value> {
+        // Build a TypeValue.Repr { repr: String } Arc<Value> for tests.
+        let mut entries = indexmap::IndexMap::new();
+        entries.insert(
+            crate::value::HashableValue::Str(Arc::from(FIELD_REPR)),
+            Arc::new(crate::value::Thunk::value(
+                Value::String {
+                    source: Arc::from(repr),
+                    start: 0,
+                    end: repr.len(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                crate::rust_span!(),
+            )),
+        );
+        Arc::new(Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_REPR),
+            payload: Some(Arc::new(crate::value::Thunk::value(
+                Value::Dict {
+                    entries,
+                    type_val: crate::value::unknown_type_val(),
+                },
+                crate::rust_span!(),
+            ))),
+        })
+    }
+
+    fn typed_variadic_param(name: &str, repr: &str, slot: u32) -> Param {
+        // Construct the TypeValue directly from the REPR_* constant —
+        // no annotation-name-to-repr mapping needed.
         Param {
             name: name.to_string(),
-            annotation: Some(sp(Annotation::Simple(type_name.to_string()))),
+            annotation: Some(sp(Annotation::Simple(repr.to_string()))),
             variadic: true,
             slot,
-            resolved_type,
+            resolved_type: Some(make_repr_typevalue(repr)),
         }
     }
 
@@ -609,7 +648,7 @@ mod tests {
         for p in params.iter() {
             if p.variadic {
                 match &p.resolved_type {
-                    Some(ty) if !matches!(ty, Type::Unknown) => {
+                    Some(tv) if !super::is_typevalue_unknown(tv) => {
                         typed_variadic_params.push(p);
                     }
                     _ => rest_param = Some(p),
@@ -656,8 +695,8 @@ mod tests {
         // `[fn [let x ...strings@String ...nums@Int ...rest] ...]`
         let params = vec![
             fixed_param_with_slot("x", 0),
-            typed_variadic_param("strings", "String", 1),
-            typed_variadic_param("nums", "Int", 2),
+            typed_variadic_param("strings", REPR_STRING, 1),
+            typed_variadic_param("nums", REPR_INT, 2),
             rest_param("rest", 3),
         ];
         let (fixed, typed, rest) = classify(&params);
@@ -678,8 +717,8 @@ mod tests {
     fn test_classify_params_only_typed_variadics_no_rest() {
         // `[fn [let ...strings@String ...nums@Int] ...]`
         let params = vec![
-            typed_variadic_param("strings", "String", 0),
-            typed_variadic_param("nums", "Int", 1),
+            typed_variadic_param("strings", REPR_STRING, 0),
+            typed_variadic_param("nums", REPR_INT, 1),
         ];
         let (fixed, typed, rest) = classify(&params);
         assert!(fixed.is_empty());
@@ -709,7 +748,7 @@ mod tests {
         let params = vec![
             fixed_param_with_slot("a", 0),
             fixed_param_with_slot("b", 1),
-            typed_variadic_param("xs", "Int", 2),
+            typed_variadic_param("xs", REPR_INT, 2),
             rest_param("rest", 3),
         ];
         let (fixed, typed, rest) = classify(&params);
@@ -721,24 +760,23 @@ mod tests {
 
     #[test]
     fn test_classify_params_resolved_type_determines_bucket() {
-        use crate::type_def::Type;
         // Typed variadic uses resolved_type (not the annotation string) for classification.
-        // A param with resolved_type=Some(Type::Int) is a typed bucket.
+        // A param with resolved_type=Some(TypeValue.Repr{repr:"Value::Int"}) is a typed bucket.
         // A param with resolved_type=None is the rest bucket.
-        // A param with resolved_type=Some(Type::Unknown) is the rest bucket (accept-all = no bucket).
+        // A param with resolved_type=Some(TypeValue.Unknown) is the rest bucket (accept-all = no bucket).
         let int_bucket = Param {
             name: "ns".to_string(),
             annotation: Some(sp(Annotation::Simple("Int".to_string()))),
             variadic: true,
             slot: 0,
-            resolved_type: Some(Type::Int),
+            resolved_type: Some(make_repr_typevalue(REPR_INT)),
         };
         let unknown_bucket = Param {
             name: "rest".to_string(),
             annotation: Some(sp(Annotation::Simple("Unknown".to_string()))),
             variadic: true,
             slot: 1,
-            resolved_type: Some(Type::Unknown),
+            resolved_type: Some(crate::value::unknown_type_val()),
         };
         let none_bucket = Param {
             name: "extra".to_string(),

@@ -1,0 +1,5 @@
+# Forward-reference function call: result references f defined later in the same dict.
+[f: [fn [let x] $x]]
+[result: [call $f 42]]
+=== out
+["result": 42]

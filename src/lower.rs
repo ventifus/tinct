@@ -7,7 +7,7 @@
 //! Key transformations:
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
-//! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
+//! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or TypeValue.Unknown)
 //! - `Field` → `Call(builtin-dict-get, [Str/Int(key), target])` (unified key-based lookup)
 //! - `Dict` with spread entries → nested `Call(builtin-dict-merge, [seg, rest])` (Axiom 4: core builtin, not prelude name)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
@@ -854,13 +854,10 @@ fn lower_expr(
                             annotation: p.node.annotation.clone(),
                             variadic: p.node.variadic,
                             slot: i as u32,
-                            resolved_type: p.node.resolved_annotation_type.get().and_then(|t| {
-                                // Type::Error (failed inference) → None (accept-all).
-                                match t {
-                                    crate::type_def::Type::Error(_) => None,
-                                    _ => Some(t.clone()),
-                                }
-                            }),
+                            // TypeAnnotation::get() now returns Option<&Arc<Value>>.
+                            // TypeValue.Unknown (which Error maps to) is treated as accept-all at
+                            // runtime — pass it through as-is; None means unannotated.
+                            resolved_type: p.node.resolved_annotation_type.get().cloned(),
                         },
                         p.span.clone(),
                     )
@@ -879,17 +876,17 @@ fn lower_expr(
             expr: inner,
             resolved_type,
         } => {
-            // Read the inline resolved type set by the type checker.
-            // Type::Error (failed inference) → fall back to Type::Unknown (accept-all).
-            // None (type checker didn't run, or --no-typecheck) → Type::Unknown.
-            let ty = match resolved_type.get() {
-                Some(crate::type_def::Type::Error(_)) | None => crate::type_def::Type::Unknown,
-                Some(ty) => ty.clone(),
-            };
+            // Read the inline TypeValue set by the type checker.
+            // None (type checker didn't run, or --no-typecheck) → TypeValue.Unknown (accept-all).
+            // TypeValue.Unknown covers both "not inferred" and "Error during inference" cases.
+            let tv = resolved_type
+                .get()
+                .cloned()
+                .unwrap_or_else(crate::value::unknown_type_val);
             CoreExpr::TypeAssert {
                 annotation: annotation.clone(),
                 expr: Arc::new(lower_inner(inner, diagnostics, scope_frames)),
-                resolved_type: ty,
+                resolved_type: tv,
                 pipeline_blame: None,
             }
         }

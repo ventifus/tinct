@@ -1,0 +1,6 @@
+# Mutual recursion without type annotations type-checks.
+[a: [fn [let x] [call $b $x]]]
+[b: [fn [let y] $y]]
+[result: [call $a 7]]
+=== out
+["result": 7]

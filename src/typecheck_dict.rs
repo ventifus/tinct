@@ -1,7 +1,7 @@
 //! Dict type inference — `compute_sccs` unit tests.
 //!
 //! Dict inference is fully implemented in `typecheck_cek::run_typecheck_dict`, called from:
-//!   - `AfterDictPassZero` handler in `typecheck_cek::apply_cont`
+//!   - `DictPassZero` handler in `typecheck_cek::apply_cont` (terminal dict expressions)
 //!   - `process_document` (top-level dict expressions)
 //!   - `run_typecheck` Sequential arm (intermediate dict bodies via CEK machine)
 

@@ -1,0 +1,5 @@
+# Type alias declaration followed by constructor access: no Unknown in result.
+[Color: [type Red Green Blue]]
+[c: Color.Red]
+=== out
+["c": Color.Red]

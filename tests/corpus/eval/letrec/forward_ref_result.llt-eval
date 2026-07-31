@@ -1,0 +1,5 @@
+# Forward reference call result type: calling unannotated $f returns the arg.
+[f: [fn [let x] $x]]
+[result: [call $f 42]]
+=== out
+["result": 42]

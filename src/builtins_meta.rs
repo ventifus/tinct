@@ -2634,10 +2634,8 @@ pub(crate) fn builtin_lint_pipeline_docs(
 /// Takes exactly 3 args:
 /// - arg0: Value::Document (already resolved)
 /// - arg1: Value::TypeContext
-/// - arg2: Value::Dict — the doc-env. String-keyed thunks are extracted and built into
-///   a GroupSpine stored in `state.type_stage_eval_group` so `eval_type_stage_expr`
-///   resolves type-stage VarRefs from the accumulated environment. Also seeds
-///   `state.scope_frames` for typeclass instance dispatch via `check_constraints_on_var`.
+/// - arg2: Value::Dict — the doc-env. Seeds `state.scope_frames` for typeclass instance
+///   dispatch via `check_constraints_on_var`.
 ///
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
@@ -2674,35 +2672,19 @@ pub(crate) fn builtin_typecheck_doc(
         // Extract string-keyed thunks in insertion order and build a GroupSpine so that
         // eval_type_stage_expr can resolve names from the accumulated environment.
         // Also store the env_val for building scope_frames below.
-        let (doc_env_spine, doc_env_val): (
-            Option<std::sync::Arc<crate::value::GroupSpine>>,
-            Option<Value>,
-        ) = {
+        // Extract the doc-env Dict value for building scope_frames below.
+        let doc_env_val: Option<Value> = {
             let env_val = args[2].require_value()?.clone();
             match env_val {
                 Value::Dict {
                     entries: dict_map,
                     ref type_val,
                 } => {
-                    let thunks: Vec<Arc<Thunk>> = dict_map
-                        .iter()
-                        .filter_map(|(k, v)| {
-                            if matches!(k, HashableValue::Str(_)) {
-                                Some(Arc::clone(v))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    let spine = Some(crate::value::GroupSpine::from_flat(thunks));
                     let tv = Arc::clone(type_val);
-                    (
-                        spine,
-                        Some(Value::Dict {
-                            entries: dict_map,
-                            type_val: tv,
-                        }),
-                    )
+                    Some(Value::Dict {
+                        entries: dict_map,
+                        type_val: tv,
+                    })
                 }
                 other => {
                     return Err(EvalError::internal(
@@ -2765,17 +2747,75 @@ pub(crate) fn builtin_typecheck_doc(
                 .into());
             }
 
-            // Install the TypeContextData's accumulated type-stage scope chain.
-            // Ensure an innermost frame exists for declarations discovered during this typecheck.
+            // Install the TypeContextData's accumulated type-stage data.
+            // Ensure an innermost scope frame exists for declarations discovered during this typecheck.
             state.type_stage_scope = guard.type_stage_scope.clone();
+            state.type_stage_fns = guard.type_stage_fns.clone();
+            state.type_stage_type_vars = guard.type_stage_type_vars.clone();
             if state.type_stage_scope.is_empty() {
                 state
                     .type_stage_scope
                     .push(std::collections::HashMap::new());
             }
 
-            // Store doc-env GroupSpine for eval_type_stage_expr.
-            state.type_stage_eval_group = doc_env_spine;
+            // T-2085: Seed flat_type_env with type-stage entries at their absolute LGM slots.
+            // Use scope_frames[0] (the full root+env frame) for slot lookup.
+            // This mirrors what typecheck_program_bootstrap does using root_frame_for_ts.
+            if let Some(ref frames) = state.scope_frames {
+                if let Some(full_frame) = frames.first() {
+                    // Resolved TypeValue entries
+                    for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
+                        if let Some(&slot) = full_frame.get(name.as_str()) {
+                            state.flat_type_env.write().unwrap().insert_at_slot(
+                                slot as usize, name.clone(), Arc::clone(tv), None
+                            );
+                        }
+                        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), Arc::clone(tv));
+                    }
+                    // Function entries (Op placeholder)
+                    for (name, _thunk) in &state.type_stage_fns {
+                        let tv = crate::type_infer::make_typevalue_op(name);
+                        if let Some(&slot) = full_frame.get(name.as_str()) {
+                            state.flat_type_env.write().unwrap().insert_at_slot(
+                                slot as usize, name.clone(), Arc::clone(&tv), None
+                            );
+                        }
+                        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), tv);
+                    }
+                    // TypeVar entries (Op placeholder)
+                    for (name, _kind) in &state.type_stage_type_vars {
+                        let tv = crate::type_infer::make_typevalue_op(name);
+                        if let Some(&slot) = full_frame.get(name.as_str()) {
+                            state.flat_type_env.write().unwrap().insert_at_slot(
+                                slot as usize, name.clone(), Arc::clone(&tv), None
+                            );
+                        }
+                        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), tv);
+                    }
+                }
+            }
+
+            // Also seed flat_type_env from inference_env slots (accumulated type schemes from
+            // prior documents). This ensures cross-document references work at depth=0.
+            {
+                let env_read = guard.inference_env.read().unwrap();
+                for (idx, slot_entry) in env_read.slots.iter().enumerate() {
+                    if let Some((slot_name, slot)) = slot_entry {
+                        if let Some(ref scheme) = slot.scheme {
+                            state.flat_type_env.write().unwrap().insert_at_slot(
+                                idx, slot_name.clone(), Arc::clone(scheme), slot.definition_span.clone()
+                            );
+                        }
+                    }
+                }
+                for (flat_name, flat_slot) in &env_read.extras {
+                    if let Some(ref scheme) = flat_slot.scheme {
+                        state.flat_type_env.write().unwrap().insert_scheme_named_only(
+                            flat_name.clone(), Arc::clone(scheme)
+                        );
+                    }
+                }
+            }
 
             let parent_env = Arc::clone(&guard.inference_env);
             (state, parent_env)
@@ -2792,6 +2832,20 @@ pub(crate) fn builtin_typecheck_doc(
             &mut type_map_ref,
         )
         .await;
+
+        // T-2085: After process_document, update flat_type_env with the GENERALIZED schemes
+        // from doc_env. The Sequential handler added UN-GENERALIZED TypeVars to flat_type_env
+        // during processing. Override with the correct generalized schemes from doc_env's extras.
+        {
+            let doc_env_read = doc_env.read().unwrap();
+            for (name, slot) in &doc_env_read.extras {
+                if let Some(ref scheme) = slot.scheme {
+                    state.flat_type_env.write().unwrap().insert_scheme_named_only(
+                        name.clone(), Arc::clone(scheme)
+                    );
+                }
+            }
+        }
 
         // Collect TypeDiagnostics from state.diagnostics — now includes inline CEK emissions
         let mut type_diagnostics: Vec<crate::error::TypeDiagnostic> =
@@ -3017,9 +3071,18 @@ pub(crate) fn builtin_get_type_context(
 
 /// `builtin-make-type-ctx`: Create a fresh TypeContext seeded with core type definitions.
 ///
-/// Creates a `TypeContextData` and installs it on the current `EvalContext`. Returns a
-/// `Value::TypeContext` handle wrapping the same `Arc<Mutex<TypeContextData>>` stored on
-/// `EvalContext` — so both the returned handle and the EvalContext share the same mutable state.
+/// Creates a `TypeContextData` seeded with:
+/// - `inference_env`: the builtin_core type env (type schemes for core builtins)
+/// - `type_stage_scope`: the builtin_core type-stage scope (Integer, String, Dict, DirCap, etc.)
+///
+/// B-663: the type-stage scope MUST be seeded with `builtin_core_ts_scope` (not `Vec::new()`)
+/// so that annotations like `@Dict`, `@Integer`, `@String` resolve to the correct TypeValues
+/// (e.g., `Dict` → open-record TypeValue.Record with Uniform tail). Without this seeding,
+/// `uses-scope` wires TyConDefs via `merge_env_schemes_into_env`, inserting `Dict → Op("Dict")`
+/// which is the nominal type (not the open-record structural type needed for annotation checks).
+///
+/// Returns a `Value::TypeContext` handle. Also installs on the EvalContext via `init_type_context`
+/// (no-op if already initialized).
 ///
 /// Signature: `[builtin-make-type-ctx]`
 pub(crate) fn builtin_make_type_ctx(
@@ -3037,14 +3100,25 @@ pub(crate) fn builtin_make_type_ctx(
         if !args.is_empty() {
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
-        // Fresh TypeContext seeded with the builtin_core type env.
-        // Use this for isolated type-checking that shouldn't inherit accumulated state.
-        // For loader's fundamental-tc, use [builtin-get-type-context] instead —
-        // it returns the TypeContext that main.rs pre-populated from builtin_core.llt.
+        // Fresh TypeContext seeded with the builtin_core type env AND type-stage scope.
+        //
+        // B-663: type_stage_scope must include builtin_core.llt's type-stage entries
+        // (Integer, String, Dict, DirCap, etc.) so that @Dict and similar annotations
+        // resolve to the correct TypeValues (e.g., Dict → open-record TypeValue.Record)
+        // rather than undefined or to an Op type from TyConDef wiring.
+        //
+        // Without this seeding, when uses-scope wires TyConDefs via merge_env_schemes_into_env,
+        // it inserts Dict → Op("Dict") (a nominal type, not the open-record type). Subsequent
+        // @Dict annotations then incorrectly resolve to Op("Dict") or worse, to whatever type
+        // was produced by an unrelated type_stage_scope[0] entry that happened to win the
+        // or_insert ordering contest.
+        let type_stage_data = crate::imports::get_builtin_core_type_stage_scope().await;
         let tc = TypeContextData {
             inference_env: crate::imports::get_builtin_core_type_env().await,
             tycon_env: std::collections::HashMap::new(),
-            type_stage_scope: Vec::new(),
+            type_stage_scope: type_stage_data.scope,
+            type_stage_fns: type_stage_data.fns,
+            type_stage_type_vars: type_stage_data.type_vars,
             type_diagnostics: Vec::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
@@ -3119,11 +3193,11 @@ pub(crate) fn builtin_fork_type_ctx(
 /// For each string-keyed entry in the env-dict:
 ///   - Materializes the thunk value
 ///   - Delegates to `classify_type_stage_entry` (same logic as the bootstrap path in imports.rs):
-///     - TypeNode leaf (Int, String, etc.) → TypeStageEntry::Resolved
-///     - TypeNode.TypeVar sentinel → TypeStageEntry::TypeVar
-///     - Complex TypeNode variant (Union, TypeApplication, Arrow, etc.) → TypeStageEntry::Resolved
+///     - TypeNode leaf (Int, String, etc.) → TypeValue in type_stage_scope
+///     - TypeNode.TypeVar sentinel → kind string in type_stage_type_vars
+///     - Complex TypeNode variant (Union, TypeApplication, Arrow, etc.) → TypeValue in type_stage_scope
 ///       via `typenode_value_to_type` using the existing scope as context
-///     - Function → TypeStageEntry::Function (parameterized type constructor)
+///     - Function → thunk in type_stage_fns (parameterized type constructor)
 ///     - Otherwise: skips (not a type-stage value)
 ///
 /// The new frame is prepended to `TypeContextData.type_stage_scope` (Vec[0] = innermost,
@@ -3192,21 +3266,24 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             })
             .collect();
 
-        // Snapshot the existing type_stage_scope so complex TypeNode variants (TypeApplication,
-        // Union, Arrow, etc.) can be resolved by typenode_value_to_type, which requires
-        // the scope chain for recursive conversion of child TypeNode values.
+        // Snapshot the existing resolved type_stage_scope so complex TypeNode variants
+        // (TypeApplication, Union, Arrow, etc.) can be resolved by typenode_value_to_type,
+        // which requires the scope chain for recursive conversion of child TypeNode values.
         let existing_scope: Vec<
-            std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
+            std::collections::HashMap<String, crate::type_infer::TypeValue>,
         > = {
             let guard = tc_arc.lock().unwrap();
             guard.type_stage_scope.clone()
         };
 
-        // Materialize each thunk and convert to TypeStageEntry
-        let mut new_frame = std::collections::HashMap::new();
+        // Materialize each thunk and classify into the three maps
+        let mut new_frame: std::collections::HashMap<String, crate::type_infer::TypeValue> = std::collections::HashMap::new();
+        let mut new_fns: std::collections::HashMap<String, Arc<Thunk>> = std::collections::HashMap::new();
+        let mut new_type_vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for (name, thunk) in to_process {
             let val = materialize(&thunk, None, &ctx).await?;
-            let entry = match crate::imports::classify_type_stage_entry(
+            let classified = match crate::imports::classify_type_stage_entry(
+                &name,
                 &thunk,
                 &val,
                 &ctx,
@@ -3214,16 +3291,30 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             )
             .await?
             {
-                Some(e) => e,
+                Some(c) => c,
                 None => continue, // not a type-stage value — skip
             };
-            new_frame.insert(name, entry);
+            let (tv, opt_thunk, opt_kind) = classified;
+            new_frame.insert(name.clone(), Arc::clone(&tv));
+            if let Some(thunk_arc) = opt_thunk {
+                new_fns.insert(name.clone(), thunk_arc);
+            }
+            if let Some(kind_str) = opt_kind {
+                new_type_vars.insert(name.clone(), kind_str);
+            }
         }
 
         // Prepend new frame — it becomes innermost (Vec[0]), highest priority
         {
             let mut guard = tc_arc.lock().unwrap();
             guard.type_stage_scope.insert(0, new_frame);
+            // Merge fns and type_vars (new entries take precedence via or_insert)
+            for (name, thunk_arc) in new_fns {
+                guard.type_stage_fns.entry(name).or_insert(thunk_arc);
+            }
+            for (name, kind_str) in new_type_vars {
+                guard.type_stage_type_vars.entry(name).or_insert(kind_str);
+            }
         }
 
         // Return same TypeContext Arc (mutations visible through it)

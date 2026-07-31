@@ -35,14 +35,14 @@ TypeValue: [type
     Repr:         [repr: String  is: [or [] Fn]]     # Rust-backed; is: = validity predicate
     Phantom:      []                                  # no-payload phantom type
     Var:          [name: String]                      # inference variable; level in InferenceContext
-    Fn:           [params: Dict  return: TypeValue]   # function TypeValue; self-referential
+    Fn:           [params: Dict  return: TypeValue  param-names: Dict  variadic: [or [] true]]   # function TypeValue; self-referential
     App:          [op: TypeValue  arg: TypeValue]     # type application T[A]
     Op:           [name: String]                      # type operator (type constructor name only)
     Record:       [fields: Dict  tail: [or [] TypeValue]]  # structural record; [] = closed
     Union:        [members: Dict]                     # BAS union
     Inter:        [members: Dict]                     # BAS intersection
     Neg:          [of: TypeValue]                     # BAS negation
-    Scheme:       [vars: Dict  constraints: Dict  body: TypeValue]  # polymorphic scheme
+    Scheme:       [vars: Dict  constraints: Dict  body: TypeValue  narrowings: [or [] Dict]  doc: [or [] String]]  # polymorphic scheme
     IntLit:       [value: Integer]                    # integer literal type
     FloatLit:     [value: Float64]                    # float literal type
     StrLit:       [value: String]                     # string literal type
@@ -183,24 +183,32 @@ The dep_graph is also a shadow of information the type checker already computes:
 The type-check pass maintains two fields in `InferState` (the local per-pass state, not the persistent `InferenceContext`):
 
 ```rust
-current_binding: Option<String>,               // which dict entry is currently being inferred
-use_def:         HashMap<String, HashSet<String>>,  // use_def[name] = names name's expression referenced
+current_binding: Option<BindingId>,               // which dict entry is currently being inferred
+use_def:         HashMap<BindingId, HashSet<BindingId>>,  // use_def[id] = BindingIds id's expression referenced
 ```
 
-In `run_typecheck_dict`, each entry's inference is bracketed:
+where `BindingId { def_span: Span, name: String }` — `def_span` is the source span of the binding's
+declaration (from its env slot), stable across all Arc frame allocations (unlike frame pointers which
+differ between dict_env, scc_env, and new_env_inner). Two bindings with the same name but from
+different source locations have distinct `def_span` values and are therefore distinct `BindingId`s.
+
+In `run_typecheck_dict`, each entry's inference is bracketed with a save/restore:
 
 ```rust
-state.current_binding = Some(entry_name.clone());
+let saved_binding = state.current_binding.take();
+state.current_binding = Some(BindingId { def_span: entry.span.clone(), name: entry_name.clone() });
 // ... type-check entry value ...
-state.current_binding = None;
+state.current_binding = saved_binding;
 ```
 
 At the VarRef resolution site — alongside the existing `referenced` mark — the edge is recorded for free:
 
 ```rust
 if let Some(ref binder) = state.current_binding {
-    if binder.as_str() != name {
-        state.use_def.entry(binder.clone()).or_default().insert(name.to_string());
+    let dep_span = find_extras_def_span(state, name);
+    let dep_id = BindingId { def_span: dep_span, name: name.to_string() };
+    if *binder != dep_id {
+        state.use_def.entry(binder.clone()).or_default().insert(dep_id);
     }
 }
 ```
@@ -521,8 +529,8 @@ struct InferenceContext {
 ```rust
 struct InferState {
     ctx:             InferenceContext,
-    current_binding: Option<String>,               // which dict entry is currently being inferred
-    use_def:         HashMap<String, HashSet<String>>, // per-binding use-def graph for liveness BFS
+    current_binding: Option<BindingId>,               // which dict entry is currently being inferred
+    use_def:         HashMap<BindingId, HashSet<BindingId>>, // per-binding use-def graph for liveness BFS
     // ... diagnostics, level, etc.
 }
 ```

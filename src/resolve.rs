@@ -810,7 +810,8 @@ impl SurfaceResolver {
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
                     // case uses parent lookup; outer `.b` / `.c` desugar to field-getter calls.
                     if let Some(coords) = self.resolve_name_parent(name) {
-                        resolution.set(Some(coords));
+                        resolution.set(Some(coords.clone()));
+                        self.table.insert(node_id(arc), coords);
                     } else {
                         // Resolver ran but name not found in parent — emit error node.
                         resolution.set(None);

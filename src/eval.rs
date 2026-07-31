@@ -14,7 +14,6 @@ mod eval_dict_mod;
 
 pub(crate) use eval_dict_mod::*;
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -23,7 +22,7 @@ use indexmap::IndexMap;
 use crate::ast::{Span, Spanned, SurfaceNode, SurfaceProgram};
 use crate::error::{EvalError, EvalResult};
 use crate::rust_span;
-use crate::types::{Row, Type};
+use crate::type_tags::*;
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
@@ -431,10 +430,15 @@ pub struct TypeContextData {
     /// type-checks (builtin_io.llt, builtin_async.llt, ...) without requiring them to
     /// re-declare types they receive from the runtime environment.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
-    /// Type-stage scope chain: pre-computed types from type-stage evaluation.
+    /// Type-stage scope chain: pre-computed resolved TypeValues from type-stage evaluation.
     /// Vec[0] = innermost (highest priority); Vec[N-1] = outermost.
     /// Populated by builtin-tc-update-type-stage-env and builtin_typecheck_doc write-back.
-    pub type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+    /// Function entries live in `type_stage_fns`; TypeVar entries live in `type_stage_type_vars`.
+    pub type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
+    /// Parameterized type constructor thunks: name → function thunk (e.g., Seq, Result).
+    pub type_stage_fns: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
+    /// TypeVar kind annotations: name → kind string (e.g., "Operator", "Label").
+    pub type_stage_type_vars: std::collections::HashMap<String, String>,
     /// Accumulated type errors from all `builtin-typecheck-doc` calls.
     /// Each call to `builtin-typecheck-doc` appends the errors from that document to this vec.
     /// Type diagnostics (errors + warnings + info) from the most recent typecheck pass.
@@ -481,12 +485,14 @@ pub struct EvalContext {
     /// span matches a guard and wraps it with a runtime Guarded thunk if so.
     /// HashMap for O(1) lookup at thunk creation time in eval_core_expr.
     /// Populated by the type checker via set_boundary_guards().
-    pub boundary_guards: RwLock<HashMap<Span, Type>>,
+    pub boundary_guards: RwLock<HashMap<Span, Arc<crate::value::Value>>>,
     /// Monad resolutions for inferred [do] forms: sentinel VarRef name → monad variable name.
     /// The type checker records the resolved monad name here (keyed by the sentinel name, e.g.,
     /// `ℊꜱʏᴍ⧼do-infer⧽0`). At eval time, when a FreeVar with that name is evaluated, the
     /// evaluator looks up this map by name and returns the monad dict value from the environment.
-    /// Populated by the type checker via set_do_infer_resolutions(), consumed during eval().
+    /// Populated by the prelude at runtime via set_do_infer_resolutions(), consumed during eval().
+    /// The type checker does not write to this map — it returns TypeValue.Unknown for do-infer
+    /// sentinel calls and leaves monad-type resolution entirely to the runtime prelude.
     pub do_infer_resolutions: RwLock<HashMap<String, String>>,
     /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs).
     /// Used by `builtin_include` to inject `%libdir` into the included file's environment
@@ -1102,7 +1108,7 @@ impl EvalContext {
 
     /// Set boundary guards from type inference.
     /// Called after type checking to wire gradual typing runtime checks.
-    pub fn set_boundary_guards(&self, guards: HashMap<Span, Type>) {
+    pub fn set_boundary_guards(&self, guards: HashMap<Span, Arc<crate::value::Value>>) {
         *self.boundary_guards.write().unwrap() = guards;
     }
 
@@ -1140,254 +1146,501 @@ fn eval_context_is_send_sync() {
     assert_sync::<EvalContext>();
 }
 
-/// Extract the ground type of a runtime value for consistent subtyping validation.
+/// Extract the ground TypeValue of a runtime value for consistent subtyping validation.
 ///
-/// Maps runtime `Value` variants to their ground `Type`. Erased positions (Seq elements,
-/// Map values, Dict field values, Function params/returns) become `Type::Unknown`.
-/// The consistent subtyping relation (`is_consistent_subtype`) then accepts `Unknown`
+/// Maps runtime `Value` variants to their ground `TypeValue` (Arc<Value>). Erased positions
+/// (Seq elements, Dict field values, Function params/returns) become `TypeValue.Unknown`.
+/// The consistent subtyping relation (`bas::is_consistent_subtype`) then accepts `Unknown`
 /// against any annotation, implementing AGT gradual typing semantics.
 ///
-/// **Laziness preservation:** This function MUST NOT force any thunks. Field types in Dict
-/// values are erased to `Unknown` without materializing the values. Element types in Seq
-/// values are erased to `Unknown` without consuming the sequence. This is the same tradeoff
-/// as `value_matches_type` tag-only validation: forcing all elements/fields would break
-/// lazy evaluation guarantees.
-pub fn ground_type_of(v: &Value) -> Type {
+/// **Laziness preservation:** This function MUST NOT force any thunks.
+pub(crate) fn ground_typevalue_of(v: &Value) -> Arc<Value> {
+    use crate::type_infer::{make_typevalue_repr, make_typevalue_unknown};
     match v {
-        Value::Int { .. } => Type::Int,
-        // U64 values have Int ground type — no dedicated Type::U64 yet (see typecheck.rs).
-        Value::U64 { .. } => Type::Int,
-        Value::Float { .. } => Type::Float,
-        Value::String { .. } => Type::Str,
-        Value::Bytes { .. } => Type::Bytes,
-        Value::Dict { entries: map, .. } => Type::Dict(extract_row(map)),
-        // Populate fixed params, typed variadics, and rest from CoreParam.resolved_type.
-        // Classification mirrors bind_args_thunks BIND-SPLIT:
-        //   - variadic + concrete resolved_type (not None/Unknown) → typed_variadics bucket
-        //   - variadic + None/Unknown → rest
-        //   - !variadic → fixed params
-        // This allows is_consistent_subtype to correctly validate function types at runtime.
-        Value::Function { params, .. } => {
-            let mut fixed: Vec<(Option<String>, Type)> = Vec::new();
-            let mut typed_variadics: Vec<(String, Type)> = Vec::new();
-            let mut rest: Option<Box<(String, Type)>> = None;
-            for p in params.iter() {
-                let resolved = p.resolved_type.clone().unwrap_or(Type::Unknown);
-                if p.variadic {
-                    if matches!(resolved, Type::Unknown) {
-                        rest = Some(Box::new((p.name.clone(), resolved)));
-                    } else {
-                        typed_variadics.push((p.name.clone(), resolved));
-                    }
-                } else {
-                    fixed.push((Some(p.name.clone()), resolved));
-                }
-            }
-            let required_count = params
-                .iter()
-                .filter(|p| {
-                    !p.variadic
-                        && p.annotation
-                            .as_ref()
-                            .and_then(|ann| ann.node.get_property("default"))
-                            .is_none()
-                })
-                .count();
-            Type::Function {
-                params: fixed,
-                typed_variadics,
-                rest,
-                ret: Box::new(Type::Unknown),
-                required_count,
-            }
+        Value::Int { .. } | Value::U64 { .. } => make_typevalue_repr(REPR_INT),
+        Value::Float { .. } => make_typevalue_repr(REPR_FLOAT),
+        Value::String { .. } => make_typevalue_repr(REPR_STRING),
+        Value::Bytes { .. } => make_typevalue_repr(REPR_BYTES),
+        Value::Dict { .. } => {
+            // Record with all fields erased to Unknown — structural tag-only check.
+            // The full field set is not inspected (would require forcing thunks).
+            make_typevalue_repr(REPR_DICT)
         }
-        // Capability types: Unknown → is_consistent_subtype accepts against any annotation.
-        // Preserves current accept-all behavior while capability-runtime-validation sprint is pending.
-        Value::File { .. } => Type::Unknown,
-        Value::DirCap { .. } | Value::RevocableDirCap { .. } => Type::Unknown,
-        Value::NetCap { .. } => Type::Unknown,
-        // Variant payload types erased (payload ThunkId has no static type without the schema).
-        Value::Variant { ctor, .. } => Type::NominalVariant {
-            tycon: crate::value::tycon_name_from_ctor(ctor.as_ref()).to_string(),
-            ctor: ctor.as_ref().to_string(),
-            fields: Row {
-                fields: indexmap::IndexMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            },
-        },
-        // Decimal/BigInt: no Type::Decimal/Type::BigInt in the type system yet.
-        // Unknown preserves current behavior (matches @Number) until those variants are added.
-        Value::Decimal { .. } | Value::BigInt { .. } => Type::Unknown,
-        // Builtin functions and Proxy values: Unknown accepts any function/type annotation.
-        Value::Builtin { .. } | Value::Proxy { .. } => Type::Unknown,
-        // Builder is a transient construction artifact — produce Top (type mismatch error)
-        // rather than panicking; Builder can reach TypeAssert via e.g. [@Int [make-builder]].
-        Value::Builder(..) => Type::Any,
+        Value::Function { .. } | Value::Builtin { .. } => make_typevalue_repr(REPR_FUNCTION),
+        Value::Variant { ctor, .. } => {
+            // Produce a TypeValue.Op with the tycon name for nominal dispatch.
+            let tycon = crate::value::tycon_name_from_ctor(ctor.as_ref());
+            crate::type_infer::make_typevalue_op(tycon)
+        }
         // Annotated is transparent — delegate to inner value's ground type.
-        Value::Annotated { inner, .. } => ground_type_of(inner),
-        // All other runtime-only types (URI, async, crypto, etc.) → Top
-        _ => Type::Any,
+        Value::Annotated { inner, .. } => ground_typevalue_of(inner),
+        // All other runtime-only types → Unknown (gradual: accept any annotation).
+        _ => make_typevalue_unknown(),
     }
 }
 
-/// Extract the ground record type from a Dict: key names only, field types erased to Unknown.
-///
-/// MUST NOT force any ThunkId — field types are static-only (same tradeoff as Seq elements).
-/// `is_consistent_subtype` then handles width subtyping: `{a: Unknown} ~<: {a: Int}` holds
-/// because `Unknown ~<: Int`. Field presence is checked structurally; field types are not.
-///
-/// Integer-keyed entries (`HashableValue::Int`) are skipped — they are explicit positional entries
-/// like `[0: x 1: y]`, not record fields.
-fn extract_row(map: &IndexMap<HashableValue, Arc<Thunk>>) -> Row {
-    let fields = map
-        .keys()
-        .filter_map(|k| match k {
-            HashableValue::Str(name) => Some((name.to_string(), Type::Unknown)),
-            // Non-string-keyed entries (integers, bools, variants, nested dicts) are not record fields.
-            _ => None,
-        })
-        .collect::<indexmap::IndexMap<String, Type>>();
-    Row {
-        fields,
-        tail: crate::type_def::RowTail::Empty,
-    }
-}
-
-/// Check if a materialized value matches a type for structural TypeAssert validation.
+/// Check if a materialized value matches a TypeValue for structural TypeAssert validation.
 /// Returns true if the value conforms to the expected type.
 ///
-/// **Component 3 unified path:** Delegates to `is_consistent_subtype(ground_type_of(v), T)`.
-/// The consistent subtyping relation handles Unknown at erased positions (Seq elements,
-/// Dict field values, Function params/returns), implementing AGT gradual typing semantics.
+/// **TyCon dispatch:** `TypeValue.Op(name)` and `TypeValue.App(TypeValue.Op(name), _)` are
+/// handled by looking up `name` in `ctx.tycon_env()`. If the def has `builtin_type`, dispatch
+/// on its discriminant string to check the corresponding Value variant. If the def is nominal
+/// (has constructors), check that the value is a Variant whose tag starts with `"<name>."`.
 ///
-/// **TyCon dispatch:** `Type::TyCon(name)` and `Type::App(f, _)` are handled by looking up
-/// `name` in `ctx.tycon_env()`. If the def has `builtin_type`, dispatch on its discriminant
-/// string to check the corresponding Value variant. If the def is nominal (has constructors),
-/// check that the value is a Variant whose tag starts with `"<name>."`. If the TyCon is not
-/// found in the env, return `false` conservatively.
+/// **Gradual types:** `TypeValue.Unknown` and `TypeValue.Top` match everything.
+/// `TypeValue.Never` matches nothing. `TypeValue.Var` is treated as Unknown at runtime.
 ///
-/// No fast-path bypasses for other types — the consistent subtyping relation handles everything
-/// uniformly. If primitive checks prove slow in profiling, optimize `is_consistent_subtype`
-/// itself, which benefits every call site across the codebase.
+/// **Fallback:** Builds a ground TypeValue from the runtime value and delegates to
+/// `bas::is_consistent_subtype` for proper structural checking.
 ///
-/// Value::Annotated is transparent: `ground_type_of(Value::Annotated { inner, .. })` delegates
-/// to `ground_type_of(inner)`, so the annotation wrapper is invisible to type checking.
-pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalContext) -> bool {
-    // Resolve the root TyCon name for TyCon and App types, then dispatch via TyConDef.
-    let tycon_name: Option<&str> = match expected {
-        Type::TyCon(name) => Some(name.as_str()),
-        Type::App(f, _) => {
-            if let Type::TyCon(name) = f.as_ref() {
-                Some(name.as_str())
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    if let Some(name) = tycon_name {
-        return match ctx.tycon_env().and_then(|env| env.get(name)) {
-            Some(def) => {
-                if let Some(discriminant) = &def.builtin_type {
-                    // Builtin type: map discriminant string to a Value variant check.
-                    match discriminant.as_str() {
-                        "Int" => matches!(value, Value::Int { .. }),
-                        "Str" => matches!(value, Value::String { .. }),
-                        "Float" => matches!(value, Value::Float { .. }),
-                        "Bytes" => matches!(value, Value::Bytes { .. }),
-                        "Dict" => matches!(value, Value::Dict { .. }),
-                        "Fn" => matches!(value, Value::Function { .. } | Value::Builtin { .. }),
-                        "File" => matches!(value, Value::File { .. }),
-                        // Opaque builtin types. Discriminant strings must match the entries
-                        // registered in build_builtin_core_envs_inner (imports.rs) and the
-                        // TypeNode tags in typenode_leaf_to_type (type_normalize.rs).
-                        // Note: Value::Builder is the Rust variant for BuilderHandle (type_name
-                        // returns "Builder" but the TyCon is "BuilderHandle" — see value_tycon_name).
-                        // Note: Value::Uri covers both Uri and Urn; there is no separate Value::Urn.
-                        "Program" => matches!(value, Value::Program { .. }),
-                        "Document" => matches!(value, Value::Document { .. }),
-                        "TypeContext" => matches!(value, Value::TypeContext { .. }),
-                        "DirCap" => {
-                            matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. })
-                        }
-                        "NetCap" => matches!(value, Value::NetCap { .. }),
-                        "BuilderHandle" => matches!(value, Value::Builder(_)),
-                        "Task" => matches!(value, Value::Task { .. }),
-                        "Channel" => matches!(value, Value::Channel { .. }),
-                        "Context" => matches!(value, Value::Context { .. }),
-                        "ReactiveCell" => matches!(value, Value::ReactiveCell { .. }),
-                        "ClockCap" => matches!(value, Value::ClockCap { .. }),
-                        "Timezone" => matches!(value, Value::Timezone { .. }),
-                        "Timestamp" => matches!(value, Value::Timestamp { .. }),
-                        "Duration" => matches!(value, Value::Duration { .. }),
-                        "Decimal" => matches!(value, Value::Decimal { .. }),
-                        "BigInt" => matches!(value, Value::BigInt { .. }),
-                        "QuicSession" => matches!(value, Value::QuicSession { .. }),
-                        "QuicDatagramHandle" => matches!(value, Value::QuicDatagramHandle { .. }),
-                        "Http2Session" => matches!(value, Value::Http2Session { .. }),
-                        "Http3Session" => matches!(value, Value::Http3Session { .. }),
-                        "Uri" | "Urn" => matches!(value, Value::Uri { .. }),
-                        // Unknown discriminant: conservative false.
-                        _ => false,
-                    }
-                } else if !def.constructors.is_empty() {
-                    // Nominal (user-defined) type: value must be a Variant with ctor prefix matching name.
-                    matches!(value, Value::Variant { ctor, .. } if crate::value::tycon_name_from_ctor(ctor.as_ref()) == name)
-                } else {
-                    // TyCon found but no builtin_type and no constructors yet (T-1003/T-1018).
-                    // Conservative: unknown structure, return false.
-                    false
-                }
-            }
-            // TyCon not found in env (tycon_env is None, or name not registered).
-            None => false,
-        };
+/// Value::Annotated is transparent.
+pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &EvalContext) -> bool {
+    // Value::Proxy is a gradual type — its ground is TypeValue.Unknown, which is consistent
+    // with any annotation. Return true immediately before dispatching on the expected type.
+    if matches!(value, Value::Proxy { .. }) {
+        return true;
     }
 
-    // Pass tycon_env for variance-directed App comparison in the fallthrough subtype check.
-    Type::is_consistent_subtype(&ground_type_of(value), expected, ctx.tycon_env())
+    // Value::Annotated is transparent — delegate to the inner value.
+    if let Value::Annotated { inner, .. } = value {
+        return value_matches_type(inner, expected, ctx);
+    }
+
+    // Non-variant TypeValues (e.g. bootstrap unknown_type_val empty dict) — treat as Unknown.
+    if !matches!(expected.as_ref(), Value::Variant { .. }) {
+        return true;
+    }
+
+    // TypeValue.Record: runtime shape check — value must be a Dict with all required fields
+    // present. Under BAS width subtyping, extra fields are always accepted.
+    //
+    // This arm cannot be delegated to BAS because BAS operates on abstract TypeValues
+    // (ground_typevalue_of erases field structure by mapping Value::Dict → Repr("Value::Dict")),
+    // whereas this check requires access to the concrete value's field set.
+    //
+    // Note: field TYPE checking is deferred to guard thunks (validate_and_wrap_record in
+    // Cont::TypeAssertCheck / Cont::GuardedValidate). This arm only performs the shape check.
+    if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD) {
+        let Value::Dict { ref entries, .. } = value else {
+            return false;
+        };
+        if let Some(fields) = extract_typevalue_record_fields(expected) {
+            // All required fields must be present in the dict.
+            for field_name in fields.keys() {
+                let has_field = entries
+                    .contains_key(&HashableValue::Str(Arc::from(field_name.as_str())))
+                    || if let Ok(idx) = field_name.parse::<i64>() {
+                        entries.contains_key(&HashableValue::Int(idx))
+                    } else {
+                        false
+                    };
+                if !has_field {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Malformed TypeValue.Record — conservative false.
+        return false;
+    }
+
+    // TypeValue.Union: value matches union if it matches ANY member.
+    //
+    // Handled here (rather than delegated to BAS) because union members may include
+    // TypeValue.Record, which requires concrete value access (see Record arm above).
+    // BAS's is_consistent_subtype handles Union on sup, but uses ground_typevalue_of(value)
+    // which erases field structure, making Record members always fail.
+    if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNION) {
+        if let Value::Variant {
+            payload: Some(payload_thunk),
+            ..
+        } = expected.as_ref()
+        {
+            if let Some(Ok(Value::Dict { entries, .. })) = payload_thunk.peek_result() {
+                let members_key = HashableValue::Str(Arc::from(FIELD_MEMBERS));
+                if let Some(members_thunk) = entries.get(&members_key) {
+                    if let Some(Ok(Value::Dict {
+                        entries: members_entries,
+                        ..
+                    })) = members_thunk.peek_result()
+                    {
+                        let mut i: i64 = 0;
+                        loop {
+                            match members_entries.get(&HashableValue::Int(i)) {
+                                None => break,
+                                Some(member_thunk) => {
+                                    match member_thunk.peek_result() {
+                                        None => {
+                                            // Unsettled thunk in a TypeValue.Union — indicates an
+                                            // internal type-checker bug (TypeValues must always be
+                                            // constructed via Thunk::value() and are settled at
+                                            // construction time). Treat as a conservative type
+                                            // mismatch: the runtime evaluation path must not abort.
+                                            debug_assert!(
+                                                false,
+                                                "invariant violation: TypeValue.Union member thunk \
+                                                 at index {i} is not settled"
+                                            );
+                                            return false;
+                                        }
+                                        Some(Err(_e)) => {
+                                            // Errored thunk in a TypeValue.Union — indicates a
+                                            // type-checker bug. Conservative type mismatch.
+                                            debug_assert!(
+                                                false,
+                                                "invariant violation: TypeValue.Union member thunk \
+                                                 at index {i} contains an error: {_e:?}"
+                                            );
+                                            return false;
+                                        }
+                                        Some(Ok(member_val)) => {
+                                            let member_tv = Arc::new(member_val.clone());
+                                            if value_matches_type(value, &member_tv, ctx) {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                    i += 1;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                }
+            }
+        }
+        // Malformed TypeValue.Union — fall through to BAS.
+    }
+
+    // All other TypeValues: delegate to BAS consistent subtyping.
+    //
+    // BAS operates on a ground TypeValue derived from the runtime value. The BAS
+    // is_atom_subtype handles:
+    //   - TypeValue.Unknown / Top / Var / Never — via is_consistent_subtype preamble
+    //   - TypeValue.Repr — via ground Repr(x) <: Repr(x) structural equality
+    //   - TypeValue.Op — via (TV_REPR, TV_OP) TyCon dispatch using ctx.tycon_env
+    //   - TypeValue.App — via (TV_REPR, TV_APP) root TyCon extraction + dispatch
+    //   - TypeValue.Fn / Inter / Recursive — via atom subtype rules
+    // Construct a temporary InferenceContext with only the tycon_env (no subst/levels).
+    // When tycon_env is not yet wired (e.g., --no-typecheck or test contexts), use an
+    // empty env. TyCon lookups on unknown names return None → conservative false, which
+    // is correct: gradual types (Unknown, Top, Var) are handled before TyCon dispatch.
+    let tycon_env = ctx.tycon_env().cloned().unwrap_or_default();
+    let inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
+    let ground_tv = ground_typevalue_of(value);
+    crate::bas::is_consistent_subtype(&ground_tv, expected, &inference_ctx)
 }
 
-/// Format a Type for error messages in TypeAssert.
+/// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.
 ///
-/// Currently delegates to Type's Display impl. This wrapper provides a semantic
-/// name and future-proofs for custom error formatting (e.g., abbreviating long
-/// record types, pretty-printing nested structures).
-pub(crate) fn format_type_for_assert(ty: &Type) -> String {
-    format!("{}", ty)
+/// Produces a human-readable string from a TypeValue for type assertion error messages.
+/// Future work: produce prettier output for complex TypeValues (Union, Record, etc.).
+pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
+    // Extract the TypeValue ctor tag and payload for display.
+    match ty.as_ref() {
+        Value::Variant { ctor, payload, .. } => match ctor.as_ref() {
+            TV_REPR => {
+                // Extract repr string and map to user-friendly name.
+                if let Some(Ok(Value::Dict { entries, .. })) =
+                    payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_REPR))) {
+                        if let Some(Ok(Value::String {
+                            source, start, end, ..
+                        })) = thunk.peek_result()
+                        {
+                            return match &source[*start..*end] {
+                                REPR_INT => "Int".to_string(),
+                                REPR_FLOAT => "Float".to_string(),
+                                REPR_STRING => "String".to_string(),
+                                REPR_BYTES => "Bytes".to_string(),
+                                REPR_FUNCTION => "Fn".to_string(),
+                                REPR_DICT => "Dict".to_string(),
+                                other => other.to_string(),
+                            };
+                        }
+                    }
+                }
+                TV_REPR.to_string()
+            }
+            TV_UNKNOWN => "?".to_string(),
+            TV_TOP => "Top".to_string(),
+            TV_NEVER => "Never".to_string(),
+            TV_VAR => {
+                if let Some(Ok(Value::Dict { entries, .. })) =
+                    payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_NAME))) {
+                        if let Some(Ok(Value::String {
+                            source, start, end, ..
+                        })) = thunk.peek_result()
+                        {
+                            return source[*start..*end].to_string();
+                        }
+                    }
+                }
+                "TypeVar".to_string()
+            }
+            TV_OP => {
+                if let Some(Ok(Value::Dict { entries, .. })) =
+                    payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_NAME))) {
+                        if let Some(Ok(Value::String {
+                            source, start, end, ..
+                        })) = thunk.peek_result()
+                        {
+                            return source[*start..*end].to_string();
+                        }
+                    }
+                }
+                TV_OP.to_string()
+            }
+            TV_UNION | TV_INTER => {
+                let keyword = if ctor.as_ref() == TV_UNION {
+                    "or"
+                } else {
+                    "and"
+                };
+                if let Some(Ok(Value::Dict {
+                    entries: payload_entries,
+                    ..
+                })) = payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    if let Some(members_thunk) =
+                        payload_entries.get(&HashableValue::Str(Arc::from(FIELD_MEMBERS)))
+                    {
+                        if let Some(Ok(Value::Dict {
+                            entries: members, ..
+                        })) = members_thunk.peek_result()
+                        {
+                            let parts: Vec<String> = members
+                                .values()
+                                .filter_map(|t| {
+                                    if let Some(Ok(v)) = t.peek_result() {
+                                        Some(format_type_for_assert(&Arc::new(v.clone())))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if !parts.is_empty() {
+                                return format!("[{} {}]", keyword, parts.join(" "));
+                            }
+                        }
+                    }
+                }
+                ctor.to_string()
+            }
+            TV_NEG => {
+                if let Some(Ok(Value::Dict { entries, .. })) =
+                    payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    if let Some(inner_thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_OF)))
+                    {
+                        if let Some(Ok(inner)) = inner_thunk.peek_result() {
+                            return format!(
+                                "~{}",
+                                format_type_for_assert(&Arc::new(inner.clone()))
+                            );
+                        }
+                    }
+                }
+                "~?".to_string()
+            }
+            TV_RECORD => {
+                if let Some(Ok(Value::Dict {
+                    entries: payload_entries,
+                    ..
+                })) = payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    if let Some(fields_thunk) =
+                        payload_entries.get(&HashableValue::Str(Arc::from(FIELD_FIELDS)))
+                    {
+                        if let Some(Ok(Value::Dict {
+                            entries: fields, ..
+                        })) = fields_thunk.peek_result()
+                        {
+                            let parts: Vec<String> = fields
+                                .iter()
+                                .filter_map(|(k, v_thunk)| {
+                                    let key_str = match k {
+                                        HashableValue::Str(s) => s.to_string(),
+                                        _ => return None,
+                                    };
+                                    if let Some(Ok(v)) = v_thunk.peek_result() {
+                                        Some(format!(
+                                            "{}: {}",
+                                            key_str,
+                                            format_type_for_assert(&Arc::new(v.clone()))
+                                        ))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            return format!("[{}]", parts.join("  "));
+                        }
+                    }
+                }
+                "Dict".to_string()
+            }
+            TV_FN => {
+                // Error-display functions must never panic — use fallback strings if the
+                // TypeValue payload is malformed or contains errored thunks.
+                if let Some(Ok(Value::Dict { entries, .. })) =
+                    payload.as_ref().and_then(|t| t.peek_result())
+                {
+                    let ret_str = entries
+                        .get(&HashableValue::Str(Arc::from(FIELD_RETURN)))
+                        .and_then(|t| t.peek_result())
+                        .and_then(|r| r.ok())
+                        .map(|v| format_type_for_assert(&Arc::new(v.clone())))
+                        .unwrap_or_else(|| "?".to_string());
+                    let params_str = entries
+                        .get(&HashableValue::Str(Arc::from(FIELD_PARAMS)))
+                        .and_then(|t| t.peek_result())
+                        .and_then(|r| r.ok())
+                        .and_then(|v| match v {
+                            Value::Dict {
+                                entries: p_entries, ..
+                            } => {
+                                let parts: Vec<String> = p_entries
+                                    .values()
+                                    .filter_map(|t| {
+                                        t.peek_result()
+                                            .and_then(|r| r.ok())
+                                            .map(|pv| format_type_for_assert(&Arc::new(pv.clone())))
+                                    })
+                                    .collect();
+                                Some(parts.join(" "))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    return format!("Fn@{ret_str} [{params_str}]");
+                }
+                "<Fn: display failed>".to_string()
+            }
+            other => other.to_string(),
+        },
+        _ => "?".to_string(), // Non-variant (bootstrap unknown_type_val) → gradual
+    }
 }
 
-/// Extract a merged Record row from a type for eval-time validation.
+/// Extract field names and their TypeValues from a TypeValue.Record payload.
 ///
-/// Multi-field annotations produce `Intersection([{f1: T1}, {f2: T2}])`.
-/// For runtime validation and proxy wrapping we need a single `Row` that collects all
-/// required fields.
+/// Returns `None` if the TypeValue is not a Record or its payload is not yet settled.
+/// All TypeValue.Record instances created by the type checker use pre-settled Thunk::value
+/// payloads, so `None` here indicates a malformed or non-record TypeValue.
 ///
-/// Under BAS, all tails are Empty. The merged row's tail is also Empty.
+/// **Laziness preservation:** uses `peek_result()` to inspect settled thunks without
+/// forcing evaluation.
+fn extract_typevalue_record_fields(expected: &Arc<Value>) -> Option<IndexMap<String, Arc<Value>>> {
+    match expected.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(payload_thunk),
+            ..
+        } if ctor.as_ref() == TV_RECORD => match payload_thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
+                let fields_thunk = entries.get(&fields_key)?;
+                match fields_thunk.peek_result()? {
+                    Ok(Value::Dict {
+                        entries: field_entries,
+                        ..
+                    }) => {
+                        let mut result = IndexMap::new();
+                        for (k, v_thunk) in field_entries.iter() {
+                            let field_name = match k {
+                                HashableValue::Str(s) => s.as_ref().to_string(),
+                                _ => continue,
+                            };
+                            if let Some(Ok(fv)) = v_thunk.peek_result() {
+                                result.insert(field_name, Arc::new(fv.clone()));
+                            }
+                        }
+                        Some(result)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract a merged record fields map from a TypeValue for eval-time validation.
+///
+/// Multi-field annotations produce `TypeValue.Inter([Record{f1:T1}, Record{f2:T2}])`.
+/// For runtime validation and proxy wrapping we need a single `IndexMap<String, Arc<Value>>`
+/// that collects all required fields.
+///
+/// Under BAS, all record tails are closed. The merged fields map inherits this semantics.
 /// The cardinality check in validate_and_wrap_record is REMOVED — BAS allows extra fields.
 ///
-/// Returns `Some(&Row)` for `Type::Record` (trivial) or `Type::Intersection` whose members
-/// are all Records.  Returns `None` for anything else (scalar types, Union, etc.).
-pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
-    match expected {
-        Type::Dict(row) => Some(Cow::Borrowed(row)),
-        Type::Intersection(members) if members.iter().all(|m| matches!(m, Type::Dict(_))) => {
-            let mut merged_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-            for m in members {
-                if let Type::Dict(row) = m {
-                    for (k, v) in &row.fields {
-                        merged_fields.entry(k.clone()).or_insert_with(|| v.clone());
+/// Returns `Some(fields)` for a `TypeValue.Record` or a `TypeValue.Inter` whose all members
+/// are Records. Returns `None` for anything else (scalar types, Union, etc.).
+pub(crate) fn as_record_typevalue_merged(
+    expected: &Arc<Value>,
+) -> Option<IndexMap<String, Arc<Value>>> {
+    // Check for a single Record type.
+    if let Some(fields) = extract_typevalue_record_fields(expected) {
+        return Some(fields);
+    }
+
+    // Check for an Intersection of Records.
+    if let Value::Variant {
+        ctor,
+        payload: Some(payload_thunk),
+        ..
+    } = expected.as_ref()
+    {
+        if ctor.as_ref() == TV_INTER {
+            if let Some(Ok(Value::Dict { entries, .. })) = payload_thunk.peek_result() {
+                let members_key = HashableValue::Str(Arc::from(FIELD_MEMBERS));
+                if let Some(members_thunk) = entries.get(&members_key) {
+                    if let Some(Ok(Value::Dict {
+                        entries: members, ..
+                    })) = members_thunk.peek_result()
+                    {
+                        // Collect all members in index order and check all are Records.
+                        let mut all_fields: IndexMap<String, Arc<Value>> = IndexMap::new();
+                        let mut i = 0i64;
+                        loop {
+                            let key = HashableValue::Int(i);
+                            let Some(member_thunk) = members.get(&key) else {
+                                break;
+                            };
+                            match member_thunk.peek_result() {
+                                Some(Ok(member_val)) => {
+                                    let member_tv = Arc::new(member_val.clone());
+                                    match extract_typevalue_record_fields(&member_tv) {
+                                        Some(fields) => {
+                                            for (k, v) in fields {
+                                                // First-wins: innermost record field dominates.
+                                                all_fields.entry(k).or_insert(v);
+                                            }
+                                        }
+                                        None => return None, // Non-Record member — not pure intersection of records.
+                                    }
+                                }
+                                _ => return None,
+                            }
+                            i += 1;
+                        }
+                        if i > 0 {
+                            return Some(all_fields);
+                        }
                     }
                 }
             }
-            Some(Cow::Owned(Row {
-                fields: merged_fields,
-                tail: crate::type_def::RowTail::Empty,
-            }))
         }
-        _ => None,
     }
+
+    None
 }
 
 /// Validate a dict value against a Record type and wrap fields with guards.
@@ -1395,8 +1648,7 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
 /// Returns a new dict with guarded field thunks. This implements the [VM-RECORD-PROXY]
 /// rule from doc/07-type-extensions.md:
 /// 1. Shape check: verify all required fields exist (with HashableValue::Int fallback)
-/// 2. Cardinality check: verify no extra fields for closed records
-/// 3. Guard wrapping: wrap each typed field with a Guarded thunk
+/// 2. Guard wrapping: wrap each typed field with a Guarded thunk
 ///
 /// This function implements **chaperone semantics** (Strickland et al., 2012):
 /// the proxy (guarded dict) is observationally equivalent to the original dict at
@@ -1409,31 +1661,33 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
 ///
 /// # Parameters
 /// - `entries`: the dict entries to validate
-/// - `row`: the expected record row type (fields + tail)
+/// - `fields`: map of required field names to their expected TypeValues (Arc<Value>)
 /// - `field_path`: accumulated path for nested field errors (empty for top-level)
 /// - `guard_span`: span for guard creation
 ///
 /// # Errors
-/// Returns TypeAssertFailed if:
-/// - A required field is missing
-/// - The record has extra fields and tail is Empty (closed)
+/// Returns TypeAssertFailed if a required field is missing.
 ///
 /// # Note
 /// The caller is responsible for checking default_expr and calling eval() with the default
 /// if this function returns an error. This keeps the helper focused on validation logic.
 /// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
+///
+/// Cardinality check REMOVED under BAS:
+/// BAS width subtyping allows a value with MORE fields to satisfy an annotation with FEWER.
+/// Extra fields are never an error.
 pub(crate) fn validate_and_wrap_record(
     entries: &IndexMap<HashableValue, Arc<Thunk>>,
-    row: &Row,
+    fields: &IndexMap<String, Arc<Value>>,
     field_path: &mut Vec<String>,
     guard_span: Span,
     data_span: Span,
     default: Option<GuardDefault>,
     blame_label: Option<crate::error::BlameLabel>,
 ) -> EvalResult<IndexMap<HashableValue, Arc<Thunk>>> {
-    // Shape check: verify all required fields exist
-    // Per doc/07:117, try HashableValue::Str first, then HashableValue::Int fallback
-    for (field_name, _field_type) in row.fields.iter() {
+    // Shape check: verify all required fields exist.
+    // Per doc/07:117, try HashableValue::Str first, then HashableValue::Int fallback.
+    for field_name in fields.keys() {
         let has_field = entries.contains_key(&HashableValue::Str(Arc::from(field_name.as_str())))
             || if let Ok(idx) = field_name.parse::<i64>() {
                 entries.contains_key(&HashableValue::Int(idx))
@@ -1462,10 +1716,6 @@ pub(crate) fn validate_and_wrap_record(
         }
     }
 
-    // Cardinality check REMOVED under BAS:
-    // BAS width subtyping allows a value with MORE fields to satisfy an annotation with FEWER.
-    // Extra fields are never an error — `validate_and_wrap_record` only checks required fields.
-
     // Guard wrapping: wrap each typed field thunk.
     // Use a for loop with push/pop on field_path to avoid cloning the full path
     // for every field — only the thunk's owned copy is allocated per field.
@@ -1473,8 +1723,8 @@ pub(crate) fn validate_and_wrap_record(
     for (key, thunk) in entries.iter() {
         // Try to find a matching field type
         let field_type = match key {
-            HashableValue::Str(field_name) => row.fields.get(field_name.as_ref()),
-            HashableValue::Int(n) => row.fields.get(&n.to_string()),
+            HashableValue::Str(field_name) => fields.get(field_name.as_ref()),
+            HashableValue::Int(n) => fields.get(&n.to_string()),
             _ => None,
         };
 
@@ -1493,7 +1743,7 @@ pub(crate) fn validate_and_wrap_record(
 
             let guarded = Arc::new(Thunk::guarded(
                 Arc::clone(thunk),
-                field_type.clone(),
+                Arc::clone(field_type),
                 nested_path,
                 guard_span.clone(),
                 blame_label.clone(),
@@ -1919,7 +2169,7 @@ pub(crate) fn match_pattern<'a>(
                             ..
                         } = &pinned_val
                         {
-                            if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "TypeNode" {
+                            if crate::value::tycon_name_from_ctor(ctor.as_ref()) == TYCON_TYPENODE {
                                 return Ok(match_typenode_pattern(ctor.as_ref(), &value));
                             }
                         }
@@ -2994,15 +3244,16 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_int_fails_on_string() {
         // [@Integer "hello"] -> error
-        // Use eval_core_for_test with resolved_type: Type::Int to exercise the TypeAssert
-        // failure path directly. eval_str doesn't typecheck, so TypeAnnotation is not set, giving
-        // resolved_type=Type::Unknown (accepts all values via consistent subtyping).
+        // Use eval_core_for_test with resolved_type: make_typevalue_repr(REPR_INT) to exercise
+        // the TypeAssert failure path directly. eval_str doesn't typecheck, so TypeAnnotation is
+        // not set, giving resolved_type=TypeValue.Unknown (accepts all values via consistent subtyping).
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Integer".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -3022,14 +3273,15 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_string_fails_on_int() {
         // [@String 42] -> error  (42 is Int, not String)
-        // Use eval_core_for_test with resolved_type: Type::Str. See note in
-        // test_type_assert_int_fails_on_string for why eval_str cannot be used here.
+        // Use eval_core_for_test with resolved_type: make_typevalue_repr(REPR_STRING). See note
+        // in test_type_assert_int_fails_on_string for why eval_str cannot be used here.
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("String".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                resolved_type: Type::Str,
+                resolved_type: make_typevalue_repr(REPR_STRING),
                 pipeline_blame: None,
             },
             span,
@@ -3063,9 +3315,10 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_property_dict_type_mismatch() {
         // [@[type: Integer] "hello"] -> error (PropertyDict annotation with type:Integer, value is String)
-        // Use eval_core_for_test with resolved_type: Type::Int. The typecheck pass resolves
-        // the `type: Integer` property to Type::Int; without typecheck (eval_str), resolved_type
-        // is Type::Unknown which accepts all values via consistent subtyping.
+        // Use eval_core_for_test with resolved_type: make_typevalue_repr(REPR_INT). The
+        // typecheck pass resolves the `type: Integer` property to TypeValue.Repr("Value::Int");
+        // without typecheck (eval_str), resolved_type is TypeValue.Unknown which accepts all values.
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let entries = vec![surf_ann_entry(
             "type",
@@ -3082,7 +3335,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -3128,7 +3381,8 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_default_used_on_mismatch() {
         // [@[type: Int  default: 0] "hello"] -> 0 (type mismatch, returns default)
-        // Use eval_core_for_test with resolved_type: Type::Int so the type check fires.
+        // Use eval_core_for_test with resolved_type: make_typevalue_repr(REPR_INT) so the type check fires.
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let entries = vec![
             surf_ann_entry(
@@ -3148,7 +3402,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -3169,7 +3423,8 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_property_dict_no_default_errors_on_mismatch() {
         // [@[type: Integer] "hello"] -> error (no default, mismatch is an error)
-        // Use eval_core_for_test with resolved_type: Type::Int so the type check fires.
+        // Use eval_core_for_test with resolved_type: make_typevalue_repr(REPR_INT) so the type check fires.
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let entries = vec![surf_ann_entry(
             "type",
@@ -3186,7 +3441,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -3208,6 +3463,7 @@ mod tests {
         // B-433/B-429: [@[type: Int default: 0] <placeholder>] -> 0 (inner is dead-code Placeholder, use default)
         // When the inner expression is a CoreExpr::Placeholder (lowered from an unresolvable VarRef
         // or parse error), the default should be used instead of propagating the error.
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let entries = vec![
             surf_ann_entry(
@@ -3228,7 +3484,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Placeholder, error_span)),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -3249,6 +3505,7 @@ mod tests {
     async fn test_type_assert_record_type_rejects_non_dict() {
         // B-434 verification: [@[name: String] 42] -> error "expected record, got Int"
         // When a record type (keyed PropertyDict) is expected, non-Dict values should be rejected.
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
         let span = rust_span!();
         let entries = vec![surf_ann_entry(
             "name",
@@ -3265,10 +3522,10 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                resolved_type: Type::Dict(crate::type_def::Row {
-                    fields: indexmap::indexmap! { "name".to_string() => Type::Str },
-                    tail: crate::type_def::RowTail::Empty,
-                }),
+                resolved_type: make_typevalue_record(
+                    indexmap::indexmap! { "name".to_string() => make_typevalue_repr(REPR_STRING) },
+                    None,
+                ),
                 pipeline_blame: None,
             },
             span,
@@ -3326,14 +3583,15 @@ mod tests {
                 )]),
             ),
         ];
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                resolved_type: Type::Dict(crate::type_def::Row {
-                    fields: indexmap::indexmap! { "name".to_string() => Type::Str },
-                    tail: crate::type_def::RowTail::Empty,
-                }),
+                resolved_type: make_typevalue_record(
+                    indexmap::indexmap! { "name".to_string() => make_typevalue_repr(REPR_STRING) },
+                    None,
+                ),
                 pipeline_blame: None,
             },
             span,
@@ -3753,7 +4011,11 @@ mod tests {
 
         // Check that the thunk is now in Materialized state
         assert_eq!(
-            pending.peek_result().and_then(|r| r.ok()),
+            match pending.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("thunk in error state: {e:?}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -4009,20 +4271,21 @@ mod tests {
 
     // === EvalContext isolation tests ===
 
-    // ── Structural TypeAssert tests (resolved_type: Some(Type::...)) ────
+    // ── Structural TypeAssert tests (resolved_type: TypeValue) ────
     // These test the NEW structural validation path added by the
     // typeassert-structural sprint, distinct from the nominal fallback path
-    // (resolved_type: None) tested in the existing TypeAssert tests above.
+    // (resolved_type: TypeValue.Unknown) tested in the existing TypeAssert tests above.
 
     #[tokio::test]
     async fn test_typeassert_structural_int_pass() {
-        // Structural path: resolved_type = Some(Type::Int), value is Int(42) -> pass
+        // Structural path: resolved_type = TypeValue.Repr("Value::Int"), value is Int(42) -> pass
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Int".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -4042,14 +4305,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_int_fail() {
-        // Structural path: resolved_type = Some(Type::Int), value is String -> error
+        // Structural path: resolved_type = TypeValue.Repr("Value::Int"), value is String -> error
         // TypeAssert is lazy in CEK model: type error fires on materialize(), not eval()
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Integer".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
-                resolved_type: Type::Int,
+                resolved_type: make_typevalue_repr(REPR_INT),
                 pipeline_blame: None,
             },
             span,
@@ -4068,13 +4332,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_str_pass() {
-        // Structural path: resolved_type = Some(Type::Str), value is String -> pass
+        // Structural path: resolved_type = TypeValue.Repr("Value::String"), value is String -> pass
+        use crate::type_infer::make_typevalue_repr;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Str".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
-                resolved_type: Type::Str,
+                resolved_type: make_typevalue_repr(REPR_STRING),
                 pipeline_blame: None,
             },
             span,
@@ -4088,13 +4353,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_any() {
-        // Structural path: resolved_type = Some(Type::Any), any value passes
+        // Structural path: resolved_type = TypeValue.Top, any value passes
+        use crate::type_infer::make_typevalue_top;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Any".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("anything".into()), span.clone())),
-                resolved_type: Type::Any,
+                resolved_type: make_typevalue_top(),
                 pipeline_blame: None,
             },
             span,
@@ -4108,13 +4374,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_any_accepts_int() {
-        // Type::Any accepts Int as well (covers any-value branch)
+        // TypeValue.Top accepts Int as well (covers any-value branch)
+        use crate::type_infer::make_typevalue_top;
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Any".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(99), span.clone())),
-                resolved_type: Type::Any,
+                resolved_type: make_typevalue_top(),
                 pipeline_blame: None,
             },
             span,
@@ -4134,15 +4401,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_record_shape_check() {
-        // Structural path: resolved_type = Some(Type::Dict(..., Open))
+        // Structural path: resolved_type = TypeValue.Record({name: TypeValue.Repr("Value::String")})
         // Dict has required field "name" -> pass.
         // The record type check is immediate (shape check), field guard wrapping deferred.
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        let record_type = make_typevalue_record(
+            indexmap::indexmap! { "name".to_string() => make_typevalue_repr(REPR_STRING) },
+            None,
+        );
 
         let span = rust_span!();
         // For the record shape check test: just verify a dict with those keys satisfies the type.
@@ -4202,12 +4468,11 @@ mod tests {
     async fn test_typeassert_structural_record_missing_field() {
         // Structural path: record type requires field "id", dict doesn't have it -> error
         // TypeAssert is lazy in CEK model: type error fires on materialize(), not eval()
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("id".to_string(), Type::Int);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        let record_type = make_typevalue_record(
+            indexmap::indexmap! { "id".to_string() => make_typevalue_repr(REPR_INT) },
+            None,
+        );
 
         let span = rust_span!();
         let inner_expr = Spanned::new(
@@ -4251,12 +4516,11 @@ mod tests {
         // BAS width subtyping: under BAS, extra fields are ALWAYS accepted.
         // A dict with {x: 1, extra: 2} satisfies the annotation @[x: Int]
         // because the annotation only constrains what it declares.
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        let record_type = make_typevalue_record(
+            indexmap::indexmap! { "x".to_string() => make_typevalue_repr(REPR_INT) },
+            None,
+        );
 
         let span = rust_span!();
         let inner_expr = Spanned::new(
@@ -4313,12 +4577,11 @@ mod tests {
     #[tokio::test]
     async fn test_typeassert_structural_closed_record_exact_fields_pass() {
         // Structural path: closed record, dict has exactly the required fields -> pass
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        let record_type = make_typevalue_record(
+            indexmap::indexmap! { "x".to_string() => make_typevalue_repr(REPR_INT) },
+            None,
+        );
 
         let span = rust_span!();
         let inner_expr = Spanned::new(
@@ -4358,14 +4621,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_record_non_dict_fails() {
-        // Structural path: resolved_type = Some(Type::Dict(...)), value is Int -> error
+        // Structural path: resolved_type = TypeValue.Record({x: Int}), value is Int -> error
         // TypeAssert is lazy in CEK model: type error fires on materialize(), not eval()
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        let record_type = make_typevalue_record(
+            indexmap::indexmap! { "x".to_string() => make_typevalue_repr(REPR_INT) },
+            None,
+        );
 
         let span = rust_span!();
         let inner_expr = Spanned::new(
@@ -4530,15 +4792,14 @@ mod tests {
     async fn test_elaboration_gap_structural_annotation_non_dict_with_default() {
         // [@[name: String  default: []] 42] — structural record annotation with default.
         // Value is Int (not a Dict), so the record shape check fails and the default is used.
-        // Use eval_core_for_test with resolved_type: Type::Dict({name: Str}) so the
-        // as_record_row_merged path fires. With resolved_type=Unknown (from eval_str),
-        // is_consistent_subtype(Int, Unknown)=true and the TypeAssert passes trivially.
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
+        // Use eval_core_for_test with resolved_type: TypeValue.Record({name: Str}) so the
+        // as_record_typevalue_merged path fires. With resolved_type=TypeValue.Unknown (from eval_str),
+        // value_matches_type(Int, Unknown)=true and the TypeAssert passes trivially.
+        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
+        let record_type = make_typevalue_record(
+            indexmap::indexmap! { "name".to_string() => make_typevalue_repr(REPR_STRING) },
+            None,
+        );
 
         let span = rust_span!();
         let entries = vec![
@@ -4586,41 +4847,45 @@ mod tests {
     }
 
     // ── value_matches_type unit tests ────────────────────────────────────
-    // Direct tests of the value_matches_type() helper function, which is
-    // called in the structural TypeAssert handler for non-Record types.
+    // Direct tests of the value_matches_type() helper function after the S-1003 migration.
+    // All expected types are now Arc<Value> TypeValues, not the old Type enum.
 
     #[tokio::test]
     async fn test_value_matches_type_int() {
+        use crate::type_infer::make_typevalue_repr;
         let ctx = test_ctx();
+        let int_tv = make_typevalue_repr(REPR_INT);
         assert!(value_matches_type(
             &Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
             },
-            &Type::Int,
+            &int_tv,
             &ctx
         ));
-        assert!(!value_matches_type(&string_val("x"), &Type::Int, &ctx));
+        assert!(!value_matches_type(&string_val("x"), &int_tv, &ctx));
         assert!(!value_matches_type(
             &Value::Float {
                 n: 1.0,
                 type_val: unknown_type_val()
             },
-            &Type::Int,
+            &int_tv,
             &ctx
         ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_str() {
+        use crate::type_infer::make_typevalue_repr;
         let ctx = test_ctx();
-        assert!(value_matches_type(&string_val("hello"), &Type::Str, &ctx));
+        let str_tv = make_typevalue_repr(REPR_STRING);
+        assert!(value_matches_type(&string_val("hello"), &str_tv, &ctx));
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
                 type_val: unknown_type_val()
             },
-            &Type::Str,
+            &str_tv,
             &ctx
         ));
         assert!(!value_matches_type(
@@ -4628,20 +4893,22 @@ mod tests {
                 n: 0.0,
                 type_val: unknown_type_val()
             },
-            &Type::Str,
+            &str_tv,
             &ctx
         ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_float() {
+        use crate::type_infer::make_typevalue_repr;
         let ctx = test_ctx();
+        let float_tv = make_typevalue_repr(REPR_FLOAT);
         assert!(value_matches_type(
             &Value::Float {
                 n: 2.5,
                 type_val: unknown_type_val()
             },
-            &Type::Float,
+            &float_tv,
             &ctx
         ));
         assert!(!value_matches_type(
@@ -4649,21 +4916,23 @@ mod tests {
                 n: 3,
                 type_val: unknown_type_val()
             },
-            &Type::Float,
+            &float_tv,
             &ctx
         ));
     }
 
     #[tokio::test]
-    async fn test_value_matches_type_any() {
+    async fn test_value_matches_type_top() {
+        use crate::type_infer::make_typevalue_top;
         let ctx = test_ctx();
-        // Type::Any accepts all value kinds
+        let top_tv = make_typevalue_top();
+        // TypeValue.Top accepts all value kinds (gradual typing)
         assert!(value_matches_type(
             &Value::Int {
                 n: 1,
                 type_val: unknown_type_val()
             },
-            &Type::Any,
+            &top_tv,
             &ctx
         ));
         assert!(value_matches_type(
@@ -4671,179 +4940,49 @@ mod tests {
                 n: 1.0,
                 type_val: unknown_type_val()
             },
-            &Type::Any,
+            &top_tv,
             &ctx
         ));
-        assert!(value_matches_type(&string_val("s"), &Type::Any, &ctx));
-        assert!(value_matches_type(
-            &Value::Float {
-                n: 1.0,
-                type_val: unknown_type_val()
-            },
-            &Type::Any,
-            &ctx
-        ));
+        assert!(value_matches_type(&string_val("s"), &top_tv, &ctx));
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
-            &Type::Any,
+            &top_tv,
             &ctx,
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_value_matches_type_int_literal() {
-        let ctx = test_ctx();
-        // Type::IntLiteral(n): ground_type_of erases Int values to Type::Int.
-        // is_consistent_subtype(Type::Int, Type::IntLiteral(n)) falls to is_subtype which
-        // returns false — Int is NOT a subtype of IntLiteral(n) (it's the other way).
-        // Literal types are static-only constraints (the type checker uses them for
-        // exhaustiveness); at runtime, ground_type_of produces the base type, not a literal.
-        assert!(!value_matches_type(
-            &Value::Int {
-                n: 5,
-                type_val: unknown_type_val()
-            },
-            &Type::IntLiteral(5),
-            &ctx
-        ));
-        assert!(!value_matches_type(
-            &Value::Int {
-                n: 6,
-                type_val: unknown_type_val()
-            },
-            &Type::IntLiteral(5),
-            &ctx
-        ));
-        assert!(!value_matches_type(
-            &string_val("5"),
-            &Type::IntLiteral(5),
-            &ctx,
-        ));
-        // But IntLiteral(n) IS a subtype of Int (literal specializes base type).
-        // Check via consistent subtyping from the literal side:
-        // is_consistent_subtype(IntLiteral(5), Int) = is_subtype(IntLiteral(5), Int) = true.
-        assert!(Type::is_consistent_subtype(
-            &Type::IntLiteral(5),
-            &Type::Int,
-            None,
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_value_matches_type_string_literal() {
-        let ctx = test_ctx();
-        // Type::StringLiteral: ground_type_of erases String values to Type::Str.
-        // is_consistent_subtype(Type::Str, Type::StringLiteral("foo")) = is_subtype(Str, StringLiteral)
-        // = false — Str is NOT a subtype of StringLiteral (it's the other way).
-        assert!(!value_matches_type(
-            &string_val("foo"),
-            &Type::StringLiteral("foo".into()),
-            &ctx,
-        ));
-        assert!(!value_matches_type(
-            &string_val("bar"),
-            &Type::StringLiteral("foo".into()),
-            &ctx,
-        ));
-        assert!(!value_matches_type(
-            &Value::Int {
-                n: 0,
-                type_val: unknown_type_val()
-            },
-            &Type::StringLiteral("foo".into()),
-            &ctx,
-        ));
-        // StringLiteral IS a subtype of Str (literal specializes base type).
-        assert!(Type::is_consistent_subtype(
-            &Type::StringLiteral("foo".into()),
-            &Type::Str,
-            None,
         ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_typevar_always_true() {
+        use crate::type_infer::make_typevar_value;
         let ctx = test_ctx();
-        // Type::Var is treated as Any (residual polymorphic instantiation)
+        // TypeValue.Var is treated as Unknown at runtime (residual polymorphic instantiation)
+        let var_tv = make_typevar_value("a");
         assert!(value_matches_type(
             &Value::Int {
                 n: 1,
                 type_val: unknown_type_val()
             },
-            &Type::Var("a".into(), 0),
+            &var_tv,
             &ctx,
         ));
-        assert!(value_matches_type(
-            &string_val("x"),
-            &Type::Var("a".into(), 0),
-            &ctx,
-        ));
+        assert!(value_matches_type(&string_val("x"), &var_tv, &ctx));
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
-            &Type::Var("a".into(), 0),
+            &var_tv,
             &ctx,
         ));
-    }
-
-    #[tokio::test]
-    async fn test_value_matches_type_record_always_true() {
-        let ctx = test_ctx();
-        // Under AGT consistent subtyping, value_matches_type uses ground_type_of and
-        // is_consistent_subtype. Record type checks are now structural:
-        //
-        // - Non-Dict values: ground_type_of(Int) = Type::Int, which is NOT a consistent
-        //   subtype of Type::Dict({x: Int}) — Int and Record are disjoint.
-        // - Dict values: ground_type_of(Dict({})) = Type::Dict({}) (empty row).
-        //   is_consistent_subtype(Record({}), Record({x: Int})) checks field presence:
-        //   field "x" required in sup but absent in empty sub → returns false.
-        //
-        // Record validation for TypeAssert happens via as_record_row_merged + validate_and_wrap_record
-        // in the TypeAssertCheck continuation, NOT via value_matches_type. value_matches_type
-        // is only called for non-record types.
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Dict(Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        });
-        // Non-Dict value: ground_type_of(Int) = Type::Int, not a subtype of Record.
-        assert!(!value_matches_type(
-            &Value::Int {
-                n: 99,
-                type_val: unknown_type_val()
-            },
-            &record_type,
-            &ctx
-        ));
-        // Empty Dict: ground_type_of(Dict({})) = Record({}), missing required field "x".
-        assert!(!value_matches_type(
-            &Value::Dict {
-                entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
-            },
-            &record_type,
-            &ctx,
-        ));
-        // Dict with the required field "x" AND the field type is Unknown (erased) which
-        // is consistent with Int (Unknown ~<: T for all T). However this test requires
-        // building a dict with thunks — covered by TypeAssert corpus tests instead.
-        // The key insight: value_matches_type is NOT the Record validation entry point
-        // at runtime; TypeAssertCheck uses as_record_row_merged → validate_and_wrap_record.
     }
 
     #[tokio::test]
     async fn test_value_matches_type_proxy() {
-        // Under AGT consistent subtyping: ground_type_of(Value::Proxy) = Type::Unknown.
-        // Capability types (Proxy, Handle, DirCap, etc.) are opaque to the type system
-        // at runtime — they return Unknown so is_consistent_subtype(Unknown, T) = true for all T.
-        // This is the correct gradual typing behavior: the type checker validates proxy usage
-        // statically; at runtime, Unknown passes through any annotation.
+        use crate::type_infer::{make_typevalue_repr, make_typevalue_unknown};
+        // Proxy values return TypeValue.Unknown from ground_typevalue_of — passes any annotation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
         let handler = Arc::new(Thunk::value(
@@ -4858,20 +4997,30 @@ mod tests {
             type_val: crate::value::unknown_type_val(),
         };
 
-        // Unknown ~<: any type, so Proxy values pass all annotations at runtime.
-        assert!(value_matches_type(&proxy_val, &Type::Proxy, &ctx));
-        assert!(value_matches_type(&proxy_val, &Type::Int, &ctx)); // Unknown ~<: Int = true
-        assert!(value_matches_type(&proxy_val, &Type::Any, &ctx));
-
-        // Verify ground_type_of explicitly
-        assert_eq!(ground_type_of(&proxy_val), Type::Unknown);
+        // Unknown (ground of Proxy) is consistent with anything.
+        assert!(value_matches_type(
+            &proxy_val,
+            &make_typevalue_unknown(),
+            &ctx
+        ));
+        assert!(value_matches_type(
+            &proxy_val,
+            &make_typevalue_repr(REPR_INT),
+            &ctx
+        ));
+        assert!(value_matches_type(
+            &proxy_val,
+            &crate::type_infer::make_typevalue_top(),
+            &ctx
+        ));
     }
 
     #[tokio::test]
     async fn test_value_matches_type_tycon_no_env() {
-        // When tycon_env is not set (None), TyCon types conservatively return false.
+        use crate::type_infer::make_typevalue_op;
+        // When tycon_env is not set (None), TypeValue.Op types conservatively return false.
         let ctx = test_ctx(); // no tycon_env set
-        let tycon = Type::TyCon("MyType".to_string());
+        let tycon = make_typevalue_op("MyType");
         // Int value against unknown TyCon → false (conservative)
         assert!(!value_matches_type(
             &Value::Int {
@@ -4893,8 +5042,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_matches_type_tycon_builtin_int() {
-        // TyCon with builtin_type "Int" discriminant matches Value::Int.
+        // TypeValue.Op("MyInt") with builtin_type "Int" discriminant matches Value::Int.
         use crate::type_def::{TyConDef, TyConEnv};
+        use crate::type_infer::make_typevalue_op;
         use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
@@ -4902,7 +5052,7 @@ mod tests {
             "MyInt".to_string(),
             Arc::new(TyConDef {
                 params: vec![],
-                body: Type::Unknown,
+                body: crate::value::unknown_type_val(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
@@ -4914,7 +5064,7 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        let tycon = Type::TyCon("MyInt".to_string());
+        let tycon = make_typevalue_op("MyInt");
         assert!(value_matches_type(
             &Value::Int {
                 n: 1,
@@ -4936,8 +5086,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_matches_type_tycon_builtin_dict() {
-        // TyCon with builtin_type "Dict" matches Value::Dict.
+        // TypeValue.Op("MyDict") with builtin_type "Dict" matches Value::Dict.
         use crate::type_def::{TyConDef, TyConEnv};
+        use crate::type_infer::make_typevalue_op;
         use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
@@ -4945,7 +5096,7 @@ mod tests {
             "MyDict".to_string(),
             Arc::new(TyConDef {
                 params: vec![],
-                body: Type::Unknown,
+                body: crate::value::unknown_type_val(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
@@ -4957,12 +5108,12 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        let tycon = Type::TyCon("MyDict".to_string());
+        let tycon = make_typevalue_op("MyDict");
         // Dict values match
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
             &tycon,
             &ctx
@@ -4988,8 +5139,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_matches_type_tycon_nominal() {
-        // Nominal TyCon (has constructors) matches Value::Variant with matching tag prefix.
+        // Nominal TypeValue.Op("Color") (has constructors) matches Value::Variant with matching tag prefix.
         use crate::type_def::{TyConDef, TyConEnv};
+        use crate::type_infer::make_typevalue_op;
         use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
@@ -4997,7 +5149,7 @@ mod tests {
             "Color".to_string(),
             Arc::new(TyConDef {
                 params: vec![],
-                body: Type::Unknown,
+                body: crate::value::unknown_type_val(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
@@ -5009,7 +5161,7 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        let tycon = Type::TyCon("Color".to_string());
+        let tycon = make_typevalue_op("Color");
         // Variant with matching tycon matches
         let red = Value::Variant {
             type_val: crate::value::unknown_type_val(),
@@ -5037,9 +5189,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_matches_type_app_tycon_dispatch() {
-        // Type::App(TyCon(name), arg) extracts the root TyCon name and applies TyConDef dispatch.
+        // TypeValue.App(TypeValue.Op(name), arg) extracts the root TyCon name and applies TyConDef dispatch.
         // Type args are ignored at the value level (type erasure).
+        use crate::type_class::make_type_app;
         use crate::type_def::{TyConDef, TyConEnv};
+        use crate::type_infer::{make_typevalue_op, make_typevalue_repr};
         use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
@@ -5047,7 +5201,7 @@ mod tests {
             "MySeq".to_string(),
             Arc::new(TyConDef {
                 params: vec![],
-                body: Type::Unknown,
+                body: crate::value::unknown_type_val(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
@@ -5059,11 +5213,8 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        // App(TyCon("MyColl"), Int) — type arg Int is ignored; dispatch on "Str" discriminant.
-        let app_type = Type::App(
-            Box::new(Type::TyCon("MySeq".to_string())),
-            Box::new(Type::Int),
-        );
+        // App(TypeValue.Op("MySeq"), TypeValue.Repr("Value::Int")) — arg is ignored; dispatch on "Str" discriminant.
+        let app_type = make_type_app(make_typevalue_op("MySeq"), make_typevalue_repr(REPR_INT));
         assert!(value_matches_type(&string_val("hello"), &app_type, &ctx));
         assert!(!value_matches_type(
             &Value::Int {
@@ -5077,21 +5228,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_matches_type_tycon_from_typecheck_pass() {
-        // Regression test: value_matches_type must correctly resolve user-defined TyCons
+        // Regression: value_matches_type must correctly resolve user-defined TyCons
         // when tycon_env is wired into the EvalContext via set_tycon_env.
-        // Without set_tycon_env, value_matches_type returns false for every user-defined
-        // TyCon because tycon_env is None.
-        //
-        // This test verifies the wiring mechanism (set_tycon_env → value_matches_type)
-        // by manually constructing a TyConDef for "Color" and injecting it.
-        // Note: The production typecheck pass does not yet populate state.tycon_env for
-        // TypeAlias declarations; that is tracked separately.
         use crate::type_def::{TyConDef, TyConEnv};
+        use crate::type_infer::make_typevalue_op;
 
-        // Build a TyConDef for Color with constructors Red, Green, Blue (unit variants, arity 0).
         let color_def = Arc::new(TyConDef {
             params: vec![],
-            body: crate::types::Type::Unknown,
+            body: crate::value::unknown_type_val(),
             constraints: vec![],
             variance: vec![],
             constructors: vec![
@@ -5108,13 +5252,11 @@ mod tests {
         let mut tycon_env: TyConEnv = std::collections::HashMap::new();
         tycon_env.insert("Color".to_string(), color_def);
 
-        // Wire into a fresh EvalContext — this is what run_loader_pipeline now does.
         let ctx = test_ctx();
         ctx.set_tycon_env(tycon_env);
 
-        let tycon = Type::TyCon("Color".to_string());
+        let tycon = make_typevalue_op("Color");
 
-        // Color.Red variant must pass @Color check.
         let color_red = Value::Variant {
             type_val: crate::value::unknown_type_val(),
             ctor: Arc::from("Color.Red"),
@@ -5125,7 +5267,6 @@ mod tests {
             "Color.Red must match @Color when tycon_env is wired from typecheck pass"
         );
 
-        // Color.Green variant must also pass.
         let color_green = Value::Variant {
             type_val: crate::value::unknown_type_val(),
             ctor: Arc::from("Color.Green"),
@@ -5133,10 +5274,9 @@ mod tests {
         };
         assert!(
             value_matches_type(&color_green, &tycon, &ctx),
-            "Color.Green must match @Color when tycon_env is wired from typecheck pass"
+            "Color.Green must match @Color"
         );
 
-        // A value from a different TyCon must not pass — no cross-TyCon confusion.
         let other = Value::Variant {
             type_val: crate::value::unknown_type_val(),
             ctor: Arc::from("Shape.Circle"),
@@ -5147,7 +5287,6 @@ mod tests {
             "Shape.Circle must not match @Color"
         );
 
-        // A non-variant value must not pass.
         assert!(
             !value_matches_type(
                 &Value::Int {
@@ -5163,11 +5302,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_matches_type_opaque_builtin_via_tycon_name() {
-        // Opaque builtin types are NOT Value::Variant at runtime. value_tycon_name() maps
-        // each opaque Value to its declared TyCon name so @Program, @DirCap, etc. work.
-        //
-        // Structural values (Int, String, Dict, Variant) return None from value_tycon_name,
-        // falling through to the TyConDef discriminant/constructor path.
+        use crate::type_infer::make_typevalue_op;
+        // Structural values do not have a value_tycon_name.
         assert_eq!(
             Value::Int {
                 n: 1,
@@ -5176,24 +5312,6 @@ mod tests {
             .value_tycon_name(),
             None,
             "Int is a primitive type, not an opaque builtin TyCon"
-        );
-        assert_eq!(
-            Value::Float {
-                n: 1.0,
-                type_val: unknown_type_val()
-            }
-            .value_tycon_name(),
-            None,
-            "Float is a primitive type"
-        );
-        assert_eq!(
-            Value::Dict {
-                entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
-            }
-            .value_tycon_name(),
-            None,
-            "Dict is structural, not an opaque TyCon"
         );
         assert_eq!(
             string_val("x").value_tycon_name(),
@@ -5211,10 +5329,9 @@ mod tests {
             "Variant is matched via TyConDef constructor check, not value_tycon_name"
         );
 
-        // value_matches_type with an unknown TyCon: structural values return false.
+        // TypeValue.Op with an unknown name (no tycon_env) → false.
         let ctx = test_ctx(); // no tycon_env
-        let unknown_tycon = Type::TyCon("Program".to_string()); // opaque, not in env
-                                                                // Int has no value_tycon_name and no TyConDef entry → false.
+        let unknown_tycon = make_typevalue_op("Program");
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
@@ -5223,7 +5340,6 @@ mod tests {
             &unknown_tycon,
             &ctx
         ));
-        // Variant has no value_tycon_name → false (no TyConDef for "Program").
         assert!(!value_matches_type(&color_variant, &unknown_tycon, &ctx));
     }
 
@@ -5239,13 +5355,10 @@ mod tests {
         // This exercises the code path where field_path_prefix is built with each
         // segment separately quoted per doc/07-type-extensions.md:162.
 
-        // Create a row type requiring field "y"
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("y".to_string(), Type::Int);
-        let row = Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        };
+        // Create a fields map requiring field "y" with type TypeValue.Repr("Value::Int")
+        use crate::type_infer::make_typevalue_repr;
+        let mut fields: IndexMap<String, Arc<Value>> = IndexMap::new();
+        fields.insert("y".to_string(), make_typevalue_repr(REPR_INT));
 
         // Create entries that are missing field "y"
         let entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -5257,7 +5370,7 @@ mod tests {
 
         let result = validate_and_wrap_record(
             &entries,
-            &row,
+            &fields,
             &mut field_path,
             guard_span,
             data_span.clone(),
@@ -5299,13 +5412,10 @@ mod tests {
         // BAS width subtyping: extra fields in closed records are ACCEPTED.
         // Under BAS, a value with more fields satisfies an annotation with fewer fields.
 
-        // Create a row type requiring only field "x"
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("x".to_string(), Type::Int);
-        let row = Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        };
+        // Create a fields map requiring only field "x"
+        use crate::type_infer::make_typevalue_repr;
+        let mut fields: IndexMap<String, Arc<Value>> = IndexMap::new();
+        fields.insert("x".to_string(), make_typevalue_repr(REPR_INT));
 
         // Create entries with "x" plus an extra field "z"
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -5337,7 +5447,7 @@ mod tests {
 
         let result = validate_and_wrap_record(
             &entries,
-            &row,
+            &fields,
             &mut field_path,
             guard_span,
             data_span,
@@ -5358,13 +5468,10 @@ mod tests {
         // Verify that when field_path is empty, no prefix is added to error messages.
         // This is the common case for top-level TypeAssert validation.
 
-        // Create a row type requiring field "name"
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("name".to_string(), Type::Str);
-        let row = Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        };
+        // Create a fields map requiring field "name"
+        use crate::type_infer::make_typevalue_repr;
+        let mut fields: IndexMap<String, Arc<Value>> = IndexMap::new();
+        fields.insert("name".to_string(), make_typevalue_repr(REPR_STRING));
 
         // Create empty entries (missing "name")
         let entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -5376,7 +5483,7 @@ mod tests {
 
         let result = validate_and_wrap_record(
             &entries,
-            &row,
+            &fields,
             &mut field_path,
             guard_span,
             data_span.clone(),
@@ -5417,12 +5524,9 @@ mod tests {
         // BAS width subtyping: integer-keyed entries are extra fields and are ACCEPTED.
         // Under BAS, a value with more fields (including int-keyed) satisfies the annotation.
 
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("name".to_string(), Type::Str);
-        let row = Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        };
+        use crate::type_infer::make_typevalue_repr;
+        let mut fields: IndexMap<String, Arc<Value>> = IndexMap::new();
+        fields.insert("name".to_string(), make_typevalue_repr(REPR_STRING));
 
         // Create entries with "name" (valid) plus an integer-keyed entry
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -5442,7 +5546,7 @@ mod tests {
 
         let result = validate_and_wrap_record(
             &entries,
-            &row,
+            &fields,
             &mut field_path,
             guard_span,
             data_span,
@@ -5461,14 +5565,10 @@ mod tests {
     #[tokio::test]
     async fn test_validate_and_wrap_record_allows_int_key_in_open_record() {
         // BAS: Integer-keyed entries are extra fields and are accepted by width subtyping.
-        // All records are closed (RowTail::Empty) but BAS allows extra fields.
-
-        let mut fields = indexmap::IndexMap::new();
-        fields.insert("name".to_string(), Type::Str);
-        let row = Row {
-            fields,
-            tail: crate::type_def::RowTail::Empty,
-        };
+        // All records are closed under BAS which allows extra fields.
+        use crate::type_infer::make_typevalue_repr;
+        let mut fields: IndexMap<String, Arc<Value>> = IndexMap::new();
+        fields.insert("name".to_string(), make_typevalue_repr(REPR_STRING));
 
         let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
@@ -5487,7 +5587,7 @@ mod tests {
 
         let result = validate_and_wrap_record(
             &entries,
-            &row,
+            &fields,
             &mut field_path,
             guard_span,
             data_span,
@@ -5539,7 +5639,7 @@ mod tests {
         // Task 3(3): Guarded thunk memoization — after successful validation, the
         // thunk transitions to Materialized and the second access returns the cached
         // value without re-running the type guard.
-        use crate::types::Type;
+        use crate::type_infer::make_typevalue_repr;
 
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
@@ -5553,10 +5653,10 @@ mod tests {
             span.clone(),
         ));
 
-        // Wrap it in a Guarded thunk expecting Int.
+        // Wrap it in a Guarded thunk expecting TypeValue.Repr("Value::Int").
         let guarded = Arc::new(Thunk::guarded(
             inner,
-            Type::Int,
+            make_typevalue_repr(REPR_INT),
             vec!["value".to_string()],
             span,
             None,
@@ -5568,7 +5668,7 @@ mod tests {
             assert!(guarded.is_guarded(), "initial state should be Guarded");
         }
 
-        // First materialization: triggers guard, validates Int(42) against Type::Int → pass.
+        // First materialization: triggers guard, validates Int(42) against TypeValue.Repr("Value::Int") → pass.
         let result1 = materialize(&guarded, None, &ctx).await;
         assert!(result1.is_ok(), "first materialization should succeed");
         assert_eq!(
@@ -5581,7 +5681,11 @@ mod tests {
 
         // After successful validation, thunk must be in Materialized state (memoized).
         assert_eq!(
-            guarded.peek_result().and_then(|r| r.ok()),
+            match guarded.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("thunk in error state: {e:?}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -5605,7 +5709,11 @@ mod tests {
 
         // State is still Materialized (not changed by second access).
         assert_eq!(
-            guarded.peek_result().and_then(|r| r.ok()),
+            match guarded.peek_result() {
+                Some(Ok(v)) => Some(v),
+                Some(Err(e)) => panic!("thunk in error state: {e:?}"),
+                None => None,
+            },
             Some(&Value::Int {
                 n: 42,
                 type_val: unknown_type_val()
@@ -5619,7 +5727,7 @@ mod tests {
         // Task 3(2): Guarded thunk failure path — when the inner value fails the type guard,
         // the thunk transitions to Failed (cacheable) and subsequent access returns the
         // cached error without re-running the guard.
-        use crate::types::Type;
+        use crate::type_infer::make_typevalue_repr;
 
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
@@ -5627,17 +5735,17 @@ mod tests {
         // Inner thunk: a String value — fails the Int guard.
         let inner = Arc::new(Thunk::value(string_val("hello"), span.clone()));
 
-        // Wrap it in a Guarded thunk expecting Int.
+        // Wrap it in a Guarded thunk expecting TypeValue.Repr("Value::Int").
         let guarded = Arc::new(Thunk::guarded(
             inner,
-            Type::Int,
+            make_typevalue_repr(REPR_INT),
             vec!["field".to_string()],
             span,
             None,
             None,
         ));
 
-        // First materialization: triggers guard, validates String against Type::Int → fail.
+        // First materialization: triggers guard, validates String against TypeValue.Repr("Value::Int") → fail.
         let result1 = materialize(&guarded, None, &ctx).await;
         assert!(
             result1.is_err(),
@@ -5677,7 +5785,7 @@ mod tests {
         // When materializing nested Guarded thunks, the error decoration should use
         // the inner thunk's origin, not the outer guard's origin. This test verifies that
         // inner_span is captured before materialization, not after.
-        use crate::types::Type;
+        use crate::type_infer::make_typevalue_repr;
 
         let span = test_span(1, 1, 1, 10);
 
@@ -5692,9 +5800,9 @@ mod tests {
             span,
         ));
 
-        // Wrap it in a Guarded thunk expecting Int (will fail type check)
+        // Wrap it in a Guarded thunk expecting TypeValue.Repr("Value::Int") (will fail type check)
         let guard_span = test_span(2, 1, 2, 10);
-        let expected = Type::Int;
+        let expected = make_typevalue_repr(REPR_INT);
         let field_path = vec!["field".to_string()];
         let guarded = Arc::new(Thunk::guarded(
             inner_thunk,
@@ -6251,130 +6359,6 @@ mod tests {
             ),
             other => panic!(
                 "B-430: expected Value::Dict({{}}) for standalone sum-type alias, got {:?}",
-                other
-            ),
-        }
-    }
-
-    // ── B-462/B-464: ground_type_of variadic flag ────────────────────────────
-
-    /// B-462/B-464: ground_type_of must set variadic: true for Value::Function when the
-    /// last parameter has variadic: true.  Previously the field was hardwired to false,
-    /// causing consistent_subtype checks against @[fn ...variadic...] to fail at runtime.
-    #[tokio::test]
-    async fn test_ground_type_of_variadic_function() {
-        // Non-variadic function: ground_type_of must report variadic: false.
-        let non_variadic = Value::Function {
-            params: Arc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                    slot: 0,
-                    resolved_type: None,
-                },
-                Param {
-                    name: "y".into(),
-                    annotation: None,
-                    variadic: false,
-                    slot: 1,
-                    resolved_type: None,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Dict(vec![]))),
-            closure_env: Arc::new(vec![]),
-            annotation: None,
-            type_val: unknown_type_val(),
-        };
-        match ground_type_of(&non_variadic) {
-            Type::Function {
-                typed_variadics,
-                rest,
-                ..
-            } => {
-                assert!(
-                    typed_variadics.is_empty() && rest.is_none(),
-                    "non-variadic function must not have typed_variadics or rest in ground_type_of"
-                );
-            }
-            other => panic!(
-                "expected Type::Function for Value::Function, got {:?}",
-                other
-            ),
-        }
-
-        // Variadic function: last param has variadic: true — ground_type_of must reflect it.
-        let variadic_fn = Value::Function {
-            params: Arc::new(vec![
-                Param {
-                    name: "x".into(),
-                    annotation: None,
-                    variadic: false,
-                    slot: 0,
-                    resolved_type: None,
-                },
-                Param {
-                    name: "rest".into(),
-                    annotation: None,
-                    variadic: true,
-                    slot: 1,
-                    resolved_type: None,
-                },
-            ]),
-            body: Arc::new(sp(CoreExpr::Dict(vec![]))),
-            closure_env: Arc::new(vec![]),
-            annotation: None,
-            type_val: unknown_type_val(),
-        };
-        match ground_type_of(&variadic_fn) {
-            Type::Function {
-                typed_variadics,
-                rest,
-                required_count,
-                ..
-            } => {
-                assert!(
-                    !typed_variadics.is_empty() || rest.is_some(),
-                    "variadic function must have rest in ground_type_of"
-                );
-                assert_eq!(
-                    required_count, 1,
-                    "required_count counts only non-variadic params without defaults; variadic rest is excluded"
-                );
-            }
-            other => panic!(
-                "expected Type::Function for variadic Value::Function, got {:?}",
-                other
-            ),
-        }
-
-        // Single variadic param (zero-arg form, e.g. [fn [let ...xs] body]).
-        let only_variadic = Value::Function {
-            params: Arc::new(vec![Param {
-                name: "xs".into(),
-                annotation: None,
-                variadic: true,
-                slot: 0,
-                resolved_type: None,
-            }]),
-            body: Arc::new(sp(CoreExpr::Dict(vec![]))),
-            closure_env: Arc::new(vec![]),
-            annotation: None,
-            type_val: unknown_type_val(),
-        };
-        match ground_type_of(&only_variadic) {
-            Type::Function {
-                typed_variadics,
-                rest,
-                ..
-            } => {
-                assert!(
-                    !typed_variadics.is_empty() || rest.is_some(),
-                    "single variadic param must have rest in ground_type_of"
-                );
-            }
-            other => panic!(
-                "expected Type::Function for single-variadic Value::Function, got {:?}",
                 other
             ),
         }

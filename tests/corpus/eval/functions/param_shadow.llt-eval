@@ -1,0 +1,6 @@
+# Function parameter shadows outer dict entry without creating false SCC dependency.
+[a: 42]
+[g: [fn [let a] [+ $a 1]]]
+[result: [call $g 10]]
+=== out
+["result": 11]

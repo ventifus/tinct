@@ -5,13 +5,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use crate::type_tags::*;
 // Pattern import deleted (T-1750)
 use crate::ast::{
     Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
 };
 use crate::env::Env;
 use crate::error::TypeDiagnostic;
-use crate::types::{generalize, InferState, Row, Type};
+use crate::types::{generalize_tv, InferState};
+use crate::value::{unknown_type_val, Value};
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]
@@ -36,10 +38,10 @@ use typecheck_narrow::{
     extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify,
 };
 
-/// Map from source span `(start_line, start_col, end_line, end_col)` to inferred type.
+/// Map from source span `(start_line, start_col, end_line, end_col)` to inferred TypeValue.
 /// Populated during type checking so LSP hover/diagnostics can look up types without
 /// re-running inference.
-pub type TypeMap = HashMap<(u32, u32, u32, u32), Type>;
+pub type TypeMap = HashMap<(u32, u32, u32, u32), Arc<Value>>;
 
 // MatchArmData (old Expr-based) removed — replaced by SurfaceMatchArmData.
 
@@ -52,10 +54,12 @@ pub(crate) struct ClassDeclSurface<'a> {
     pub params: &'a [String],
     pub superclasses: &'a [(String, String)],
     pub determines: &'a [Arc<SurfaceNode>],
-    pub resolver: &'a Option<Arc<SurfaceNode>>,
-    pub resolver_injective: bool,
     pub structural: &'a str,
     pub span: Span,
+    /// Optional resolver name (from `resolver:` in class metadata). Stored in ClassDecl.
+    pub resolver: Option<String>,
+    /// Whether the resolver is injective (from `resolver_injective:` in class metadata).
+    pub resolver_injective: bool,
 }
 
 /// Type-check a `SurfaceProgram` — minimal bootstrap entry point.
@@ -83,7 +87,7 @@ pub async fn typecheck_program_bootstrap(
     parent_env: Arc<RwLock<Env>>,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     seed_tycon_env: crate::type_def::TyConEnv,
-    type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
+    type_stage_data: crate::type_infer::TypeStageData,
 ) -> (
     Vec<TypeDiagnostic>,
     Arc<RwLock<Env>>,
@@ -101,7 +105,9 @@ pub async fn typecheck_program_bootstrap(
     // This function must NOT call get_builtin_core_type_stage_scope() internally —
     // build_builtin_core_envs_inner() calls this function, so calling it here would
     // create circular recursion.
-    state.type_stage_scope = type_stage_scope;
+    state.type_stage_scope = type_stage_data.scope;
+    state.type_stage_fns = type_stage_data.fns;
+    state.type_stage_type_vars = type_stage_data.type_vars;
     // Seed tycon_env from the TypeContext's accumulated TyConDefs. This propagates
     // opaque types (DirCap, File, ClockCap, Handle, etc.) declared in builtin_core.llt
     // to subsequent module type-checks (builtin_io.llt, builtin_async.llt, ...) so that
@@ -123,15 +129,147 @@ pub async fn typecheck_program_bootstrap(
             .map(|(i, def)| (def.name.to_string(), i as u32))
             .collect()
     };
+    // Keep a reference to root_frame for T-2085 type-stage slot insertion below.
+    // The root_frame contains the full accumulated group including TypeNode and other
+    // type-stage entries at their absolute LGM slot positions.
+    let root_frame_for_ts = root_frame.clone();
     let (resolve_table, frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
     state.resolution_table = Arc::new(resolve_table);
     state.resolver_frames = frames;
 
+    // T-2085: Seed flat_type_env with type-stage entries at their absolute LGM slots.
+    // flat_type_env mirrors the evaluator's frame.group: all accumulated entries are
+    // accessible at get_scheme_at(0, slot) from any dict_env that includes it.
+    // type_stage_scope now holds only resolved TypeValues; Function entries are in
+    // type_stage_fns; TypeVar entries are in type_stage_type_vars.
+    // All non-resolved entries use make_typevalue_op(name) as their TypeValue placeholder.
+    for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
+        // Use root_frame_for_ts (has all runtime builtins including type-stage entries)
+        // then fall back to document-level frames for program-defined type-stage entries.
+        let abs_slot = root_frame_for_ts.get(name.as_str()).copied()
+            .or_else(|| state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied()));
+        if let Some(slot) = abs_slot {
+            state.flat_type_env.write().unwrap().insert_at_slot(slot as usize, name.clone(), Arc::clone(tv), None);
+        }
+        // Also insert by name into extras for name-based lookups (resolve_type_head etc.).
+        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), Arc::clone(tv));
+    }
+    // Also seed flat_type_env for Function entries (stored as TypeValue.Op placeholder).
+    for (name, _thunk) in &state.type_stage_fns {
+        use crate::type_infer::make_typevalue_op;
+        let tv = make_typevalue_op(name);
+        let abs_slot = root_frame_for_ts.get(name.as_str()).copied()
+            .or_else(|| state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied()));
+        if let Some(slot) = abs_slot {
+            state.flat_type_env.write().unwrap().insert_at_slot(slot as usize, name.clone(), Arc::clone(&tv), None);
+        }
+        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), tv);
+    }
+    // Also seed flat_type_env for TypeVar entries (stored as TypeValue.Op placeholder).
+    for (name, _kind) in &state.type_stage_type_vars {
+        use crate::type_infer::make_typevalue_op;
+        let tv = make_typevalue_op(name);
+        let abs_slot = root_frame_for_ts.get(name.as_str()).copied()
+            .or_else(|| state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied()));
+        if let Some(slot) = abs_slot {
+            state.flat_type_env.write().unwrap().insert_at_slot(slot as usize, name.clone(), Arc::clone(&tv), None);
+        }
+        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), tv);
+    }
+
+    // Seed flat_type_env with all root-group entries not already covered by type-stage
+    // classification, so get_scheme_at(0, slot) works for the full accumulated group.
+    //
+    // Priority (highest to lowest):
+    // 1. Type-stage entries — already seeded above with their actual TypeValues.
+    // 2. Prelude entries — walk parent_env's full parent chain; use proper polymorphic
+    //    scheme where available (e.g. reduce, map, filter with their FD constraint types).
+    // 3. Unknown — for any remaining slot (pure-Rust builtins like builtin-make-type-ctx,
+    //    CLI-injected capability vars like %libdir that have no type-checker scheme).
+    {
+        use crate::type_infer::make_typevalue_unknown;
+        // Build the set of slots already populated by type-stage seeding.
+        let mut covered: std::collections::HashSet<usize> = {
+            let flat = state.flat_type_env.read().unwrap();
+            flat.slots.iter().enumerate()
+                .filter_map(|(idx, e)| if e.is_some() { Some(idx) } else { None })
+                .collect()
+        };
+        // Walk parent_env's full chain from outermost ancestor to innermost so innermost wins.
+        let mut frames: Vec<Arc<RwLock<Env>>> = Vec::new();
+        {
+            let mut cursor = Some(Arc::clone(&parent_env));
+            while let Some(arc) = cursor {
+                frames.push(Arc::clone(&arc));
+                cursor = arc.read().unwrap().parent.as_ref().map(Arc::clone);
+            }
+        }
+        for frame in frames.iter().rev() {
+            let frame_read = frame.read().unwrap();
+            for (idx, slot_entry) in frame_read.slots.iter().enumerate() {
+                if let Some((name, env_slot)) = slot_entry {
+                    if let Some(ref scheme) = env_slot.scheme {
+                        if !covered.contains(&idx) {
+                            state.flat_type_env.write().unwrap().insert_at_slot(
+                                idx, name.clone(), Arc::clone(scheme), None
+                            );
+                            state.flat_type_env.write().unwrap().insert_scheme_named_only(
+                                name.clone(), Arc::clone(scheme)
+                            );
+                            covered.insert(idx);
+                        }
+                    }
+                }
+            }
+        }
+        // Fill remaining slots with Unknown (pure-Rust builtins, capability vars).
+        for (name, &slot) in &root_frame_for_ts {
+            let idx = slot as usize;
+            if !covered.contains(&idx) {
+                state.flat_type_env.write().unwrap().insert_at_slot(
+                    idx, name.clone(), make_typevalue_unknown(), None
+                );
+                state.flat_type_env.write().unwrap().insert_scheme_named_only(
+                    name.clone(), make_typevalue_unknown()
+                );
+            }
+        }
+    }
+
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
+        // Skip type-stage documents — they are evaluated before type-checking runs and their
+        // entries are already in state.type_stage_scope / flat_type_env via the caller-supplied
+        // type_stage_data. Re-processing them through process_document produces resolver-slot-miss
+        // errors because flat_type_env is seeded for runtime slots, not type-stage eval slots.
+        if doc.header.get("stage").is_some_and(|stage_node| {
+            matches!(
+                &stage_node.expr,
+                crate::ast::SurfaceExpression::StringLiteral { content, .. }
+                if content == "type"
+            )
+        }) {
+            continue;
+        }
         let (new_env, _, mut doc_errors) = process_document(doc, &env, &mut state, &mut None).await;
-        env = new_env;
         errors.append(&mut doc_errors);
+        // T-2085: After each document, update flat_type_env with the GENERALIZED schemes
+        // from new_env. process_document calls generalize_tv on all entry schemes, producing
+        // TypeValue.Scheme for polymorphic entries. The Sequential handler (which runs DURING
+        // process_document) adds UN-GENERALIZED TypeVars to flat_type_env. We now override
+        // those with the correct generalized schemes so that subsequent documents see
+        // polymorphic function types (enabling proper per-call-site instantiation).
+        {
+            let new_env_read = new_env.read().unwrap();
+            for (name, slot) in &new_env_read.extras {
+                if let Some(ref scheme) = slot.scheme {
+                    state.flat_type_env.write().unwrap().insert_scheme_named_only(
+                        name.clone(), Arc::clone(scheme)
+                    );
+                }
+            }
+        }
+        env = new_env;
     }
 
     // Include state-level diagnostics (e.g. unknown-type warnings from unification).
@@ -154,7 +292,7 @@ pub async fn typecheck_program_bootstrap(
 ///
 /// Since `target_env.parent == parent_env`, schemes that already exist in the parent
 /// chain are already visible — no filtering is needed. Duplicate insertion is safe
-/// (insert_at_slot and insert_scheme_named_only are idempotent for same-name, same-value).
+/// (`insert_scheme_named_only` and `insert_scheme_with_span` are idempotent for same-name, same-value).
 fn merge_env_schemes_into_env(
     source_env: &Arc<RwLock<Env>>,
     target_env: &Arc<RwLock<Env>>,
@@ -183,12 +321,20 @@ fn merge_env_schemes_into_env(
         let frame = frame_arc.read().unwrap();
         for (name, slot) in frame.iter_slots() {
             if let Some(ref scheme) = slot.scheme {
-                guard.insert_scheme_named_only(name.to_string(), scheme.clone());
+                if let Some(ref span) = slot.definition_span {
+                    guard.insert_scheme_with_span(name.to_string(), scheme.clone(), span.clone());
+                } else {
+                    guard.insert_scheme_named_only(name.to_string(), scheme.clone());
+                }
             }
         }
         for (name, slot) in &frame.extras {
             if let Some(ref scheme) = slot.scheme {
-                guard.insert_scheme_named_only(name.clone(), scheme.clone());
+                if let Some(ref span) = slot.definition_span {
+                    guard.insert_scheme_with_span(name.clone(), scheme.clone(), span.clone());
+                } else {
+                    guard.insert_scheme_named_only(name.clone(), scheme.clone());
+                }
             }
         }
         for (_, decl) in &frame.classes {
@@ -200,26 +346,17 @@ fn merge_env_schemes_into_env(
         for (name, def) in &frame.tycon_defs {
             guard.insert_tycon_def(name.clone(), Arc::clone(def));
         }
-        // Wire classes into type_stage_scope so that imported declarations from loaded
-        // modules are visible to annotation resolution.
+        // Wire tycon_defs into type_stage_scope so that imported type constructors from
+        // loaded modules resolve correctly in annotations.
         if state.type_stage_scope.is_empty() {
             state
                 .type_stage_scope
                 .push(std::collections::HashMap::new());
         }
-        for (name, decl) in &frame.classes {
-            state.type_stage_scope[0]
-                .entry(name.clone())
-                .or_insert(crate::type_infer::TypeStageEntry::Class(decl.clone()));
-        }
-        // Wire tycon_defs into type_stage_scope so that imported type constructors from
-        // loaded modules resolve correctly in annotations.
         for (name, _) in &frame.tycon_defs {
-            state.type_stage_scope[0].entry(name.clone()).or_insert(
-                crate::type_infer::TypeStageEntry::Resolved(crate::types::Type::TyCon(
-                    name.clone(),
-                )),
-            );
+            state.type_stage_scope[0].entry(name.clone()).or_insert_with(|| {
+                crate::type_infer::make_typevalue_op(name)
+            });
         }
     }
 }
@@ -231,8 +368,9 @@ fn merge_env_schemes_into_env(
 /// is evaluated directly (no Sequential wrapper).
 ///
 /// After `run_typecheck`, ctor_schemes (ADT constructor TypeSchemes) are recovered from the
-/// diff of `state.tycon_env` against a pre-run snapshot: `dict_finish` (the DictPassZero
-/// terminal path) discards ctor_schemes, so we reconstruct them here for result_env.
+/// diff of `state.tycon_env` against a pre-run snapshot: `run_typecheck_dict` does not return
+/// ctor_schemes for the terminal dict (the DictPassZero caller discards the schemes return),
+/// so we reconstruct them here for result_env.
 ///
 /// # Returns
 ///
@@ -240,21 +378,119 @@ fn merge_env_schemes_into_env(
 /// - `result_env`: env containing schemes from the last dict body, exported to subsequent documents
 /// - `result_type`: the type of the last expression (or empty-dict for empty documents)
 /// - `errors`: type errors encountered during inference (non-fatal — env always propagated)
+/// Extract fields from a TypeValue.Record as `Vec<(field_name, TypeValue)>`.
+/// Public alias for use by typecheck_narrow.rs.
+pub(crate) fn extract_record_fields_pub(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
+    extract_record_fields(tv)
+}
+///
+/// Returns `Some(fields)` for TypeValue.Record variants where the payload can be read
+/// synchronously (settled thunks). Returns `None` for non-Record TypeValues or unsettled payloads.
+fn extract_record_fields(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(payload_thunk),
+            ..
+        } if ctor.as_ref() == TV_RECORD => match payload_thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
+                let fields_thunk = entries.get(&fields_key)?;
+                match fields_thunk.peek_result()? {
+                    Ok(Value::Dict {
+                        entries: field_entries,
+                        ..
+                    }) => {
+                        let mut result = Vec::new();
+                        for (k, v_thunk) in field_entries {
+                            if let HashableValue::Str(name) = k {
+                                if let Some(Ok(field_val)) = v_thunk.peek_result() {
+                                    result.push((
+                                        name.as_ref().to_string(),
+                                        Arc::new(field_val.clone()),
+                                    ));
+                                }
+                            }
+                        }
+                        Some(result)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Public alias for use by typecheck_narrow.rs.
+pub(crate) fn make_typevalue_record_pub(
+    fields: indexmap::IndexMap<String, Arc<Value>>,
+    tail: Option<Arc<Value>>,
+) -> Arc<Value> {
+    make_typevalue_record(fields, tail)
+}
+
+/// Construct a TypeValue.Record Arc<Value> from an IndexMap of field name → TypeValue pairs
+/// and an optional tail TypeValue. `tail: None` means closed record (RowTail.Closed).
+fn make_typevalue_record(
+    fields: indexmap::IndexMap<String, Arc<Value>>,
+    tail: Option<Arc<Value>>,
+) -> Arc<Value> {
+    use crate::value::{HashableValue, Thunk};
+    // Build the fields dict: { fieldname: TypeValue, ... }
+    let mut fields_entries: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
+        indexmap::IndexMap::new();
+    for (name, tv) in fields {
+        fields_entries.insert(
+            HashableValue::Str(Arc::from(name.as_str())),
+            Arc::new(Thunk::value(Value::clone(tv.as_ref()), crate::rust_span!())),
+        );
+    }
+    let fields_dict_val = Value::Dict {
+        entries: fields_entries,
+        type_val: unknown_type_val(),
+    };
+    // tail: None → closed record → RowTail.Closed variant
+    let tail_val = tail
+        .map(|tv| Value::clone(tv.as_ref()))
+        .unwrap_or_else(|| crate::type_infer::make_rowtail_closed().as_ref().clone());
+    // Build payload dict: { fields: Dict, tail: TypeValue }
+    let mut payload_entries: indexmap::IndexMap<HashableValue, Arc<Thunk>> =
+        indexmap::IndexMap::new();
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_FIELDS)),
+        Arc::new(Thunk::value(fields_dict_val, crate::rust_span!())),
+    );
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_TAIL)),
+        Arc::new(Thunk::value(tail_val, crate::rust_span!())),
+    );
+    let payload_dict = Value::Dict {
+        entries: payload_entries,
+        type_val: unknown_type_val(),
+    };
+    Arc::new(Value::Variant {
+        type_val: unknown_type_val(),
+        ctor: Arc::from(TV_RECORD),
+        payload: Some(Arc::new(Thunk::value(payload_dict, crate::rust_span!()))),
+    })
+}
+
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> (Arc<RwLock<Env>>, Type, Vec<TypeDiagnostic>) {
-    let empty_dict_ty = Type::Dict(Row {
-        fields: indexmap::IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
+) -> (Arc<RwLock<Env>>, Arc<Value>, Vec<TypeDiagnostic>) {
+    // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }
+    let empty_dict_ty = make_typevalue_record(indexmap::IndexMap::new(), None);
 
     // Collect all items in source order as SurfaceNodes.
     // SurfaceItem::Expr → use the node directly.
     // SurfaceItem::Decl → synthetic node with SurfaceExpression::Decl so infer_step::Decl
-    //   handles class/instance registration and TypeAlias (returns Type::Any, a no-op).
+    //   handles class/instance/type-decl registration (TypeAlias deleted in S-1003).
     let nodes: Vec<Arc<SurfaceNode>> = doc
         .items
         .iter()
@@ -276,13 +512,14 @@ pub(crate) async fn process_document(
         );
     }
 
-    let enclosing_level = state.level;
+    let enclosing_level = state.ctx.current_level;
     let last_span = nodes.last().unwrap().span.clone();
 
     // Snapshot tycon_env keys before the run.
-    // ctor_schemes for ADT types declared in the last Dict expression are dropped by
-    // dict_finish (DictPassZero terminal path). We reconstruct them by diffing tycon_env
-    // against this snapshot: new zero-arity TyCon entries represent types declared here.
+    // ctor_schemes for ADT types declared in the last Dict expression are not propagated
+    // by the DictPassZero handler (it discards the schemes return from run_typecheck_dict).
+    // We reconstruct them by diffing tycon_env against this snapshot: new zero-arity TyCon
+    // entries represent types declared here.
     let tycon_keys_before: std::collections::HashSet<String> =
         state.tycon_env.keys().cloned().collect();
 
@@ -313,23 +550,37 @@ pub(crate) async fn process_document(
     // the same constraint via builtin-eval, but catching it here produces a clearer error
     // message and fails fast at compile time rather than at evaluation time.
     //
-    // Type::Dict(_):        ok — any dict (open, closed, uniform-tail) satisfies the constraint.
-    // Type::Unknown:        ok — gradual escape hatch; cannot rule out a dict statically.
-    // Type::Any:            ok — top type; cannot rule out a dict.
-    // Type::Var(_, _):      ok — inference variable; deferred to the constraint solver.
-    //                            is_subtype returns true for TypeVars (conservative approximation).
-    // Type::Error(_):       ok — cascade sentinel; an upstream error already reported.
-    // Everything else:      the type is known to be a non-dict → error.
-    match &result_ty {
-        Type::Dict(_) | Type::Unknown | Type::Any | Type::Var(_, _) | Type::Error(_) => {}
-        _ => errors.push(TypeDiagnostic::error(
-            "type-error",
-            format!(
-                "document last expression must be a record type, got {}",
-                result_ty
-            ),
-            last_span,
-        )),
+    // TypeValue.Record:   ok — any record type satisfies the constraint.
+    // TypeValue.Unknown:  ok — gradual escape hatch; cannot rule out a dict statically.
+    // TypeValue.Top:      ok — top type; cannot rule out a dict.
+    // TypeValue.Var:      ok — inference variable; deferred to the constraint solver.
+    // TypeValue.Op/App:   ok — named type constructor (may be a Dict alias).
+    // Everything else:    the type is known to be a non-dict → error.
+    {
+        let is_dict_ok = match result_ty.as_ref() {
+            Value::Variant { ctor, .. } => {
+                let c = ctor.as_ref();
+                c == TV_RECORD
+                    || c == TV_UNKNOWN
+                    || c == TV_TOP
+                    || c == TV_VAR
+                    || c == TV_OP
+                    || c == TV_APP
+            }
+            // Bootstrap sentinel (empty dict = Unknown during bootstrap)
+            Value::Dict { entries, .. } if entries.is_empty() => true,
+            _ => false,
+        };
+        if !is_dict_ok {
+            errors.push(TypeDiagnostic::error(
+                "type-error",
+                format!(
+                    "document last expression must be a record type, got {:?}",
+                    result_ty
+                ),
+                last_span,
+            ));
+        }
     }
 
     // Build result_env with parent=parent_env (flat env chain invariant).
@@ -338,43 +589,40 @@ pub(crate) async fn process_document(
     let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
 
     // Extract schemes from the last expression's result type.
-    // The last Dict goes through DictPassZero → dict_finish which produces mono field types
-    // (not generalized). Generalize at enclosing_level — dict_finish restores state.level
-    // to enclosing_level before returning, so TypeVars at level > enclosing_level are the
-    // ones created during this document's inference and are safe to generalize.
+    // The last Dict goes through DictPassZero → run_typecheck_dict, which produces mono field
+    // types (not generalized at the call site). Generalize at enclosing_level here —
+    // run_typecheck_dict restores state.ctx.current_level to enclosing_level before returning, so TypeVars
+    // at level > enclosing_level are the ones from this document's inference and are safe to
+    // generalize.
     //
-    // Note: TypeAlias entries (e.g., `Direction: [type North South]`) are skipped by
-    // DictSccMember (is_alias = true → continue) and are NOT in result_ty.fields. They
-    // are handled separately below via the tycon_env diff.
-    if let Type::Dict(Row { ref fields, .. }) = result_ty {
-        for (name, field_ty) in fields {
-            let scheme = generalize(enclosing_level, field_ty, state);
-            result_env_inner.insert_scheme_named_only(name.clone(), scheme);
+    // Note: TyConDef entries (e.g., `Direction: [type North South]`) are excluded from
+    // the record's field_types in run_typecheck_dict. They are NOT in result_ty.fields
+    // and are handled separately below via the tycon_env diff.
+    if let Some(fields) = extract_record_fields(&result_ty) {
+        for (name, field_tv) in fields {
+            // After S-1003: generalize returns a TypeValue (possibly TypeValue.Scheme for polymorphic).
+            // insert_scheme_named_only takes TypeValue directly.
+            let tv = generalize_tv(enclosing_level, &field_tv, &state.ctx);
+            result_env_inner.insert_scheme_named_only(name, tv);
         }
     }
 
     // Reconstruct schemes for zero-arity ADT types declared in this document.
-    // run_typecheck (DictPassZero path) does not return these in result_ty: TypeAlias entries
-    // are skipped in DictSccMember and not included in field_types/resolved_field_types.
-    // dict_finish drops ctor_schemes. We recover both by diffing state.tycon_env against the
-    // pre-run snapshot, matching what run_typecheck_dict's schemes IndexMap would have returned:
+    // TypeAlias entries have is_alias=true in run_typecheck_dict and are excluded from
+    // resolved_field_types, so they are not in result_ty.fields. The DictPassZero handler
+    // also discards the schemes return from run_typecheck_dict. We recover both by diffing
+    // state.tycon_env against the pre-run snapshot:
     //   1. The type name itself (e.g., "Direction") → adt_value_type(body) — the constructor dict
     //   2. Each constructor name (e.g., "North", "South") → the NominalVariant type
     for (name, def) in &state.tycon_env {
         if !tycon_keys_before.contains(name) && def.params.is_empty() {
             let value_ty = typecheck_cek::adt_value_type(&def.body);
-            // Insert the type name itself with the constructor dict type.
-            result_env_inner.insert_scheme_named_only(
-                name.clone(),
-                crate::types::TypeScheme::mono(value_ty.clone()),
-            );
-            // Insert each constructor name with its variant type.
-            if let Type::Dict(ref row) = value_ty {
-                for (ctor_name, ctor_ty) in &row.fields {
-                    result_env_inner.insert_scheme_named_only(
-                        ctor_name.clone(),
-                        crate::types::TypeScheme::mono(ctor_ty.clone()),
-                    );
+            // After S-1003: insert_scheme_named_only takes TypeValue directly.
+            result_env_inner.insert_scheme_named_only(name.clone(), Arc::clone(&value_ty));
+            // Insert each constructor name with its variant TypeValue.
+            if let Some(ctor_fields) = extract_record_fields(&value_ty) {
+                for (ctor_name, ctor_tv) in ctor_fields {
+                    result_env_inner.insert_scheme_named_only(ctor_name, ctor_tv);
                 }
             }
         }
@@ -385,7 +633,7 @@ pub(crate) async fn process_document(
 
 /// Pre-register type aliases in `target_env` before Pass 1 inference.
 ///
-/// Map a resolved `Type` to the dispatch tag string used in instance binding names.
+/// Map a resolved TypeValue (Arc<Value>) to the dispatch tag string used in instance binding names.
 ///
 /// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
 /// names from instance arm patterns.  Annotations are written as `@Integer`, `@Float`,
@@ -393,25 +641,89 @@ pub(crate) async fn process_document(
 /// `instance_binding_name` calls.
 ///
 /// Returns `None` for:
-/// - Unbound `TypeVar` (instance not yet determined).
-/// - `Unknown` / `Top` / `Error` (gradual / lattice types that don't correspond to instances).
+/// - Unbound `TypeValue.Var` (instance not yet determined).
+/// - `TypeValue.Unknown` / `TypeValue.Top` (gradual / lattice types that don't correspond to instances).
 /// - Compound types that don't map to a single dispatch tag (records, functions, unions).
 ///
-/// `IntLiteral`/`StringLiteral` are promoted to `"Integer"`/`"String"` because instance arms
-/// are always annotated with the widened type (e.g., `@Integer`, never `@42`).
-pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
-    match ty {
-        Type::Int | Type::IntLiteral(_) => Some("Integer".to_string()),
-        Type::Float | Type::FloatLiteral(_) => Some("Float".to_string()),
-        Type::Str | Type::StringLiteral(_) => Some("String".to_string()),
-        // Bytes is a direct variant (not TyCon("Bytes")).
-        Type::Bytes => Some("Bytes".to_string()),
-        // TyCon: map to the type name directly. Instance arm annotations must match the declared
-        // type name exactly (e.g., @SomeType not a shortened alias) for dispatch tags to align.
-        Type::TyCon(name) => Some(name.clone()),
-        // Unresolved inference variables and gradual types cannot be dispatched.
-        Type::Var(_, _) | Type::Unknown | Type::Any | Type::Error(_) => None,
-        // Compound types don't correspond to single-param dispatch tags.
+/// Literal types (IntLit, FloatLit, StrLit) are promoted to their widened tags
+/// (`"Integer"`, `"Float"`, `"String"`) because instance arms are always annotated
+/// with the widened type (e.g., `@Integer`, never `@42`).
+pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
+    match tv.as_ref() {
+        Value::Variant { ctor, .. } => match ctor.as_ref() {
+            TV_REPR => {
+                // Extract the repr string from the payload to determine the dispatch tag.
+                let repr = typevalue_repr_string(tv)?;
+                match repr.as_str() {
+                    REPR_INT => Some(DISPATCH_INTEGER.to_string()),
+                    REPR_FLOAT => Some(DISPATCH_FLOAT.to_string()),
+                    REPR_STRING => Some(DISPATCH_STRING.to_string()),
+                    REPR_BYTES => Some(DISPATCH_BYTES.to_string()),
+                    _ => None,
+                }
+            }
+            TV_INT_LIT => Some(DISPATCH_INTEGER.to_string()),
+            TV_FLOAT_LIT => Some(DISPATCH_FLOAT.to_string()),
+            TV_STR_LIT => Some(DISPATCH_STRING.to_string()),
+            // TypeValue.Op: a named type constructor → dispatch on its name.
+            TV_OP => {
+                // Extract name from payload dict.
+                typevalue_op_name(tv).map(|n| n.to_string())
+            }
+            // Inference variables and gradual types cannot be dispatched.
+            TV_VAR | TV_UNKNOWN | TV_TOP | TV_NEVER => None,
+            // Compound types (Record, Fn, Union, App, etc.) don't map to single dispatch tags.
+            _ => None,
+        },
+        // Bootstrap sentinel (empty dict = Unknown) → not dispatchable.
+        _ => None,
+    }
+}
+
+/// Extract the `repr` string from a TypeValue.Repr variant payload (synchronously).
+fn typevalue_repr_string(tv: &Arc<Value>) -> Option<String> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_REPR => match thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let key = HashableValue::Str(Arc::from(FIELD_REPR));
+                match entries.get(&key)?.peek_result()? {
+                    Ok(Value::String {
+                        source, start, end, ..
+                    }) => Some(source[*start..*end].to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract the `name` string from a TypeValue.Op variant payload (synchronously).
+fn typevalue_op_name(tv: &Arc<Value>) -> Option<String> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_OP => match thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let key = HashableValue::Str(Arc::from(FIELD_NAME));
+                match entries.get(&key)?.peek_result()? {
+                    Ok(Value::String {
+                        source, start, end, ..
+                    }) => Some(source[*start..*end].to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -421,19 +733,19 @@ pub(crate) fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
 pub(crate) fn infer_class_decl_from_surface(
     decl: &ClassDeclSurface<'_>,
     state: &mut InferState,
-) -> Result<Type, Vec<TypeDiagnostic>> {
-    use crate::types::{ClassDecl, Kind};
+) -> Result<Arc<Value>, Vec<TypeDiagnostic>> {
+    use crate::types::ClassDecl;
+    // After S-1003: Kind deleted, params use Arc<Value> TypeValue kind.
 
     let ClassDeclSurface {
         name,
         params,
         superclasses,
         determines,
-        resolver,
-        resolver_injective,
         structural,
         span,
-        ..
+        resolver,
+        resolver_injective,
     } = decl;
     let span = span.clone();
 
@@ -449,7 +761,8 @@ pub(crate) fn infer_class_decl_from_surface(
     // resolve_type_expr is async and cannot be called from sync infer_class_decl_from_surface.
     // method_signatures is populated as empty (matches existing ClassDecl construction sites).
 
-    let existing_param_kinds: std::collections::HashMap<String, Kind> = {
+    // After S-1003: ClassDecl.params is Vec<(String, Arc<Value>)> where Arc<Value> is the kind TypeValue.
+    let existing_param_kinds: std::collections::HashMap<String, Arc<Value>> = {
         let env_guard = state.env.read().unwrap();
         env_guard
             .get_class(name)
@@ -478,24 +791,8 @@ pub(crate) fn infer_class_decl_from_surface(
         }
     }
 
-    let resolver_name = if let Some(resolver_node) = resolver {
-        match &resolver_node.expr {
-            SurfaceExpression::VarRef { name: n, .. } => Some(n.clone()),
-            SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
-            _ => {
-                return Err(vec![TypeDiagnostic::error(
-                    "type-error",
-                    "resolver must be an identifier or string",
-                    resolver_node.span.clone(),
-                )]);
-            }
-        }
-    } else {
-        None
-    };
-
     let structural_discharge = match *structural {
-        "closed-dict" => crate::type_class::StructuralDischarge::ClosedDict,
+        STRUCTURAL_CLOSED_DICT => crate::type_class::StructuralDischarge::ClosedDict,
         _ => crate::type_class::StructuralDischarge::None,
     };
 
@@ -504,7 +801,11 @@ pub(crate) fn infer_class_decl_from_surface(
         params: params
             .iter()
             .map(|p| {
-                let kind = existing_param_kinds.get(p).cloned().unwrap_or(Kind::Type);
+                // After S-1003: default kind is TypeValue.Op{name:"Type"} (kind *).
+                let kind = existing_param_kinds
+                    .get(p)
+                    .cloned()
+                    .unwrap_or_else(|| crate::type_infer::make_typevalue_op(KIND_TYPE));
                 (p.clone(), kind)
             })
             .collect(),
@@ -513,7 +814,7 @@ pub(crate) fn infer_class_decl_from_surface(
             .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
             .collect(),
         determines: fd_indices,
-        resolver: resolver_name,
+        resolver: resolver.clone(),
         resolver_injective: *resolver_injective,
         structural_discharge,
         method_signatures: vec![],
@@ -521,31 +822,22 @@ pub(crate) fn infer_class_decl_from_surface(
 
     state.env.write().unwrap().insert_class(class_decl.clone());
     state.invalidate_env_caches();
-    // Wire class declarations into type_stage_scope so resolve_type_head
-    // can find class names via the scope chain. or_insert preserves type-stage
-    // entries (type-stage has priority over runtime-declared classes).
-    if state.type_stage_scope.is_empty() {
-        state
-            .type_stage_scope
-            .push(std::collections::HashMap::new());
-    }
-    state.type_stage_scope[0]
-        .entry(class_decl.name.clone())
-        .or_insert(crate::type_infer::TypeStageEntry::Class(class_decl.clone()));
-    for (param_name, kind) in &class_decl.params {
-        if *kind == Kind::Operator {
-            state.kind_env.insert(param_name.clone(), Kind::Operator);
-        }
-    }
+    // Class entries are stored in state.env (class registry).
+    // resolve_type_head looks up classes via state.env.read().get_class(name).
+    // No insertion into type_stage_scope needed.
+    // After S-1003: Kind deleted, kind_env removed from InferState.
+    // Operator-kinded params are now tracked as TypeValue kinds in ClassDecl.params.
+    // No further action needed — the kind information is already in class_decl.params.
 
-    Ok(Type::Dict(Row {
-        fields: indexmap::IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    }))
+    Ok(make_typevalue_record(indexmap::IndexMap::new(), None))
 }
 
 /// Type alias for match arm type data (Surface version): (param_types, span, entries).
-type SurfaceMatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<crate::ast::SurfaceEntry>>);
+type SurfaceMatchArmData<'a> = (
+    Vec<Arc<Value>>,
+    Span,
+    &'a Vec<Spanned<crate::ast::SurfaceEntry>>,
+);
 
 /// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
 /// Called from process_document (via CEK Sequential) and typecheck_cek::run_typecheck_dict — no Expr bridge needed.
@@ -556,14 +848,11 @@ pub(crate) async fn infer_instance_decl_from_surface(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeDiagnostic>> {
+) -> Result<Arc<Value>, Vec<TypeDiagnostic>> {
     use crate::types::InstanceDecl;
 
     if arms.is_empty() {
-        return Ok(Type::Dict(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Empty,
-        }));
+        return Ok(make_typevalue_record(indexmap::IndexMap::new(), None));
     }
 
     let (param_count, has_fds, fd_list, param_names) = {
@@ -609,7 +898,10 @@ pub(crate) async fn infer_instance_decl_from_surface(
             )]);
         }
 
-        if pattern_types.iter().any(|ty| matches!(ty, Type::Unknown)) {
+        if pattern_types.iter().any(|tv| {
+            matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNKNOWN)
+                || matches!(tv.as_ref(), Value::Dict { entries, .. } if entries.is_empty())
+        }) {
             return Err(vec![TypeDiagnostic::error("type-error",
                 format!(
                     "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
@@ -649,23 +941,23 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     let (types_i, span_i, _) = &arm_data[i];
                     let (types_j, span_j, _) = &arm_data[j];
 
-                    let determining_i: Vec<Type> = determining_indices
+                    let determining_i: Vec<Arc<Value>> = determining_indices
                         .iter()
-                        .map(|&idx| types_i[idx].clone())
+                        .map(|&idx| Arc::clone(&types_i[idx]))
                         .collect();
-                    let determining_j: Vec<Type> = determining_indices
+                    let determining_j: Vec<Arc<Value>> = determining_indices
                         .iter()
-                        .map(|&idx| types_j[idx].clone())
+                        .map(|&idx| Arc::clone(&types_j[idx]))
                         .collect();
 
                     if types_can_unify(&determining_i, &determining_j, state).await? {
-                        let determined_i: Vec<Type> = determined_indices
+                        let determined_i: Vec<Arc<Value>> = determined_indices
                             .iter()
-                            .map(|&idx| types_i[idx].clone())
+                            .map(|&idx| Arc::clone(&types_i[idx]))
                             .collect();
-                        let determined_j: Vec<Type> = determined_indices
+                        let determined_j: Vec<Arc<Value>> = determined_indices
                             .iter()
-                            .map(|&idx| types_j[idx].clone())
+                            .map(|&idx| Arc::clone(&types_j[idx]))
                             .collect();
 
                         if !types_can_unify(&determined_i, &determined_j, state).await? {
@@ -688,16 +980,14 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
     for (pattern_types, _arm_span, methods) in &arm_data {
         let inst_type = if pattern_types.len() == 1 {
-            pattern_types[0].clone()
+            Arc::clone(&pattern_types[0])
         } else {
-            Type::Dict(Row {
-                fields: pattern_types
-                    .iter()
-                    .enumerate()
-                    .map(|(i, ty)| (i.to_string(), ty.clone()))
-                    .collect(),
-                tail: crate::type_def::RowTail::Empty,
-            })
+            let fields: indexmap::IndexMap<String, Arc<Value>> = pattern_types
+                .iter()
+                .enumerate()
+                .map(|(i, tv)| (i.to_string(), Arc::clone(tv)))
+                .collect();
+            make_typevalue_record(fields, None)
         };
 
         // Extract type tags for instance binding name generation.
@@ -722,24 +1012,24 @@ pub(crate) async fn infer_instance_decl_from_surface(
         // this also injects the correct concrete type.
         //
         // Implementation: push a new innermost type_stage_scope frame (index 0) containing
-        // the param_name → TypeStageEntry::Resolved(pattern_type) bindings. Pop it after all
+        // the param_name → TypeValue (pattern_type) bindings. Pop it after all
         // methods in this arm are checked. This is a temporary scope — it does NOT leak into
         // other arms or the surrounding type environment.
-        let param_type_frame: std::collections::HashMap<String, crate::type_infer::TypeStageEntry> = {
+        let param_type_frame: std::collections::HashMap<String, crate::type_infer::TypeValue> = {
             let mut frame = std::collections::HashMap::new();
-            for (name, ty) in param_names.iter().zip(pattern_types.iter()) {
-                if !matches!(ty, Type::Var(..)) {
-                    frame.insert(
-                        name.clone(),
-                        crate::type_infer::TypeStageEntry::Resolved(ty.clone()),
-                    );
+            for (name, tv) in param_names.iter().zip(pattern_types.iter()) {
+                // Skip TypeValue.Var — unresolved type variable, not a concrete pattern type.
+                let is_var =
+                    matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_VAR);
+                if !is_var {
+                    frame.insert(name.clone(), Arc::clone(tv));
                 }
             }
             frame
         };
         let pushed_frame = !param_type_frame.is_empty();
         if pushed_frame {
-            state.type_stage_scope.insert(0, param_type_frame);
+            state.type_stage_scope.insert(0, param_type_frame.clone());
         }
 
         for method in *methods {
@@ -779,41 +1069,50 @@ pub(crate) async fn infer_instance_decl_from_surface(
             // → Fn(Int,Int)→Bool → expected_fn_params = [Int, Int].
             // Unannotated params x, y in `[fn [let x y] ...]` then get Type::Int instead
             // of Type::Unknown.
+            //
+            // ClassDecl.method_signatures is populated by the CEK pass when the [class ...]
+            // declaration is processed. By the time [instance ...] arms are checked, the
+            // class body has already been type-checked, so method_signatures is available.
             {
-                let class_method_sig: Option<Type> = {
-                    let env_guard = state.env.read().unwrap();
-                    env_guard.get_class(class_name).and_then(|cd| {
-                        cd.method_signatures
-                            .iter()
-                            .find(|(n, _)| n == &method_name)
-                            .map(|(_, ty)| ty.clone())
-                    })
-                };
-                if let Some(sig) = class_method_sig {
-                    // Build a temporary substitution: class param name → concrete pattern type.
-                    // This is purely local — no state mutation.
-                    let tmp_subst = crate::type_infer::Substitution::new();
-                    for (pname, pty) in param_names.iter().zip(pattern_types.iter()) {
-                        if !matches!(pty, Type::Var(..)) {
-                            tmp_subst
-                                .type_map
-                                .borrow_mut()
-                                .insert(pname.clone(), pty.clone());
-                        }
-                    }
-                    let specialized = tmp_subst.apply(&sig);
-                    // Extract fixed param types from the specialized Function type.
-                    if let Type::Function {
-                        params: fn_params, ..
-                    } = specialized
+                // Build a TypeValue substitution from the param_type_frame, mapping class
+                // param names (e.g., "a") to the concrete pattern TypeValues (e.g., Int).
+                // param_type_frame contains TypeValue directly for each concrete param.
+                let type_subst: HashMap<String, Arc<Value>> = param_type_frame
+                    .iter()
+                    .map(|(name, tv)| (name.clone(), Arc::clone(tv)))
+                    .collect();
+
+                // Look up this method's polymorphic signature in the class.
+                let method_sig_opt =
+                    state
+                        .env
+                        .read()
+                        .unwrap()
+                        .get_class(class_name)
+                        .and_then(|cd| {
+                            cd.method_signatures
+                                .iter()
+                                .find(|(n, _)| n == &method_name)
+                                .map(|(_, tv)| Arc::clone(tv))
+                        });
+
+                if let Some(poly_sig) = method_sig_opt {
+                    // Apply the substitution to the polymorphic method type to get the
+                    // specialized (monomorphic) signature for this instance arm.
+                    let concrete_sig =
+                        crate::types::apply_typevalue_renaming(&poly_sig, &type_subst);
+
+                    // Extract the param types from the concrete TypeValue.Fn.
+                    if let Some((param_types, _ret)) =
+                        crate::type_infer::typevalue_fn_params_and_ret(&concrete_sig)
                     {
-                        let expected: Vec<Type> =
-                            fn_params.iter().map(|(_, ty)| ty.clone()).collect();
-                        if !expected.is_empty() {
-                            state.expected_fn_params = Some(expected);
+                        if !param_types.is_empty() {
+                            state.expected_fn_params = Some(param_types);
                         }
                     }
                 }
+                // If method_signatures is empty (class body not yet processed or no signature),
+                // or if the method is not found, skip — unannotated params fall back to Unknown.
             }
 
             let mut method_errors: Vec<TypeDiagnostic> = Vec::new();
@@ -838,15 +1137,15 @@ pub(crate) async fn infer_instance_decl_from_surface(
             }
             method_types.insert(method_name.clone(), method_impl_type.clone());
 
-            // Insert TypeScheme for the ɪ-prefixed binding name so that VarRef resolution
+            // Insert TypeValue for the ɪ-prefixed binding name so that VarRef resolution
             // can find the method type. This mirrors what lower.rs does at runtime:
             // lower.rs creates a dict entry with key `ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽` and the
-            // type checker must insert a matching TypeScheme at that name.
+            // type checker must insert a matching TypeValue at that name.
             let type_args_str: Vec<&str> = type_args.iter().map(|s| s.as_str()).collect();
             let binding_name =
                 crate::type_def::instance_binding_name(class_name, &method_name, &type_args_str);
 
-            let scheme = generalize(state.level, &method_impl_type, state);
+            let scheme = generalize_tv(state.ctx.current_level, &method_impl_type, &state.ctx);
 
             // Insert into the parent dict env. The env parameter is the dict's environment,
             // so inserting here makes the ɪ-prefixed binding visible to the same scope as
@@ -886,9 +1185,13 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
         // Structural overlap is async (calls unify) and cannot be checked from this sync function.
         // Exact duplicates are caught by the mangled-key dedup in env.insert_instance.
+        // After S-1003: instance_type is Arc<Value>. Use the dispatch tag strings for mangling.
+        // type_args contains the dispatch tag strings derived from pattern_types.
+        let type_args_for_mangling: Vec<&str> = type_args.iter().map(String::as_str).collect();
         let mangled = format!(
             "ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽",
-            instance_decl.class_name, instance_decl.instance_type
+            instance_decl.class_name,
+            type_args_for_mangling.join(",")
         );
         state
             .env
@@ -898,185 +1201,12 @@ pub(crate) async fn infer_instance_decl_from_surface(
         state.invalidate_env_caches();
     }
 
-    Ok(Type::Dict(Row {
-        fields: indexmap::IndexMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    }))
+    Ok(make_typevalue_record(indexmap::IndexMap::new(), None))
 }
 
-/// Check if a type contains Unknown or Top anywhere in its structure.
-///
-/// Used for the gradual typing fallback: when Unknown/Top appears anywhere in a type,
-/// subsumption uses `is_consistent` instead of `is_subtype` to maintain the gradual guarantee.
-pub(crate) fn contains_unknown_or_top(ty: &Type) -> bool {
-    match ty {
-        Type::Unknown | Type::Any => true,
-        // TypeVar is treated as gradual (like Unknown) in the subsumption check.
-        // An unresolved TypeVar represents an unknown type that could be anything.
-        // Internal TypeVars from annotated params, `instantiate_scheme`, and
-        // `fresh_type_var` used in pass-1 positions can appear during body checking
-        // before the substitution has resolved them. Without this arm, TypeVars in
-        // an actual type would fall through to `_ => false` in is_subtype, causing
-        // false subsumption failures against concrete expected types like Number or Str.
-        Type::Var(_, _) => true,
-        Type::Function { params, ret, .. } => {
-            params.iter().any(|(_, t)| contains_unknown_or_top(t)) || contains_unknown_or_top(ret)
-        }
-        Type::App(f, a) => contains_unknown_or_top(f) || contains_unknown_or_top(a),
-        Type::Dict(row) => row.fields.values().any(contains_unknown_or_top),
-        Type::Union(members) => members.iter().any(contains_unknown_or_top),
-        _ => false,
-    }
-}
+// contains_unknown_or_top removed — check_surface_expr now uses constrain() which handles
+// gradual types internally (Unknown absorption in unify). The helper is no longer needed.
 
-#[cfg(test)]
-/// Check that an expression has a compatible type with the expected type.
-///
-/// Uses bidirectional type checking: synthesize the expression's type via `run_typecheck` (CEK),
-/// then check subsumption via `is_subtype(actual, expected)`.
-///
-/// Per doc/06-type-inference.md §Bidirectional Typing, this is the [SUB] rule:
-/// if `Γ ⊢ e ⇒ σ` and `σ <: τ`, then `Γ ⊢ e ⇐ τ`.
-///
-/// Special case for lambdas (doc/06 §[CHECK-FN]): when `node` is a `Fn` expression and
-/// `expected` is a concrete `Function` type, arity is checked before synthesis.
-/// Used at checking positions where the expected type is fully concrete: TypeAssert and
-/// default-value validation. Called from test code only.
-pub(crate) async fn check_surface_expr(
-    node: &Arc<SurfaceNode>,
-    expected: &Type,
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<(), Vec<TypeDiagnostic>> {
-    // Lambda checking mode (CHECK-FN) — arity check.
-    // When the node is a Fn expression and expected is a concrete Function type, check
-    // that the lambda's param count matches the expected param count. This is a necessary
-    // arity check even when full bidirectional propagation is not available (sync context).
-    if let (
-        SurfaceExpression::Fn { params, .. },
-        Type::Function {
-            params: exp_params,
-            typed_variadics: exp_tv,
-            rest: exp_rest,
-            required_count: exp_required,
-            ..
-        },
-    ) = (&node.expr, expected)
-    {
-        if !expected.has_inference_vars() {
-            let actual_count = params.len();
-            let expected_count = exp_params.len();
-            let min_required = *exp_required;
-            let exp_variadic = !exp_tv.is_empty() || exp_rest.is_some();
-            let max_allowed = if exp_variadic {
-                usize::MAX
-            } else {
-                expected_count
-            };
-            if actual_count < min_required || actual_count > max_allowed {
-                return Err(vec![TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "arity mismatch: expected {} arguments, got {}",
-                        if exp_variadic {
-                            format!("at least {}", min_required)
-                        } else {
-                            expected_count.to_string()
-                        },
-                        actual_count
-                    ),
-                    node.span.clone(),
-                )]);
-            }
-        }
-    }
-
-    // Default: synthesize then check via run_typecheck (CEK machine).
-    // Full lambda checking mode (CHECK-FN) that propagates expected parameter types into a lambda
-    // requires async annotation resolution (resolve_annotation). Lambda inference is handled
-    // correctly by the CEK machine's AfterFnBody continuation.
-    // Fall through to synthesize+subsume.
-    let mut local_errors: Vec<TypeDiagnostic> = Vec::new();
-    let mut local_stack = Vec::new();
-    let actual = Box::pin(typecheck_cek::run_typecheck(
-        node,
-        env,
-        state,
-        &mut local_errors,
-        type_map,
-        &mut local_stack,
-    ))
-    .await;
-    if !local_errors.is_empty() {
-        return Err(local_errors);
-    }
-    // Apply state.subst to both types before comparison — access-chain constraints
-    // may have bound TypeVars in state.subst. Without substitution, the comparison
-    // uses stale TypeVars.
-    // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let (actual, expected_resolved) = if state.subst.type_map.borrow().is_empty() {
-        (actual, expected.clone())
-    } else {
-        (state.subst.apply(&actual), state.subst.apply(expected))
-    };
-
-    // Unified CALL-MONO/CALL-POLY path: eliminates verdict divergence between monomorphic
-    // and polymorphic function calls. When expected type has TypeVars, use unification to
-    // bind them (CALL-POLY). When expected type is concrete, use subsumption (CALL-MONO).
-    // This ensures identical literal pairs get consistent verdicts regardless of whether
-    // the function type has inference vars.
-    if expected_resolved.has_inference_vars() {
-        // Expected type contains TypeVars — use consistent subtyping (gradual).
-        // Full unification is async (unify calls are async) and cannot be performed from
-        // this sync function. is_consistent_subtype handles TypeVar positions as gradual (?),
-        // which is the correct behavior for the check context (unknown ≡ accept anything).
-        if !Type::is_consistent_subtype(&actual, &expected_resolved, Some(&state.tycon_env)) {
-            return Err(vec![TypeDiagnostic::error(
-                "unification-failure",
-                format!("cannot unify {} with {}", &expected_resolved, &actual),
-                node.span.clone(),
-            )]);
-        }
-        Ok(())
-    } else {
-        // Expected type is concrete — use subsumption with gradual typing fallback.
-        // This is the CALL-MONO path: the function type is fully known, so we check
-        // that the argument type is a subtype of the parameter type.
-        //
-        // Use is_subtype for standard HM subsumption. When is_subtype fails and either type
-        // contains Unknown (gradual ?) anywhere in its structure, fall back to is_consistent.
-        // The gradual guarantee requires that making types less precise (adding ?) never
-        // causes new type errors (Siek & Taha 2006). We only use the consistency fallback
-        // when Unknown is present, because is_consistent is symmetric (Number ~ Int) while
-        // is_subtype is directional (Int <: Number but NOT Number <: Int).
-
-        // Apply substitution before consistency check
-        let (actual_resolved, expected_final) = if state.subst.type_map.borrow().is_empty() {
-            (actual.clone(), expected_resolved.clone())
-        } else {
-            (
-                state.subst.apply(&actual),
-                state.subst.apply(&expected_resolved),
-            )
-        };
-
-        let tycon_env = state.tycon_env_ref();
-        let passes = Type::is_subtype(&actual_resolved, &expected_final, Some(tycon_env))
-            || ((contains_unknown_or_top(&actual_resolved)
-                || contains_unknown_or_top(&expected_final))
-                && Type::is_consistent(&actual_resolved, &expected_final));
-        if !passes {
-            Err(vec![TypeDiagnostic::error(
-                "unification-failure",
-                format!("cannot unify {} with {}", &expected_final, &actual_resolved),
-                node.span.clone(),
-            )])
-        } else {
-            Ok(())
-        }
-    }
-}
 
 #[cfg(test)]
 #[path = "typecheck_tests.rs"]

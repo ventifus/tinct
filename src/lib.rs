@@ -41,6 +41,8 @@ pub(crate) mod test_util;
 pub mod typecheck;
 // Boolean-Algebraic Subtyping (BAS) — RDNF normalization and emptiness checking.
 pub(crate) mod bas;
+// TypeValue constructor tag string constants — single authoritative source for all ctor strings.
+pub mod type_tags;
 // Type system modules (top-level for circular dependency avoidance)
 pub(crate) mod type_class;
 pub(crate) mod type_def;
@@ -117,8 +119,13 @@ pub use error::{
     TypeDiagnostic,
 };
 
-/// Type error diagnostic formatting.
-pub use types::{Type, TypeScheme};
+/// TypeValue: the Arc<Value>-based type representation used throughout the type checker.
+pub use type_class::TypeValue;
+
+/// TypeValue construction helpers exposed for use in crate embedders (e.g., main.rs CLI
+/// injected type env). These are the canonical single-path constructors — callers must
+/// not duplicate construction logic locally (Axiom 2).
+pub use type_infer::{make_typevalue_op, make_typevalue_repr, make_typevalue_unknown};
 
 /// Format a TypeDiagnostic with source context for display.
 ///
@@ -227,10 +234,8 @@ pub async fn run_loader_pipeline(
     };
 
     // Two-pass: evaluate type-stage documents first, force all thunks to build
-    // type_stage_scope with fully materialized types, then typecheck the loader program.
-    let type_stage_scope: Vec<
-        std::collections::HashMap<String, crate::type_infer::TypeStageEntry>,
-    > = {
+    // type_stage_data with fully materialized types, then typecheck the loader program.
+    let loader_type_stage_data: crate::type_infer::TypeStageData = {
         // Filter type-stage documents (those with stage: "type" in their header).
         let ts_docs: Vec<_> = loader_program
             .documents
@@ -248,7 +253,7 @@ pub async fn run_loader_pipeline(
             .collect();
 
         if ts_docs.is_empty() {
-            Vec::new()
+            crate::type_infer::TypeStageData::new()
         } else {
             // Build a mini-program with only the type-stage documents and evaluate it.
             // The documents are already desugared and resolved from the main program pass —
@@ -264,11 +269,10 @@ pub async fn run_loader_pipeline(
                 .map_err(|e| format!("type-stage materialization failed: {e}"))?;
             match ts_val {
                 crate::value::Value::Dict { entries, .. } => {
-                    // Force all thunks and classify them into TypeStageEntry variants.
-                    let mut map: std::collections::HashMap<
-                        String,
-                        crate::type_infer::TypeStageEntry,
-                    > = std::collections::HashMap::new();
+                    // Force all thunks and classify into the three maps.
+                    let mut scope_map: std::collections::HashMap<String, crate::type_infer::TypeValue> = std::collections::HashMap::new();
+                    let mut fns_map: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>> = std::collections::HashMap::new();
+                    let mut type_vars_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                     for (key, thunk) in &entries {
                         if let crate::value::HashableValue::Str(name) = key {
                             let val = eval::materialize(thunk, None, &eval_ctx_with_frames)
@@ -280,8 +284,9 @@ pub async fn run_loader_pipeline(
                                     )
                                 })?;
 
-                            let scope_so_far = vec![map.clone()];
-                            let entry = crate::imports::classify_type_stage_entry(
+                            let scope_so_far = vec![scope_map.clone()];
+                            let classified = crate::imports::classify_type_stage_entry(
+                                name,
                                 thunk,
                                 &val,
                                 &eval_ctx_with_frames,
@@ -289,12 +294,22 @@ pub async fn run_loader_pipeline(
                             )
                             .await
                             .map_err(|e| format!("type-stage classify '{}' failed: {}", name, e))?;
-                            if let Some(e) = entry {
-                                map.insert(name.to_string(), e);
+                            if let Some((tv, opt_thunk, opt_kind)) = classified {
+                                scope_map.insert(name.to_string(), Arc::clone(&tv));
+                                if let Some(thunk_arc) = opt_thunk {
+                                    fns_map.insert(name.to_string(), thunk_arc);
+                                }
+                                if let Some(kind_str) = opt_kind {
+                                    type_vars_map.insert(name.to_string(), kind_str);
+                                }
                             }
                         }
                     }
-                    vec![map]
+                    crate::type_infer::TypeStageData {
+                        scope: vec![scope_map],
+                        fns: fns_map,
+                        type_vars: type_vars_map,
+                    }
                 }
                 other => {
                     return Err(format!(
@@ -314,10 +329,13 @@ pub async fn run_loader_pipeline(
     // so that opaque types (BuilderHandle, TypeContext, DirCap, etc.) declared in
     // builtin_core.llt's type-stage section are resolvable when typechecking the loader.
     // Also saved separately for TypeContext pre-initialization (see below).
-    let builtin_core_ts_scope = crate::imports::get_builtin_core_type_stage_scope().await;
-    let type_stage_scope = {
-        let mut combined = builtin_core_ts_scope.clone();
-        combined.extend(type_stage_scope);
+    let builtin_core_ts_data = crate::imports::get_builtin_core_type_stage_scope().await;
+    // Combine: builtin_core entries first (outermost), loader entries innermost.
+    let combined_type_stage_data = {
+        let mut combined = builtin_core_ts_data.clone();
+        combined.scope.extend(loader_type_stage_data.scope);
+        combined.fns.extend(loader_type_stage_data.fns);
+        combined.type_vars.extend(loader_type_stage_data.type_vars);
         combined
     };
     // Save clones for TypeContext pre-initialization before builtin_env_base and seed_tycon_env
@@ -342,7 +360,7 @@ pub async fn run_loader_pipeline(
             builtin_env,
             Some(Arc::clone(&eval_ctx_with_frames)),
             seed_tycon_env,
-            type_stage_scope,
+            combined_type_stage_data,
         )
         .await;
     // Wire the TyConEnv from the typecheck pass into the eval context so that
@@ -375,7 +393,9 @@ pub async fn run_loader_pipeline(
     eval_ctx_with_frames.init_type_context(TypeContextData {
         inference_env: core_env_for_tc,
         tycon_env: core_tycon_for_tc,
-        type_stage_scope: builtin_core_ts_scope,
+        type_stage_scope: builtin_core_ts_data.scope,
+        type_stage_fns: builtin_core_ts_data.fns,
+        type_stage_type_vars: builtin_core_ts_data.type_vars,
         type_diagnostics: Vec::new(),
     });
 
@@ -417,13 +437,13 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let env_arc = imports::get_builtin_core_type_env().await;
-    let type_stage_scope = imports::get_builtin_core_type_stage_scope().await;
+    let ts_data = imports::get_builtin_core_type_stage_scope().await;
     let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
         &program,
         env_arc,
         None,
         std::collections::HashMap::new(),
-        type_stage_scope,
+        ts_data,
     )
     .await;
     if diagnostics.is_empty() {
@@ -450,13 +470,13 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let program = desugar::desugar_program_full(&parsed.program);
     // Type check the surface program.
     let env_arc = imports::get_builtin_core_type_env().await;
-    let type_stage_scope = imports::get_builtin_core_type_stage_scope().await;
+    let ts_data = imports::get_builtin_core_type_stage_scope().await;
     let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
         &program,
         env_arc,
         None,
         std::collections::HashMap::new(),
-        type_stage_scope,
+        ts_data,
     )
     .await;
     if !crate::error::has_type_errors(&diagnostics) {
@@ -1274,7 +1294,7 @@ mod tests {
             std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
             None,
             std::collections::HashMap::new(),
-            Vec::new(),
+            crate::type_infer::TypeStageData::new(),
         )
         .await;
         let ctx = test_ctx().await;

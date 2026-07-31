@@ -1,15 +1,31 @@
 //! Type class declarations, constraints, and class/instance environments.
 //!
 //! This module contains the type class system infrastructure including
-//! `ClassDecl`, `Constraint`, `ClassEnv`, and `InstanceEnv`.
+//! `ClassDecl` and `InstanceDecl`.
+//!
+//! Constraints are represented as `Arc<Value>` TypeValues using the `ConstraintDecl`
+//! variant declared in stdlib/builtin_core.llt:
+//!
+//! ```
+//! ConstraintDecl: [type
+//!   class: TypeValue
+//!   args:  Dict]
+//! ```
+//!
+//! A class constraint `Sortable a` becomes:
+//! ```
+//! Value::Variant { ctor: "ConstraintDecl", payload: Dict { class: <Sortable TypeValue>, args: { "0": TypeValue.Var "a" } } }
+//! ```
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
+
 use crate::ast::Span;
-use crate::rust_span;
-use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
+use crate::type_tags::*;
+use crate::value::{unknown_type_val, HashableValue, Thunk, Value};
 
 /// Structural discharge rule for a typeclass — a general mechanism for declaring
 /// that a typeclass is satisfied by a structural property of the type rather than
@@ -19,134 +35,149 @@ pub enum StructuralDischarge {
     /// No structural rule — use normal instance resolution (the default).
     #[default]
     None,
-    /// Only closed dicts (`RowTail::Empty`) satisfy this constraint.
-    /// Open dicts (`RowTail::Uniform`) do NOT satisfy it and produce a type error.
+    /// Only closed dicts satisfy this constraint.
+    /// Open dicts do NOT satisfy it and produce a type error.
     /// Used by the `Record` typeclass to enforce closed-dict semantics.
     ClosedDict,
 }
 
-/// A single argument position in a `Constraint::Class`.
+/// A TypeValue is an `Arc<Value>` where the Value is a `Value::Variant` with
+/// a constructor tag like `"TypeValue.Int"`, `"TypeValue.Var"`, `"TypeValue.Fn"`, etc.
+/// as declared in stdlib/builtin_core.llt.
+pub type TypeValue = Arc<Value>;
+
+// ─── Internal span helper ─────────────────────────────────────────────────────
+
+/// Build an AST span for TypeValue bootstrap construction (no source location).
+fn boot_span() -> Span {
+    Span {
+        file: Arc::from("<type_class>"),
+        start_line: 0,
+        start_col: 0,
+        end_line: 0,
+        end_col: 0,
+        name: None,
+    }
+}
+
+/// Create a settled (already-forced) thunk wrapping a Value.
+pub(crate) fn settled_thunk(v: Value) -> Arc<Thunk> {
+    Arc::new(Thunk::value(v, boot_span()))
+}
+
+// ─── TypeValue construction helpers ───────────────────────────────────────────
+
+/// Build a `Value::String` from a plain `&str`.
+fn string_value(s: &str) -> Value {
+    let source: Arc<str> = Arc::from(s);
+    let end = source.len();
+    Value::String {
+        source,
+        start: 0,
+        end,
+        type_val: unknown_type_val(),
+    }
+}
+
+/// Build a single-field payload Dict.
+fn single_field_dict(key: &str, value: Value) -> Value {
+    let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    entries.insert(HashableValue::Str(Arc::from(key)), settled_thunk(value));
+    Value::Dict {
+        entries,
+        type_val: unknown_type_val(),
+    }
+}
+
+/// Build a two-field payload Dict.
+fn two_field_dict(key1: &str, val1: Value, key2: &str, val2: Value) -> Value {
+    let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    entries.insert(HashableValue::Str(Arc::from(key1)), settled_thunk(val1));
+    entries.insert(HashableValue::Str(Arc::from(key2)), settled_thunk(val2));
+    Value::Dict {
+        entries,
+        type_val: unknown_type_val(),
+    }
+}
+
+/// Construct a `Value::Variant` (the fundamental building block of TypeValues).
+fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
+    Value::Variant {
+        ctor: Arc::from(ctor),
+        payload: payload.map(|p| settled_thunk(p)),
+        type_val: unknown_type_val(),
+    }
+}
+
+/// Make a `TypeValue.Op { name }` variant — a TypeValue representing a type operator.
 ///
-/// Most positions hold a type variable name that will be renamed during instantiation.
-/// Determined positions (those resolved by functional-dependency improvement before
-/// generalization) are stored as `Ground(Type)` so that `instantiate_scheme` and
-/// `check_constraints_on_var` can use the concrete type directly without needing
-/// to look it up in the substitution.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ConstraintArg {
-    /// A type variable that will be renamed during instantiation.
-    Var(String),
-    /// A concrete ground type — passed through unchanged during instantiation.
-    Ground(Type),
+/// Represents a type operator name (e.g., "HasField", "Seq", "Map").
+pub fn make_type_op(name: impl Into<String>) -> TypeValue {
+    let name_str: String = name.into();
+    let payload = single_field_dict("name", string_value(&name_str));
+    Arc::new(make_variant(TV_OP, Some(payload)))
 }
 
-impl ConstraintArg {
-    /// Returns the variable name if this is a `Var` position, `None` for `Ground`.
-    pub fn as_var(&self) -> Option<&str> {
-        match self {
-            ConstraintArg::Var(s) => Some(s),
-            ConstraintArg::Ground(_) => None,
-        }
-    }
-
-    /// Returns the ground type if this is a `Ground` position, `None` for `Var`.
-    pub fn as_ground(&self) -> Option<&Type> {
-        match self {
-            ConstraintArg::Var(_) => None,
-            ConstraintArg::Ground(t) => Some(t),
-        }
+/// Extract the inner `Value` from an `Arc<Value>`, cloning if there are multiple owners.
+///
+/// This is needed when constructing payload dicts where we need owned `Value` values
+/// but are given `Arc<Value>` TypeValues.
+pub(crate) fn arc_into_value(arc: Arc<Value>) -> Value {
+    match Arc::try_unwrap(arc) {
+        Ok(v) => v,
+        Err(arc_ref) => (*arc_ref).clone(),
     }
 }
 
-/// Constraint on a type variable (type class membership or structural property)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Constraint {
-    /// Type class constraint: `class vars` (e.g., `Numeric a` or `Add a b c`)
-    ///
-    /// `class`: The type class declaration (provides name, functional dependencies, resolver, etc.)
-    /// `vars`: Arguments to the constraint — either type variable names or concrete ground types.
-    ///   Use `ConstraintArg::Var(name)` for positions that are still polymorphic and will be
-    ///   renamed during instantiation, and `ConstraintArg::Ground(ty)` for positions whose type
-    ///   was determined by functional-dependency improvement before generalization.
-    /// `origin_name`: Name of the function/builtin that introduced this constraint (for T013 diagnostics)
-    /// `origin_span`: Span of the argument that introduced this constraint (for T013 diagnostics)
-    ///
-    /// Functional dependencies are accessed via `class.determines`.
-    /// For `Add a b c` with FD `(a,b) → c`: `class.determines = vec![(vec![0,1], vec![2])]`
-    Class {
-        class: Arc<ClassDecl>,
-        vars: Vec<ConstraintArg>,
-        origin_name: Option<Arc<str>>,
-        origin_span: Option<Span>,
-    },
-    /// HasField constraint: `HasField label dict_var field_var`
-    /// Asserts that dict_var has a field at label with type field_var.
-    /// Functional dependency: (label, dict_var) → field_var
-    HasField {
-        label: Label,
-        dict_var: String,
-        field_var: String,
-    },
+/// Construct a `ConstraintDecl` Arc<Value> for a class constraint.
+///
+/// `class_tv` is the TypeValue representing the class (e.g., the TypeValue for "Sortable").
+/// `args` is a Vec of argument TypeValues, in constraint-position order.
+///
+/// The resulting value is:
+/// ```
+/// Value::Variant { ctor: "ConstraintDecl", payload: { class: class_tv, args: { 0: arg0, 1: arg1, ... } } }
+/// ```
+pub fn make_constraint_decl(class_tv: TypeValue, args: Vec<TypeValue>) -> TypeValue {
+    // Build args dict (auto-indexed by integer position)
+    let mut args_entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(args.len());
+    for (i, arg) in args.into_iter().enumerate() {
+        args_entries.insert(
+            HashableValue::Int(i as i64),
+            settled_thunk(arc_into_value(arg)),
+        );
+    }
+    let args_dict = Value::Dict {
+        entries: args_entries,
+        type_val: unknown_type_val(),
+    };
+
+    let class_val = arc_into_value(class_tv);
+    let payload = two_field_dict("class", class_val, "args", args_dict);
+    Arc::new(make_variant(TV_CONSTRAINT_DECL, Some(payload)))
 }
 
-impl Constraint {
-    /// Create a single-parameter Class constraint from a class name string.
-    /// Constructs a minimal `ClassDecl` with just the name (no params, superclasses, or FDs).
-    ///
-    /// **WARNING: This method is ONLY safe for classes that have no functional dependencies.**
-    ///
-    /// Because `new_by_name` creates a `ClassDecl` with `determines: vec![]`, using it for
-    /// FD-bearing classes causes functional dependency improvement to silently skip.
-    /// For classes with functional dependencies, use `state.env.read().unwrap().get_class(class_name)` to
-    /// retrieve the full `ClassDecl`, then construct `Constraint::Class { class, vars, .. }` directly.
-    pub fn new_by_name(name: impl Into<String>, var: impl Into<String>) -> Self {
-        let name = name.into();
-        let class = Arc::new(ClassDecl {
-            name,
-            params: vec![],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            structural_discharge: StructuralDischarge::None,
-            method_signatures: vec![],
-        });
-        Self::Class {
-            class,
-            vars: vec![ConstraintArg::Var(var.into())],
-            origin_name: None,
-            origin_span: None,
-        }
-    }
+// ─── TypeValue inspection helpers ─────────────────────────────────────────────
+
+/// Extract the constructor tag from a TypeValue (Value::Variant).
+/// Returns `None` if the value is not a Variant.
+///
+/// Delegates to the canonical definition in `crate::type_tags::typevalue_ctor`.
+pub fn typevalue_ctor(tv: &Arc<Value>) -> Option<&str> {
+    crate::type_tags::typevalue_ctor(tv)
 }
 
-impl fmt::Display for ConstraintArg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConstraintArg::Var(s) => write!(f, "{}", s),
-            ConstraintArg::Ground(t) => write!(f, "{}", t),
-        }
-    }
+/// Create a TypeValue.App (type application) — `op` applied to `arg`.
+///
+/// Produces `TypeValue.App { op: TypeValue, arg: TypeValue }`.
+/// Used to represent parameterized types like `Seq Int` or `Result Str Err`.
+/// Delegates to `crate::type_infer::make_typevalue_app` — the canonical construction site.
+#[cfg(test)]
+pub fn make_type_app(op: TypeValue, arg: TypeValue) -> TypeValue {
+    crate::type_infer::make_typevalue_app(op, arg)
 }
 
-impl fmt::Display for Constraint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Constraint::Class { class, vars, .. } => {
-                write!(f, "{}", class.name)?;
-                for arg in vars {
-                    write!(f, " {}", arg)?;
-                }
-                Ok(())
-            }
-            Constraint::HasField {
-                label,
-                dict_var,
-                field_var,
-            } => write!(f, "HasField {} {} {}", label, dict_var, field_var),
-        }
-    }
-}
+// ─── ClassDecl ────────────────────────────────────────────────────────────────
 
 /// Type class declaration (Wadler & Blott 1989)
 /// Example: `[class [Equatable a] eq: [Fn@Bool [a a]]]`
@@ -154,41 +185,38 @@ impl fmt::Display for Constraint {
 pub struct ClassDecl {
     /// Class name (e.g., "Equatable")
     pub name: String,
-    /// Type parameters with their kinds (e.g., [("a", Kind::Type)])
-    pub params: Vec<(String, Kind)>,
+    /// Type parameters with their kind TypeValues.
+    /// The kind TypeValue is one of:
+    ///   - TypeValue.Op { name: "Type" } — proper type kind `*`
+    ///   - TypeValue.Fn { params: [...], return: TypeValue.Op "Type" } — type constructor kind `* → *`
+    ///   - TypeValue.Op { name: "Row" } — row kind
+    ///   - TypeValue.Op { name: "Label" } — label kind
+    pub params: Vec<(String, Arc<Value>)>,
     /// Superclass constraints as (class_name, Vec<param_names>) tuples.
     /// Example: ("Functor", vec!["f"]) means this class extends Functor with parameter f.
-    /// Updated from Vec<(String, String)> to Vec<(String, Vec<String>)> for multi-param support.
     pub superclasses: Vec<(String, Vec<String>)>,
     /// Functional dependencies: (determining_positions, determined_positions) pairs.
     /// Each pair is (Vec<usize>, Vec<usize>) indexing into `params`.
     /// Example: for Add a b c with FD (a,b) → c: determines = vec![(vec![0,1], vec![2])]
     pub(crate) determines: Vec<(Vec<usize>, Vec<usize>)>,
-    /// Type-stage resolver function name — names a function in the type-stage env.
-    /// When Some, the resolver is called at type-check time to compute determined types from determining types.
-    pub(crate) resolver: Option<String>,
-    /// Whether the resolver is injective (one-to-one mapping).
-    /// If true, the type checker uses the resolver result to refine the determining types
-    /// via reverse functional dependency improvement.
-    ///
-    /// When `resolver_injective = true` and a determined-position variable becomes ground,
-    /// `improve_functional_dependency_inner` in `type_unify.rs` fires the reverse FD:
-    /// it scans `InstanceEnv` for an instance whose determined-position type matches the
-    /// ground determined type, extracts the corresponding determining-position types, and
-    /// unifies them with the constraint's determining-position variables.
-    ///
-    /// Read site: `check_constraints_on_var` → `improve_functional_dependency_inner`
-    /// (see `type_unify.rs`: `resolver_injective` is captured in `ApplicableConstraint::MultiParam`).
-    pub(crate) resolver_injective: bool,
+    /// Optional resolver: the name of the typeclass method (or builtin function) that,
+    /// given ground values for the determining positions, computes the determined type.
+    /// When Some, FD improvement uses the resolver to compute the target type rather than
+    /// scanning registered instances. When None, instance lookup is used.
+    pub resolver: Option<String>,
+    /// Whether the resolver function is injective (one-to-one from source positions to result).
+    /// If true, unifying two `TV_APP` applications of the resolver pairwise unifies their
+    /// arguments (safe because injectivity means equal results ↔ equal args).
+    /// If false, pairwise unification is deferred to `state.deferred_equalities` because
+    /// the resolver may map different inputs to the same output.
+    pub resolver_injective: bool,
     /// Structural discharge rule — enables this typeclass to be satisfied by a structural
-    /// property without a registered instance. See `StructuralDischarge` for variants.
+    /// property without a registered instance.
     pub structural_discharge: StructuralDischarge,
-    /// Method signatures declared in the class body (S-886: class method synthesis).
-    /// Each entry is (method_name, method_type) where method_type uses the class's type
-    /// parameters as TypeVars. E.g., for Addable: [("+", Fn(TypeVar("a"), TypeVar("b")) -> TypeVar("c"))].
-    /// Used by infer_class_decl_from_surface to inject method schemes into TypeEnv.
-    /// Vec instead of HashMap to avoid Hash trait requirement (Type doesn't implement Hash).
-    pub method_signatures: Vec<(String, crate::type_def::Type)>,
+    /// Method signatures declared in the class body.
+    /// Each entry is (method_name, method_type_as_TypeValue) where method_type is a
+    /// TypeValue.Fn Arc<Value> using the class's type parameters as TypeValue.Var nodes.
+    pub method_signatures: Vec<(String, Arc<Value>)>,
 }
 
 impl PartialEq for ClassDecl {
@@ -211,861 +239,480 @@ impl fmt::Display for ClassDecl {
     }
 }
 
+// ─── InstanceDecl ─────────────────────────────────────────────────────────────
+
 /// Type class instance declaration
-/// Example: `[instance [Equatable Int] eq: [fn [x y] [= x y]]]`
+/// Example: `[instance [Equatable NativeInt] eq: [fn [x y] [= x y]]]`
 #[derive(Debug, Clone)]
 pub struct InstanceDecl {
     /// Class name (e.g., "Equatable")
     pub class_name: String,
-    /// Instance type (e.g., Int, or type constructor application).
-    /// For multi-parameter type classes, this is a Record with numbered fields:
-    /// `[Add Int Float Float]` → `Record {0: Int, 1: Float, 2: Float}`.
-    pub instance_type: Type,
+    /// Instance type as a TypeValue (Arc<Value>).
+    /// For single-parameter classes: the type the instance covers
+    ///   (e.g., TypeValue.Repr { repr: "Value::Int" } for NativeInt).
+    /// For multi-parameter type classes, this is a TypeValue.Record with numbered fields:
+    ///   `[Add NativeInt Float64 Float64]` →
+    ///   TypeValue.Record { fields: { 0: NativeInt TypeValue, 1: Float64 TypeValue, 2: Float64 TypeValue }, tail: RowTail.Closed }
+    pub instance_type: Arc<Value>,
     /// Determining positions (indices into the multi-param pattern) used to build the lookup key.
     /// Empty for single-parameter classes (no functional dependencies).
     /// Example: for `Add a b c` with FD `(a,b) → c`, this is `vec![0, 1]`.
     pub det_positions: Vec<usize>,
-    /// Method implementations: method_name -> inferred type
-    /// (The actual dictionary value is stored in eval::ClassDictionary)
-    pub method_types: HashMap<String, Type>,
+    /// Method implementations: method_name -> inferred type as TypeValue.
+    /// (The actual runtime dictionary value is stored in eval::ClassDictionary)
+    pub method_types: HashMap<String, Arc<Value>>,
 }
 
-/// Class environment: lexically scoped registry of type class declarations.
+// ─── FD improvement ───────────────────────────────────────────────────────────
+
+/// Extract the class name and ordered arg TypeValues from a ConstraintDecl Arc<Value>.
 ///
-/// Follows the same parent-chain scoping model as `TypeEnv`:
-/// - A `BTreeMap` per scope frame with a parent pointer
-/// - Insertions go into the current frame; lookups walk the chain (inner wins)
-/// - Prelude classes live in the root frame — visible everywhere
-/// - A class in an inner dict is visible only to that dict's descendants
-///
-/// `iter_classes()` returns only the current frame's entries (used by `imports.rs` seeding).
-/// `get()` walks the full parent chain for lookups.
-///
-/// `parent` uses `Arc` so the parent frame can be shared without cloning when creating children.
-/// `InferState.env` (Arc<RwLock<Env>>) is the canonical store for class declarations;
-/// `ClassEnv` is used as a temporary snapshot via `state.build_class_env_snapshot()`.
-///
-/// Uses `BTreeMap` for deterministic iteration order across threads. HashMap iteration
-/// order is randomized per-process (via `RandomState` hashing) and differs across threads
-/// with separate hash seeds — using HashMap here would cause non-deterministic class
-/// resolution results when `build_prelude_env()` is called from different threads
-/// (e.g., the corpus-test thread vs. the main thread). BTreeMap is sorted by key
-/// and produces the same iteration order on every thread.
-#[derive(Debug, Clone)]
-pub struct ClassEnv {
-    classes: BTreeMap<String, ClassDecl>,
-    parent: Option<std::sync::Arc<ClassEnv>>,
-}
-
-impl ClassEnv {
-    /// Create a new root-level (no parent) ClassEnv.
-    pub fn new() -> Self {
-        Self {
-            classes: BTreeMap::new(),
-            parent: None,
-        }
-    }
-
-    /// Look up a class declaration by name, walking the parent chain (inner wins).
-    pub fn get(&self, name: &str) -> Option<&ClassDecl> {
-        if let Some(decl) = self.classes.get(name) {
-            return Some(decl);
-        }
-        self.parent.as_ref().and_then(|p| p.get(name))
-    }
-
-    /// Insert a class declaration into the CURRENT frame.
-    pub fn insert(&mut self, class_decl: ClassDecl) {
-        self.classes.insert(class_decl.name.clone(), class_decl);
-    }
-}
-
-impl Default for ClassEnv {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Instance environment: lexically scoped registry of type class instances.
-///
-/// Follows the same parent-chain scoping model as `ClassEnv` and `TypeEnv`:
-/// - Instances are stored with a key of `(class_name, determining_type_strings)` for fast
-///   exact-match lookup in the current frame.
-/// - Insertions go into the current frame; lookups (via `lookup_mptc`) walk the chain.
-/// - Prelude instances live in the root frame — visible everywhere.
-/// - An instance in an inner dict is visible only to that dict's descendants.
-///
-/// **Local coherence:** Within a single scope frame, at most one instance per `(Class, Type)`
-/// pair is allowed. Across scope levels, shadowing is allowed — the innermost instance wins.
-/// Two `[instance [Monad Result] ...]` in the same dict is a type error; one in an outer
-/// scope and one in an inner scope is valid (inner shadows).
-///
-/// The comment "Globally registered: coherence requires global uniqueness" no longer applies.
-/// Lexically scoped with frame-local coherence enforced at insertion time.
-///
-/// Uses `BTreeMap` for deterministic iteration order across threads. `resolve_instance` and
-/// `lookup_mptc` both iterate over instances and return the first match; with `HashMap` the
-/// iteration order is randomized per-process and differs between threads (different hash seeds),
-/// causing non-deterministic instance dispatch when `build_prelude_env()` runs in multiple
-/// threads (e.g., the corpus-test spawn thread vs. the main thread). BTreeMap is sorted
-/// by `(class_name, det_type_strings)` and produces the same iteration order on every thread,
-/// making instance resolution deterministic regardless of thread scheduling.
-#[derive(Debug, Clone)]
-pub struct InstanceEnv {
-    instances: BTreeMap<(String, Vec<String>), InstanceDecl>,
-    parent: Option<std::sync::Arc<InstanceEnv>>,
-}
-
-impl InstanceEnv {
-    /// Create a new root-level (no parent) InstanceEnv.
-    pub fn new() -> Self {
-        Self {
-            instances: BTreeMap::new(),
-            parent: None,
-        }
-    }
-
-    /// Build the lookup key for an instance declaration.
-    ///
-    /// For single-parameter classes (`det_positions` is empty), the key is a one-element vec
-    /// containing the string representation of `instance_type`.
-    ///
-    /// For MPTC classes, the key is the string representations of the types at each
-    /// determining position within the encoded Record (`instance_type`).
-    fn build_key(inst: &InstanceDecl) -> (String, Vec<String>) {
-        let det_strings = if inst.det_positions.is_empty() {
-            // Single-parameter class: use the canonical string of the full instance type
-            vec![type_to_string_key(&inst.instance_type)]
-        } else {
-            // Multi-parameter class: extract types at determining positions from the Record
-            match &inst.instance_type {
-                Type::Dict(row) => inst
-                    .det_positions
-                    .iter()
-                    .map(|&pos| {
-                        type_to_string_key(
-                            row.fields
-                                .get(&pos.to_string())
-                                .expect("determining position field must exist in instance row"),
-                        )
-                    })
-                    .collect(),
-                // Fallback: if not a Record, use the canonical string for each position
-                _ => vec![type_to_string_key(&inst.instance_type)],
-            }
-        };
-        (inst.class_name.clone(), det_strings)
-    }
-
-    /// Insert an instance.
-    ///
-    /// Inserts idempotently: if an instance with the same key already exists, the duplicate is
-    /// silently discarded (returns `Ok(())`). This handles user code re-declaring an instance
-    /// that was already seeded from the prelude cache.
-    ///
-    /// The key is `(class_name, determining_type_strings)` derived from `inst.det_positions`.
-    /// For single-parameter classes the key is `(class_name, [instance_type_string])`.
-    ///
-    /// This method does NOT perform structural overlap checking (string-key dedup only).
-    /// Built-in and prelude instance registration is known-disjoint by construction.
-    pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
-        let key = Self::build_key(&inst);
-        if self.instances.contains_key(&key) {
-            // Exact duplicate: idempotent, no error.
-            // This covers re-declarations of prelude instances in user code and corpus tests.
-            return Ok(());
-        }
-        self.instances.insert(key, inst);
-        Ok(())
-    }
-
-    /// Look up an MPTC instance by class name and the ground determining types.
-    ///
-    /// Uses structural unification to match instances rather than string-key lookup.
-    /// This correctly handles HKT instance heads like `[Channel t]` where the type
-    /// variable `t` needs to unify with concrete query types like `Int`.
-    ///
-    /// Returns `Some(InstanceDecl)` (owned, with freshened types) if a matching instance
-    /// is found, `None` otherwise.
-    ///
-    /// This is the query API for MPTC functional-dependency resolution: the caller supplies the
-    /// ground types at the determining positions of the class's FD, and this method returns the
-    /// registered instance whose determining positions unify with the query types.
-    ///
-    /// Note: This method performs unification checks but does not modify the global substitution.
-    /// It uses a temporary substitution for matching purposes only. Returns a cloned instance
-    /// to avoid borrow checker issues when state is also needed by the caller.
-    pub async fn lookup_mptc(
-        &self,
-        class: &str,
-        determining_types: &[Type],
-        state: &mut InferState,
-    ) -> Option<InstanceDecl> {
-        // Collect candidate instances for this class
-        for ((cname, _), inst) in &self.instances {
-            if cname != class {
-                continue;
-            }
-
-            // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
-            // unify() mutates state.type_vars and state.deferred_equalities.
-            // Failed candidates must not leak these mutations.
-            // per_origin_counter is intentionally NOT saved/restored (monotonically advancing).
-            let saved_type_vars = state.type_vars.clone();
-            let saved_deferred = state.deferred_equalities.clone();
-            let saved_bounds = state.bounds.clone();
-
-            // Freshen the ENTIRE instance_type at once so that shared type variables
-            // (e.g. `K` in both `Map[K V]` and the standalone `K` position) map to the
-            // same fresh name. Freshening each position independently would create
-            // unrelated fresh vars, breaking determined-type resolution.
-            let freshened_instance_type =
-                instantiate_at_level(&inst.instance_type, state, &rust_span!());
-
-            // Extract the determining types from the freshened instance pattern.
-            // For multi-param instances, instance_type is a Record with numbered fields.
-            let instance_det_types: Vec<Type> = if inst.det_positions.is_empty() {
-                // Single-parameter class: the entire instance_type is the determining type
-                vec![freshened_instance_type.clone()]
-            } else {
-                // Multi-parameter class: extract types at determining positions
-                match &freshened_instance_type {
-                    Type::Dict(row) => inst
-                        .det_positions
-                        .iter()
-                        .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
-                        .collect(),
-                    _ => {
-                        // Malformed instance, skip — restore state first (not per_origin_counter).
-                        state.type_vars = saved_type_vars.clone();
-                        state.deferred_equalities = saved_deferred;
-                        state.bounds = saved_bounds;
-                        continue;
+/// Returns `None` if the constraint is not a ConstraintDecl, or if the payload cannot
+/// be read synchronously (unsettled thunk). The args are returned in ascending integer
+/// key order (position 0, 1, 2, ...).
+fn extract_fd_constraint_parts(cv: &Arc<Value>) -> Option<(String, Vec<Arc<Value>>)> {
+    match cv.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_CONSTRAINT_DECL => {
+            let payload_val = thunk.peek_result()?;
+            let payload_dict = match payload_val {
+                Ok(Value::Dict { entries, .. }) => entries,
+                _ => return None,
+            };
+            // Extract class name from class: TypeValue.Op { name: ... }
+            let class_key = HashableValue::Str(Arc::from(FIELD_CLASS));
+            let class_thunk = payload_dict.get(&class_key)?;
+            let class_name = match class_thunk.peek_result()? {
+                Ok(Value::Variant {
+                    ctor: c_ctor,
+                    payload: Some(class_payload),
+                    ..
+                }) if c_ctor.as_ref() == TV_OP => {
+                    let class_payload_val = class_payload.peek_result()?;
+                    match class_payload_val {
+                        Ok(Value::Dict { entries: inner, .. }) => {
+                            let name_key = HashableValue::Str(Arc::from(FIELD_NAME));
+                            let name_thunk = inner.get(&name_key)?;
+                            match name_thunk.peek_result()? {
+                                Ok(Value::String {
+                                    source, start, end, ..
+                                }) => source[*start..*end].to_string(),
+                                _ => return None,
+                            }
+                        }
+                        _ => return None,
                     }
                 }
+                _ => return None,
             };
-
-            // Check arity
-            if instance_det_types.len() != determining_types.len() {
-                state.type_vars = saved_type_vars.clone();
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
-                continue;
-            }
-
-            // Attempt unification of all determining positions.
-            // Probe directly into state.type_vars; snapshot/restore isolates the probe.
-            let mut all_match = true;
-
-            let mut probe_constraints: Vec<Constraint> = Vec::new();
-            for (inst_ty, query_ty) in instance_det_types.iter().zip(determining_types.iter()) {
-                if Box::pin(unify(
-                    inst_ty,
-                    query_ty,
-                    state,
-                    &mut probe_constraints,
-                    rust_span!(),
-                    0,
-                ))
-                .await
-                .is_err()
-                {
-                    all_match = false;
-                    break;
-                }
-            }
-
-            if all_match {
-                // Capture resolved instance type BEFORE restoring state (bindings are in state.type_vars).
-                let resolved_instance_type = state.apply(&freshened_instance_type);
-
-                // Restore state: discard probe mutations (not per_origin_counter).
-                state.type_vars = saved_type_vars.clone();
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
-
-                return Some(InstanceDecl {
-                    class_name: inst.class_name.clone(),
-                    instance_type: resolved_instance_type,
-                    det_positions: inst.det_positions.clone(),
-                    method_types: inst.method_types.clone(),
-                });
-            } else {
-                // Restore state after failed probe (not per_origin_counter).
-                state.type_vars = saved_type_vars.clone();
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
-            }
-        }
-
-        // No match in current frame — walk parent chain.
-        if let Some(parent) = &self.parent {
-            return Box::pin(parent.lookup_mptc(class, determining_types, state)).await;
-        }
-
-        None
-    }
-
-    /// Reverse MPTC lookup: given a class name, the determined positions, and the ground
-    /// determined types, find an instance whose determined-position types unify with the
-    /// given types. If found, return the determining-position types extracted from that instance
-    /// alongside the determining-position indices.
-    ///
-    /// This implements the reverse functional dependency improvement needed for injective
-    /// resolvers: if we know the output of an injective resolver, we can infer the inputs.
-    ///
-    /// Returns `Some((determining_types, det_positions))` where `determining_types[i]` is
-    /// the type at `det_positions[i]` in the matched instance.
-    ///
-    /// Returns `None` if no instance matches or if the class has no registered instances.
-    ///
-    /// Like `lookup_mptc`, this is a pure probe: all state mutations from unification
-    /// attempts are discarded on failure (save/restore pattern). On success, the caller
-    /// is responsible for unifying the returned determining types with the constraint vars.
-    pub async fn reverse_lookup_mptc(
-        &self,
-        class: &str,
-        ded_positions: &[usize],
-        ded_types: &[Type],
-        state: &mut InferState,
-    ) -> Option<(Vec<Type>, Vec<usize>)> {
-        for ((cname, _), inst) in &self.instances {
-            if cname != class {
-                continue;
-            }
-
-            // Save state before probe — restore on failure. per_origin_counter NOT saved.
-            let saved_type_vars = state.type_vars.clone();
-            let saved_deferred = state.deferred_equalities.clone();
-            let saved_bounds = state.bounds.clone();
-            // type_vars snapshot captures levels, bindings, and kinds in one clone
-
-            // Freshen the entire instance type at once so shared type variables
-            // across positions map to the same fresh names.
-            let freshened_instance_type =
-                instantiate_at_level(&inst.instance_type, state, &rust_span!());
-
-            // Extract the determined-position types from the freshened instance.
-            // For multi-param instances, instance_type is a Record with numbered fields.
-            let instance_ded_types: Vec<Type> = match &freshened_instance_type {
-                Type::Dict(row) => ded_positions
-                    .iter()
-                    .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
-                    .collect(),
-                _ => {
-                    // Single-parameter class or malformed: no determined positions to match.
-                    // Restore and skip. per_origin_counter NOT restored.
-                    state.type_vars = saved_type_vars.clone();
-                    state.deferred_equalities = saved_deferred;
-                    state.bounds = saved_bounds;
-                    continue;
-                }
+            // Extract args dict: { 0: TypeValue, 1: TypeValue, ... }
+            let args_key = HashableValue::Str(Arc::from(FIELD_ARGS));
+            let args_thunk = payload_dict.get(&args_key)?;
+            let args_entries = match args_thunk.peek_result()? {
+                Ok(Value::Dict { entries, .. }) => entries,
+                _ => return None,
             };
-
-            // Arity check: must have the same number of determined types.
-            if instance_ded_types.len() != ded_types.len() {
-                state.type_vars = saved_type_vars.clone();
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
-                continue;
-            }
-
-            // Probe: attempt to unify all determined positions with the query types.
-            // Probe directly into state.type_vars; snapshot/restore isolates the probe.
-            let mut all_match = true;
-
-            let mut rl_probe_constraints: Vec<Constraint> = Vec::new();
-            for (inst_ded_ty, query_ded_ty) in instance_ded_types.iter().zip(ded_types.iter()) {
-                if Box::pin(unify(
-                    inst_ded_ty,
-                    query_ded_ty,
-                    state,
-                    &mut rl_probe_constraints,
-                    rust_span!(),
-                    0,
-                ))
-                .await
-                .is_err()
-                {
-                    all_match = false;
-                    break;
-                }
-            }
-
-            if all_match {
-                // Extract the determining-position types from the matched instance,
-                // applying state (probe bindings) so that type variables in the determining
-                // positions are resolved to concrete types derived from the determined-position
-                // unification. Capture BEFORE restoring state.
-                let det_position_indices: Vec<usize> = inst.det_positions.clone();
-                let determining_types: Vec<Type> = match &freshened_instance_type {
-                    Type::Dict(row) => det_position_indices
-                        .iter()
-                        .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
-                        .map(|ty| state.apply(&ty))
-                        .collect(),
-                    _ => {
-                        // No determining positions to back-propagate for single-param classes.
-                        // per_origin_counter NOT restored.
-                        state.type_vars = saved_type_vars.clone();
-                        state.deferred_equalities = saved_deferred;
-                        state.bounds = saved_bounds;
-                        continue;
+            // Collect args in ascending integer key order.
+            let mut indexed: Vec<(i64, Arc<Value>)> = Vec::new();
+            for (k, v_thunk) in args_entries.iter() {
+                if let HashableValue::Int(idx) = k {
+                    if let Some(Ok(v)) = v_thunk.peek_result() {
+                        indexed.push((*idx, Arc::new(v.clone())));
                     }
+                }
+            }
+            indexed.sort_by_key(|(i, _)| *i);
+            let args: Vec<Arc<Value>> = indexed.into_iter().map(|(_, v)| v).collect();
+            Some((class_name, args))
+        }
+        _ => None,
+    }
+}
+
+/// Check whether a TypeValue contains any free type variables (unbound TypeValue.Var).
+///
+/// Returns `true` if any TypeValue.Var in `tv` is not bound in `subst`.
+/// Uses a shallow walk — follows the top-level TypeVar chain and inspects settled
+/// payload dicts one level deep (same coverage as InferenceContext::free_vars).
+fn has_free_type_vars(tv: &Arc<Value>, subst: &HashMap<String, Arc<Value>>) -> bool {
+    has_free_type_vars_inner(tv, subst, &mut std::collections::HashSet::new())
+}
+
+fn has_free_type_vars_inner(
+    tv: &Arc<Value>,
+    subst: &HashMap<String, Arc<Value>>,
+    visited: &mut std::collections::HashSet<String>,
+) -> bool {
+    match tv.as_ref() {
+        Value::Variant { ctor, payload, .. } => match ctor.as_ref() {
+            TV_VAR => {
+                // Extract var name from payload dict.
+                let name = match payload {
+                    Some(thunk) => match thunk.peek_result() {
+                        Some(Ok(Value::Dict { entries, .. })) => {
+                            let key = HashableValue::Str(Arc::from(FIELD_NAME));
+                            match entries.get(&key).and_then(|t| t.peek_result()) {
+                                Some(Ok(Value::String {
+                                    source, start, end, ..
+                                })) => source[*start..*end].to_string(),
+                                _ => return true, // unreadable — treat as free
+                            }
+                        }
+                        _ => return true,
+                    },
+                    None => return true,
                 };
-
-                // Restore state — the caller handles the actual unification of determining vars.
-                // per_origin_counter NOT restored.
-                state.type_vars = saved_type_vars.clone();
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
-
-                return Some((determining_types, det_position_indices));
-            } else {
-                // Restore state after failed probe. per_origin_counter NOT restored.
-                state.type_vars = saved_type_vars.clone();
-                state.deferred_equalities = saved_deferred;
-                state.bounds = saved_bounds;
+                if visited.contains(&name) {
+                    return false; // cycle — treat as bound (avoid infinite recursion)
+                }
+                match subst.get(&name) {
+                    Some(bound) => {
+                        visited.insert(name);
+                        has_free_type_vars_inner(bound, subst, visited)
+                    }
+                    None => true, // free variable
+                }
             }
-        }
-
-        // No match in current frame — walk parent chain.
-        if let Some(parent) = &self.parent {
-            return Box::pin(parent.reverse_lookup_mptc(class, ded_positions, ded_types, state))
-                .await;
-        }
-
-        None
+            // Leaf/opaque variants have no type variable positions.
+            TV_UNKNOWN | TV_NEVER | TV_TOP | TV_REPR | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT
+            | TV_OP => false,
+            // Structural variants: inspect settled payload dicts.
+            _ => {
+                if let Some(thunk) = payload {
+                    if let Some(Ok(Value::Dict { entries, .. })) = thunk.peek_result() {
+                        for (_k, v_thunk) in entries.iter() {
+                            if let Some(Ok(v)) = v_thunk.peek_result() {
+                                match v {
+                                    Value::Variant { .. } => {
+                                        let arc = Arc::new(v.clone());
+                                        if has_free_type_vars_inner(&arc, subst, visited) {
+                                            return true;
+                                        }
+                                    }
+                                    Value::Dict {
+                                        entries: inner_entries,
+                                        ..
+                                    } => {
+                                        for (_ik, iv_thunk) in inner_entries.iter() {
+                                            if let Some(Ok(iv)) = iv_thunk.peek_result() {
+                                                if matches!(iv, Value::Variant { .. }) {
+                                                    let arc = Arc::new(iv.clone());
+                                                    if has_free_type_vars_inner(
+                                                        &arc, subst, visited,
+                                                    ) {
+                                                        return true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            }
+        },
+        _ => false,
     }
+}
 
-    /// Resolve an instance for the given class and target type using specificity-based selection.
-    ///
-    /// Collects ALL instances whose head types unify with the target, ranks them by specificity
-    /// (fewest unresolved TypeVars in the original instance head = most specific), and returns
-    /// the unique most-specific match. If two or more instances tie at the minimum specificity
-    /// score, returns `Err` with an "ambiguous instances" diagnostic instead of picking
-    /// arbitrarily (which would violate coherence).
-    ///
-    /// **Specificity score**: `count_unresolved_vars(inst.instance_type, temp_subst)` — counts
-    /// TypeVars in the *original* (un-freshened) instance head that are not resolved by the
-    /// unification substitution `temp_subst`. Because the substitution uses freshened names
-    /// (e.g., `_t7` not `a`), original TypeVar names are never in `temp_subst`, so the score
-    /// equals the number of declared type variables in the instance head. `[F Int]` → 0
-    /// (most specific); `[F a]` → 1 (less specific).
-    ///
-    /// **Two-pass algorithm**:
-    /// - Pass 1: probe each candidate with a temporary substitution, collect `(score, inst)` for
-    ///   all matches, always restore state (save/restore probe pattern).
-    /// - Pass 2: find minimum score, check for ties, re-run unification for the unique winner
-    ///   to build the final resolved `InstanceDecl` with method types applied.
-    ///
-    /// Returns:
-    /// - `Ok(Some(inst))` — unique most-specific match found
-    /// - `Ok(None)` — no instance matches the target
-    /// - `Err(msg)` — two or more equally-specific instances match (ambiguity error)
-    pub async fn resolve_instance(
-        &self,
-        class_name: &str,
-        target_type: &Type,
-        state: &mut InferState,
-    ) -> Result<Option<InstanceDecl>, String> {
-        // Collect all instances for this class from the CURRENT FRAME only.
-        // If no candidates in the current frame, delegate to parent.
-        // This implements inner-wins semantics: the innermost frame with ANY instance
-        // for this class takes precedence over the parent chain entirely.
-        let mut candidates: Vec<&InstanceDecl> = Vec::new();
+/// Find the instance whose source-position type patterns match `source_types`,
+/// and return the full field map of that instance.
+///
+/// The `source_positions` are the FD-determining parameter positions. We look
+/// for an instance whose `instance_type` record field at each source position
+/// structurally matches the corresponding ground `source_types[i]`.
+///
+/// On success, returns the `HashMap<i64, Arc<Value>>` of all fields from the
+/// matched instance's `instance_type` record. Callers select target positions
+/// by key (e.g., `field_map.get(&(target_pos as i64))`).
+fn lookup_instance_for_fd(
+    class_name: &str,
+    source_positions: &[usize],
+    source_types: &[Arc<Value>],
+    env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+) -> Option<HashMap<i64, Arc<Value>>> {
+    let env_guard = env.read().unwrap();
+    let instances = env_guard.all_instances();
+    drop(env_guard);
 
-        for ((cname, _), inst) in &self.instances {
-            if cname == class_name {
-                candidates.push(inst);
+    for (_, inst) in &instances {
+        if inst.class_name != class_name {
+            continue;
+        }
+        // inst.instance_type is a TypeValue.Record { fields: { 0: T0, 1: T1, ... }, ... }
+        // for multi-parameter classes, or the direct TypeValue for single-param classes.
+        let inst_type = &inst.instance_type;
+        // For MPTC instances, extract fields from the Record payload.
+        let field_map = extract_instance_record_fields(inst_type);
+        // Match source positions against the instance's field types.
+        let mut all_match = true;
+        for (i, &pos) in source_positions.iter().enumerate() {
+            let inst_arg = match field_map.get(&(pos as i64)) {
+                Some(t) => t.clone(),
+                None => {
+                    all_match = false;
+                    break;
+                }
+            };
+            // Use structural TypeValue matching: TypeValue.Var in the instance pattern
+            // matches any target (polymorphic wildcard). Concrete types must match exactly.
+            if !typevalue_matches_fd(&inst_arg, &source_types[i]) {
+                all_match = false;
+                break;
             }
         }
-
-        // If no candidates in the current frame, walk the parent chain.
-        if candidates.is_empty() {
-            if let Some(parent) = &self.parent {
-                return Box::pin(parent.resolve_instance(class_name, target_type, state)).await;
-            }
-            return Ok(None);
+        if all_match {
+            return Some(field_map);
         }
+    }
+    None
+}
 
-        // Pass 1: probe each candidate; collect (specificity_score, instance) for all that match.
-        //
-        // Specificity is measured on the ORIGINAL (un-freshened) instance type using temp_subst.
-        // Original TypeVar names (e.g., "a") are never in temp_subst (which binds freshened names
-        // like "_t7"), so every TypeVar in inst.instance_type counts as unresolved. This gives
-        // the count of declared type variables in the instance head, correctly ranking
-        // `[F Int]` (0) above `[F a]` (1).
-        //
-        // All state mutations from each probe are discarded; per_origin_counter is NOT saved/
-        // restored — it advances monotonically to prevent TypeVar name reuse across candidates.
-        let mut matches: Vec<(usize, &InstanceDecl)> = Vec::new();
+/// Extract integer-keyed fields from a TypeValue.Record payload.
+/// Returns a HashMap from integer position → TypeValue.
+/// For single-param instances where the instance_type is NOT a Record,
+/// returns a single-entry map { 0: instance_type }.
+fn extract_instance_record_fields(tv: &Arc<Value>) -> HashMap<i64, Arc<Value>> {
+    let mut result = HashMap::new();
+    match tv.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_RECORD => {
+            if let Some(Ok(Value::Dict { entries, .. })) = thunk.peek_result() {
+                let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
+                if let Some(fields_thunk) = entries.get(&fields_key) {
+                    if let Some(Ok(Value::Dict {
+                        entries: f_entries, ..
+                    })) = fields_thunk.peek_result()
+                    {
+                        for (k, v_thunk) in f_entries.iter() {
+                            if let HashableValue::Int(idx) = k {
+                                if let Some(Ok(v)) = v_thunk.peek_result() {
+                                    result.insert(*idx, Arc::new(v.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            // Single-parameter instance: the instance_type IS the type directly.
+            result.insert(0, Arc::clone(tv));
+        }
+    }
+    result
+}
 
-        for inst in &candidates {
-            // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
-            // unify() mutates state.type_vars and state.deferred_equalities. Failed candidates
-            // must not leak bindings/levels/kinds. per_origin_counter is NOT saved — it advances
-            // monotonically to prevent TypeVar name reuse across probe candidates.
-            let saved_type_vars = state.type_vars.clone();
-            let saved_deferred = state.deferred_equalities.clone();
-            let saved_bounds = state.bounds.clone();
-
-            // Freshen the instance type to prevent variable leakage across resolution attempts.
-            let freshened_instance_type =
-                instantiate_at_level(&inst.instance_type, state, &rust_span!());
-
-            // Probe directly into state.type_vars; snapshot/restore isolates the probe.
-            let mut probe_constraints: Vec<Constraint> = Vec::new();
-            let unify_ok = Box::pin(unify(
-                &freshened_instance_type,
-                target_type,
-                state,
-                &mut probe_constraints,
-                rust_span!(),
-                0,
-            ))
-            .await
-            .is_ok();
-
-            // Compute specificity BEFORE restoring state (bindings needed for resolution).
-            let score = if unify_ok {
-                Some(count_unresolved_vars(&inst.instance_type, &state.type_vars))
-            } else {
+/// Structural matching for FD instance lookup: does `pattern` match `target`?
+///
+/// TypeValue.Var in `pattern` is a wildcard (matches any target).
+/// All other constructors must match by ctor tag. Repr-typed patterns must
+/// match the target's repr string exactly.
+fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
+    match (pattern.as_ref(), target.as_ref()) {
+        // Var in pattern = polymorphic wildcard — matches anything.
+        (Value::Variant { ctor, .. }, _) if ctor.as_ref() == TV_VAR => true,
+        // Both unit variants with same ctor — equal.
+        (
+            Value::Variant {
+                ctor: ca,
+                payload: None,
+                ..
+            },
+            Value::Variant {
+                ctor: cb,
+                payload: None,
+                ..
+            },
+        ) => ca.as_ref() == cb.as_ref(),
+        // TypeValue.Repr: match by repr string.
+        (
+            Value::Variant {
+                ctor: ca,
+                payload: Some(pa),
+                ..
+            },
+            Value::Variant {
+                ctor: cb,
+                payload: Some(pb),
+                ..
+            },
+        ) if ca.as_ref() == TV_REPR && cb.as_ref() == TV_REPR => {
+            let repr_str = |thunk: &Arc<Thunk>| -> Option<String> {
+                if let Some(Ok(Value::Dict { entries, .. })) = thunk.peek_result() {
+                    let key = HashableValue::Str(Arc::from(FIELD_REPR));
+                    if let Some(Ok(Value::String {
+                        source, start, end, ..
+                    })) = entries.get(&key).and_then(|t| t.peek_result())
+                    {
+                        return Some(source[*start..*end].to_string());
+                    }
+                }
                 None
             };
+            repr_str(pa) == repr_str(pb)
+        }
+        // Same ctor with payload — conservative: treat as a match for now
+        // (handles Int, Float, Str, etc. where the ctor tag alone determines the type).
+        (Value::Variant { ctor: ca, .. }, Value::Variant { ctor: cb, .. }) => {
+            ca.as_ref() == cb.as_ref()
+        }
+        _ => false,
+    }
+}
 
-            // Always restore state after the probe. per_origin_counter NOT restored.
-            state.type_vars = saved_type_vars.clone();
-            state.deferred_equalities = saved_deferred;
-            state.bounds = saved_bounds;
+/// Functional dependency improvement pass.
+///
+/// For each constraint in `constraints`, if the constraint's class has FD rules and
+/// the source-position types are all ground (no free TypeVars), compute the target
+/// type and return `(target_arg, computed_ty)` pairs for the caller to unify.
+///
+/// Returns an empty Vec when no improvement is possible or `state.fd_depth >= 32`.
+/// The caller runs a fixpoint loop: call `try_fd_improvement`, unify all returned
+/// pairs, then repeat until the returned Vec is empty.
+///
+/// The returned pairs are `(target_arg TypeValue, computed_ty TypeValue)` where
+/// `target_arg` is a free TypeVar and `computed_ty` is a ground type. The caller
+/// calls `unify(target_arg, computed_ty, ...)` for each pair.
+pub(crate) async fn try_fd_improvement(
+    constraints: &[Arc<Value>],
+    ctx: &crate::type_infer::InferenceContext,
+    state_env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+    fd_depth: &mut u32,
+) -> Vec<(Arc<Value>, Arc<Value>)> {
+    if *fd_depth >= 32 {
+        return vec![];
+    }
+    *fd_depth += 1;
+    let mut pairs = Vec::new();
 
-            if let Some(score) = score {
-                matches.push((score, inst));
+    for constraint in constraints {
+        let (class_name, args) = match extract_fd_constraint_parts(constraint) {
+            Some(v) => v,
+            None => continue,
+        };
+        // Look up the class declaration.
+        let class_decl = {
+            let env_guard = state_env.read().unwrap();
+            env_guard.get_class(&class_name)
+        };
+        let class_decl = match class_decl {
+            Some(c) => c,
+            None => continue,
+        };
+
+        for (source_positions, target_positions) in &class_decl.determines {
+            // Collect ground source types (apply substitution, check ground).
+            let mut source_types: Vec<Arc<Value>> = Vec::new();
+            let mut all_ground = true;
+            for &pos in source_positions {
+                let arg = match args.get(pos) {
+                    Some(a) => ctx.apply_subst(a),
+                    None => {
+                        all_ground = false;
+                        break;
+                    }
+                };
+                if has_free_type_vars(&arg, &ctx.subst) {
+                    all_ground = false;
+                    break;
+                }
+                source_types.push(arg);
+            }
+            if !all_ground {
+                continue;
+            }
+
+            // Compute the determined type via instance lookup or resolver.
+            //
+            // Resolver-based classes (e.g. Indexable with FieldType) call a type-stage
+            // function that takes the ground source types as positional arguments and
+            // returns the determined TypeValue directly. Instance-based classes (e.g.
+            // Addable, Multipliable) scan registered instances for a structural match.
+            if let Some(ref _resolver_name) = class_decl.resolver {
+                // Resolver-based FD: type-stage functions (FieldType, ElementType) expect
+                // TypeNode args, but source_types are TypeValues. Direct call returns Unknown
+                // (via catch-all) which is filtered and produces a no-op. Until TypeValue→TypeNode
+                // conversion is implemented (T-2078), skip resolver-based FD entirely.
+                continue;
+            }
+
+            let instance_field_map = lookup_instance_for_fd(
+                class_name.as_str(),
+                source_positions,
+                &source_types,
+                state_env,
+            );
+
+            let instance_field_map = match instance_field_map {
+                Some(f) => f,
+                None => continue,
+            };
+
+            // For each target position, if the constraint arg is a free TypeVar,
+            // generate a (target_arg, computed_type) pair.
+            for &target_pos in target_positions {
+                let target_arg = match args.get(target_pos) {
+                    Some(a) => ctx.apply_subst(a),
+                    None => continue,
+                };
+                if !has_free_type_vars(&target_arg, &ctx.subst) {
+                    continue; // Already ground — nothing to improve.
+                }
+                // Compute the type for this target position from the matched instance's field map.
+                let computed_ty = match instance_field_map.get(&(target_pos as i64)) {
+                    Some(t) => Arc::clone(t),
+                    None => continue,
+                };
+                // Skip if the computed type is itself Unknown or a TypeVar (uninformative).
+                match computed_ty.as_ref() {
+                    Value::Variant { ctor, .. }
+                        if ctor.as_ref() == TV_UNKNOWN || ctor.as_ref() == TV_VAR =>
+                    {
+                        continue;
+                    }
+                    _ => {}
+                }
+                pairs.push((target_arg, computed_ty));
             }
         }
-
-        // No instance matched.
-        if matches.is_empty() {
-            return Ok(None);
-        }
-
-        // Find the minimum (most specific) score.
-        let best_score = matches.iter().map(|(s, _)| *s).min().unwrap();
-
-        // Collect all instances that achieve the best score.
-        let winners: Vec<&InstanceDecl> = matches
-            .iter()
-            .filter(|(s, _)| *s == best_score)
-            .map(|(_, inst)| *inst)
-            .collect();
-
-        // Ambiguity: two or more equally-specific instances match the target.
-        if winners.len() > 1 {
-            let names: Vec<String> = winners
-                .iter()
-                .map(|inst| inst.instance_type.to_string())
-                .collect();
-            return Err(format!(
-                "ambiguous instances for class '{}' with target '{}': equally specific matches — {}",
-                class_name,
-                target_type,
-                names.join(", "),
-            ));
-        }
-
-        // Unique winner: re-run the unification to build the resolved InstanceDecl.
-        // Pass 1 discarded all state mutations — we need the bindings from the winning
-        // instance to apply to method types, so we unify once more.
-        let winner = winners[0];
-
-        // per_origin_counter is NOT saved/restored here — it advances monotonically.
-        let saved_type_vars = state.type_vars.clone();
-        let saved_deferred = state.deferred_equalities.clone();
-        let saved_bounds = state.bounds.clone();
-
-        let freshened_instance_type =
-            instantiate_at_level(&winner.instance_type, state, &rust_span!());
-
-        // This unification must succeed — we confirmed it in Pass 1.
-        let mut winner_constraints: Vec<Constraint> = Vec::new();
-        Box::pin(unify(
-            &freshened_instance_type,
-            target_type,
-            state,
-            &mut winner_constraints,
-            rust_span!(),
-            0,
-        ))
-        .await
-        .expect("unify failed in Pass 2 after succeeding in Pass 1 — invariant violation");
-
-        // Apply the unification bindings to method types (capture BEFORE restoring state).
-        let freshened_method_types: HashMap<String, Type> = winner
-            .method_types
-            .iter()
-            .map(|(name, ty)| {
-                let freshened_ty = instantiate_at_level(ty, state, &rust_span!());
-                (name.clone(), state.apply(&freshened_ty))
-            })
-            .collect();
-
-        // Restore state after resolution. per_origin_counter NOT restored.
-        state.type_vars = saved_type_vars.clone();
-        state.deferred_equalities = saved_deferred;
-        state.bounds = saved_bounds;
-
-        Ok(Some(InstanceDecl {
-            class_name: winner.class_name.clone(),
-            instance_type: freshened_instance_type,
-            det_positions: winner.det_positions.clone(),
-            method_types: freshened_method_types,
-        }))
     }
-}
 
-impl Default for InstanceEnv {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Count TypeVars in `ty` that are not resolved (bound) in `type_vars`.
-///
-/// A TypeVar is "unresolved" if applying bindings to it still yields a TypeVar.
-/// This measures how polymorphic an instance head remains after unification with a
-/// target type: a fully concrete instance head (`[F Int]`) scores 0, while a
-/// fully polymorphic head (`[F a]`) scores 1 for each free type variable.
-///
-/// Used by `resolve_instance` to select the most specific matching instance —
-/// the one with the fewest unresolved TypeVars after unification.
-fn count_unresolved_vars(
-    ty: &Type,
-    type_vars: &indexmap::IndexMap<String, crate::type_infer::TypeVarEntry>,
-) -> usize {
-    match ty {
-        Type::Var(name, level) => {
-            // Apply the substitution: if still a TypeVar, it is unresolved.
-            match crate::types::apply_substitution(&Type::Var(name.clone(), *level), type_vars) {
-                Type::Var(_, _) => 1,
-                _ => 0,
-            }
-        }
-        Type::App(f, a) => {
-            count_unresolved_vars(f, type_vars) + count_unresolved_vars(a, type_vars)
-        }
-        Type::TyCon(_) => 0, // TyCon has no vars
-        Type::Dict(row) => row
-            .fields
-            .values()
-            .map(|field_ty| count_unresolved_vars(field_ty, type_vars))
-            .sum(),
-        Type::Function {
-            params,
-            ret,
-            typed_variadics: _,
-            rest: _,
-            required_count: _,
-        } => {
-            let param_count: usize = params
-                .iter()
-                .map(|(_, p_ty)| count_unresolved_vars(p_ty, type_vars))
-                .sum();
-            param_count + count_unresolved_vars(ret, type_vars)
-        }
-        Type::Union(members) => members
-            .iter()
-            .map(|m| count_unresolved_vars(m, type_vars))
-            .sum(),
-        Type::Intersection(members) => members
-            .iter()
-            .map(|m| count_unresolved_vars(m, type_vars))
-            .sum(),
-        Type::Negation(inner) => count_unresolved_vars(inner, type_vars),
-        Type::StageApp { fn_name: _, args } => args
-            .iter()
-            .map(|a| count_unresolved_vars(a, type_vars))
-            .sum(),
-        Type::NominalVariant {
-            tycon: _,
-            ctor: _,
-            fields,
-        } => fields
-            .fields
-            .values()
-            .map(|field_ty| count_unresolved_vars(field_ty, type_vars))
-            .sum(),
-        // S-860: equirecursive-types-core — recurse into the body.
-        Type::Recursive { var: _, body } => count_unresolved_vars(body, type_vars),
-        // Concrete types: Int, Float, Str, Bool, Number, Unknown, Top, Error, etc.
-        _ => 0,
-    }
-}
-
-/// Normalize a type to a canonical string for use as an instance lookup key.
-///
-/// Promotes `IntLiteral` to `"Int"` and `StringLiteral` to `"String"` so that
-/// literal types resolve to the same instance as their parent types.  All other
-/// types use their `Display` representation unchanged (Type::Str displays as "String").
-///
-/// This function mirrors the normalization performed by `type_key` in `type_unify.rs`
-/// for the hardcoded arithmetic instances.
-pub fn type_to_string_key(ty: &Type) -> String {
-    match ty {
-        Type::IntLiteral(_) => "Int".to_string(),
-        Type::FloatLiteral(_) => "Float".to_string(),
-        Type::StringLiteral(_) => "String".to_string(),
-        _ => ty.to_string(),
-    }
+    *fd_depth -= 1;
+    pairs
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::type_infer::InferState;
-    use std::collections::HashMap;
 
-    fn make_tycon_app(name: &str, elem: Type) -> Type {
-        Type::App(Box::new(Type::TyCon(name.into())), Box::new(elem))
+    fn make_typevar_local(name: &str) -> Arc<Value> {
+        let payload = single_field_dict("name", string_value(name));
+        Arc::new(make_variant(TV_VAR, Some(payload)))
     }
 
-    fn make_coll_a() -> Type {
-        make_tycon_app("Coll", Type::Var("a".to_string(), 0))
-    }
+    /// make_constraint_decl produces a ConstraintDecl Variant.
+    #[test]
+    fn test_make_constraint_decl_ctor() {
+        let class_tv = make_type_op("Sortable");
+        let arg_tv = make_typevar_local("a");
+        let constraint = make_constraint_decl(class_tv, vec![arg_tv]);
 
-    fn make_coll_int() -> Type {
-        make_tycon_app("Coll", Type::Int)
-    }
-
-    fn make_appendable_instance(instance_type: Type) -> InstanceDecl {
-        InstanceDecl {
-            class_name: "Appendable".to_string(),
-            instance_type,
-            det_positions: vec![],
-            method_types: HashMap::new(),
+        match constraint.as_ref() {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(ctor.as_ref(), TV_CONSTRAINT_DECL);
+            }
+            _ => panic!("expected Value::Variant for ConstraintDecl"),
         }
-    }
-
-    /// When both `[Coll Int]` and `[Coll a]` are registered, resolving against `Coll[Int]`
-    /// must select `[Coll Int]` (score 0) over `[Coll a]` (score 1) by specificity.
-    ///
-    /// Both instances are inserted directly to test that `resolve_instance` handles
-    /// equally-registered instances correctly.
-    #[tokio::test]
-    async fn test_resolve_instance_specificity_concrete_wins_over_polymorphic() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        env.insert(make_appendable_instance(make_coll_a())).unwrap();
-        env.insert(make_appendable_instance(make_coll_int()))
-            .unwrap();
-
-        let target = make_coll_int();
-        let resolved = env
-            .resolve_instance("Appendable", &target, &mut state)
-            .await
-            .expect("should not be ambiguous — concrete instance is strictly more specific");
-
-        assert!(
-            resolved.is_some(),
-            "should find a matching instance for Coll[Int]"
-        );
-        let resolved = resolved.unwrap();
-
-        assert!(
-            !resolved.instance_type.has_inference_vars(),
-            "resolved instance should be concrete (no TypeVars), got: {}",
-            resolved.instance_type
-        );
-        if let Type::App(_, elem) = &resolved.instance_type {
-            assert!(
-                matches!(elem.as_ref(), Type::Int),
-                "element of resolved type should be Int, got: {}",
-                elem
-            );
-        } else {
-            panic!(
-                "resolved instance type should be Coll[Int], got: {}",
-                resolved.instance_type
-            );
-        }
-    }
-
-    /// When `[Coll a]` and `[Coll b]` are both registered (equally polymorphic), resolving
-    /// against `Coll[Int]` must report ambiguity — both score 1, so neither wins.
-    #[tokio::test]
-    async fn test_resolve_instance_ambiguity_equally_specific() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        let coll_a_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::Var("a".to_string(), 0)));
-        let coll_b_inst =
-            make_appendable_instance(make_tycon_app("Coll", Type::Var("b".to_string(), 0)));
-
-        env.insert(coll_a_inst).unwrap();
-        env.insert(coll_b_inst).unwrap();
-
-        let target = make_coll_int();
-        let result = env
-            .resolve_instance("Appendable", &target, &mut state)
-            .await;
-
-        assert!(
-            result.is_err(),
-            "two equally-specific instances should yield an ambiguity error"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("ambiguous instances"),
-            "error message should mention ambiguous instances, got: {msg}"
-        );
-        assert!(
-            msg.contains("Appendable"),
-            "error message should mention the class name, got: {msg}"
-        );
-    }
-
-    /// When only `[Coll a]` is registered, it resolves for `Coll[Int]` without ambiguity —
-    /// single match always wins regardless of polymorphism score.
-    #[tokio::test]
-    async fn test_resolve_instance_single_match_no_ambiguity() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        // Only the polymorphic instance — no competition.
-        env.insert(make_appendable_instance(make_coll_a())).unwrap();
-
-        let target = make_coll_int();
-        let resolved = env
-            .resolve_instance("Appendable", &target, &mut state)
-            .await
-            .expect("single match should not be ambiguous");
-
-        assert!(
-            resolved.is_some(),
-            "should find a matching instance for Coll[Int] via [Coll a]"
-        );
-    }
-
-    /// Resolving against a target that matches no instance returns Ok(None).
-    #[tokio::test]
-    async fn test_resolve_instance_no_match_returns_none() {
-        let mut state = InferState::new();
-        let mut env = InstanceEnv::new();
-
-        env.insert(make_appendable_instance(make_coll_int()))
-            .unwrap();
-
-        // Coll[Str] does not match Coll[Int].
-        let target = make_tycon_app("Coll", Type::Str);
-        let resolved = env
-            .resolve_instance("Appendable", &target, &mut state)
-            .await
-            .expect("no match should not yield an error");
-
-        assert!(
-            resolved.is_none(),
-            "Coll[Str] should not match Coll[Int] instance"
-        );
     }
 }

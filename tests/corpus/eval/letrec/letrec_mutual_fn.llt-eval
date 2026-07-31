@@ -1,0 +1,6 @@
+# Mutual recursion: g calls f, both defined sequentially.
+[f: [fn [let y] $y]]
+[g: [fn [let x] [call $f $x]]]
+[result: [call $g 99]]
+=== out
+["result": 99]

@@ -197,7 +197,7 @@ my-int?: [fn@Boolean [let x@[is: Int]] [match x [@Integer _]: Boolean.True _: Bo
 
 The semantics are identical: `[my-int? x]` being true narrows `x` to `Int`.
 
-**Mechanism:** Both forms store `TypeScheme.param_narrowings[0] = Some(T)` when the predicate's type scheme is constructed. `extract_narrowings` (in `src/typecheck_narrow.rs`) looks up the called function's type scheme in the environment and reads `param_narrowings`. The narrowing logic is fully annotation-driven — no predicate names are hardcoded in Rust.
+**Mechanism:** Both forms store narrowing info in the callee's `TypeValue.Scheme` payload under the `narrowings` key (an indexed Dict, field `FIELD_NARROWINGS` in `type_tags.rs`). `extract_scheme_narrowings_first` (in `src/typecheck_narrow.rs`) looks up the called function's `TypeValue.Scheme` in the type environment and reads `narrowings[0]`. The narrowing logic is fully annotation-driven — no predicate names are hardcoded in Rust.
 
 ### Structural Narrowing Protocol Entries (D-8)
 

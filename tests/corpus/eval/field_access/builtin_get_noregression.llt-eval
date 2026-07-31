@@ -1,0 +1,5 @@
+# builtin-dict-get still works correctly after type-checker refactoring.
+[record: [name: "Bob"  age: 25]]
+[result: [builtin-dict-get "name" $record]]
+=== out
+["result": "Bob"]

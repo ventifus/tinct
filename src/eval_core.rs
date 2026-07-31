@@ -19,6 +19,7 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Param, Span, Spanned, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
+use crate::type_tags::*;
 use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value};
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
@@ -1092,57 +1093,58 @@ pub(crate) fn eval_core_expr<'a>(
 
 /// Returns `true` if `s` is a valid `repr:` string for [`CoreExpr::ReprDecl`].
 ///
-/// Each arm of the `matches!` macro corresponds to exactly one variant of [`Value`].
-/// When a new `Value` variant is added, this function must be updated — the compiler
-/// cannot enforce this directly, but the test [`tests::test_is_valid_repr_string`]
-/// verifies every arm explicitly and will fail if an arm is removed or misspelled.
+/// Each entry in the slice corresponds to exactly one variant of [`Value`] via the
+/// canonical `REPR_*` constant from `type_tags`. When a new `Value` variant is added,
+/// this function must be updated — the compiler cannot enforce this directly, but the
+/// test [`tests::test_is_valid_repr_string`] verifies every entry explicitly and will
+/// fail if an entry is removed or a new variant is added without updating here.
 ///
 /// `Value::Builder` is intentionally excluded: Builder is a transient accumulator that
 /// is consumed before type identity matters; it cannot meaningfully participate in the
 /// `repr:` type-identity protocol.
 fn is_valid_repr_string(s: &str) -> bool {
-    matches!(
-        s,
-        "Value::Int"
-            | "Value::U64"
-            | "Value::Float"
-            | "Value::String"
-            | "Value::Bytes"
-            | "Value::Dict"
-            | "Value::Function"
-            | "Value::Builtin"
-            | "Value::Proxy"
-            | "Value::Variant"
-            | "Value::Decimal"
-            | "Value::BigInt"
-            | "Value::Duration"
-            | "Value::Uri"
-            | "Value::Timestamp"
-            | "Value::Timezone"
-            | "Value::ClockCap"
-            | "Value::DirCap"
-            | "Value::NetCap"
-            | "Value::File"
-            | "Value::RevocableDirCap"
-            | "Value::QuicSession"
-            | "Value::Http2Session"
-            | "Value::Http3Session"
-            | "Value::QuicDatagramHandle"
-            | "Value::Task"
-            | "Value::Channel"
-            | "Value::BroadcastChannel"
-            | "Value::OneshotSender"
-            | "Value::OneshotReceiver"
-            | "Value::Context"
-            | "Value::ReactiveCell"
-            | "Value::Arena"
-            | "Value::TypeContext"
-            | "Value::Program"
-            | "Value::Document"
-            | "Value::Expression"
-            | "Value::CoreDocument"
-            | "Value::Annotated"
-    )
+    [
+        REPR_INT,
+        REPR_U64,
+        REPR_FLOAT,
+        REPR_STRING,
+        REPR_BYTES,
+        REPR_DICT,
+        REPR_FUNCTION,
+        REPR_BUILTIN,
+        REPR_PROXY,
+        REPR_VARIANT,
+        REPR_DECIMAL,
+        REPR_BIGINT,
+        REPR_DURATION,
+        REPR_URI,
+        REPR_TIMESTAMP,
+        REPR_TIMEZONE,
+        REPR_CLOCK_CAP,
+        REPR_DIR_CAP,
+        REPR_NET_CAP,
+        REPR_FILE,
+        REPR_REVOCABLE_DIR_CAP,
+        REPR_QUIC_SESSION,
+        REPR_HTTP2_SESSION,
+        REPR_HTTP3_SESSION,
+        REPR_QUIC_DATAGRAM_HANDLE,
+        REPR_TASK,
+        REPR_CHANNEL,
+        REPR_BROADCAST_CHANNEL,
+        REPR_ONESHOT_SENDER,
+        REPR_ONESHOT_RECEIVER,
+        REPR_CONTEXT,
+        REPR_REACTIVE_CELL,
+        REPR_ARENA,
+        REPR_TYPE_CONTEXT,
+        REPR_PROGRAM,
+        REPR_DOCUMENT,
+        REPR_EXPRESSION,
+        REPR_CORE_DOCUMENT,
+        REPR_ANNOTATED,
+    ]
+    .contains(&s)
 }
 
 #[cfg(test)]
@@ -1260,52 +1262,53 @@ mod tests {
     /// Verifies that `is_valid_repr_string` returns `true` for every expected `Value`
     /// variant name and `false` for unknown strings.
     ///
-    /// Each assertion corresponds to one arm of the `matches!` macro in
-    /// `is_valid_repr_string`. If an arm is removed or a new variant is added without
-    /// updating the function, this test will fail.
+    /// Each entry corresponds to one `REPR_*` constant from `type_tags`. If a constant
+    /// is removed or a new variant is added without updating `is_valid_repr_string`,
+    /// this test will fail.
     #[test]
     fn test_is_valid_repr_string() {
-        // Every arm that should be accepted — one per Value variant (excluding Builder).
+        use crate::type_tags::*;
+        // Every entry that should be accepted — one per Value variant (excluding Builder).
         let valid = [
-            "Value::Int",
-            "Value::U64",
-            "Value::Float",
-            "Value::String",
-            "Value::Bytes",
-            "Value::Dict",
-            "Value::Function",
-            "Value::Builtin",
-            "Value::Proxy",
-            "Value::Variant",
-            "Value::Decimal",
-            "Value::BigInt",
-            "Value::Duration",
-            "Value::Uri",
-            "Value::Timestamp",
-            "Value::Timezone",
-            "Value::ClockCap",
-            "Value::DirCap",
-            "Value::NetCap",
-            "Value::File",
-            "Value::RevocableDirCap",
-            "Value::QuicSession",
-            "Value::Http2Session",
-            "Value::Http3Session",
-            "Value::QuicDatagramHandle",
-            "Value::Task",
-            "Value::Channel",
-            "Value::BroadcastChannel",
-            "Value::OneshotSender",
-            "Value::OneshotReceiver",
-            "Value::Context",
-            "Value::ReactiveCell",
-            "Value::Arena",
-            "Value::TypeContext",
-            "Value::Program",
-            "Value::Document",
-            "Value::Expression",
-            "Value::CoreDocument",
-            "Value::Annotated",
+            REPR_INT,
+            REPR_U64,
+            REPR_FLOAT,
+            REPR_STRING,
+            REPR_BYTES,
+            REPR_DICT,
+            REPR_FUNCTION,
+            REPR_BUILTIN,
+            REPR_PROXY,
+            REPR_VARIANT,
+            REPR_DECIMAL,
+            REPR_BIGINT,
+            REPR_DURATION,
+            REPR_URI,
+            REPR_TIMESTAMP,
+            REPR_TIMEZONE,
+            REPR_CLOCK_CAP,
+            REPR_DIR_CAP,
+            REPR_NET_CAP,
+            REPR_FILE,
+            REPR_REVOCABLE_DIR_CAP,
+            REPR_QUIC_SESSION,
+            REPR_HTTP2_SESSION,
+            REPR_HTTP3_SESSION,
+            REPR_QUIC_DATAGRAM_HANDLE,
+            REPR_TASK,
+            REPR_CHANNEL,
+            REPR_BROADCAST_CHANNEL,
+            REPR_ONESHOT_SENDER,
+            REPR_ONESHOT_RECEIVER,
+            REPR_CONTEXT,
+            REPR_REACTIVE_CELL,
+            REPR_ARENA,
+            REPR_TYPE_CONTEXT,
+            REPR_PROGRAM,
+            REPR_DOCUMENT,
+            REPR_EXPRESSION,
+            REPR_CORE_DOCUMENT,
+            REPR_ANNOTATED,
         ];
         for s in &valid {
             assert!(

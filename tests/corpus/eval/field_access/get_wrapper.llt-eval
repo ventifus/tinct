@@ -1,0 +1,5 @@
+# get wrapper function with dot-access produces the correct field type.
+[record: [x: 99  y: 1]]
+[result: $record.x]
+=== out
+["result": 99]

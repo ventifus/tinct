@@ -1,0 +1,11 @@
+# @Callable permits calling with multiple arguments (B-673 regression guard).
+# f@Callable annotates a parameter as "some function" (variadic=true, zero fixed params).
+# The function should be callable with any number of arguments without a spurious arity
+# mismatch type error. Verifies constrain_fn allows Callable to accept any concrete fn signature.
+
+[
+  apply: [fn [let f@Callable a b] [f a b]]
+  result: [apply [fn [let x y] [+ x y]] 1 2]
+]
+=== out
+Dict({"apply": Function(f, a, b), "result": Int(3)})

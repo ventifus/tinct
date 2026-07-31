@@ -1,0 +1,15 @@
+# T-2071 companion: outer 'env' binding is NOT referenced from the final expression.
+# 'result' references the inner 'env' (shadowed by the second dict), not the outer one.
+# The outer 'env' from the first dict should produce a lost-binding warning.
+# BindingId (span-keyed) must distinguish the outer 'env' (source span 1) from any
+# inner binding with the same name, so only the outer one is flagged.
+[call [fn [let x]
+  [env: x]
+  [env: "shadowed"]
+  env]
+"hello"]
+=== out
+String("shadowed")
+
+=== warn
+variable 'env' is never referenced

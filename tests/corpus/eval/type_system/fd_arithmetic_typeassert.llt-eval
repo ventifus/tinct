@@ -1,0 +1,6 @@
+# Functional dependency satisfaction: [@Integer [+ 1 2]] passes when FD correctly
+# determines c=Int for Addable[Int, Int, c]. Without FD, c remains Unknown and the
+# TypeAssert fails at runtime because the value's type_val does not match Integer.
+[@Integer [+ 1 2]]
+=== out
+Int(3)

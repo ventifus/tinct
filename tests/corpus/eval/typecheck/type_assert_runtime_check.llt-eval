@@ -1,0 +1,7 @@
+# B-658 regression guard: TypeAnnotation.resolved_type OnceLock is written by TypeAssertInner.
+# This positive test verifies the TypeValue from the OnceLock round-trips through lowering
+# without error. A negative test (wrong-type assertion should fail) requires repr_registry
+# enforcement, tracked separately.
+[@Integer 42]
+=== out
+Int(42)

@@ -1923,12 +1923,19 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
         // tycon_env seeded with builtin_core TyCons (Program, DirCap, etc.) so runtime
         // value_matches_type checks have definition spans for clear error messages.
+        // type_stage_scope seeded with builtin_core type-stage entries (Integer, String,
+        // Dict, DirCap, etc.) so that @Dict and similar annotations resolve correctly
+        // (B-663: without this, Dict → Op("Dict") from TyConDef wiring, causing incorrect
+        // record-subtype errors when @Dict annotations are used).
         // Accumulated further by builtin-typecheck-doc calls during loading.
         let (core_type_env, core_tycon_env) = tinct::build_builtin_core_envs().await;
+        let core_ts_data = tinct::get_builtin_core_type_stage_scope().await;
         ctx.init_type_context(tinct::TypeContextData {
             inference_env: core_type_env,
             tycon_env: core_tycon_env,
-            type_stage_scope: Vec::new(),
+            type_stage_scope: core_ts_data.scope,
+            type_stage_fns: core_ts_data.fns,
+            type_stage_type_vars: core_ts_data.type_vars,
             type_diagnostics: Vec::new(),
         });
         ctx
@@ -2157,10 +2164,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // uses this so injected names like %programs, %cwd, %args are typed rather than
         // "undefined variable". Each injection site in main.rs is responsible for its type.
         let injected_type_env = {
-            use tinct::{Env, Type};
-            let dircap = || Type::TyCon("DirCap".to_string());
-            let dict = || Type::TyCon("Dict".to_string());
-            let netcap = || Type::TyCon("NetCap".to_string());
+            use tinct::Env;
+            let dircap = || tinct::make_typevalue_op("DirCap");
+            let dict = || tinct::make_typevalue_op("Dict");
+            let netcap = || tinct::make_typevalue_op("NetCap");
             let mut inj = Env::new();
             // CLI-injected values: types match what is actually injected above.
             inj.insert_injected("%programs".to_string(), dict());
@@ -2301,13 +2308,13 @@ async fn run_fmt(
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
         let env_arc = tinct::get_builtin_core_type_env().await;
-        let type_stage_scope = tinct::get_builtin_core_type_stage_scope().await;
+        let ts_data = tinct::get_builtin_core_type_stage_scope().await;
         let (diagnostics, _env, _tycon_env) = tinct::typecheck::typecheck_program_bootstrap(
             &program,
             env_arc,
             None,
             std::collections::HashMap::new(),
-            type_stage_scope,
+            ts_data,
         )
         .await;
 

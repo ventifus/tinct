@@ -1,0 +1,10 @@
+# B-663 regression: @Dict annotation must produce an open-record type, not a record
+# whose field names are TypeNode constructor names (Int, String, Float, Proxy, etc.).
+# Before the fix, the TypeNode constructor dict leaked into the type annotation,
+# causing false "missing field 'Proxy'" errors on Dict-annotated values.
+[
+  xs@Dict: [a: 1  b: 2]
+  xs
+]
+=== out
+{0: {a: Int(1), b: Int(2)}}

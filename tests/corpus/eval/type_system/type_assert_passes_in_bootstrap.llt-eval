@@ -1,7 +1,7 @@
-# During bootstrap, all TypeAssert checks pass because values carry unknown_type_val().
-# [@Int 42] returns 42 (an Integer) — the assertion passes since the unknown sentinel
-# is consistent with every type. See S-1001, sprint-reviewer finding #2.
-# Enforcement (type mismatch detection) is deferred to S-1004 when repr_registry is wired.
+# TypeAssert [@Int 42]: integer value satisfies Integer annotation.
+# Corpus tests run via test-loader.llt (not as init program), so this exercises
+# the type assertion after the full eval pipeline is initialized.
+# The assertion passes because 42 is an Int, consistent with the @Int annotation.
 [@Int 42]
 === out
 Int(42)

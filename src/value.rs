@@ -11,7 +11,6 @@ use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::{EvalError, EvalResult};
-use crate::types::Type;
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
@@ -1818,7 +1817,10 @@ pub enum UnevaluatedState {
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
         inner: std::sync::Arc<Thunk>,
-        expected: Type,
+        /// TypeValue (Arc<Value>) representing the expected type for this guard.
+        /// Uses the TypeValue representation (TypeValue.Repr, TypeValue.Record, etc.)
+        /// rather than the deleted Type enum. Set by Thunk::guarded.
+        expected: std::sync::Arc<Value>,
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
@@ -2067,7 +2069,7 @@ impl Thunk {
 
     pub fn guarded(
         inner: std::sync::Arc<Thunk>,
-        expected: Type,
+        expected: std::sync::Arc<Value>,
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,

@@ -1,0 +1,4 @@
+# Variadic recursive function type-checks without annotation.
+[f: [fn [let ...rest] [call $f]]]
+=== out
+["f": [fn [let rest] ...]]

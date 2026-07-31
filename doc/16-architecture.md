@@ -44,7 +44,7 @@
 
 **Key contracts:**
 
-- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`, `caller_env_id: Option<u32>` (for scope-introspecting builtins)
+- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>>` (`+ Send` required — builtins run on the multi-threaded tokio runtime; `Value`, `Arc<Thunk>`, and `Arc<EvalContext>` are all `Send` since T-1768/T-1774); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`, `caller_env_id: Option<u32>` (for scope-introspecting builtins)
 - `Value` serialization: every `Value` variant must have handlers in both `JsonVisitor` (via `visit_value`) and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
@@ -55,7 +55,7 @@
 **Cross-module coupling:**
 
 - Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `builtin_module()` (builtins.rs). Safe because dependency is at function-call level, not module init.
-- Elaboration write-once: type annotations are resolved from `TypeAnnotationTable` (a side-table keyed by `NodeId`) during lowering. `CoreExpr::TypeAssert.resolved_type` is a plain field set once at lower time — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run (side tables are separate).
+- Elaboration write-once: type annotations are resolved by the type checker and stored inline as `OnceLock<Option<Arc<Value>>>` (TypeValue) on `SurfaceExpression::TypeAssert` nodes. The lowering pass reads these OnceLocks and transfers the resolved TypeValue into `CoreExpr::TypeAssert.resolved_type: Arc<Value>` — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run.
 - Include cache: `EvalContext.state.string_include_cache` (`HashMap<String, IncludeCacheEntry>`, content-addressed, keyed by `blake3(cap-identity + "|" + source_text)`) memoizes `$include` results — the old inode-keyed `include_guard` and `include_cache` fields are deleted.
 
 ### Rust-Tinct Protocol Names
@@ -72,9 +72,9 @@ The Unicode gensym convention for macro names (`∷`) ensures these names cannot
 
 ### Type Checker
 
-The type checker (advisory only — type errors are warnings, evaluation proceeds regardless) operates on the `Type` Rust enum defined in `src/type_def.rs`. All types are represented as `Type` values — there is no `CheckerType` newtype wrapper in the current implementation.
+The type checker (advisory only — type errors are warnings, evaluation proceeds regardless) operates on `Arc<Value>` TypeValues (see `src/type_tags.rs` for `TV_*` constructor tag constants and `src/type_infer.rs` for `TypeValue` construction helpers). The `Type` Rust enum was deleted in S-1003.
 
-**`Type` as the primary type representation.** Every type — primitives, record, union, arrow, recursive, and inference variables — is a `Type` enum value. Inference variables are `Type::Var(name: String, level: u32)`. Substitution maps TypeVar name → `Type`. The type checker pattern-matches on `Type` variants using Rust `match`. Key walkers requiring explicit `TypeVar` arms: `is_subtype_bas` / `is_atom_subtype`, `unify`, `Substitution::apply`, and `PartialEq`. See [Type Inference](06-type-inference.md) §Type Representation for full details.
+**`Arc<Value>` (TypeValue) as the primary type representation.** Every type — primitives, record, union, arrow, recursive, and inference variables — is an `Arc<Value>` TypeValue: a `Value::Variant { ctor, payload }` where `ctor` is a `TV_*` tag constant (e.g., `"TypeValue.Repr"`, `"TypeValue.Union"`, `"TypeValue.Fn"`). Inference variables are `TypeValue.Var` variants. Substitution maps TypeVar name → `Arc<Value>`. The type checker inspects TypeValues by matching on `typevalue_ctor()`. See [Type Inference](06-type-inference.md) §Type Representation for full details.
 
 **Unified type store: `HashMap<String, Arc<TyConDef>>`.** The previous split between `type_aliases: HashMap<String, TypeAlias>` and `tycon_defs: HashMap<String, TyConDef>` (both registered for every `[type ...]` declaration) is eliminated. All named types — primitive builtins, structural aliases, and nominal ADTs — are stored as a single `HashMap<String, Arc<TyConDef>>`. `Arc` is used (not value storage) for two reasons:
 

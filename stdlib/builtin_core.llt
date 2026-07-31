@@ -36,9 +36,10 @@
     # Kind-annotated type variable sentinel: resolves to a fresh TypeVar of the given kind.
     # kind: "Operator" | "Label" — string keys matching crate::type_def::Kind variants.
     TypeVar: [kind: Any]
-    # Literal type constructors — produced by [or 0 1], [or "ok" "err"] in type position.
+    # Literal type constructors — produced by [or 0 1], [or "ok" "err"], [or 1.5 2.5] in type position.
     IntLiteral:    [n: Any]
     StringLiteral: [s: Any]
+    FloatLiteral:  [value: Any]
     # Opaque Rust value types — no payload, identity-matched by tag name.
     Program
     Document
@@ -360,31 +361,35 @@
 ]
 
 ---
-# Runtime type declarations — mirror the type system's representation.
+# Runtime type declarations — the type system's runtime representation.
 # These types are accessible to user code at runtime for type introspection,
-# reflection, and metaprogramming. They correspond to Rust's Type/RowTail enums.
+# reflection, and metaprogramming.
+# Note: The Rust `Type`, `RowTail`, and `Kind` enums were deleted in S-1003.
+# TypeValue (Arc<Value>) is now the canonical type representation throughout.
 [
   # ── Type system representation types ─────────────────────────────────────
 
   # TypeValue: runtime representation of types in the type system.
-  # Corresponds to src/types.rs Type enum.
+  # Used by the type checker (InferenceContext, type_unify.rs, bas.rs, etc.)
+  # as Arc<Value> with ctor tags matching these constructor names.
   TypeValue: [type
     Repr:         [repr: String  is: [or [] Fn]]
     Phantom:      []
     Var:          [name: String]
-    Fn:           [params: Dict  return: TypeValue]
+    Fn:           [params: Dict  return: TypeValue  param-names: Dict  variadic: [or [] true]]
     App:          [op: TypeValue  arg: TypeValue]
     Op:           [name: String]
     Record:       [fields: Dict  tail: [or [] TypeValue]]
     Union:        [members: Dict]
     Inter:        [members: Dict]
     Neg:          [of: TypeValue]
-    Scheme:       [vars: Dict  constraints: Dict  body: TypeValue]
+    Scheme:       [vars: Dict  constraints: Dict  body: TypeValue  narrowings: [or [] Dict]  doc: [or [] String]]
     IntLit:       [value: Integer]
     FloatLit:     [value: Float64]
     StrLit:       [value: String]
-    Recursive:    [body: TypeValue]
-    RecursiveRef: [depth: Integer]
+    Recursive:       [body: TypeValue]
+    RecursiveRef:    [depth: Integer]
+    NominalVariant:  [tycon: String  ctor: String  fields: [or [] Dict]]
     Unknown
     Never
     Top]

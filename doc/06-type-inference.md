@@ -6,28 +6,35 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
 
 ## Type Representation
 
-The type checker uses the `Type` Rust enum (defined in `src/type_def.rs`) as its primary type representation. `Type` is a conventional algebraic data type — not a newtype wrapper around tinct `Value`. The type checker pattern-matches on `Type` variants directly using Rust's `match`.
+S-1003 completed the migration to `Arc<Value>` TypeValues as the primary type representation. The `Type` Rust enum (formerly in `src/type_def.rs`) was deleted. All type checker files now use `Arc<Value>` TypeValues with `TV_*` ctor tag constants from `src/type_tags.rs`. The `TypeAnnotationTable` side-table was also deleted (T-1999); type annotation results are stored inline as `OnceLock<Option<Arc<Value>>>` on AST nodes.
 
-Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-class tinct values) is a planned future refactor. It is not yet implemented. Until then, `Type` is the authoritative representation.
+**TypeValue = `Arc<Value>`.** A TypeValue is an `Arc<Value::Variant { ctor, payload }>` where `ctor` is a tag constant (e.g., `TV_REPR`, `TV_UNION`, `TV_FN`, `TV_FLOAT_LIT`). The type checker inspects TypeValues by calling `typevalue_ctor()` and matching on these constants, rather than pattern-matching on a Rust enum. Construction helpers (`make_typevalue_repr`, `make_typevalue_union`, `make_typevalue_fn`, etc.) in `src/type_infer.rs` produce correctly structured TypeValues.
 
-**`Var` is a `Type` variant.** `Type::Var(name: String, level: u32)` is a regular Rust enum variant. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. `state.levels` maps TypeVar name → current (possibly lowered) level; `state.levels` is authoritative. The `level` field inside the `Var` variant is the creation-time level (fixed at `fresh_type_var()` call time) and is used only as the initial value when registering in `state.levels`.
+**Inference variables are `TypeValue.Var` TypeValues.** `fresh_typevar()` produces a `TV_VAR`-tagged TypeValue with a fresh name (prefix + gensym counter). The level is NOT stored in the TypeValue payload — `TypeValue.Var` carries identity only (the variable's name). `ctx.levels` maps TypeVar name → current (possibly lowered) level; `ctx.levels` is authoritative. The level is registered in `ctx.levels` at creation time via `ctx.fresh_typevar()`.
 
-**`Type` variants available to the type checker** (representative set; see `src/type_def.rs` for the complete list):
+**InferenceContext replaced the old substitution model.** `state.ctx.subst` is a `HashMap<String, Arc<Value>>` (TypeVar name → TypeValue). `InferenceContext` (in `src/type_infer.rs`) holds `subst`, `levels`, `tycon_env`, `current_level`, `gensym_counter` (private), and `resolver_deferred`. `InferState` owns a `pub ctx: InferenceContext` field; all substitution and level operations go through `state.ctx`.
 
-| Variant | Notes |
+**TypeValue variants available to the type checker** (representative set; see `src/type_tags.rs` for all `TV_*` constants):
+
+| TypeValue tag | Notes |
 |---------|-------|
-| `Type::Int`, `Float`, `Str`, `Bool`, `Bytes`, `Unknown`, `Never`, `Any` | leaf primitives |
-| `Type::Record(Row)` | record type with optional tail |
-| `Type::Union(Vec<Type>)` | union A \| B |
-| `Type::Intersection(Vec<Type>)` | intersection A & B |
-| `Type::Negation(Box<Type>)` | complement ~A (BAS) |
-| `Type::Function { params, ret, typed_variadics, rest, required_count }` | function type |
-| `Type::TyCon(String)` | type constructor name |
-| `Type::App(Box<Type>, Box<Type>)` | type constructor application |
-| `Type::Recursive { var, body }` | equirecursive type |
-| `Type::Var(String, u32)` | inference variable |
+| `TV_REPR` | leaf primitive (payload: `repr` string — `"Value::Int"`, `"Value::Float"`, etc.) |
+| `TV_UNION` | union A \| B (payload: `members` indexed dict) |
+| `TV_INTER` | intersection A & B (payload: `members` indexed dict) |
+| `TV_NEG` | complement ~A (payload: `of` TypeValue) |
+| `TV_FN` | function type (payload: `params` indexed dict, `return` TypeValue, `param-names` indexed dict (optional — param name strings by index), `variadic` `"true"` Variant or absent) |
+| `TV_OP` | type constructor name (payload: `name` string) |
+| `TV_APP` | type constructor application (payload: `op` TypeValue, `arg` TypeValue) |
+| `TV_RECURSIVE` | equirecursive type μvar.τ (payload: `body` TypeValue) |
+| `TV_VAR` | inference variable (payload: `name` string) |
+| `TV_INT_LIT` | integer literal type (payload: `value` Int) |
+| `TV_STR_LIT` | string literal type (payload: `value` String) |
+| `TV_FLOAT_LIT` | float literal type (payload: `value` Float) |
+| `TV_UNKNOWN` | gradual typing escape hatch (no payload) |
+| `TV_TOP` | universal supertype ⊤ (no payload) |
+| `TV_NEVER` | bottom type ⊥ (no payload) |
 
-`Substitution` maps TypeVar name `String → Type`. `fresh_type_var()` creates `Type::Var("_tN", current_level)`. Substitution lookup: `subst.type_map.get(typevar_name)`.
+`state.ctx.subst` maps TypeVar name `String → Arc<Value>`. `ctx.fresh_typevar(prefix)` creates a `TV_VAR` TypeValue with a fresh name and registers it in `ctx.levels` at the current level. Substitution lookup: `state.ctx.subst.get(typevar_name)`.
 
 ## Type Grammar
 
@@ -44,30 +51,28 @@ Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-cla
     | App(τ, τ)                  curried type constructor application — left-to-right
     | Record(f₁:τ₁...fₙ:τₙ, tail)  closed record with optional uniform tail
     | Proxy                      opaque proxy (field access dispatches to handler)
-    | α                          type variable  (Type::Var(name, level) in the current implementation)
+    | α                          type variable  (`TV_VAR`-tagged TypeValue; level tracked separately in `ctx.levels`)
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
     | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[or A B]`)
     | Intersection(τ₁...τₙ)      intersection type A & B (user-expressible via `@[[all A B]]`)
     | Negation(τ)                negation type ~A (user-expressible via `@[[without A]]`)
     | Never                      bottom type ⊥ (uninhabited, user-expressible via `@Never`)
-    | Recursive(var, τ)          equirecursive type μvar.τ  (TypeNode.Recursive)
-    | RecursiveRef(name)         back-reference inside a Recursive body  (TypeNode.RecursiveRef)
+    | Recursive { body: τ }      equirecursive type μ.τ, de Bruijn indexed  (TypeNode.Recursive)
+    | RecursiveRef { depth: n }  back-reference at de Bruijn depth n inside a Recursive body  (TypeNode.RecursiveRef)
 ```
 
 `TyCon(name)` replaces the dedicated collection variants `Seq(τ)`, `Map(K,V)`, and `Handle(τ)`. All named types — builtins and user-declared — are represented uniformly:
 
 ```text
-Seq Int     → App(TyCon("Seq"), Int)
+Seq Int     → App(TyCon("Seq"), Int)   # TV_APP{ op: TV_OP{name:"Seq"}, arg: TV_REPR{repr:"Value::Int"} }
 Map Str Int → App(App(TyCon("Map"), Str), Int)   # curried: left-to-right
-Tree a      → App(TyCon("Tree"), Var("a", level))
+Tree a      → App(TyCon("Tree"), Var("a"))        # level tracked in ctx.levels, not in the Var payload
 ```
 
-`Type::Operator(String)` remains for type constructor *variables* (class params like `f` in `[class [f@Operator] ...]`); `TyCon` is for concrete *names*.
+`TV_OP` (type constructor variables) is used for class params like `f` in `[class [f@Operator] ...]`; `TV_OP` with a concrete name is the equivalent of the former `TyCon` leaf.
 
-The `Row` tail field carries `RowTail::Empty` (closed record, current default) or `RowTail::Uniform { key: Option<Box<Type>>, value: Box<Type> }` (column constraint — see §Column Constraints in [Type System Extensions](07-type-extensions.md)).
-
-*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The historical Rémy-style row polymorphism design is documented in the archived section of [Type System Extensions](07-type-extensions.md).
+*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The historical Rémy-style row polymorphism design (with closed/uniform record tails) is documented in the archived section of [Type System Extensions](07-type-extensions.md).
 
 **Additional types** (not expressible in annotations, used internally by inference):
 
@@ -81,31 +86,44 @@ The `Row` tail field carries `RowTail::Empty` (closed record, current default) o
 
 ## TyCon Registry
 
-**`TyConDef`** is the unified type constructor store. All named type constructors — builtins, structural aliases, and nominal ADTs — are registered in `tycon_defs: HashMap<String, Arc<TyConDef>>` (B-343 implemented in S-856) alongside the existing `TypeAlias` map. `TypeAlias` continues to hold param/body/constraints for alias expansion; `TyConDef` adds variance and constructor metadata for subtyping and coverage.
+**`TyConDef`** is the unified type constructor store. All named type constructors — builtins, structural aliases, and nominal ADTs — are registered in `tycon_defs: HashMap<String, Arc<TyConDef>>` (B-343 implemented in S-856). `TyConDef` holds params, body (TypeValue), constraints, variance, and constructor metadata for subtyping and coverage. The separate `TypeAlias` map was deleted in S-1003.
 
 ```rust
 pub struct TyConDef {
-    /// Constructors for nominal ADTs: (qualified_tag, payload_arity).
-    /// e.g., [("Color.Red", 0), ("Color.Green", 0)].
-    /// Empty for structural aliases and builtin-opaque types.
-    pub constructors: Vec<(String, usize)>,
+    /// Type parameter names (e.g., ["a", "k", "v"]). Empty for zero-parameter types.
+    pub params: Vec<String>,
+
+    /// Type body as a TypeValue (Arc<Value>). For structural aliases, this is the expanded
+    /// TypeValue; for nominal ADTs, a TypeValue.Union of NominalVariants.
+    /// During bootstrap, holds `unknown_type_val()` as a placeholder.
+    pub body: Arc<Value>,  // S-1003: was Type pre-migration
+
+    /// Class constraints on type parameters, populated when params carry `@ClassName` annotations.
+    /// Empty for unconstrained aliases. Arc<Value> ConstraintDecl entries.
+    pub constraints: Vec<Arc<Value>>,
 
     /// Variance per type parameter, in declaration order.
     /// Length equals the number of declared `[let ...]` params.
     /// Empty for zero-parameter types (primitives, unit ADTs, builtin-opaque types).
     pub variance: Vec<Variance>,
 
+    /// Constructors for nominal ADTs: (qualified_tag, payload_arity).
+    /// e.g., [("Color.Red", 0), ("Color.Green", 0)].
+    /// Empty for structural aliases and builtin-opaque types.
+    pub constructors: Vec<(String, usize)>,
+
     /// Builtin-type discriminant (e.g., "Seq", "Map", "Int").
-    /// `Some` → builtin-opaque: `expand_named` returns `TypeNode.TypeApplication` without
-    /// structural expansion, preserving the TyCon leaf in the checker's type representation.
-    /// `None` → user-declared or structural alias.
+    /// `Some` → builtin-opaque type; `None` → user-declared or structural alias.
     pub builtin_type: Option<String>,
+
+    // Additional fields: `annotation`, `field_annotations`, `constructor_constants`,
+    // `definition_span`. See src/type_def.rs for the complete definition.
 }
 
 pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 ```
 
-`TypeEnv` carries `tycon_defs: HashMap<String, Arc<TyConDef>>` with `insert_tycon_def(name, Arc<TyConDef>)` and `lookup_tycon_def(name)` methods (parent-chain walk). When the type checker processes `Color: [type Red Green Blue]`, it stores both a `TypeAlias` entry (for alias expansion) and a `TyConDef` entry (for variance and constructor metadata).
+`TypeEnv` carries `tycon_defs: HashMap<String, Arc<TyConDef>>` with `insert_tycon_def(name, Arc<TyConDef>)` and `lookup_tycon_def(name)` methods (parent-chain walk). When the type checker processes `Color: [type Red Green Blue]`, it stores a `TyConDef` entry (for variance and constructor metadata) in both the scoped `TypeEnv` and the flat `InferState.tycon_env`.
 
 **Two population sites:**
 
@@ -119,11 +137,11 @@ pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 
 **Kind registration.** TyCon kind is derived from `TyConDef.variance.len()`:
 
-- 0 parameters → `Kind::Type` (`*`)
-- 1 parameter → `Kind::Operator` (`* → *`)
-- 2+ parameters → `Kind::Arrow` chain (`* → * → *`, etc.)
+- 0 parameters → `*` (type)
+- 1 parameter → `* → *` (type operator)
+- 2+ parameters → `* → * → *` chain, etc.
 
-`InferState.kind_env` tracks TypeVar kinds (`f@Operator` in class params) and is unaffected.
+The `Kind` Rust enum was deleted in T-1995. Kind information is now encoded implicitly via `TyConDef.variance.len()`. `state.ctx.kind_env` is a `HashMap<String, Arc<Value>>` tracking TypeVar kinds (`f@Operator` in class params).
 
 ## Annotation Resolution
 
@@ -134,9 +152,9 @@ pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 
 `apply_builtin_constructor` has been deleted; `is_builtin_type_name` was deleted in T-1113 and both call sites now use `TyConEnv` lookup (`state.tycon_env.get(name).map_or(false, |def| def.builtin_type.is_some())`). The general lookup path — look up the name in `TyConEnv`, retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expand the alias body — is implemented.
 
-**`{_ : V}` recognition (implemented in S-843).** When parsing a type dict expression in `resolve_type_dict` (`src/typecheck_annot.rs`), the `_` key (optionally annotated `_@K`) is recognized as a uniform tail rather than a named field. The recognizer is a single pass: accumulate named fields; when a key is `_` (plain) or an annotated `_@K` form, set `RowTail::Uniform { key: None, value: V }` or `RowTail::Uniform { key: Some(K), value: V }` respectively. At most one `_` per row type — a duplicate raises "duplicate uniform-field sentinel `_` in row type annotation".
+**`{_ : V}` recognition (implemented in S-843).** When parsing a type dict expression in `resolve_type_dict` (`src/typecheck_annot.rs`), the `_` key (optionally annotated `_@K`) is recognized as a uniform tail rather than a named field. The recognizer is a single pass: accumulate named fields; when a key is `_` (plain) or an annotated `_@K` form, a uniform-tail TypeValue variant is produced. At most one `_` per row type — a duplicate raises "duplicate uniform-field sentinel `_` in row type annotation".
 
-**Polarity analysis** for transparent alias variance inference: `infer_variance(body: &Type, params: &[String], type_env: &TypeEnv) -> Vec<Variance>` implements Dolan 2017 §4. Walk the body type with a current polarity (`Positive`/`Negative`); classify each TypeVar's occurrences to determine `Covariant`, `Contravariant`, `Invariant`, or `Phantom`. Explicit `@` annotations override inference and are checked for conflicts.
+**Polarity analysis** for transparent alias variance inference: `infer_variance(body: &TypeValue, params: &[String], type_env: &TypeEnv) -> Vec<Variance>` implements Dolan 2017 §4. Walk the body TypeValue with a current polarity (`Positive`/`Negative`); classify each TypeVar's occurrences to determine `Covariant`, `Contravariant`, `Invariant`, or `Phantom`. Explicit `@` annotations override inference and are checked for conflicts.
 
 **`annotation_to_variance`** — a closed 4-entry match used when processing `[let a@X]` params:
 
@@ -156,19 +174,19 @@ If `annotation_to_variance` returns `None` AND the name is a registered class, t
 
 **Literal types in annotation position (T-1885).** Integer and string literal values are valid in type annotation position and resolve to singleton literal types:
 
-- `@0` → `Type::IntLiteral(0)`
-- `@"foo"` → `Type::StringLiteral("foo")`
-- `@[or 0 1]` → `Type::Union([IntLiteral(0), IntLiteral(1)])`
+- `@0` → `TV_INT_LIT`-tagged TypeValue with payload `{ value: 0 }`
+- `@"foo"` → `TV_STR_LIT`-tagged TypeValue with payload `{ value: "foo" }`
+- `@[or 0 1]` → `TV_UNION`-tagged TypeValue with members `[TV_INT_LIT{0}, TV_INT_LIT{1}]`
 
 This enables precise return type annotations for boolean-result builtins. The comparison and equality builtins (`builtin-eq-int`, `builtin-eq-string`, `builtin-lt`, `builtin-lte`, `builtin-gt`, `builtin-gte`) declare return type `@[or 0 1]` rather than `@Integer`, so callers can use concrete `0:` / `1:` arms in `match` expressions and the type checker accepts them without a catch-all.
 
-Implementation: `resolve_type_name` in `src/typecheck_annot.rs` recognizes `SurfaceExpression::Int(n)` and `SurfaceExpression::Str(s)` in annotation position and produces the corresponding `Type::IntLiteral` / `Type::StringLiteral` directly.
+Implementation: `resolve_type_name` in `src/typecheck_annot.rs` recognizes `SurfaceExpression::Int(n)` and `SurfaceExpression::Str(s)` in annotation position and produces the corresponding `TV_INT_LIT` / `TV_STR_LIT` TypeValues directly.
 
 ## Unification: UNIFY-TYCON and UNIFY-UNIFORM
 
 **UNIFY-TYCON:** `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2`. Name-equality is the operative check; `Arc::ptr_eq` is also called via `tycon_env` lookup (B-343). No binding is produced — UNIFY-TYCON is a pure equality check with no substitution side-effects.
 
-**UNIFY-TYCON-EXPAND:** `TyCon(n)` unified with `NominalVariant { tycon, ctor, fields }` (T-1112). When a zero-arity TyCon (e.g., `@Color`) is unified against a value whose type is `NominalVariant { tycon: "Color", ctor: "Red", ... }`, the unifier looks up `n` in `state.tycon_env`, retrieves the registered body (the Union of NominalVariants for the type declaration), and checks membership via `is_subtype`. This enables `@Color` annotations to accept any constructed variant of `Color`. If the TyCon has no registered body (unknown or builtin opaque type), unification fails with a type mismatch. Both `(TyCon, NominalVariant)` and `(NominalVariant, TyCon)` directions are handled symmetrically.
+**UNIFY-TYCON-EXPAND:** `TV_OP{name:n}` unified with a `TV_APP`-rooted nominal variant TypeValue (T-1112). When a zero-arity type operator (e.g., `@Color`) is unified against a value whose type is a nominal variant TypeValue with tag `"Color.Red"`, the unifier looks up `n` in `state.ctx.tycon_env`, retrieves the registered body (the Union of nominal variant TypeValues for the type declaration), and checks membership via `is_subtype`. This enables `@Color` annotations to accept any constructed variant of `Color`. If the TyCon has no registered body (unknown or builtin opaque type), unification fails with a type mismatch. Both `(TV_OP, nominal variant)` and `(nominal variant, TV_OP)` directions are handled symmetrically.
 
 **UNIFY-APP:** Decomposes `App(f1, a1)` and `App(f2, a2)` by first unifying constructors (`f1 ~ f2`, which dispatches to UNIFY-TYCON for `TyCon` heads), then unifying arguments (`a1 ~ a2`).
 
@@ -179,7 +197,7 @@ Implementation: `resolve_type_name` in `src/typecheck_annot.rs` recognizes `Surf
 
 ## Subtyping: Variance-Directed App
 
-**`is_subtype` signature change:** `is_subtype(sub: &Type, sup: &Type, tycon_env: Option<&TyConEnv>) -> bool`.
+**`is_subtype` signature:** `is_subtype(sub: &TypeValue, sup: &TypeValue, tycon_env: Option<&TyConEnv>) -> bool`.
 
 - `None`: invariant fallback for all `App(TyCon(_), _)` — safe conservative default (never unsound).
 - `Some(&state.tycon_env)`: all type-checker call sites.
@@ -192,7 +210,7 @@ Implementation: `resolve_type_name` in `src/typecheck_annot.rs` recognizes `Surf
 - Invariant (default): only when `a = b`
 - `@Phantom`: always
 
-The variance lookup uses `TyCon` name string to find `TyConDef.variance[i]` in `tycon_env`. For user-declared types, `tycon_env` is populated by `register_type_aliases`; for builtins, by `InferState::new()`. `TyConEnv` uses `Arc<TyConDef>` (B-343 implemented in S-856), so cross-scope TyCon identity via `Arc::ptr_eq` is structurally in place. Cross-scope rejection becomes operative after the T-1112 migration to `Type::TyCon(Arc<TyConDef>)` — until then, name-equality is the operative identity check.
+The variance lookup uses `TyCon` name string to find `TyConDef.variance[i]` in `tycon_env`. For user-declared types, `tycon_env` is populated by `register_type_aliases`; for builtins, by `InferState::new()`. `TyConEnv` uses `Arc<TyConDef>` (B-343 implemented in S-856), so cross-scope TyCon identity via `Arc::ptr_eq` is structurally in place. Name-equality is the operative identity check for `TV_OP` nodes; `Arc::ptr_eq` on `TyConDef` bodies is available but not yet used for cross-scope TyCon identity (tracked separately).
 
 ## Scoped ClassEnv and InstanceEnv
 
@@ -284,7 +302,7 @@ Implementation:
 
 ```text
 Γ(x) = ∀α₁...αₙ. τ
-τ' = instantiate_scheme(∀α₁...αₙ. τ, ℓ_current)
+τ' = instantiate_scheme_tv(∀α₁...αₙ. τ, ℓ_current)
 ────────────────────────────────── [VAR-POLY]
 Γ ⊢ x : τ'
 ```
@@ -340,7 +358,7 @@ Else:
 
 **Substitution note:** σ_exp is substitution-applied (S(σ_exp)) before comparison via `state.subst.apply`, ensuring that any type variables bound during parameter checking are resolved before the subsumption check. σᵣ (the declared return annotation) is guaranteed to be concrete — no TypeVars — at the `else: check σᵣ <: σ_exp` sub-branch (the concrete-return-annotation path), because the `!declared.has_inference_vars()` guard has already fired. Applying the current substitution to σᵣ would therefore be a no-op; the code omits it correctly.
 
-Unannotated non-variadic params receive `Type::Unknown` (gradual typing); the type checker accepts any argument without a static check, and the full Hindley-Milner alternative of assigning fresh TypeVars and inferring parameter types from usage requires explicit annotations. Variadic params without annotations also default to Unknown.
+Unannotated non-variadic params receive `TypeValue.Unknown` (gradual typing); the type checker accepts any argument without a static check, and the full Hindley-Milner alternative of assigning fresh TypeVars and inferring parameter types from usage requires explicit annotations. Variadic params without annotations also default to Unknown.
 
 When a return annotation is present, the dispatch depends on whether σᵣ contains type variables. If σᵣ is fully concrete (no type variables), the body is **checked** against it (⇐ mode): the body is synthesized, then subsumption verifies the inferred type is a subtype of the declared type. If σᵣ contains type variables (e.g., `fn@a`), the body is **synthesized** and then **unified** with σᵣ. This is necessary because type variables are not ground — `is_subtype` treats them as opaque and only matches reflexively, so `is_subtype(IntLiteral(42), TypeVar("_t5"))` would incorrectly reject valid code. Unification mode binds the type variables via constraint solving (Damas & Milner, 1982), which is the correct mechanism for annotations that introduce polymorphism.
 
@@ -412,13 +430,13 @@ S = compose(unify(β, widen(υₙ)), ..., unify(β, widen(υₖ)))
 
 All variadic arguments are unified against the same TypeVar β after widening to their base types. Heterogeneous variadic arguments produce a unification error. Inside the variadic function body, the collected parameter has type `Seq(β)` and supports all Seq operations.
 
-Named argument type checking is implemented. `Type::Function` carries `params: Vec<(Option<String>, Type)>` where `Some(name)` is a user-defined function parameter name extracted from the AST and `None` is a builtin parameter (no name exposed at the type level). Three paths check named args:
+Named argument type checking is implemented. `TypeValue.Fn` carries `params: indexed Dict` (integer-keyed, each entry a TypeValue) and `param-names: indexed Dict` (integer-keyed, each entry a String param name or absent for unnamed builtin params). Three paths check named args:
 
-- **CALL-MONO**: for each named arg, the matching parameter is found by name via `params.iter().find_map(|(pname, pty)| if pname.as_ref() == Some(arg_name) { Some(pty) })`, the arg is inferred with `infer_expr`, and the type is unified against the parameter type. Unknown names and type mismatches emit `TypeError`.
+- **CALL-MONO**: for each named arg, the matching parameter is found by name via `param-names`, the arg is inferred with `infer_expr`, and the type is unified against the corresponding entry in `params`. Unknown names and type mismatches emit `TypeError`.
 - **CALL-POLY** (`check_call`): same name-based lookup and unify on the instantiated params.
-- **`check_call_with_scheme`** Function arm: same name-based lookup and unify, applied after the positional arg unification loop, using the already-instantiated `params` from `instantiate_scheme`.
+- **`check_call_with_scheme`** `TypeValue.Fn` arm: same name-based lookup and unify, applied after the positional arg unification loop, using the already-instantiated `params` from `instantiate_scheme`.
 
-Known gap: when the callee is a letrec forward reference for a *non-fn* entry (same-dict scope), the type resolves to an unbound `TypeVar` and falls through to the `TypeVar` arm, which skips named-arg validation. Fn-form entries are pre-bound as `Type::Function` (B-520), so recursive calls to fn entries are handled correctly by the `Type::Function` arm. See [Type System Extensions](07-type-extensions.md) §Completeness for the remaining gaps.
+Known gap: when the callee is a letrec forward reference for a *non-fn* entry (same-dict scope), the type resolves to an unbound `TypeVar` and falls through to the `TypeVar` arm, which skips named-arg validation. Fn-form entries are pre-bound as `TypeValue.Fn` (B-520), so recursive calls to fn entries are handled correctly by the `TypeValue.Fn` arm. See [Type System Extensions](07-type-extensions.md) §Completeness for the remaining gaps.
 
 **Access chains:**
 
@@ -590,7 +608,7 @@ Negation is contravariant in constrain() — C-Negation swaps directions. For un
 ¬T₁≤¬T₂, and constrain(T₁,T₂) from [C-Negation] applied to ¬T₂≤¬T₁.
 ```
 
-Record unification performs bidirectional `constrain_rows` for field subtyping, then applies UNIFY-UNIFORM tail binding for any `RowTail::Uniform` TypeVar positions. The `constrain_rows` pairs handle field variance; the UNIFY-UNIFORM pass binds tail TypeVars via `unify()` (equality, not subsumption) because tail equality requires direct substitution, not bounds. See [Type System Extensions](07-type-extensions.md) §Column Constraints for the full rules including the substitution-first branching for the TypeVar vs concrete split.
+Record unification performs bidirectional `constrain_rows` for field subtyping, then applies UNIFY-UNIFORM tail binding for any uniform tail TypeVar positions. The `constrain_rows` pairs handle field variance; the UNIFY-UNIFORM pass binds tail TypeVars via `unify()` (equality, not subsumption) because tail equality requires direct substitution, not bounds. See [Type System Extensions](07-type-extensions.md) §Column Constraints for the full rules including the substitution-first branching for the TypeVar vs concrete split.
 
 Row tail unification:
 
@@ -807,17 +825,17 @@ constrain_rows(sub_row, sup_row):
     for each (k, sup_ty) in sup_row.fields:
         if k ∈ sub_row.fields:
             constrain(sub_row[k], sup_ty)          (covariant field subtyping)
-        elif sub_row.tail = Uniform{v}:
+        elif sub_row.tail = RowTail.Uniform { value-type: v }:
             constrain(v, sup_ty)                   (uniform tail covers missing field)
         else:
             error "missing field k"                (no Uniform tail, no field: error)
 
     # Step 2: Tail compatibility.
-    (_, RowTail::Empty)          → Ok(())          (sub may have more fields: width subtyping)
-    (sub_tail, RowTail::Uniform{sup_v}) →
+    (_, closed_tail)             → Ok(())          (sub may have more fields: width subtyping)
+    (sub_tail, RowTail.Uniform { value-type: sup_v }) →
         for each sub_field_ty in sub_row.fields:
             constrain(sub_field_ty, sup_v)         (all sub fields ≤ sup uniform value)
-        if sub_tail = Uniform{sub_v}:
+        if sub_tail = RowTail.Uniform { value-type: sub_v }:
             constrain(sub_v, sup_v)                (sub uniform value ≤ sup uniform value)
             if sup has key type sup_k:
                 constrain(sub_k, sup_k)  or error  (key type ≤)
@@ -825,13 +843,13 @@ constrain_rows(sub_row, sup_row):
 
 ### Invariant
 
-**Every compound `Type` variant that carries structural sub-terms must have an explicit `constrain()` arm.** Falling through to `unify()` is permitted only for:
+**Every compound `TypeValue` constructor that carries structural sub-terms must have an explicit `constrain()` arm (e.g., `TV_RECORD`, `TV_FN`, `TV_APP`).** Falling through to `unify()` is permitted only for:
 
-- `TypeVar`-to-`TypeVar` binding (C-Var1/C-Var2 handle union/intersection TypeVar cases above)
-- Atomic mismatches (e.g., `Int` vs `Str`) — `unify()` generates the structured error
+- `TypeValue.Var`-to-`TypeValue.Var` binding (C-Var1/C-Var2 handle union/intersection TV_VAR cases above)
+- Atomic mismatches (e.g., `Repr("Value::Int")` vs `Repr("Value::String")`) — `unify()` generates the structured error
 - Ground-type pairs with no inference variables — `constrain()` applies the BAS `is_subtype` check first, then falls through to `unify()` for error generation on failure
 
-If a new compound variant is added to `Type`, a `constrain()` arm must be added before introducing the variant. Relying on `unify()`'s U-SUBSUME fallthrough for TypeVar-containing compound types is unsound — variance would be lost.
+If a new compound TypeValue constructor is added to builtin_core.llt, a `constrain()` arm must be added before introducing the constructor. Relying on `unify()`'s U-SUBSUME fallthrough for TV_VAR-containing compound types is unsound — variance would be lost.
 
 ### Match Arm Narrowing for Dict Patterns (B-617)
 
@@ -841,9 +859,9 @@ When a `[match ...]` arm uses a dict pattern (`[case [let v] [k₁: τ₁ ... k�
 narrowed_scrutinee = scrutinee ∩ ¬{k₁: Any, ..., kₙ: Any, _: Any}
 ```
 
-The negation type `¬{k₁: Any, ..., kₙ: Any, _: Any}` (a `Type::Negation` wrapping an open `Record` with a `RowTail::Uniform` tail) represents values that do NOT have all of `k₁...kₙ` as fields. The wildcard arm `...:` therefore sees only values not matched by any preceding dict arm.
+The negation type `¬{k₁: Any, ..., kₙ: Any, _: Any}` (a `TypeValue.Neg` wrapping an open `TypeValue.Record` with a `RowTail.Uniform` tail) represents values that do NOT have all of `k₁...kₙ` as fields. The wildcard arm `...:` therefore sees only values not matched by any preceding dict arm.
 
-Only statically-known string keys from the arm pattern contribute to narrowing (dynamic keys via `[bracket ...]` forms are ignored for soundness). The narrowing is applied in `setup_match_arm_env` in `src/typecheck.rs` and uses `Type::Intersection` with `Type::Negation` to represent the residual type.
+Only statically-known string keys from the arm pattern contribute to narrowing (dynamic keys via `[bracket ...]` forms are ignored for soundness). The narrowing is applied in `setup_match_arm_env` in `src/typecheck.rs` and uses `TypeValue.Inter` with `TypeValue.Neg` to represent the residual type.
 
 ## Contractiveness
 
@@ -955,33 +973,33 @@ pub fn is_atom_subtype(
 
 Two rules govern recursive types. They fire in order at the top of every `is_atom_subtype` call for `Recursive` atoms:
 
-**S-Assum** — coinductive hypothesis. When both sides are `TypeNode.Recursive`, check and insert the pair before proceeding:
+**S-Assum** — coinductive hypothesis. When both sides are `TypeValue.Recursive`, check and insert the pair before proceeding:
 
 ```text
-(a.var, b.var) ∈ Σ
+(ptr(a), ptr(b)) ∈ Σ
 ────────────────────────────────────── [S-ASSUM]
-Recursive(a.var, _) <: Recursive(b.var, _)  (return true immediately)
+Recursive(a) <: Recursive(b)  (return true immediately)
 ```
 
-If the pair is not yet in Σ, insert `(a.var, b.var)` into Σ and continue.
+If the pair is not yet in Σ, insert `(ptr(a), ptr(b))` into Σ and continue.
 
-**S-Exp** — structural unfolding. When one side is `TypeNode.Recursive`, unfold it once and re-enter `is_atom_subtype`. Sigma already contains the pair when S-Exp fires (inserted by S-Assum), so when the unfolded body's recursive positions are reached, S-Assum terminates the check immediately:
+**S-Exp** — structural unfolding. When one side is `TypeValue.Recursive`, unfold it once and re-enter `is_atom_subtype`. Sigma already contains the pair when S-Exp fires (inserted by S-Assum), so when the unfolded body's recursive positions are reached, S-Assum terminates the check immediately:
 
 ```text
-unfold_once(Recursive(var, body)) = body[RecursiveRef(var) ↦ Recursive(var, body)]
+unfold_once(Recursive(body)) = body[RecursiveRef(depth=0) ↦ Recursive(body)]
 ```
 
 ```text
-a = Recursive(_, _),   sigma ← sigma ∪ {(a.var, b.var)}
+a = Recursive(_),   sigma ← sigma ∪ {(ptr(a), ptr(b))}
 ──────────────────────────────────────────────────────── [S-EXP-L]
 a <: b  iff  unfold_once(a) <: b  (sigma threaded)
 
-b = Recursive(_, _),   sigma ← sigma ∪ {(a.var, b.var)}
+b = Recursive(_),   sigma ← sigma ∪ {(ptr(a), ptr(b))}
 ──────────────────────────────────────────────────────── [S-EXP-R]
 a <: b  iff  a <: unfold_once(b)  (sigma threaded)
 ```
 
-The sigma key is `(a.var, b.var)` — a `(String, String)` pair of globally unique gensym binder names, giving O(1) lookup with no false positives from shadowed alias names.
+The sigma key is `(ptr(a), ptr(b))` — a `(String, String)` pair of `Arc` pointer addresses formatted as decimal strings via `format!("{:p}", Arc::as_ptr(tv))`. Arc pointer equality gives O(1) lookup and correctly identifies self-comparison (S-Assum fires for `Arc::ptr_eq`). Note: two separately allocated structurally-identical `Recursive` values have different pointers and won't trigger S-Assum — see B-668 for the known limitation.
 
 ### Sigma Threading Through All BAS Arms
 
@@ -1009,11 +1027,12 @@ instantiate(τ) = (S(τ), S)
     for each αᵢ ∈ FTV(τ), fresh type var names _tN generated
     from a shared monotonic per-file counter.
 
-FTV(τ) collects type variables via collect_type_vars().
+FTV(τ) collects type variables via ctx.free_vars(ty) — walks settled
+Dict payloads recursively, returning unbound TypeVar names.
 
-Under BAS, all records are closed. The substitution map contains
-only type_map. TypeScheme carries only type_vars. Record openness
-is expressed via width subtyping in is_subtype.
+Under BAS, all records are closed. TypeValue.Scheme carries only
+type variable names in its vars dict. Record openness is expressed
+via width subtyping in is_subtype_bas_with_sigma.
 ```
 
 This is alpha-renaming for call-site freshening. Each polymorphic call site gets independent type variables so unification at one site does not constrain another. With let-generalization (below), instantiation also handles let-bound polymorphic type schemes.
@@ -1028,60 +1047,46 @@ Tinct uses levels-based let-generalization following Kiselyov (2013) to support 
 σ ::= ∀(α₁...αₙ, ρ₁...ρₘ). τ    (n,m ≥ 0; when both zero, equivalent to monomorphic τ)
 ```
 
-Implementation: `TypeEnv.bindings` changes from `HashMap<String, Type>` to `HashMap<String, TypeScheme>`. The `TypeScheme` struct:
+Implementation: the runtime environment stores schemes as `TypeValue.Scheme`, the tinct-side variant declared in `stdlib/builtin_core.llt`:
 
-```rust
-#[derive(Debug, Clone)]
-pub struct TypeScheme {
-    pub type_vars: Vec<String>,         // quantified type variable names
-    pub constraints: Vec<Constraint>,   // constraints on quantified vars
-    pub label_vars: Vec<String>,        // quantified label variables (Kind::Label)
-    pub doc: Option<String>,            // documentation from annotations
-    pub body: Type,
-}
-
-impl TypeScheme {
-    pub fn mono(ty: Type) -> Self {
-        Self {
-            type_vars: vec![],
-            constraints: vec![],
-            label_vars: vec![],
-            doc: None,
-            body: ty,
-        }
-    }
+```text
+TypeValue.Scheme {
+    vars:        Dict,              -- var-name → VarDecl { name: String, kind: TypeValue }
+    constraints: Dict,              -- reserved for typeclass constraint integration (currently empty)
+    body:        TypeValue,         -- the quantified type body
+    narrowings?: Dict,              -- optional; index → TypeValue narrowing hint per parameter
+    doc?:        String,            -- optional; docstring for the generalized binding
 }
 ```
 
-**TypeScheme grammar:** `σ ::= ∀(α₁...αₙ). [C₁ a₁, ...] τ` where α₁...αₙ are type variables, C₁ a₁, ... are constraints, and τ is the body type. Under BAS, all records are closed and type schemes carry only type variables — no row variable quantifier.
+Monomorphic bindings (no generalizable variables) are stored as bare `TypeValue` values without a `TypeValue.Scheme` wrapper. The `Env` type stores schemes as `EnvSlot.scheme: Option<TypeValue>` — `None` for non-scheme bindings, `Some(TypeValue.Scheme {...})` for polymorphic ones.
 
-`PartialEq` for `TypeScheme` compares structurally (type_vars + constraints + label_vars + doc + body). `Display` shows `∀a b. [Eq a] Fn(a → b)` for constrained schemes, or the bare type for monomorphic ones. Located in `types.rs`.
+**Scheme grammar:** `σ ::= ∀(α₁...αₙ). τ` where α₁...αₙ are the keys of the `vars` dict and τ is `body`. Under BAS, all records are closed and schemes carry only type variables — no row variable quantifier.
 
 **Levels.** Every type variable α carries an integer level ℓ(α). The type checker maintains a current level counter ℓ_current, incremented at each dict boundary (every `infer_dict` call):
 
 - Fresh type variables are created at ℓ_current
-- `Type::Var(String)` becomes `Type::Var(String, u32)` (name + level)
-- `PartialEq` for `Type` is implemented manually: `Var(a, _) == Var(b, _)` compares names only, ignoring levels. This preserves the [U-REFL] fast path in `unify()`.
-- Under BAS, all records are closed. The `Row` struct contains only `fields: HashMap<String, Type>` with no tail. Width subtyping handles record openness.
-- `Display` for `Var` hides the level (internal inference state, not user-facing).
+- Level is NOT stored in `TypeValue.Var` — the `TypeValue.Var` payload carries only `{ name: String }`
+- Under BAS, all records are closed. Width subtyping handles record openness.
 
-**Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Since `Type` is a value type, levels are stored in a separate mutable map alongside the substitution:
+**Level storage and mutation.** Levels must be mutable during unification (Kiselyov's level lowering). Levels live entirely in `InferenceContext`, which is stored as `state.ctx`:
 
 ```rust
-pub struct InferState {
-    pub level: u32,          // current binding depth
-    pub levels: HashMap<String, u32>,  // var name → current level
-    pub subst: Substitution, // constraint accumulator; child frame per dict (T-926)
+pub struct InferenceContext {
+    pub current_level: u32,                                           // current binding depth
+    pub levels: HashMap<String, u32>,                                 // TypeVar name → current (possibly lowered) level
+    pub subst: HashMap<String, Arc<Value>>,                           // monotonic TypeVar → TypeValue binding
+    pub tycon_env: HashMap<String, Arc<TyConDef>>,                    // type constructor definitions for BAS variance
+    pub resolver_deferred: Vec<(Arc<Value>, Arc<Value>)>,             // deferred equality pairs for non-injective resolver FDs; drained by run_fd_improvement_fixpoint
+    gensym_counter: u64,                                              // private, for globally unique fresh names
 }
-// Note: InferState no longer contains name_counter.
-// The per-frame fresh-var counter lives in Substitution.name_counter (Cell<u32>)
-// so each dict's child substitution frame inherits the parent's current counter
-// value, ensuring globally unique TypeVar names across all frames (T-927, Barendregt).
 ```
 
-`InferState.subst` accumulates type-variable constraints from [DOT-VAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** rather than dropped, maintaining substitution composition soundness. After merging, Pass 3d writes the fully-merged local substitution back into `state.subst` so that subsequent dicts in the same document see the letrec bindings. See the Pass 3b merge algorithm in [DICT-GEN] below for the precise pseudocode.
+`InferenceContext.subst` is a monotonic binding map: once a TypeVar is bound, the binding is never removed or overwritten. Level lowering mutates `ctx.levels[name]` without touching `ctx.subst`. The level in `ctx.levels[name]` is the *current* (possibly lowered) level; it is this value that `generalize_tv` consults, not any level embedded in the TypeValue itself.
 
-When a `Var(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `Var(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
+`InferState.subst` and `InferState.levels` no longer exist as top-level fields — all substitution and level state is accessed via `state.ctx`.
+
+When a fresh TypeVar is created (`ctx.fresh_typevar(prefix)`), its name is registered in `ctx.levels` at the current level. During unification, level lowering mutates `ctx.levels[name]` without rebuilding the TypeValue. This matches the authoritative-level model from Kiselyov (2013): the level embedded at creation time is a lower bound; the authoritative current level is always in `ctx.levels`.
 
 **Level adjustment during unification (symmetric).** Both branches of type variable unification perform level lowering:
 
@@ -1118,29 +1123,25 @@ This ensures Unknown-touched variables are never generalized (since `ℓ(β) = 0
 generalize(ℓ, τ) = ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ     [GEN]
 ```
 
-where ℓ(α) is read from `InferState.levels[α]` (the current, possibly lowered level). Type variables whose level exceeds the enclosing scope's level are local to the binding and can be universally quantified. Variables at or below level ℓ are free in the enclosing scope and must remain monomorphic.
+where ℓ(α) is read from `ctx.levels[α]` (the current, possibly lowered level). Type variables whose level exceeds the enclosing scope's level are local to the binding and can be universally quantified. Variables at or below level ℓ are free in the enclosing scope and must remain monomorphic.
 
 Implementation signature:
 
 ```rust
-pub fn generalize(level: u32, ty: &Type, state: &InferState) -> TypeScheme
+pub fn generalize_tv(enclosing_level: u32, ty: &TypeValue, ctx: &InferenceContext) -> TypeValue
 ```
 
-Collects type variables from ty via level-aware traversal (collect_type_vars), filters by `current_level > level`, returns `TypeScheme { type_vars, doc: None, body: ty.clone() }`.
+Calls `ctx.free_vars(ty)` to collect unbound TypeVar names, filters by `ctx.get_level(name) > enclosing_level`, and returns a `TypeValue.Scheme` wrapping the original TypeValue. If no TypeVars are generalizable (monomorphic fast path), the original TypeValue is returned unchanged without wrapping. Located in `type_env.rs`.
 
 **[VAR-POLY] rule:** See §Inference Judgments: Γ ⊢ e ⇒ τ above. Variable references instantiate the type scheme stored in Γ at ℓ_current.
 
 Implementation signature:
 
 ```rust
-pub fn instantiate_scheme(
-    scheme: &TypeScheme,
-    level: u32,
-    state: &mut InferState,
-) -> Type
+pub fn instantiate_scheme_tv(scheme: &TypeValue, ctx: &mut InferenceContext, level: u32) -> Option<TypeValue>
 ```
 
-Creates fresh `Var(_tN, level)` for each quantified variable, registers them in `state.levels`, applies the renaming substitution to the scheme body.
+Matches `TypeValue.Scheme` by ctor, extracts the `vars` dict and `body` TypeValue synchronously via settled-thunk inspection, builds a renaming from var-name to `ctx.fresh_typevar()` at `level`, and applies it via `apply_typevalue_renaming`. Returns `None` if the scheme is malformed (wrong ctor, unsettled payload). Located in `type_env.rs`.
 
 **Modified dict inference (letrec with generalization):**
 
@@ -1150,7 +1151,7 @@ Pass 1 — Bind all (B-520):
          For each fn-form entry kᵢ (SurfaceExpression::Fn):
            αᵢ = Fn([fresh βⱼ for each param j], variadic) → fresh γᵢ  at level ℓ+1
            Recursive calls see a Function-shaped callee so the
-           Type::Function arm handles them without a return annotation.
+           TypeValue.Fn arm handles them without a return annotation.
            Variadic params get Dict(Uniform { value: fresh δ }) as βⱼ
            rather than a bare TypeVar, mirroring infer_fn's own binding.
          For each non-fn entry kⱼ:
@@ -1159,55 +1160,24 @@ Pass 1 — Bind all (B-520):
            unlike the previous Unknown which silently matched everything).
          Γ' = Γ, k₁:α₁, ..., kₙ:αₙ
 Pass 2 — Type aliases: unchanged. Aliases remain monomorphic
-         (IndexMap<String, Type>, not TypeScheme).
+         (IndexMap<String, TypeValue>, not a TypeValue.Scheme).
 Pass 3 — Infer values: at level ℓ+1, for each non-alias
          entry kᵢ, infer Γ' ⊢ eᵢ : τᵢ, then unify(αᵢ, τᵢ).
          Apply resulting substitution S.
-         
-         Implementation note: Pass 3 splits into sub-passes 3a/3b/3c/3d
-         to handle the two-substitution model (local + state.subst).
-         3a: clone state.subst → local subst;
-         3:  for each entry, infer value, unify αᵢ with inferred type into
-             local subst; on success, propagate all local subst bindings
-             into state.subst (per-entry) so that subsequent sibling
-             infer_expr calls can resolve forward-reference TypeVars bound
-             in earlier siblings — this is the mechanism that makes letrec
-             sibling cross-references work (e.g. `[a: "hi"  b: [length a]]`);
-         3b: merge state.subst updates → local subst (unify-based reconciliation);
-         3c: apply merged subst to all field types;
-         3d: merge local subst back into state.subst for subsequent dicts.
 
-         Pass 3b merge algorithm (Algorithm W substitution composition,
-         Damas & Milner 1982) — applied to type_map:
+         Implementation note: substitution is handled through `state.ctx: InferenceContext`.
+         `ctx.subst` is a monotonic map — bindings accumulate and are never removed. When
+         a TypeVar is unified with a TypeValue, `ctx.bind(name, val)` records the binding.
+         Forward-reference TypeVars from Pass 1 are resolved by `ctx.apply_subst()` when
+         their binding propagates from an earlier sibling. This is the mechanism that makes
+         letrec sibling cross-references work (e.g. `[a: "hi"  b: [length a]]`): `a`'s
+         TypeVar is bound during its own inference step; when `b` is inferred, `ctx.apply_subst`
+         chases the binding to the concrete String type.
 
-             for each (k, v) in state.subst.type_map:
-                 applied_v = local_subst.apply(v)
-                 if k ∈ local_subst.type_map:
-                     existing = local_subst.type_map[k]
-                     local_subst.type_map.remove(k)   // prevent apply() cycle k→existing→k
-                     if error e = unify(existing, applied_v, local_subst, state):
-                         errors.push(e)
-                         local_subst.type_map[k] = existing  // restore original on failure
-                         continue
-                     // Re-insert resolved binding so pass 3c can apply it.
-                     // (e.g. field_types["a"] = TypeVar(_tb) in [a: $b  b: 42]
-                     //  needs resolution via pass 3c's apply call)
-                     resolved = local_subst.apply(applied_v)
-                     local_subst.type_map[k] = resolved
-                 else:
-                     local_subst.type_map[k] = applied_v
-
-         The remove-before-unify step is required because `apply()` chases
-         bound variables transitively: if k is in the map during unify(),
-         apply() would chase k → existing → k in an infinite cycle.
-         Collision means two independent inference paths (access-chain and
-         letrec unification) each bound the same variable; unifying their
-         bindings reconciles the constraints correctly.
-         
-Pass 4 — Generalize (NEW): for each entry kᵢ,
-         σᵢ = generalize(ℓ, S(αᵢ), state)
+Pass 4 — Generalize: for each entry kᵢ,
+         σᵢ = generalize_tv(ℓ, ctx.apply_subst(αᵢ), ctx)
          Update Γ'(kᵢ) = σᵢ
-Build Record(k₁:S(α₁)...kₙ:S(αₙ), Closed).
+Build Record(k₁:ctx.apply_subst(α₁)...kₙ:ctx.apply_subst(αₙ), Closed).
 ────────────────────────────────── [DICT-GEN]
 ```
 
@@ -1217,7 +1187,7 @@ Non-Dict Record expressions at document boundaries follow the same level-increme
 Γ, ℓ ⊢ save ℓ_enc = ℓ; increment ℓ to ℓ+1
 Γ, ℓ+1 ⊢ e : Record(k₁:τ₁ … kₙ:τₙ, tail)
          restore ℓ to ℓ_enc
-         for each kᵢ: σᵢ = generalize(ℓ_enc, τᵢ, state)
+         for each kᵢ: σᵢ = generalize_tv(ℓ_enc, τᵢ, ctx)
          Γ' = Γ[k₁ ↦ σ₁, …, kₙ ↦ σₙ]
 ──────────────────────────────────────────── [NON-DICT-GEN]
 ```
@@ -1226,13 +1196,13 @@ This rule applies when `typecheck_document` processes a non-Dict expression (e.g
 
 The Record type uses monomorphic (substitution-applied) types for the type map and downstream structural checks. The type schemes σᵢ live in Γ and are instantiated at each reference via [VAR-POLY].
 
-**Level increments at document boundaries.** Each `infer_dict` call increments ℓ_current, and `typecheck_document` also increments ℓ_current before inferring any non-Dict expression at a document boundary (both last and non-last positions). For `[a: [b: 42]]`, the outer dict runs at ℓ+1 and the inner dict at ℓ+2. For a non-Dict Record expression at a document boundary, ℓ_current is incremented to ℓ+1 before inference and restored to ℓ afterward, following the same protocol as `infer_dict`. This matches standard HM let-nesting: each binding scope increments the level.
+**Level increments at document boundaries.** Each `infer_dict` call increments ℓ_current (via `ctx.current_level`), and `typecheck_document` also increments ℓ_current before inferring any non-Dict expression at a document boundary (both last and non-last positions). For `[a: [b: 42]]`, the outer dict runs at ℓ+1 and the inner dict at ℓ+2. For a non-Dict Record expression at a document boundary, ℓ_current is incremented to ℓ+1 before inference and restored to ℓ afterward, following the same protocol as `infer_dict`. This matches standard HM let-nesting: each binding scope increments the level.
 
-**Forward references within letrec.** Within a single dict (letrec group), all entries share level ℓ+1 during Pass 3 inference. Forward references see the monomorphic αᵢ from Pass 1 — these are fresh type variables that participate in unification, producing binding constraints. This is more precise than the previous behavior (binding to `Any`): forward references now produce real type constraints rather than silently succeeding. After Pass 4, downstream consumers of the dict see polymorphic schemes.
+**Forward references within letrec.** Within a single dict (letrec group), all entries share level ℓ+1 during Pass 3 inference. Forward references see the monomorphic αᵢ from Pass 1 — these are fresh TypeVars that participate in unification via `ctx.subst`, producing binding constraints. After Pass 4, downstream consumers of the dict see polymorphic schemes.
 
 Mutually recursive entries constrain each other through unification during Pass 3. This is standard monomorphic letrec (OCaml, Haskell `let rec`) — entries see each other as monomorphic during inference, not polymorphic. Polymorphic recursion (Mycroft 1984) is not supported: it would require fixpoint iteration to convergence, which is more complex and can diverge. The monomorphic restriction is sufficient for tinct's use cases.
 
-**Document-level scheme threading.** `typecheck_document` splats dict Record fields into the parent environment for downstream document expressions. To preserve polymorphism across `---` boundaries, the splat must carry type schemes alongside the Record type. Implementation: `infer_dict` returns both the `Record` type (for structural checks) and a `HashMap<String, TypeScheme>` (for environment threading). `typecheck_document` inserts the schemes into the parent `TypeEnv`.
+**Document-level scheme threading.** `typecheck_document` splats dict Record fields into the parent environment for downstream document expressions. To preserve polymorphism across `---` boundaries, schemes are stored in `Env` slots as `EnvSlot.scheme: Option<TypeValue>`. `typecheck_document` inserts these into the parent `Env` so downstream document expressions see polymorphic types via `Env.get_scheme()`.
 
 **Interaction with `Unknown` and unannotated parameters:**
 
@@ -1243,13 +1213,13 @@ Mutually recursive entries constrain each other through unification during Pass 
 
 **Interaction with CALL-POLY.** When a call expression targets a `VarRef`, the inference engine inspects the scheme directly before any instantiation. This determines the routing:
 
-- **Polymorphic scheme** (has quantified `type_vars`): routes to `check_call_with_scheme`, which calls `instantiate_scheme` once to produce a function type with fresh `_tN` variables at ℓ_current. It then checks `has_inference_vars()` on the *post-instantiation* type: if all variables were resolved (fully concrete), it takes the CALL-MONO path (bidirectional checking via `check_expr`); if type variables remain, it takes the CALL-POLY path (synthesize arguments, unify, apply substitution to return type). This avoids double instantiation — without this optimization, VAR-POLY would instantiate the scheme at the reference site, producing `_tN` variables, and then CALL-POLY's `instantiate_at_level` would freshen those into yet more `_tM` variables.
-- **Monomorphic scheme** (no quantified vars): routes to `check_call`, which infers the function expression normally. Since the scheme has no quantified variables, no instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
+- **Polymorphic scheme** (`TypeValue.Scheme` with a non-empty `vars` dict): routes to `check_call_with_scheme`, which calls `instantiate_scheme_tv` once to produce a function TypeValue with fresh TypeVars at ℓ_current. It then checks whether inference variables remain in the post-instantiation type: if all variables were resolved (fully concrete), it takes the CALL-MONO path (bidirectional checking via `check_expr`); if TypeVars remain, it takes the CALL-POLY path (synthesize arguments, unify, apply substitution to return type). This avoids double instantiation.
+- **Monomorphic binding** (bare TypeValue, no `TypeValue.Scheme` wrapper): routes to `check_call`, which infers the function expression normally. No instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
 - **Non-VarRef function expressions** (e.g., inline lambdas): always route to `check_call`.
 
-**Substitution name uniqueness.** `Substitution::type_map` is keyed by variable name, routing type variable bindings. User-annotated type variables (e.g., `@a`) are mapped to fresh `_tN` names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different `_tN` than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same `_tN` variable (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeScheme`s, `instantiate_scheme()` renames the quantified variables to fresh `_tM` names at each call site, preventing cross-call-site interference.
+**Substitution name uniqueness.** `ctx.subst` is keyed by TypeVar name. User-annotated type variables (e.g., `@a`) are mapped to fresh names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different name than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same TypeVar (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeValue.Scheme` values, `instantiate_scheme_tv` renames the quantified variables to fresh names at each call site, preventing cross-call-site interference.
 
-**Error recovery.** If Pass 3 inference fails for an entry, `Type::Unknown` is inserted for that entry (matching current behavior). Level lowering from partial unification before the failure is retained in `InferState.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries get `TypeScheme::mono(Type::Unknown)`.
+**Error recovery.** If Pass 3 inference fails for an entry, `TypeValue.Unknown` is used for that entry. Level lowering from partial unification before the failure is retained in `ctx.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries use the bare `TypeValue.Unknown` without a scheme wrapper.
 
 **Key invariants:**
 
@@ -1259,31 +1229,26 @@ Mutually recursive entries constrain each other through unification during Pass 
 4. **Occurs check:** Unchanged — prevents infinite types regardless of levels.
 5. **Substitution idempotence:** Unchanged — transitive chasing is orthogonal to levels.
 6. **Letrec monomorphism during inference:** Within a letrec group, entries see each other as monomorphic during Pass 3 (fresh type variables, not schemes). Polymorphism only becomes visible after Pass 4 generalization.
-7. **PartialEq level-blindness:** `Var` equality ignores levels, preserving [U-REFL] semantics. Levels are consulted only during generalization (via `InferState.levels`).
+7. **TypeVar equality:** `TypeValue.Var` equality is by name (the `name` field in the payload dict). Levels are consulted only during generalization (via `ctx.levels`) — they are not compared for equality.
 
 **Key implementation types:**
 
 | Component | Specification |
 |-----------|--------------|
-| `Type::Var` | `Var(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
-| `TypeEnv.bindings` | `HashMap<String, TypeScheme>` |
-| `TypeEnv.tycon_defs` | `HashMap<String, Arc<TyConDef>>` — unified type declaration store; replaces old `type_aliases`. `Arc` wrapping enables pointer-identity checks in UNIFY-TYCON (B-343, implemented in S-856). |
-| `TypeEnv::get()` | Returns `&TypeScheme` |
-| `TypeEnv::insert_scheme()` | `fn(name, TypeScheme)` |
-| `infer_expr` VAR case | `instantiate_scheme(env.get(name)?, ...)` |
-| `infer_dict` | 5 passes (0-4), bind to fresh αᵢ, generalize in Pass 4 |
-| `infer_dict` return | `(Type, HashMap<String, TypeScheme>)` |
-| `typecheck_document` | Splats `TypeScheme`s into parent env across `---` boundaries |
-| `instantiate()` | `fn(Type, &mut u32) → (Type, Subst)` — `#[cfg(test)]` only; not used in production |
-| `instantiate_at_level()` | `fn(Type, &mut InferState) → Type` — live CALL-POLY implementation; registers fresh vars in `state.levels` |
-| `instantiate_scheme()` | `fn(TypeScheme, u32, &mut InferState) → Type` |
-| `generalize()` | `fn(u32, Type, &InferState) → TypeScheme` |
-| `unify()` U-VAR | Bind + symmetric level lowering |
-| `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
-| `InferState` | `{ level: u32, levels: HashMap<String, u32>, subst: Substitution }` (name_counter moved to `Substitution.name_counter: Cell<u32>`, T-927) |
-| `InferState.subst` | Accumulates constraints from [DOT-VAR]; merged into letrec substitution in Pass 3b |
-| `collect_type_vars()` | Uses `walk_type` + TypeVar tag predicate — no explicit TypeVar match arm; TypeVar nodes are found automatically since they are TypeNode values. Reads level from `state.levels[name]` (not the TypeNode `level` payload field). |
-| `Type::Display` | Shows `TypeVar` name only (level hidden) |
+| `TypeValue.Var` | `Variant { ctor: "TypeValue.Var", payload: { name: String } }` — level stored in `ctx.levels`, not in the value |
+| `EnvSlot.scheme` | `Option<TypeValue>` — `None` for monomorphic, `Some(TypeValue.Scheme {...})` for polymorphic |
+| `TyConEnv.tycon_defs` | `HashMap<String, Arc<TyConDef>>` — unified type declaration store; `Arc` wrapping enables pointer-identity checks in UNIFY-TYCON |
+| `Env::get_scheme()` | Returns `Option<TypeValue>` — the stored scheme (if any) |
+| `Env::insert_scheme()` | `fn(name, Option<TypeValue>)` |
+| `infer_expr` VAR case | `instantiate_scheme_tv(env.get_scheme(name)?, &mut state.ctx, state.ctx.current_level)` |
+| `infer_dict` | Passes 0–4: key resolution, placeholder binding, type-alias pass, value inference+unify, generalize |
+| `typecheck_document` | Splats `EnvSlot.scheme` values into parent env across `---` boundaries |
+| `instantiate_scheme_tv()` | `fn(scheme: &TypeValue, ctx: &mut InferenceContext, level: u32) -> Option<TypeValue>` — `type_env.rs` |
+| `generalize_tv()` | `fn(enclosing_level: u32, ty: &TypeValue, ctx: &InferenceContext) -> TypeValue` — `type_env.rs` |
+| `constrain()` U-VAR | Bind via `ctx.bind()` + symmetric level lowering via `ctx.lower_var_level()` |
+| `constrain()` U-ANY + TypeVar | Level set to 0 via `ctx.lower_var_level(name, 0)` to prevent generalization |
+| `InferenceContext` | `{ current_level: u32, levels: HashMap<String, u32>, subst: HashMap<String, Arc<Value>>, tycon_env: HashMap<String, Arc<TyConDef>>, resolver_deferred: Vec<(Arc<Value>, Arc<Value>)>, gensym_counter: u64 }` — in `type_infer.rs` |
+| `ctx.free_vars()` | Collects unbound TypeVar names from a TypeValue; walks settled Dict payloads recursively |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).
 
@@ -1297,14 +1262,14 @@ Tinct implements **constrained type variables** to provide precise types for ove
 
 ### Constraint Representation
 
-A **constraint** is a pair `(class, var)` where `class` is the type class name (e.g., `"Equatable"`) and `var` is the type variable name (e.g., `"a"`). Type schemes carry constraints alongside quantified variables:
+A **constraint** is a `ConstraintDecl` TypeValue (Arc<Value>) where the payload specifies the type class name (e.g., `"Equatable"`) and the type variable name (e.g., `"a"`). Type schemes (TypeValue.Scheme) carry constraints alongside quantified variables:
 
 ```text
-TypeScheme {
+TypeValue.Scheme {
     type_vars: Vec<String>,
-    constraints: Vec<Constraint>,    // constraints on quantified variables
+    constraints: Vec<Arc<Value>>,    // ConstraintDecl entries (Arc<Value>)
     doc: Option<String>,
-    body: Type,
+    body: Arc<Value>,                // the type body as TypeValue
 }
 ```
 
@@ -1369,7 +1334,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
    scheme: Numeric a => a → a → a
    instantiate → fresh var _t0, constraint Numeric _t0
    result: Fn@_t0 [_t0 _t0]
-   state.constraints += Constraint { class: "Numeric", var: "_t0" }
+   state.constraints += ConstraintDecl { class: "Numeric", var: "_t0" }  (Arc<Value>)
    ```
 
 3. **Constraint checking** (`unify`): When binding a type variable α to a concrete type τ (U-VAR-LEVEL arm), check all constraints on α:
@@ -1387,7 +1352,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
    → TypeError: type Fn@Integer [Integer] does not satisfy constraint Numeric
    ```
 
-4. **Generalization** (`generalize`): Constraints on generalized variables are included in the resulting TypeScheme:
+4. **Generalization** (`generalize`): Constraints on generalized variables are included in the resulting TypeValue.Scheme:
 
    ```text
    state.constraints: [Numeric _t0, Castable String _t1]
@@ -1445,7 +1410,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 Tinct's MPTC/FD system is grounded in **Constraint Handling Rules** (CHRs, Sulzmann et al. 2007), which unify functional dependencies (propagation rules `==>`) and type-stage functions (simplification rules `<=>`). The central mechanism is `normalize()`, called before every `unify` step.
 
-**`Type::StageApp` — lazy type-stage application.** When FD improvement fires and the determining positions are not yet ground, the type checker produces `TypeStageApp { fn_name, args }` rather than calling the resolver eagerly. `normalize()` reduces it to a concrete type when args become ground. When any determining position is `Unknown`, the result is `Unknown` directly (not deferred indefinitely).
+**`TypeValue.StageApp` — lazy type-stage application.** When FD improvement fires and the determining positions are not yet ground, the type checker produces `TypeStageApp { fn_name, args }` rather than calling the resolver eagerly. `normalize()` reduces it to a concrete type when args become ground. When any determining position is `Unknown`, the result is `Unknown` directly (not deferred indefinitely).
 
 **`NormCtxt` — normalization context.** `normalize()` takes a `NormCtxt` carrying everything needed for a complete reduction pass: the current substitution chain (`subst`), the type-stage environment for calling resolver functions (`type_stage_env`), the alias table (`alias_env`), the current depth and max depth for the step limit, and the in-progress resolver call stack for cycle detection (`call_stack`). A normalization cache (`resolver_cache`) memoizes ground-arg results — same inputs always produce the same output under resolver purity. A fresh `NormCtxt` is constructed from the current `InferState` before every `unify` call.
 
@@ -1492,12 +1457,12 @@ See `doc/feature/chr-unification.md` for the complete formal specification inclu
 
 ### Nested Dict Polymorphism
 
-When a dict literal is bound by name (e.g., `helpers: [id: [fn [x] x] ...]`), the dict's generalized entry schemes are stored in the binding's `TypeScheme` as `inner_schemes: Option<HashMap<String, TypeScheme>>`. Dot-access on a `VarRef` target retrieves the scheme and instantiates it via `[VAR-POLY]`:
+When a dict literal is bound by name (e.g., `helpers: [id: [fn [x] x] ...]`), each entry in the dict is individually generalized at the dict boundary. The outer binding stores a `TypeValue.Scheme` whose `body` is a `TypeValue.Record` with field types that are themselves `TypeValue.Scheme` values. Dot-access on a `VarRef` target retrieves the field's scheme from the body record and instantiates it via `instantiate_scheme_tv`:
 
 ```text
-Γ(d) = TypeScheme { body: Record(...), inner_schemes: Some(inner) }
-inner(f) = ∀α₁...αₙ[C₁...Cₙ]. τ_f
-τ' = instantiate_scheme(inner(f), ℓ_current)
+Γ(d) = TypeValue.Scheme { vars: ..., constraints: ..., body: Record(fields) }
+fields(f) = TypeValue.Scheme { vars: α₁...αₙ, constraints: ..., body: τ_f }
+τ' = instantiate_scheme_tv(fields(f), ℓ_current)
 ──────────────────────────────────────── [DOT-POLY]
 Γ ⊢ d.f : τ'
 ```
@@ -1527,10 +1492,10 @@ The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kin
 
 ### Type Constructor Application
 
-Two new `Type` variants:
+Two TypeValue variants for higher-kinded types:
 
-- `Type::App(Box<Type>, Box<Type>)` — type constructor applied to an argument: `App(Result, Int)` is `Result Int`
-- `Type::Operator(String)` — a type constructor variable: `Operator("m")` for a Monad variable `m`
+- `TypeValue.App` (TV_APP) — type constructor applied to an argument: `App(Result, Int)` is `Result Int`
+- `TypeValue.Op` (TV_OP) — a type constructor variable: `Operator("m")` for a Monad variable `m`
 
 In annotation positions, `[f a]` (no colons) is type constructor application when `f` is Operator-kinded or a user type alias. `@[m a]` applies constructor `m` to argument `a`.
 
@@ -1700,7 +1665,7 @@ HasField l ⊤ Unknown                            for BAS-collapsed disjoint-fie
 HasField l Unknown Unknown                      gradual typing fallback
 ```
 
-**Label TypeVars** are introduced by Label annotations (`key@Label` for anonymous or `key@[label: l]` for named) and tracked in `kind_env` with `Kind::Label`. They are generalized into `TypeScheme.label_vars` and re-registered at call sites.
+**Label TypeVars** are introduced by Label annotations (`key@Label` for anonymous or `key@[label: l]` for named) and tracked in `kind_env` as label-kinded TypeVars. They are generalized into the `vars` dict of the enclosing `TypeValue.Scheme` (with a label kind stored in their `VarDecl`) and re-instantiated at call sites via `instantiate_scheme_tv`.
 
 **Union distribution** is the key BAS contribution — `get "port" (A | B)` returns `A.port | B.port`, not `Unknown`.
 
@@ -1712,7 +1677,7 @@ BAS operates on types of kind `*`. With HKT:
 - **Covariant functorial subtyping:** `a <: b` implies `App(f, a) <: App(f, b)` for covariant functors (all stdlib Functor instances)
 - **Join (one-directional):** `App(m, a) | App(m, b) <: App(m, a | b)` — the reverse is unsound for diagonal functors
 
-`Kind::Label` vars are phantom indices — they do not introduce BAS lattice atoms. `HasField` constraints are resolved eagerly before BAS normalization to prevent S-RcdTop from collapsing union dict types to ⊤.
+Label-kinded TypeVars are phantom indices — they do not introduce BAS lattice atoms. `HasField` constraints are resolved eagerly before BAS normalization to prevent S-RcdTop from collapsing union dict types to ⊤.
 
 **References:** Jones, M.P. (1993). "A system of constructor classes." Jones, M.P. (1994). "Qualified types." Gaster, B.R. & Jones, M.P. (1996). "A polymorphic type system for extensible records." Castagna, G. (2023). "Typing records, maps, and structs." ICFP.
 
@@ -1749,7 +1714,7 @@ For each param (name, Kind::Operator) in ClassDecl.params:
 
 ### KIND-OPERATOR — Type Constructor Application
 
-Type constructor application `[f a]` (no colons) resolves to `Type::App(Operator(f), a)` when `f` is Operator-kinded in `kind_env`. This check occurs before the union type path to prevent `[m Int]` from being parsed as `Union(Operator("m"), Int)`.
+Type constructor application `[f a]` (no colons) resolves to `TypeValue.App(Operator(f), a)` when `f` is Operator-kinded in `kind_env`. This check occurs before the union type path to prevent `[m Int]` from being parsed as `Union(Operator("m"), Int)`.
 
 ```text
 resolve_type_expr([f a], env, state, ...) where all_positional ∧ len = 2:
@@ -1798,18 +1763,18 @@ UNIFY-APP:
 Constraints are generated when a constrained type scheme is instantiated at a call site. Each constraint in the scheme is copied with renamed type variables.
 
 ```text
-instantiate_scheme(σ, ℓ_current, state) where σ = ∀(α₁...αₙ). [C₁ a₁, ...] τ:
+instantiate_scheme_tv(σ, ℓ_current, state) where σ = ∀(α₁...αₙ). [C₁ a₁, ...] τ:
   For each αᵢ: fresh_var ← TypeVar(_tN, ℓ_current)
                S[αᵢ ↦ fresh_var]
-               state.levels[_tN] ← ℓ_current
+               ctx.levels[_tN] ← ℓ_current
   For each constraint Cᵢ aᵢ in σ.constraints:
-      state.constraints.push(Constraint { class: Cᵢ, var: S(aᵢ) })
+      state.constraints.push(ConstraintDecl { class: Cᵢ, var: S(aᵢ) })  (Arc<Value>)
   return S(τ)
 ```
 
 **Example:** Instantiating `Numeric a => Fn@a [a a]` produces a fresh `_t0`, constraint `Numeric _t0`, and type `Fn@_t0 [_t0 _t0]`.
 
-**Implementation:** `src/types.rs:instantiate_scheme`. Constraints are stored in `InferState.constraints: Vec<Constraint>` and checked during unification.
+**Implementation:** `src/type_infer.rs:instantiate_scheme_tv`. Constraints are stored in `InferState.constraints: Vec<Arc<Value>>` (ConstraintDecl entries) and checked during unification.
 
 ### Entailment — Constraint Checking
 
@@ -1845,9 +1810,9 @@ InstanceDecl {
 InstanceEnv.instances[(C, T)] ← decl
 ```
 
-**Implementation:** `src/typecheck.rs:1882-1952`. Instance methods are inferred as ordinary expressions; their types are stored in `InstanceDecl.method_types: HashMap<String, Type>`.
+**Implementation:** `src/typecheck.rs:1882-1952`. Instance methods are inferred as ordinary expressions; their types are stored in `InstanceDecl.method_types: HashMap<String, Arc<Value>>`.
 
-**Superclass method inheritance:** Instance declarations may use `extends` to declare superclass relationships (`[class [Monad m@Operator] extends [Applicative m] ...]`). The `Monad` instance implicitly carries `bind` plus inherited `pure`, `lift2`, and `fmap` from the Applicative and Functor instances. The ClassEnv stores superclass chains (`ClassDecl.superclasses: Vec<Constraint>`); instance resolution follows the chain to retrieve inherited methods.
+**Superclass method inheritance:** Instance declarations may use `extends` to declare superclass relationships (`[class [Monad m@Operator] extends [Applicative m] ...]`). The `Monad` instance implicitly carries `bind` plus inherited `pure`, `lift2`, and `fmap` from the Applicative and Functor instances. The ClassEnv stores superclass chains (`ClassDecl.superclasses: Vec<Arc<Value>>` ConstraintDecl entries); instance resolution follows the chain to retrieve inherited methods.
 
 ### Parameterized Instance Head Resolution
 

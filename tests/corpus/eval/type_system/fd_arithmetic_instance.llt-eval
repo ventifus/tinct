@@ -1,0 +1,7 @@
+# Functional dependency satisfaction (instance-based): Addable determines result type.
+# fn@Integer on [+ n n] matches the FD-inferred type — no overbroad-annotation expected.
+# Without FD improvement, the body infers as Unknown and the annotation triggers a warning.
+[double: [fn@Integer [let n@Integer] [+ n n]]]
+[double 5]
+=== out
+Int(10)

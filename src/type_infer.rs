@@ -1,284 +1,1558 @@
-//! Type inference machinery: InferState, Substitution, generalization, instantiation.
+//! Type inference machinery: InferenceContext, InferState, generalization.
 //!
 //! This module contains the core type inference infrastructure including
-//! substitution and levels-based let-generalization (Kiselyov 2013).
+//! the InferenceContext (TypeValue substitution, levels-based let-generalization,
+//! Kiselyov 2013) used throughout the S-1003 Arc<Value> migration.
+//!
+//! NOTE: The `Substitution` and `TypeScheme` structs were deleted as part of S-1003 T-2004.
+//! The `Type` enum was deleted from `type_def.rs` in T-1986.
+//! Type representations now use `Arc<Value>` (TypeValue) throughout.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::Span;
-use crate::types::{Constraint, Kind, Row, RowTail, Type};
+use crate::type_tags::*;
+// TypeValue is the canonical Arc<Value> alias for tinct-side type representations.
+// The definition lives in type_class.rs — re-export it here so callers can import
+// TypeValue from type_infer without reaching into type_class directly.
+pub use crate::type_class::TypeValue;
+
+// ── TypeValue helper functions ────────────────────────────────────────────────
+
+/// Create a TypeValue.Var Arc<Value> with the given name.
+///
+/// The level is NOT stored in the TypeValue — register it in `InferenceContext.levels`
+/// separately. TypeValue.Var carries identity only (the variable's name).
+pub fn make_typevar_value(name: &str) -> TypeValue {
+    // Payload: a settled Dict with { name: String }
+    let payload = make_dict_typevalue(&[(FIELD_NAME, make_string_typevalue(name))]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_VAR),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Unknown Arc<Value> (the gradual `?` escape hatch).
+pub fn make_typevalue_unknown() -> TypeValue {
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_UNKNOWN),
+        payload: None,
+    })
+}
+
+/// Create a TypeValue.Never Arc<Value> (the bottom type ⊥).
+pub fn make_typevalue_never() -> TypeValue {
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_NEVER),
+        payload: None,
+    })
+}
+
+/// Create a TypeValue.Top Arc<Value> (the top type ⊤).
+pub fn make_typevalue_top() -> TypeValue {
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_TOP),
+        payload: None,
+    })
+}
+
+/// Create a TypeValue.Repr Arc<Value> for a primitive type.
+///
+/// `repr` is the Rust variant discriminant string, e.g. `"Value::Int"`, `"Value::Float"`.
+/// The `is` field is left as an empty dict (no typeclass instance attached at construction time).
+pub fn make_typevalue_repr(repr: &str) -> TypeValue {
+    // Payload: { repr: String, is: [] }
+    let payload = make_dict_typevalue(&[
+        (FIELD_REPR, make_string_typevalue(repr)),
+        (FIELD_IS, make_empty_dict_typevalue()),
+    ]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_REPR),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.IntLit Arc<Value> for an integer literal type.
+pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
+    let payload = make_dict_typevalue(&[(
+        FIELD_VALUE,
+        crate::value::Value::Int {
+            n,
+            type_val: crate::value::unknown_type_val(),
+        },
+    )]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_INT_LIT),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.StrLit Arc<Value> for a string literal type.
+pub fn make_typevalue_str_lit(s: &str) -> TypeValue {
+    let payload = make_dict_typevalue(&[(FIELD_VALUE, make_string_typevalue(s))]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_STR_LIT),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.FloatLit Arc<Value> for a float literal type.
+pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
+    let payload = make_dict_typevalue(&[(
+        FIELD_VALUE,
+        crate::value::Value::Float {
+            n: f,
+            type_val: crate::value::unknown_type_val(),
+        },
+    )]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_FLOAT_LIT),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Op Arc<Value> for a type constructor name.
+pub fn make_typevalue_op(name: &str) -> TypeValue {
+    let payload = make_dict_typevalue(&[(FIELD_NAME, make_string_typevalue(name))]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_OP),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Var Arc<Value> — alias for `make_typevar_value`.
+pub fn make_typevalue_var(name: &str) -> TypeValue {
+    make_typevar_value(name)
+}
+
+/// Create a TypeValue.Fn Arc<Value> for a function type.
+///
+/// `params`: list of `(param_name_opt, TypeValue)` pairs for fixed parameters.
+/// `ret`: the return TypeValue.
+pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue)>, ret: TypeValue) -> TypeValue {
+    make_typevalue_fn_with_flags(params, ret, false)
+}
+
+/// Create a TypeValue.Fn with variadic flag and param names stored in the payload.
+///
+/// This is the full-fidelity version of `make_typevalue_fn` that stores:
+/// - `params`: integer-keyed dict of param types
+/// - `param-names`: integer-keyed dict of param names (when names are available)
+/// - `variadic`: "true" Variant if variadic, absent if not
+/// - `return`: the return type
+pub fn make_typevalue_fn_with_flags(
+    params: Vec<(Option<String>, TypeValue)>,
+    ret: TypeValue,
+    variadic: bool,
+) -> TypeValue {
+    use crate::value::HashableValue;
+    // Build params dict: { 0: TypeValue, 1: TypeValue, ... }
+    let mut params_entries = indexmap::IndexMap::new();
+    let mut names_entries = indexmap::IndexMap::new();
+    for (i, (name, param_tv)) in params.iter().enumerate() {
+        params_entries.insert(
+            HashableValue::Int(i as i64),
+            Arc::new(crate::value::Thunk::value(
+                param_tv.as_ref().clone(),
+                crate::rust_span!(),
+            )),
+        );
+        if let Some(ref n) = name {
+            names_entries.insert(
+                HashableValue::Int(i as i64),
+                Arc::new(crate::value::Thunk::value(
+                    make_string_typevalue(n),
+                    crate::rust_span!(),
+                )),
+            );
+        }
+        // Unnamed params (name=None) are left absent in names_entries so that
+        // typevalue_fn_param_names returns None for that index. Named-arg matching
+        // must not treat an index string ("0", "1") as an identifier name.
+    }
+    let params_dict = crate::value::Value::Dict {
+        entries: params_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    let param_names_dict = crate::value::Value::Dict {
+        entries: names_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    let mut payload_entries = indexmap::IndexMap::new();
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_PARAMS)),
+        Arc::new(crate::value::Thunk::value(params_dict, crate::rust_span!())),
+    );
+    // Store param-names dict: only named params have entries. Unnamed params (name=None)
+    // are absent from the dict so that typevalue_fn_param_names returns None for those
+    // indices, preventing false named-arg matches against index strings ("0", "1").
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_PARAM_NAMES)),
+        Arc::new(crate::value::Thunk::value(
+            param_names_dict,
+            crate::rust_span!(),
+        )),
+    );
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_RETURN)),
+        Arc::new(crate::value::Thunk::value(
+            ret.as_ref().clone(),
+            crate::rust_span!(),
+        )),
+    );
+    if variadic {
+        // Store "variadic: true" as a unit Variant with ctor BOOL_TRUE ("true").
+        let true_variant = crate::value::Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(BOOL_TRUE),
+            payload: None,
+        };
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_VARIADIC)),
+            Arc::new(crate::value::Thunk::value(
+                true_variant,
+                crate::rust_span!(),
+            )),
+        );
+    }
+    let payload_dict = crate::value::Value::Dict {
+        entries: payload_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_FN),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload_dict,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a RowTail.Closed Arc<Value> — the tail for a closed (fully-specified) record.
+pub fn make_rowtail_closed() -> TypeValue {
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(RT_CLOSED),
+        payload: None,
+    })
+}
+
+/// Create a RowTail.Uniform Arc<Value> — the tail for an open record where all additional
+/// fields share the given `value_type`. Pass `make_typevalue_top()` for "any field value".
+pub fn make_rowtail_uniform(value_type: TypeValue) -> TypeValue {
+    let payload =
+        make_dict_typevalue_from_value(&[(RT_FIELD_VALUE_TYPE, value_type.as_ref().clone())]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(RT_UNIFORM),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Record Arc<Value> for a record/dict type.
+///
+/// `fields`: map of field name → TypeValue for the known fields.
+/// `tail`: the row tail — must be a RowTail Variant constructed by `make_rowtail_*`:
+///   - `None` → closed record (RowTail.Closed, no additional fields allowed)
+///   - `Some(make_rowtail_closed())` → explicit closed record (equivalent to None)
+///   - `Some(make_rowtail_uniform(value_type))` → open record; all extra fields have `value_type`
+///
+/// IMPORTANT: Do NOT pass a raw TypeValue (e.g., TypeValue.Top) as the tail — `bas.rs`
+/// dispatch expects a RowTail Variant. Raw TypeValues in the tail field will fall through
+/// to the "closed" branch in `is_record_subtype`, silently producing incorrect subtype checks.
+pub fn make_typevalue_record(
+    fields: indexmap::IndexMap<String, TypeValue>,
+    tail: Option<TypeValue>,
+) -> TypeValue {
+    use crate::value::HashableValue;
+    // Build fields dict
+    let mut fields_entries = indexmap::IndexMap::new();
+    for (name, tv) in fields {
+        fields_entries.insert(
+            HashableValue::Str(Arc::from(name.as_str())),
+            Arc::new(crate::value::Thunk::value(
+                tv.as_ref().clone(),
+                crate::rust_span!(),
+            )),
+        );
+    }
+    let fields_dict = crate::value::Value::Dict {
+        entries: fields_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    // Build tail: None (closed) → RowTail.Closed variant
+    let tail_val = match tail {
+        Some(t) => t.as_ref().clone(),
+        None => make_rowtail_closed().as_ref().clone(),
+    };
+    let mut payload_entries = indexmap::IndexMap::new();
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_FIELDS)),
+        Arc::new(crate::value::Thunk::value(fields_dict, crate::rust_span!())),
+    );
+    payload_entries.insert(
+        HashableValue::Str(Arc::from(FIELD_TAIL)),
+        Arc::new(crate::value::Thunk::value(tail_val, crate::rust_span!())),
+    );
+    let payload_dict = crate::value::Value::Dict {
+        entries: payload_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_RECORD),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload_dict,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Union Arc<Value> for a union of types.
+///
+/// Members are ordered positionally (0, 1, 2, ...) in the payload dict.
+pub fn make_typevalue_union(members: Vec<TypeValue>) -> TypeValue {
+    use crate::value::HashableValue;
+    let mut members_entries = indexmap::IndexMap::new();
+    for (i, tv) in members.iter().enumerate() {
+        members_entries.insert(
+            HashableValue::Int(i as i64),
+            Arc::new(crate::value::Thunk::value(
+                tv.as_ref().clone(),
+                crate::rust_span!(),
+            )),
+        );
+    }
+    let members_dict = crate::value::Value::Dict {
+        entries: members_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_UNION),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Inter Arc<Value> for an intersection of types.
+pub fn make_typevalue_intersection(members: Vec<TypeValue>) -> TypeValue {
+    use crate::value::HashableValue;
+    let mut members_entries = indexmap::IndexMap::new();
+    for (i, tv) in members.iter().enumerate() {
+        members_entries.insert(
+            HashableValue::Int(i as i64),
+            Arc::new(crate::value::Thunk::value(
+                tv.as_ref().clone(),
+                crate::rust_span!(),
+            )),
+        );
+    }
+    let members_dict = crate::value::Value::Dict {
+        entries: members_entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_INTER),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Neg Arc<Value> for a negation type.
+pub fn make_typevalue_negation(inner: TypeValue) -> TypeValue {
+    let payload = make_dict_typevalue_from_value(&[(FIELD_OF, inner.as_ref().clone())]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_NEG),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.App Arc<Value> for a type application.
+pub fn make_typevalue_app(op: TypeValue, arg: TypeValue) -> TypeValue {
+    let payload = make_dict_typevalue_from_value(&[
+        (FIELD_OP, op.as_ref().clone()),
+        (FIELD_ARG, arg.as_ref().clone()),
+    ]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_APP),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.NominalVariant Arc<Value> for a nominal variant type.
+///
+/// `tycon`: the type constructor name string.
+/// `ctor`: the constructor tag string (qualified, e.g., "Color.Red").
+/// `fields`: a TypeValue.Record or empty dict for unit constructors.
+pub fn make_typevalue_nominal_variant(tycon: &str, ctor: &str, fields: TypeValue) -> TypeValue {
+    let payload = make_dict_typevalue_from_value(&[
+        (FIELD_TYCON, make_string_typevalue(tycon)),
+        (FIELD_CTOR, make_string_typevalue(ctor)),
+        (FIELD_FIELDS, fields.as_ref().clone()),
+    ]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_NOMINAL_VARIANT),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.Recursive Arc<Value> for a recursive type (de Bruijn).
+///
+/// De Bruijn contract: the `body` must use `TypeValue.RecursiveRef { depth: 0 }` (created by
+/// `make_typevalue_recursive_ref(0)`) wherever the type self-refers. Do NOT use a TypeValue.Var
+/// for the self-reference — Recursive types are de Bruijn indexed, not name-bound. A free TypeVar
+/// in `body` will remain unbound by this constructor, producing a type with a dangling variable
+/// rather than the intended equirecursive self-reference.
+///
+/// For nested Recursive types (μ inside μ), the inner Recursive's body uses depth=0 for its own
+/// binder and depth=1 (or higher) to refer to the outer binder. `substitute_recursive_ref` handles
+/// de Bruijn shifting correctly when unfolding nested types.
+///
+/// **Exception**: `typecheck_annot.rs` uses `TypeValue.Var` for the bound variable name during
+/// initial alias expansion (before the alias body is fully constructed). The Var is replaced by
+/// `TypeValue.RecursiveRef { depth: 0 }` by `substitute_rec_ref` after the body is materialized.
+/// This is the only permitted use of `TypeValue.Var` inside a Recursive body; all other callers
+/// must satisfy the de Bruijn contract above.
+pub fn make_typevalue_recursive(body: TypeValue) -> TypeValue {
+    let payload = make_dict_typevalue_from_value(&[(FIELD_BODY, body.as_ref().clone())]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_RECURSIVE),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Create a TypeValue.RecursiveRef Arc<Value> for a de Bruijn depth reference within a Recursive type.
+/// `depth = 0` refers to the immediately enclosing TypeValue.Recursive binder.
+#[cfg(test)]
+pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
+    use crate::value::HashableValue;
+    let mut entries = indexmap::IndexMap::new();
+    entries.insert(
+        HashableValue::Str(Arc::from(FIELD_DEPTH)),
+        Arc::new(crate::value::Thunk::value(
+            crate::value::Value::Int {
+                n: depth,
+                type_val: crate::value::unknown_type_val(),
+            },
+            crate::rust_span!(),
+        )),
+    );
+    let payload = crate::value::Value::Dict {
+        entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_RECURSIVE_REF),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Normalize a union: flatten nested unions and deduplicate.
+/// If members is empty, returns TypeValue.Never.
+/// If members has one element, returns that element.
+/// Otherwise wraps in TypeValue.Union.
+pub fn typevalue_normalize_union(mut members: Vec<TypeValue>) -> TypeValue {
+    // Flatten nested unions
+    let mut flat: Vec<TypeValue> = Vec::with_capacity(members.len());
+    while let Some(m) = members.pop() {
+        if let Some(TV_UNION) = typevalue_ctor(&m) {
+            // Flatten — extract members from payload dict
+            if let Some(inner) = typevalue_extract_list_members(&m) {
+                for im in inner {
+                    flat.push(im);
+                }
+            } else {
+                flat.push(m);
+            }
+        } else {
+            flat.push(m);
+        }
+    }
+    flat.reverse();
+    // Deduplicate by structural equality (ptr_eq fast path, then typevalue_eq for unit
+    // variants, TypeValue.Var by name, TypeValue.Repr by repr string).
+    let mut deduped: Vec<TypeValue> = Vec::new();
+    for tv in flat {
+        if !deduped.iter().any(|existing| typevalue_eq(existing, &tv)) {
+            deduped.push(tv);
+        }
+    }
+    match deduped.len() {
+        0 => make_typevalue_never(),
+        1 => deduped.into_iter().next().unwrap(),
+        _ => make_typevalue_union(deduped),
+    }
+}
+
+/// Normalize an intersection: flatten nested intersections and deduplicate.
+/// If members is empty, returns TypeValue.Top.
+/// If members has one element, returns that element.
+/// Otherwise wraps in TypeValue.Inter.
+pub fn typevalue_normalize_intersection(mut members: Vec<TypeValue>) -> TypeValue {
+    let mut flat: Vec<TypeValue> = Vec::with_capacity(members.len());
+    while let Some(m) = members.pop() {
+        if let Some(TV_INTER) = typevalue_ctor(&m) {
+            if let Some(inner) = typevalue_extract_list_members(&m) {
+                for im in inner {
+                    flat.push(im);
+                }
+            } else {
+                flat.push(m);
+            }
+        } else {
+            flat.push(m);
+        }
+    }
+    flat.reverse();
+    // Deduplicate by structural equality (ptr_eq fast path, then typevalue_eq for unit
+    // variants, TypeValue.Var by name, TypeValue.Repr by repr string).
+    let mut deduped: Vec<TypeValue> = Vec::new();
+    for tv in flat {
+        if !deduped.iter().any(|existing| typevalue_eq(existing, &tv)) {
+            deduped.push(tv);
+        }
+    }
+    match deduped.len() {
+        0 => make_typevalue_top(),
+        1 => deduped.into_iter().next().unwrap(),
+        _ => make_typevalue_intersection(deduped),
+    }
+}
+
+/// Extract field name → TypeValue pairs from a TypeValue.Record payload.
+/// Returns an empty IndexMap if the payload cannot be read.
+pub fn typevalue_record_fields_pub(tv: &TypeValue) -> indexmap::IndexMap<String, TypeValue> {
+    use crate::value::HashableValue;
+    let mut result = indexmap::IndexMap::new();
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_RECORD => thunk,
+        _ => return result,
+    };
+    let fields_thunk = match payload_thunk.peek_result() {
+        Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+            let key = HashableValue::Str(Arc::from(FIELD_FIELDS));
+            match entries.get(&key) {
+                Some(t) => t.clone(),
+                None => return result,
+            }
+        }
+        _ => return result,
+    };
+    match fields_thunk.peek_result() {
+        Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+            for (k, v_thunk) in entries.iter() {
+                if let HashableValue::Str(name) = k {
+                    if let Some(Ok(val)) = v_thunk.peek_result() {
+                        result.insert(name.as_ref().to_string(), Arc::new(val.clone()));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    result
+}
+
+/// Extract the params and return TypeValues from a TypeValue.Fn payload.
+/// Returns `None` if the TypeValue is not a settled TypeValue.Fn.
+/// The params are returned as `Vec<TypeValue>` (positional, in dict key order).
+pub fn typevalue_fn_params_and_ret(tv: &TypeValue) -> Option<(Vec<TypeValue>, TypeValue)> {
+    use crate::value::HashableValue;
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_FN => thunk,
+        _ => return None,
+    };
+    match payload_thunk.peek_result()? {
+        Ok(crate::value::Value::Dict { entries, .. }) => {
+            let params_key = HashableValue::Str(Arc::from(FIELD_PARAMS));
+            let ret_key = HashableValue::Str(Arc::from(FIELD_RETURN));
+            let params_thunk = entries.get(&params_key)?;
+            let ret_thunk = entries.get(&ret_key)?;
+            let params: Vec<TypeValue> = match params_thunk.peek_result()? {
+                Ok(crate::value::Value::Dict {
+                    entries: params_entries,
+                    ..
+                }) => {
+                    let mut result = Vec::new();
+                    for i in 0..params_entries.len() {
+                        let key = HashableValue::Int(i as i64);
+                        if let Some(p_thunk) = params_entries.get(&key) {
+                            if let Some(Ok(pv)) = p_thunk.peek_result() {
+                                result.push(Arc::new(pv.clone()));
+                            }
+                        }
+                    }
+                    result
+                }
+                _ => Vec::new(),
+            };
+            let ret: TypeValue = match ret_thunk.peek_result()? {
+                Ok(rv) => Arc::new(rv.clone()),
+                _ => return None,
+            };
+            Some((params, ret))
+        }
+        _ => None,
+    }
+}
+
+/// Public version of `typevalue_extract_list_members` for use by typecheck_cek.rs.
+/// Extracts the members list from a TypeValue.Union or TypeValue.Inter payload.
+pub fn typevalue_extract_members_pub(tv: &TypeValue) -> Option<Vec<TypeValue>> {
+    typevalue_extract_list_members(tv)
+}
+
+/// Extract optional param names from a TypeValue.Fn payload.
+///
+/// TypeValue.Fn stores param names under the "param-names" key (a Dict with Int keys
+/// mapping to String values). Only named params have entries; unnamed params are absent.
+/// Returns a Vec of length `count` where each position is `Some(name)` for named params
+/// and `None` for unnamed params. Returns a vec of `None`s of length `count` if the
+/// "param-names" key is absent (TypeValue.Fn without name storage).
+///
+/// The `count` parameter must equal the number of positional params extracted from the
+/// same TypeValue.Fn — callers derive it from `typevalue_fn_params_and_ret`.
+pub fn typevalue_fn_param_names(tv: &TypeValue, count: usize) -> Vec<Option<String>> {
+    use crate::value::HashableValue;
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_FN => thunk,
+        _ => return vec![None; count],
+    };
+    let payload_val = match payload_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        _ => return vec![None; count],
+    };
+    let entries = match payload_val {
+        crate::value::Value::Dict { entries, .. } => entries,
+        _ => return vec![None; count],
+    };
+    let names_key = HashableValue::Str(Arc::from(FIELD_PARAM_NAMES));
+    let names_thunk = match entries.get(&names_key) {
+        Some(t) => t,
+        None => return vec![None; count],
+    };
+    let names_entries = match names_thunk.peek_result() {
+        Some(Ok(crate::value::Value::Dict { entries, .. })) => entries,
+        _ => return vec![None; count],
+    };
+    // Iterate all indices up to `count`, returning None for absent (unnamed) params.
+    // We do NOT stop at the first gap — unnamed params may appear at any position.
+    (0..count as i64)
+        .map(|i| {
+            let key = HashableValue::Int(i);
+            match names_entries.get(&key) {
+                Some(thunk) => match thunk.peek_result() {
+                    Some(Ok(crate::value::Value::String {
+                        source, start, end, ..
+                    })) => Some(source[*start..*end].to_string()),
+                    _ => None,
+                },
+                None => None,
+            }
+        })
+        .collect()
+}
+
+/// Check if a TypeValue.Fn is variadic (has the "variadic" field set to "true").
+///
+/// Returns false if the "variadic" key is absent (non-variadic function) or if the
+/// TypeValue is not a TypeValue.Fn.
+pub fn typevalue_fn_is_variadic(tv: &TypeValue) -> bool {
+    use crate::value::HashableValue;
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_FN => thunk,
+        _ => return false,
+    };
+    let payload_val = match payload_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        _ => return false,
+    };
+    let entries = match payload_val {
+        crate::value::Value::Dict { entries, .. } => entries,
+        _ => return false,
+    };
+    let key = HashableValue::Str(Arc::from(FIELD_VARIADIC));
+    match entries.get(&key).and_then(|t| t.peek_result()) {
+        Some(Ok(crate::value::Value::Variant { ctor, .. })) => ctor.as_ref() == BOOL_TRUE,
+        _ => false,
+    }
+}
+
+/// Extract list members from a TypeValue.Union or TypeValue.Inter payload.
+/// Returns None if the payload is not a settled dict with integer-keyed entries.
+fn typevalue_extract_list_members(tv: &TypeValue) -> Option<Vec<TypeValue>> {
+    use crate::value::HashableValue;
+    match tv.as_ref() {
+        crate::value::Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => {
+            match thunk.peek_result()? {
+                Ok(crate::value::Value::Dict { entries, .. }) => {
+                    // Look for "members" key
+                    let members_key = HashableValue::Str(Arc::from(FIELD_MEMBERS));
+                    let members_thunk = entries.get(&members_key)?;
+                    match members_thunk.peek_result()? {
+                        Ok(crate::value::Value::Dict {
+                            entries: members_entries,
+                            ..
+                        }) => {
+                            // Mirror bas.rs::payload_members: sort by integer key to
+                            // guarantee numeric order regardless of IndexMap insertion order.
+                            let mut indexed: Vec<(i64, Arc<crate::value::Value>)> = Vec::new();
+                            for (k, v_thunk) in members_entries.iter() {
+                                if let HashableValue::Int(idx) = k {
+                                    if let Some(Ok(v)) = v_thunk.peek_result() {
+                                        indexed.push((*idx, Arc::new(v.clone())));
+                                    }
+                                }
+                            }
+                            indexed.sort_by_key(|(i, _)| *i);
+                            Some(indexed.into_iter().map(|(_, v)| v).collect())
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+// ── Private Value construction helpers ───────────────────────────────────────
+
+/// Construct a `Value::Dict` from a slice of `(key, Value)` pairs where Values are already built.
+fn make_dict_typevalue_from_value(fields: &[(&str, crate::value::Value)]) -> crate::value::Value {
+    use crate::value::HashableValue;
+    let mut entries = indexmap::IndexMap::new();
+    for (key, val) in fields {
+        entries.insert(
+            HashableValue::Str(Arc::from(*key)),
+            Arc::new(crate::value::Thunk::value(val.clone(), crate::rust_span!())),
+        );
+    }
+    crate::value::Value::Dict {
+        entries,
+        type_val: crate::value::unknown_type_val(),
+    }
+}
+
+/// Construct a `Value::String` from a Rust `&str`.
+fn make_string_typevalue(s: &str) -> crate::value::Value {
+    crate::value::Value::String {
+        source: Arc::from(s),
+        start: 0,
+        end: s.len(),
+        type_val: crate::value::unknown_type_val(),
+    }
+}
+
+/// Construct an empty `Value::Dict` for use as a TypeValue field.
+fn make_empty_dict_typevalue() -> crate::value::Value {
+    crate::value::Value::Dict {
+        entries: indexmap::IndexMap::new(),
+        type_val: crate::value::unknown_type_val(),
+    }
+}
+
+/// Construct a `Value::Dict` from a slice of `(key, value)` pairs.
+///
+/// Keys are string keys; values are already-constructed `Value` objects that will be
+/// wrapped in settled thunks.
+fn make_dict_typevalue(fields: &[(&str, crate::value::Value)]) -> crate::value::Value {
+    use crate::value::HashableValue;
+    let mut entries = indexmap::IndexMap::new();
+    for (key, val) in fields {
+        entries.insert(
+            HashableValue::Str(Arc::from(*key)),
+            Arc::new(crate::value::Thunk::value(val.clone(), crate::rust_span!())),
+        );
+    }
+    crate::value::Value::Dict {
+        entries,
+        type_val: crate::value::unknown_type_val(),
+    }
+}
+
+// ── TypeValue inspection helpers ─────────────────────────────────────────────
+
+/// Check if an `Arc<Value>` is a `TypeValue.Var` and return its name.
+///
+/// Returns `None` if the value is not a TypeValue.Var or if the name payload
+/// cannot be read synchronously (thunk not yet settled).
+pub fn typevalue_var_name(v: &TypeValue) -> Option<String> {
+    match v.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_VAR => {
+            // Inspect the settled payload dict to extract `name`.
+            // peek_result returns Option<Result<&Value, &Arc<EvalError>>>.
+            match thunk.peek_result() {
+                Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+                    let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
+                    let name_thunk = entries.get(&key)?;
+                    match name_thunk.peek_result()? {
+                        Ok(crate::value::Value::String {
+                            source, start, end, ..
+                        }) => Some(source[*start..*end].to_string()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a single named field from a TypeValue variant's payload dict.
+///
+/// Returns `None` if the TypeValue has no payload, if the payload is not a settled dict,
+/// or if the named field is absent.
+pub fn typevalue_payload_field(tv: &TypeValue, field: &str) -> Option<TypeValue> {
+    match tv.as_ref() {
+        crate::value::Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let key = crate::value::HashableValue::Str(Arc::from(field));
+                let field_thunk = entries.get(&key)?;
+                match field_thunk.peek_result()? {
+                    Ok(v) => Some(Arc::new(v.clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Check if a TypeValue is a TypeValue.Op (type operator/constructor name).
+pub fn typevalue_is_op(v: &TypeValue) -> bool {
+    typevalue_ctor(v) == Some(TV_OP)
+}
+
+/// Return the constructor tag string of a TypeValue.
+///
+/// Returns `None` if the value is not a `Value::Variant`.
+/// Delegates to `crate::type_class::typevalue_ctor` — canonical implementation lives there.
+pub fn typevalue_ctor(v: &TypeValue) -> Option<&str> {
+    crate::type_class::typevalue_ctor(v)
+}
+
+/// Extract the `name` string from a TypeValue.Op payload.
+/// Returns None if not a TypeValue.Op or payload cannot be read.
+pub fn typevalue_op_name(v: &TypeValue) -> Option<String> {
+    if typevalue_ctor(v) != Some(TV_OP) {
+        return None;
+    }
+    match v.as_ref() {
+        crate::value::Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
+                let name_thunk = entries.get(&key)?;
+                match name_thunk.peek_result()? {
+                    Ok(crate::value::Value::String {
+                        source, start, end, ..
+                    }) => Some(source[*start..*end].to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract (tycon, ctor) strings from a TypeValue.NominalVariant payload.
+/// Returns None if not a NominalVariant or payload unreadable.
+pub fn typevalue_nominal_variant_tag(v: &TypeValue) -> Option<(String, String)> {
+    if typevalue_ctor(v) != Some(TV_NOMINAL_VARIANT) {
+        return None;
+    }
+    match v.as_ref() {
+        crate::value::Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let tycon_key = crate::value::HashableValue::Str(Arc::from(FIELD_TYCON));
+                let ctor_key = crate::value::HashableValue::Str(Arc::from(FIELD_CTOR));
+                // Use ? to propagate None (missing or non-string field) instead of
+                // silently defaulting to empty string.
+                let tycon_str = entries.get(&tycon_key).and_then(|t| {
+                    match t.peek_result()? {
+                        Ok(crate::value::Value::String {
+                            source, start, end, ..
+                        }) => Some(source[*start..*end].to_string()),
+                        Ok(_) => None, // unexpected type
+                        Err(e) => panic!(
+                            "invariant: TypeValue.NominalVariant tycon thunk has error: {}",
+                            e
+                        ),
+                    }
+                })?;
+                let ctor_str = entries.get(&ctor_key).and_then(|t| {
+                    match t.peek_result()? {
+                        Ok(crate::value::Value::String {
+                            source, start, end, ..
+                        }) => Some(source[*start..*end].to_string()),
+                        Ok(_) => None, // unexpected type
+                        Err(e) => panic!(
+                            "invariant: TypeValue.NominalVariant ctor thunk has error: {}",
+                            e
+                        ),
+                    }
+                })?;
+                Some((tycon_str, ctor_str))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Check if a TypeValue.NominalVariant has a non-empty fields record.
+pub fn typevalue_nominal_variant_has_fields(v: &TypeValue) -> bool {
+    if typevalue_ctor(v) != Some(TV_NOMINAL_VARIANT) {
+        return false;
+    }
+    match v.as_ref() {
+        crate::value::Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result() {
+            Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+                let fields_key = crate::value::HashableValue::Str(Arc::from(FIELD_FIELDS));
+                if let Some(fields_thunk) = entries.get(&fields_key) {
+                    match fields_thunk.peek_result() {
+                        Some(Ok(crate::value::Value::Dict {
+                            entries: f_entries, ..
+                        })) => !f_entries.is_empty(),
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Check structural equality of two TypeValues.
+///
+/// Uses pointer equality as a fast path. For unit variants (no payload), equality
+/// is determined by constructor tag. For `TypeValue.Var`, equality is by name.
+/// For TypeValue.Repr, equality is by repr string.
+/// For all other variants, this is conservative: falls back to pointer equality
+/// (no thunk forcing — structural walking would require async).
+///
+/// Available in production (not test-only) so normalize_union/intersection can use it
+/// for structural deduplication.
+pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
+    // Fast path: same Arc<Value> pointer — definitionally equal.
+    if Arc::ptr_eq(a, b) {
+        return true;
+    }
+    match (a.as_ref(), b.as_ref()) {
+        // Unit variants: no payload — equality by constructor tag.
+        (
+            crate::value::Value::Variant {
+                ctor: ca,
+                payload: None,
+                ..
+            },
+            crate::value::Value::Variant {
+                ctor: cb,
+                payload: None,
+                ..
+            },
+        ) => ca.as_ref() == cb.as_ref(),
+        // TypeValue.Var: equality by name.
+        (
+            crate::value::Value::Variant {
+                ctor: ca,
+                payload: Some(_),
+                ..
+            },
+            crate::value::Value::Variant {
+                ctor: cb,
+                payload: Some(_),
+                ..
+            },
+        ) if ca.as_ref() == TV_VAR && cb.as_ref() == TV_VAR => {
+            typevalue_var_name(a) == typevalue_var_name(b)
+        }
+        // TypeValue.Repr: equality by repr string.
+        (
+            crate::value::Value::Variant {
+                ctor: ca,
+                payload: Some(pa),
+                ..
+            },
+            crate::value::Value::Variant {
+                ctor: cb,
+                payload: Some(pb),
+                ..
+            },
+        ) if ca.as_ref() == TV_REPR && cb.as_ref() == TV_REPR => {
+            // Extract repr string from each payload dict.
+            let repr_str = |thunk: &crate::value::Thunk| -> Option<String> {
+                if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
+                    let key = crate::value::HashableValue::Str(Arc::from(FIELD_REPR));
+                    if let Some(Ok(crate::value::Value::String {
+                        source, start, end, ..
+                    })) = entries.get(&key).and_then(|t| t.peek_result())
+                    {
+                        return Some(source[*start..*end].to_string());
+                    }
+                }
+                None
+            };
+            repr_str(pa) == repr_str(pb)
+        }
+        // Conservative: all other variants use pointer equality (already checked above).
+        _ => false,
+    }
+}
+
+// ── InferenceContext ─────────────────────────────────────────────────────────
+
+/// Monotonic inference context for TypeValue-based type inference (S-1003 migration).
+///
+/// This is the replacement for `Substitution` (TypeVar → TypeValue bindings) and the
+/// `levels` field in `InferState` (TypeVar creation-time levels). It is designed to
+/// coexist with the Type-enum-based `InferState` during the incremental migration.
+///
+/// ## Monotonicity invariant
+/// `bind()` enforces that each TypeVar is bound at most once — bindings are monotonic.
+/// Once a TypeVar is bound, its binding never changes. This is the Robinson unification
+/// invariant: each unification step either fails (occurs check) or adds exactly one new binding.
+///
+/// ## Level semantics (Kiselyov 2013)
+/// TypeValue.Var does NOT carry a level (unlike `Type::Var(name, level)`). Levels live
+/// in `self.levels: HashMap<VarName, u32>`. Level lowering mutates context entries rather
+/// than TypeValues — Arc<Value> is stable and immutable. This is the key architectural
+/// difference from the old Type-enum approach.
+///
+/// ## Access control
+/// - Static type-checker holds `&mut InferenceContext` during inference passes (mutable).
+/// - At runtime (read-only), wrap in `Arc<InferenceContext>` to prevent mutation.
+#[derive(Debug, Clone)]
+pub struct InferenceContext {
+    /// Current binding level. Increased when entering a let-binding's RHS, decreased
+    /// when leaving. Used by `fresh_typevar()` to set the creation-time level.
+    pub current_level: u32,
+    /// TypeVar name → creation-time level. This is the authoritative source for level
+    /// lookups. Mutated by level lowering, NOT by TypeValue objects themselves.
+    pub levels: HashMap<String, u32>,
+    /// TypeVar name → TypeValue binding. Monotonic: each name appears at most once.
+    /// Query via `lookup(name)`. Bind via `bind(name, ty)`.
+    /// Restricted to `pub(crate)` to enforce the monotonicity invariant — all insertions
+    /// must go through `bind()`, which checks for double-binding. Direct field assignment
+    /// is only permitted via `restore_subst()`, which is a whole-substitution rollback
+    /// (save/restore pattern, not a monotonic insertion).
+    pub(crate) subst: HashMap<String, TypeValue>,
+    /// Monotonic counter for fresh TypeVar name generation.
+    /// Incremented by `fresh_typevar()`. Never decremented.
+    gensym_counter: u64,
+    /// Type constructor environment: name → TyConDef.
+    /// Used by BAS subtyping to look up variance annotations for type constructor applications.
+    /// Optional: callers that don't need TyCon variance can leave this empty.
+    pub tycon_env: HashMap<String, Arc<crate::type_def::TyConDef>>,
+    /// Deferred equality pairs for non-injective resolver FDs.
+    ///
+    /// Added by `unify()` when two `TV_APP(F, ...)` nodes with non-injective F are compared.
+    /// Equal outputs don't imply equal inputs for non-injective F, so pairwise unification
+    /// of args is unsound. Instead the pair is queued here.
+    ///
+    /// Drained by `run_fd_improvement_fixpoint` after each constraint push:
+    /// - Apply substitution to both sides.
+    /// - If both are ground (no free TypeVars), unify them directly.
+    /// - Otherwise, put back (retry next fixpoint iteration).
+    pub resolver_deferred: Vec<(Arc<crate::value::Value>, Arc<crate::value::Value>)>,
+    /// Directional lower bounds accumulated by `constrain(sub, α)`.
+    ///
+    /// When `constrain(sub, α)` is called and α is a free TypeVar, `sub` is pushed here
+    /// rather than binding α = sub via equality. This preserves directionality:
+    /// "sub <: α" means α must be AT LEAST as general as sub. Multiple lower bounds from
+    /// different call sites widen α rather than conflict.
+    ///
+    /// At bound resolution time (generalization or explicit solve), α is bound to the
+    /// JOIN of all its lower bounds (computed via `typevalue_normalize_union`). This is
+    /// sound because JOIN(lbs) is the least type that all lower bounds are subtypes of.
+    ///
+    /// When `constrain(α, sup)` fires (α is the sub), α is bound to `sup` as an upper
+    /// bound. Any existing lower bounds for α are checked: each `lb <: sup` must hold.
+    pub lower_bounds: HashMap<String, Vec<TypeValue>>,
+}
+
+impl InferenceContext {
+    /// Create a new empty InferenceContext at level 0.
+    pub fn new() -> Self {
+        Self {
+            current_level: 0,
+            levels: HashMap::new(),
+            subst: HashMap::new(),
+            gensym_counter: 0,
+            tycon_env: HashMap::new(),
+            resolver_deferred: Vec::new(),
+            lower_bounds: HashMap::new(),
+        }
+    }
+
+    /// Create an InferenceContext seeded with a TyConEnv.
+    ///
+    /// Used by callers (e.g., eval.rs) that need BAS subtyping with variance information
+    /// but do not have an active inference session (no live TypeVars or substitution).
+    pub fn with_tycon_env(tycon_env: HashMap<String, Arc<crate::type_def::TyConDef>>) -> Self {
+        Self {
+            current_level: 0,
+            levels: HashMap::new(),
+            subst: HashMap::new(),
+            gensym_counter: 0,
+            tycon_env,
+            resolver_deferred: Vec::new(),
+            lower_bounds: HashMap::new(),
+        }
+    }
+
+    /// Create an InferenceContext from explicit substitution/level/tycon_env components.
+    ///
+    /// Used by callers that need a snapshot of a live inference session's state for
+    /// a read-only check (e.g., BAS subtyping inside typecheck_cek.rs). The `gensym_counter`
+    /// is initialized to 0 — callers using this context for read-only checks never call
+    /// `fresh_typevar()`, so the counter value is irrelevant.
+    pub fn from_snapshot(
+        subst: HashMap<String, TypeValue>,
+        levels: HashMap<String, u32>,
+        current_level: u32,
+        tycon_env: HashMap<String, Arc<crate::type_def::TyConDef>>,
+    ) -> Self {
+        Self {
+            current_level,
+            levels,
+            subst,
+            gensym_counter: 0,
+            tycon_env,
+            resolver_deferred: Vec::new(),
+            lower_bounds: HashMap::new(),
+        }
+    }
+
+    /// Bind a TypeVar name to a TypeValue.
+    ///
+    /// Enforces monotonicity: returns `Err` if the variable is already bound.
+    /// Callers discovering a conflict during unification should emit a type error
+    /// diagnostic rather than overwriting.
+    pub fn bind(
+        &mut self,
+        name: String,
+        val: TypeValue,
+    ) -> Result<(), crate::error::TypeDiagnostic> {
+        if self.subst.contains_key(&name) {
+            return Err(crate::error::TypeDiagnostic::error(
+                "inference-internal",
+                format!(
+                    "type variable '{}' bound twice — monotonicity invariant violated",
+                    name
+                ),
+                crate::ast::Span::rust_source(file!(), line!()),
+            ));
+        }
+        self.subst.insert(name, val);
+        Ok(())
+    }
+
+    /// Create a fresh TypeValue.Var at the current level.
+    ///
+    /// The level is recorded in `self.levels` before the TypeValue is returned.
+    /// `prefix` is a human-readable prefix used in diagnostic messages.
+    pub fn fresh_typevar(&mut self, prefix: &str) -> TypeValue {
+        let name = format!("{}__{}", prefix, self.gensym_counter);
+        self.gensym_counter += 1;
+        // Register the creation-time level BEFORE returning the TypeValue.
+        self.levels.insert(name.clone(), self.current_level);
+        make_typevar_value(&name)
+    }
+
+    /// Lower the level of a TypeVar to at most `max_level`.
+    ///
+    /// Used by the Kiselyov (2013) level-lowering algorithm: when TypeVar α at level ℓα
+    /// is unified with TypeVar β at level ℓβ where ℓβ < ℓα, α must be lowered to ℓβ to
+    /// prevent unsound generalization. This mutates `self.levels` — TypeValue.Var is stable.
+    pub fn lower_var_level(&mut self, name: &str, max_level: u32) {
+        if let Some(level) = self.levels.get_mut(name) {
+            if *level > max_level {
+                *level = max_level;
+            }
+        }
+    }
+
+    /// Get the level of a TypeVar, or 0 if not registered.
+    ///
+    /// Level 0 is the safe default for unregistered names (e.g., μ-binder variables in
+    /// recursive types, which are not inference TypeVars).
+    pub fn get_level(&self, name: &str) -> u32 {
+        self.levels.get(name).copied().unwrap_or(0)
+    }
+
+    /// Record a lower bound for a free TypeVar.
+    ///
+    /// Called by `constrain(sub, α)` when α is free. Instead of binding α = sub via
+    /// equality (which would be unsound for directional subtype constraints), the lower
+    /// bound is accumulated here. Multiple lower bounds are widened at solve time via
+    /// `resolve_lower_bounds()`.
+    pub fn add_lower_bound(&mut self, name: &str, ty: TypeValue) {
+        self.lower_bounds
+            .entry(name.to_string())
+            .or_default()
+            .push(ty);
+    }
+
+    /// Drain and return all accumulated lower bounds for a TypeVar.
+    ///
+    /// Used when binding α from an upper-bound constraint (`constrain(α, sup)`): the
+    /// caller verifies each lower bound satisfies `lb <: sup`. Also used by
+    /// `resolve_lower_bounds()` to compute the JOIN.
+    pub fn take_lower_bounds(&mut self, name: &str) -> Vec<TypeValue> {
+        self.lower_bounds.remove(name).unwrap_or_default()
+    }
+
+    /// Walk a TypeValue and apply the current substitution, resolving bound TypeVars.
+    ///
+    /// Follows TypeVar binding chains to fixpoint (cycle-safe via a visited set).
+    /// Unit variants and non-Var variants are returned as-is (via Arc::clone).
+    ///
+    /// NOTE: Does NOT recursively walk complex variant payloads (which are async thunks).
+    /// This resolves the top-level TypeVar chain only. Full structural apply requires
+    /// forcing thunks asynchronously.
+    pub fn apply_subst(&self, ty: &TypeValue) -> TypeValue {
+        self.apply_subst_inner(ty, &mut HashSet::new())
+    }
+
+    fn apply_subst_inner(&self, ty: &TypeValue, visited: &mut HashSet<String>) -> TypeValue {
+        if let Some(name) = typevalue_var_name(ty) {
+            if visited.contains(&name) {
+                // Cycle detected — return the TypeVar itself.
+                return Arc::clone(ty);
+            }
+            if let Some(bound) = self.subst.get(&name) {
+                visited.insert(name);
+                return self.apply_subst_inner(bound, visited);
+            }
+        }
+        Arc::clone(ty)
+    }
+
+    /// Collect all free TypeVar names directly reachable from a TypeValue.
+    ///
+    /// "Free" means the TypeVar has no binding in `self.subst`. Follows binding chains
+    /// for bound TypeVars. Inspects settled dict payloads recursively for TypeValue-shaped
+    /// fields. Non-settled thunks are treated as opaque.
+    pub fn free_vars(&self, ty: &TypeValue) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        self.collect_free_vars_inner(ty, &mut result, &mut visited);
+        result
+    }
+
+    fn collect_free_vars_inner(
+        &self,
+        ty: &TypeValue,
+        result: &mut Vec<String>,
+        visited: &mut HashSet<String>,
+    ) {
+        match ty.as_ref() {
+            crate::value::Value::Variant { ctor, payload, .. } => {
+                match ctor.as_ref() {
+                    TV_VAR => {
+                        if let Some(name) = typevalue_var_name(ty) {
+                            if visited.insert(name.clone()) {
+                                if let Some(bound) = self.subst.get(&name) {
+                                    self.collect_free_vars_inner(bound, result, visited);
+                                } else {
+                                    result.push(name);
+                                }
+                            }
+                        }
+                    }
+                    // Leaf/opaque variants — no TypeVar positions inside.
+                    // TV_PHANTOM: zero-payload unit constructor.
+                    // TV_RECURSIVE_REF: payload { depth: Integer } — no TypeVar positions.
+                    // TV_ERROR: Rust-internal sentinel; never contains inference vars.
+                    // TV_STAGE_APP: deferred computation sentinel; payload fields are not TypeVar containers.
+                    TV_UNKNOWN | TV_NEVER | TV_TOP | TV_REPR | TV_INT_LIT | TV_FLOAT_LIT
+                    | TV_STR_LIT | TV_OP | TV_PHANTOM | TV_RECURSIVE_REF | TV_ERROR
+                    | TV_STAGE_APP => {}
+                    _ => {
+                        // Structural variants: inspect settled payload dicts.
+                        // TypeValue payloads are Dicts whose values are either TypeValues
+                        // (Variant) or nested Dicts of TypeValues (e.g., Record.fields,
+                        // Union.members, Fn.params). We recurse into both layers.
+                        if let Some(thunk) = payload {
+                            if let Some(Ok(crate::value::Value::Dict { entries, .. })) =
+                                thunk.peek_result()
+                            {
+                                for (_key, val_thunk) in entries.iter() {
+                                    if let Some(Ok(val)) = val_thunk.peek_result() {
+                                        match val {
+                                            crate::value::Value::Variant { .. } => {
+                                                // Direct TypeValue field (e.g., Fn.return).
+                                                let val_arc: TypeValue = Arc::new(val.clone());
+                                                self.collect_free_vars_inner(
+                                                    &val_arc, result, visited,
+                                                );
+                                            }
+                                            crate::value::Value::Dict {
+                                                entries: inner_entries,
+                                                ..
+                                            } => {
+                                                // Nested Dict of TypeValues (e.g., Record.fields,
+                                                // Union.members, Fn.params). Recurse into its values.
+                                                for (_inner_key, inner_thunk) in
+                                                    inner_entries.iter()
+                                                {
+                                                    if let Some(Ok(inner_val)) =
+                                                        inner_thunk.peek_result()
+                                                    {
+                                                        if matches!(
+                                                            inner_val,
+                                                            crate::value::Value::Variant { .. }
+                                                        ) {
+                                                            let inner_arc: TypeValue =
+                                                                Arc::new(inner_val.clone());
+                                                            self.collect_free_vars_inner(
+                                                                &inner_arc, result, visited,
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Look up a TypeVar binding by name (test helper).
+    ///
+    /// Returns `Some(TypeValue)` if the variable is bound in the substitution, `None` otherwise.
+    /// Production code should use `apply_subst` which follows chains to fixpoint.
+    #[cfg(test)]
+    pub fn lookup(&self, name: &str) -> Option<TypeValue> {
+        self.subst.get(name).cloned()
+    }
+}
+
+impl Default for InferenceContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Return `true` if `tv` contains any free (unbound) TypeVar under `ctx`'s substitution.
+///
+/// Uses the same shallow walk as `InferenceContext::free_vars` — follows the top-level
+/// TypeVar chain and inspects settled payload dicts one level deep.
+/// A TypeValue is "ground" (concrete, no free TypeVars) when this returns `false`.
+///
+/// Used by `run_fd_improvement_fixpoint` to decide whether a deferred resolver equality
+/// is ready to be unified: unification proceeds only when both sides are ground.
+pub fn has_free_type_vars_ctx(tv: &Arc<crate::value::Value>, ctx: &InferenceContext) -> bool {
+    !ctx.free_vars(tv).is_empty()
+}
 
 /// A deferred typeclass dispatch: connects a constraint TypeVar to the call-site VarRef.
 /// When check_constraints_on_var resolves the TypeVar to a concrete type, it uses this to
 /// set call_dispatch on the VarRef with the resolved VarAddr (via debruijn_to_var_addr).
 #[derive(Clone, Debug)]
 pub struct DispatchObligation {
-    /// The TypeVar name (at a determining position) that must resolve before dispatch fires.
-    pub typevar_name: String,
     /// The call-site VarRef node. call_dispatch.set() is called on this.
     pub varref_node: std::sync::Arc<crate::ast::SurfaceNode>,
     /// Class name (e.g., "Addable")
     pub class_name: String,
     /// Method name (e.g., "+")
     pub method_name: String,
-    /// Instantiated constraint vars (all positions). Applied with state.subst at resolution time.
-    pub constraint_vars: Vec<crate::type_class::ConstraintArg>,
-    /// Determining positions from the class's functional dependency.
-    /// For single-param classes with no FD: use vec![0] (all positions are determining).
-    pub det_positions: Vec<usize>,
 }
 
-/// All per-TypeVar metadata in one place.
-/// IndexMap preserves insertion order (= TypeVar creation order via monotonic counter),
-/// giving deterministic iteration across runs -- unlike HashMap which has random seeds.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypeVarEntry {
-    /// Creation-time level (previously in InferState.levels).
-    pub level: u32,
-    /// Current binding (previously in Substitution.type_map). None = still free.
-    pub binding: Option<Type>,
-    /// Kind of this TypeVar (previously in InferState.kind_env).
-    pub kind: Kind,
-}
-
-impl TypeVarEntry {
-    /// Create a new unbound TypeVar entry with the given level and kind.
-    pub fn blank(level: u32, kind: Kind) -> Self {
-        Self {
-            level,
-            binding: None,
-            kind,
-        }
-    }
-}
-
-/// Finite substitution: maps TypeVar names to replacement types.
-/// Used by `instantiate_scheme` to rename quantified variables to fresh names.
-/// The `type_map` is interior-mutable so the renaming can be built incrementally
-/// and passed by shared reference to the `apply` method.
-#[derive(Debug, Clone)]
-pub struct Substitution {
-    pub type_map: RefCell<HashMap<String, Type>>,
-}
-
-impl Substitution {
-    pub fn new() -> Self {
-        Self {
-            type_map: RefCell::new(HashMap::new()),
-        }
-    }
-
-    /// Apply this substitution to a type, replacing free TypeVars named in `type_map`.
-    /// Recurses structurally. Does NOT follow binding chains (no occurs-check).
-    pub fn apply(&self, ty: &Type) -> Type {
-        let map = self.type_map.borrow();
-        Self::apply_inner(ty, &map)
-    }
-
-    fn apply_inner(ty: &Type, map: &HashMap<String, Type>) -> Type {
-        match ty {
-            Type::Var(name, _) => {
-                if let Some(replacement) = map.get(name.as_str()) {
-                    replacement.clone()
-                } else {
-                    ty.clone()
-                }
-            }
-            Type::Operator(name) => {
-                if let Some(replacement) = map.get(name.as_str()) {
-                    replacement.clone()
-                } else {
-                    ty.clone()
-                }
-            }
-            Type::Function {
-                params,
-                ret,
-                typed_variadics,
-                rest,
-                required_count,
-            } => Type::Function {
-                params: params
-                    .iter()
-                    .map(|(n, t)| (n.clone(), Self::apply_inner(t, map)))
-                    .collect(),
-                typed_variadics: typed_variadics
-                    .iter()
-                    .map(|(n, t)| (n.clone(), Self::apply_inner(t, map)))
-                    .collect(),
-                rest: rest
-                    .as_ref()
-                    .map(|boxed| Box::new((boxed.0.clone(), Self::apply_inner(&boxed.1, map)))),
-                ret: Box::new(Self::apply_inner(ret, map)),
-                required_count: *required_count,
-            },
-            // App(f, a): type constructor application — substitute into both sides.
-            // App(TyCon("Seq"), TypeVar("_t0")) with {_t0 → Int} → App(TyCon("Seq"), Int).
-            Type::App(f, a) => Type::App(
-                Box::new(Self::apply_inner(f, map)),
-                Box::new(Self::apply_inner(a, map)),
-            ),
-            // Recursive(μvar.body): substitute through the body WITHOUT touching the binder name.
-            // The binder is a μ-name (not a type variable in the substitution domain),
-            // so it must be left unchanged. Only free type variables inside the body are substituted.
-            Type::Recursive { var, body } => Type::Recursive {
-                var: var.clone(),
-                body: Box::new(Self::apply_inner(body, map)),
-            },
-            Type::Dict(row) => Type::Dict(Self::apply_row(row, map)),
-            Type::Union(types) => {
-                Type::Union(types.iter().map(|t| Self::apply_inner(t, map)).collect())
-            }
-            Type::Intersection(types) => {
-                Type::Intersection(types.iter().map(|t| Self::apply_inner(t, map)).collect())
-            }
-            Type::Negation(inner) => Type::Negation(Box::new(Self::apply_inner(inner, map))),
-            Type::StageApp { fn_name, args } => Type::StageApp {
-                fn_name: fn_name.clone(),
-                args: args.iter().map(|a| Self::apply_inner(a, map)).collect(),
-            },
-            _ => ty.clone(),
-        }
-    }
-
-    fn apply_row(row: &Row, map: &HashMap<String, Type>) -> Row {
-        Row {
-            fields: row
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), Self::apply_inner(v, map)))
-                .collect(),
-            tail: match &row.tail {
-                RowTail::Uniform { key, value } => RowTail::Uniform {
-                    key: key.as_ref().map(|k| Box::new(Self::apply_inner(k, map))),
-                    value: Box::new(Self::apply_inner(value, map)),
-                },
-                other => other.clone(),
-            },
-        }
-    }
-}
-
-impl Default for Substitution {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Polymorphic type scheme: ∀ type_vars kind_vars. constraints => body
-/// Used for let-bound polymorphism (Damas-Milner) and type class constraints.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypeScheme {
-    /// Quantified type variables (e.g., ["a", "b"])
-    pub type_vars: Vec<String>,
-    /// Type class constraints on quantified variables (e.g., [Equatable a, Numeric b])
-    pub constraints: Vec<Constraint>,
-    /// Body type (may contain type_vars and kind_vars)
-    pub body: Type,
-    /// Quantified label variables (for HasField constraints with label polymorphism)
-    pub label_vars: Vec<String>,
-    /// Kinded quantified variables: pairs of (name, Kind) for variables that must
-    /// instantiate as something other than Type::Var. Currently used for
-    /// Kind::Operator variables, which instantiate as Type::Operator(fresh_name)
-    /// rather than Type::Var(fresh_name, level). This enables builtin TypeSchemes
-    /// like ∀(f: Operator) a b. Mappable f ⇒ (a→b)→f a→f b where f must not be
-    /// confused with a monomorphic type variable.
-    ///
-    /// Variables listed here must NOT also appear in `type_vars` — they are dispatched
-    /// separately during instantiate_scheme. Kind::Type variables should go in `type_vars`.
-    pub kind_vars: Vec<(String, Kind)>,
-    /// Optional documentation string (extracted from doc: annotations)
-    pub doc: Option<String>,
-    /// Nested schemes for function parameters (used for higher-rank types)
-    pub inner_schemes: Option<HashMap<String, TypeScheme>>,
-    /// Per-parameter narrowing types declared via `@[narrows: T]` annotation on the binding.
-    ///
-    /// When a predicate function `foo?@[narrows: Int] [fn [let x] ...]` is defined, this
-    /// field holds `vec![Some(Type::Int)]`. `extract_narrowings` reads this to produce
-    /// `Narrowing::TypeOf` constraints when the function appears as a condition in an `if`
-    /// or match guard. Any function — not just prelude predicates — can declare narrowing.
-    ///
-    /// Index parallel to the function's parameter list. `None` means the parameter has no
-    /// declared narrowing; `Some(T)` means `[foo? x]` being true narrows `x` to `T`.
-    pub param_narrowings: Vec<Option<crate::type_def::Type>>,
-    /// Source span where this binding was defined (if known).
-    /// Populated by `generalize_with_doc` with the binding's span. Used by lost-binding
-    /// warnings to point at the definition site. `None` for synthetic/builtin schemes.
-    pub definition_span: Option<crate::ast::Span>,
-}
-
-impl TypeScheme {
-    /// Create a monomorphic type scheme (no quantified variables or constraints).
-    pub fn mono(ty: Type) -> Self {
-        Self {
-            type_vars: Vec::new(),
-            constraints: Vec::new(),
-            body: ty,
-            label_vars: Vec::new(),
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-            param_narrowings: Vec::new(),
-            definition_span: None,
-        }
-    }
-}
-
-/// Maps expression spans `(start_offset, end_offset)` to the TypeScheme of the variable
+/// Maps expression spans `(start_offset, end_offset)` to the TypeValue of the variable
 /// referenced there. Only populated for `VarRef` expressions that resolve to a polymorphic
-/// scheme (schemes with constraints or type variables). Used by LSP hover to display
+/// scheme (TypeValue.Scheme variants). Used by LSP hover to display
 /// constraints (e.g., `Equatable a => Fn@Bool [a a]`).
 ///
 /// Stored in `InferState.scheme_map` during inference, then extracted and returned as part
 /// of the type-checking result for LSP consumers.
-pub type SchemeMap = HashMap<(u32, u32, u32, u32), TypeScheme>;
+pub type SchemeMap = HashMap<(u32, u32, u32, u32), Arc<crate::value::Value>>;
 
-/// Type-stage entry: either a resolved type, a function, a type variable kind, or a class.
-#[derive(Debug, Clone)]
-pub enum TypeStageEntry {
-    /// Fully materialized type — no further evaluation needed.
-    Resolved(Type),
-    /// Function thunk that must be called to produce a type — used for parameterized
-    /// type constructors (e.g., Seq, Result) where the type-stage function takes type
-    /// parameters and returns a TypeNode.
-    Function(std::sync::Arc<crate::value::Thunk>),
-    /// Annotation type variable of this kind — produces a fresh TypeVar when resolved.
-    TypeVar(crate::type_def::Kind),
-    /// Class constraint — produces a fresh TypeVar with a class constraint when resolved.
-    Class(crate::type_class::ClassDecl),
+/// Bundled type-stage data: resolved TypeValues, parameterized type constructor thunks,
+/// and TypeVar kind annotations. Replaces the now-deleted `TypeStageEntry` enum.
+///
+/// - `scope`: resolved TypeValues, one frame per type-stage document.
+///   Vec[0] = innermost (highest priority); Vec[N-1] = outermost.
+/// - `fns`: parameterized type constructor thunks (e.g., Seq, Result).
+/// - `type_vars`: TypeVar kind annotations (e.g., Operator → "Operator", Label → "Label").
+#[derive(Debug, Clone, Default)]
+pub struct TypeStageData {
+    pub scope: Vec<std::collections::HashMap<String, TypeValue>>,
+    pub fns: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
+    pub type_vars: std::collections::HashMap<String, String>,
 }
 
-/// Inference state for levels-based let-generalization
+impl TypeStageData {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return true if no type-stage entries exist in any frame.
+    pub fn is_empty(&self) -> bool {
+        self.scope.iter().all(|m| m.is_empty())
+            && self.fns.is_empty()
+            && self.type_vars.is_empty()
+    }
+
+    /// Check whether a name is present in any frame.
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.scope.iter().any(|m| m.contains_key(name))
+            || self.fns.contains_key(name)
+            || self.type_vars.contains_key(name)
+    }
+
+    /// Get the resolved TypeValue for a name (checking all scope frames).
+    /// Does NOT check fns or type_vars — those have separate lookup methods.
+    pub fn get_resolved(&self, name: &str) -> Option<&TypeValue> {
+        self.scope.iter().find_map(|m| m.get(name))
+    }
+
+    /// Prepend a new scope frame (innermost wins).
+    pub fn push_front(&mut self, frame: std::collections::HashMap<String, TypeValue>) {
+        self.scope.insert(0, frame);
+    }
+}
+
+/// Unique identity of a binding: the source span where the binding was declared
+/// plus its string name. Two bindings with the same name at different source
+/// locations have different def_spans — uniqueness is guaranteed by the source
+/// position, which is stable across all code paths (unlike Arc frame pointers,
+/// which differ between dict_env, scc_env, and new_env_inner allocations).
+///
+/// Used as keys in `InferState.use_def` and as the type of `InferState.current_binding`.
+/// Defined here (in type_infer.rs) because `InferState` holds fields of this type —
+/// the dependency direction must be: low-level infrastructure (type_infer) defines
+/// the type, high-level strategy (typecheck_cek) uses it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BindingId {
+    /// Source span of the binding's declaration site.
+    /// Stable across all code paths because it comes from the parsed AST.
+    pub def_span: crate::ast::Span,
+    pub name: String,
+}
+
+/// Inference state for levels-based let-generalization (S-1003 TypeValue migration).
+///
+/// After S-1003 T-2004: All type representations use `Arc<Value>` (TypeValue).
+/// `TypeScheme`, `Substitution`, `Type`, and `Kind` have been deleted.
+/// TypeVar substitution lives in `InferenceContext.subst`.
 #[derive(Debug, Clone)]
 pub struct InferState {
-    pub level: u32,
-    pub levels: HashMap<String, u32>,
-    /// Cached InstanceEnv snapshot. Invalidated by `invalidate_env_caches` after any
-    /// `insert_instance` call. Rebuilt lazily by `build_instance_env_snapshot`.
-    cached_instance_env: Option<crate::types::InstanceEnv>,
-    /// Working copy of InstanceEnv for async constraint resolution. Cloned once per inference
-    /// pass from `cached_instance_env`, wrapped in Arc for cheap sharing across constraint checks.
-    /// Cleared by `invalidate_env_caches`.
-    working_instance_env: Option<std::sync::Arc<crate::types::InstanceEnv>>,
-    /// Cached ClassEnv snapshot. Invalidated by `invalidate_env_caches` after any
-    /// `insert_class` call. Rebuilt lazily by `build_class_env_snapshot`.
-    cached_class_env: Option<crate::types::ClassEnv>,
-    /// Global accumulated substitution: collects constraints from access-chain inference
-    /// and other constraint generators. Applied when resolving type variables during
-    /// inference, so that constraints from `$x.field1` are visible when processing
-    /// `$x.field2` in the same expression. See doc/07-type-extensions.md Part 5.
-    pub subst: Substitution,
     /// Accumulated type class constraints on type variables.
-    /// Constraints are generated when overloaded builtins are called with type variables.
-    /// During generalization, constraints on generalized variables are included in the TypeScheme.
-    pub constraints: Vec<Constraint>,
-    /// Kind environment: maps TypeVar names to their kinds.
-    /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
-    /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
-    /// enforce kind checking (e.g., reject `Seq(TypeVar(l, Label))`).
-    pub kind_env: HashMap<String, Kind>,
+    /// Constraints are `Arc<Value>` ConstraintDecl variants (see type_class.rs for construction helpers).
+    /// Generated when overloaded builtins are called with type variables.
+    /// During generalization, constraints on generalized variables are included in the TypeValue.Scheme.
+    pub constraints: Vec<Arc<crate::value::Value>>,
     /// Unified environment: the canonical store for classes, instances, type schemes, and values.
     /// Class/instance lookups go through `state.env.read().unwrap().get_class(name)` and
     /// `state.env.read().unwrap().get_instance(mangled)`.
@@ -287,7 +1561,7 @@ pub struct InferState {
     /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
     /// that points to the failed definition site instead of just saying "not in scope".
     pub failed_bindings: HashMap<String, Span>,
-    /// Span-keyed map from VarRef sites to the TypeScheme of the variable they reference.
+    /// Span-keyed map from VarRef sites to the TypeValue of the variable they reference.
     /// Only populated when the caller enables scheme collection (non-None). Used by LSP hover
     /// to display type class constraints alongside the instantiated type.
     ///
@@ -296,16 +1570,16 @@ pub struct InferState {
     /// Expected return type of the currently-inferring function (if annotated).
     /// Set by `infer_fn_push_cont` (CEK) when entering a function body with an explicit return annotation,
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
-    pub expected_return: Option<Type>,
+    pub expected_return: Option<TypeValue>,
     /// Expected parameter types for the next `fn` expression to be inferred.
     /// Set by `infer_instance_decl_from_surface` before calling `run_typecheck` on an instance
     /// method body, using the class method's specialized signature. Consumed and cleared by
     /// `infer_fn_push_cont` when it processes the params — it is single-use per fn invocation.
     ///
-    /// Index i = expected type for the i-th fixed (non-variadic) parameter.
-    /// When `Some`, unannotated params use `expected_fn_params[i]` instead of `Type::Unknown`.
-    /// When `None` (the default), unannotated params fall back to `Type::Unknown` as before.
-    pub expected_fn_params: Option<Vec<Type>>,
+    /// Index i = expected TypeValue for the i-th fixed (non-variadic) parameter.
+    /// When `Some`, unannotated params use `expected_fn_params[i]` instead of TypeValue.Unknown.
+    /// When `None` (the default), unannotated params fall back to TypeValue.Unknown as before.
+    pub expected_fn_params: Option<Vec<TypeValue>>,
     /// Accumulated type diagnostics (warnings, hints).
     /// Populated during type inference and generalization, extracted by the type checker.
     pub diagnostics: Vec<crate::error::TypeDiagnostic>,
@@ -314,27 +1588,13 @@ pub struct InferState {
     /// constraints involving it are deferred here. After each round of unification,
     /// process_deferred_equalities attempts to resolve them.
     /// Actively written to (type_unify.rs) and saved/restored during branch inference (typecheck.rs).
-    pub deferred_equalities: Vec<(Type, Type)>,
-    /// Current functional dependency improvement recursion depth.
-    /// Prevents infinite loops through the improve_functional_dependency → unify →
-    /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
-    /// entering improve_functional_dependency, decremented when exiting.
-    pub fd_depth: usize,
-    /// Instance resolution recursion depth.
-    /// Prevents infinite loops through the check_constraints_on_var → resolve_instance →
-    /// unify → check_constraints_on_var cycle. Incremented when entering resolve_instance,
-    /// decremented when exiting. Matches GHC's -freduction-depth semantics (Sulzmann et al. 2007 §3.2).
-    pub instance_resolution_depth: u32,
+    pub deferred_equalities: Vec<(TypeValue, TypeValue)>,
     /// Source names for type variables: internal TypeVar name → user-visible source name.
     /// When a function parameter `x` has an inferred TypeVar `_t42`, this maps `"_t42"` → `"x"`.
     /// Used by T013 diagnostics to report "ambiguous type variable 'x'" (the internal _tN
     /// name is hidden — it is noise for users). Only populated for parameters and let-bindings
     /// where a source name exists.
     pub type_var_source_names: HashMap<String, String>,
-    /// Deduplication set for T013 ambiguous constraint warnings: (TypeVar name, Span) pairs.
-    /// Prevents emitting duplicate T013 warnings when the same ambiguous TypeVar is encountered
-    /// multiple times during constraint discharge. Each unique (var, span) pair is emitted once.
-    pub t013_emitted: std::collections::HashSet<(String, crate::ast::Span)>,
     /// Resolution table for slot-indexed TypeEnv lookups.
     ///
     /// The CEK machine's VarRef handler uses the resolved (level, slot) coordinates to
@@ -355,22 +1615,27 @@ pub struct InferState {
     /// to materialize type-stage thunks without ambient filesystem access. Never created
     /// inside the type checker; always provided by the caller that has proper capabilities.
     pub eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
-    /// Type-stage scope chain: pre-computed types from type-stage evaluation.
+    /// Type-stage scope chain: pre-computed resolved TypeValues from type-stage evaluation.
     /// Vec[0] = innermost (highest priority); Vec[N-1] = outermost.
-    /// Each frame is a HashMap of type names to their TypeStageEntry.
+    /// Each frame maps type names to their resolved TypeValue.
     /// Populated by builtin-tc-update-type-stage-env (T-1803) and builtin_typecheck_doc
     /// write-back. Empty Vec means no type-stage types are available.
-    pub type_stage_scope: Vec<std::collections::HashMap<String, TypeStageEntry>>,
-    /// Unified TypeVar table (from HEAD~1 design).
-    /// In the current design, TypeVar bindings are in `subst.type_map`, levels in `levels`,
-    /// and kinds in `kind_env`. This field exists for compatibility with type_class.rs
-    /// save/restore probe patterns.
-    pub type_vars: indexmap::IndexMap<String, TypeVarEntry>,
-    /// BAS TypeVar bounds (from HEAD~1 design).
-    pub bounds: std::collections::HashMap<String, crate::bas::TypeVarBounds>,
-    /// Set of TypeVar names currently being processed by FD improvement (compatibility field).
-    pub fd_in_progress: std::collections::HashSet<String>,
-    /// Type constructor environment (from HEAD~1 design).
+    ///
+    /// Function entries (parameterized type constructors like Seq, Result) are NOT stored
+    /// here — they live in `type_stage_fns`. TypeVar entries are NOT stored here — they
+    /// live in `type_stage_type_vars`. Class entries are NOT stored here — they are looked
+    /// up via `state.env`.
+    pub type_stage_scope: Vec<std::collections::HashMap<String, TypeValue>>,
+    /// Parameterized type constructor thunks from type-stage evaluation.
+    /// Maps type name → function thunk for constructors like Seq, Result that take type
+    /// arguments and return a TypeNode when called.
+    pub type_stage_fns: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
+    /// TypeVar kind annotations from type-stage evaluation.
+    /// Maps type name → kind string (e.g., "Operator", "Label", "Type") for names that
+    /// were declared as type-variable markers in the type-stage section (e.g., `Operator`,
+    /// `Label` in builtin_core.llt).
+    pub type_stage_type_vars: std::collections::HashMap<String, String>,
+    /// Type constructor environment.
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
     /// Scope frames derived from parent_scope_id. Used by check_constraints_on_var
@@ -381,12 +1646,71 @@ pub struct InferState {
     /// Added by T-1731 at VarRef instantiation time; drained by check_constraints_on_var
     /// when the TypeVar resolves to a concrete type.
     pub dispatch_obligations: Vec<DispatchObligation>,
-    /// Eval-stage GroupSpine for type-stage expression evaluation.
-    /// When set, `eval_type_stage_expr` uses this as the root scope frame instead of
-    /// `EvalFrame::empty()`. Built from the doc-env thunks passed to `builtin-typecheck-doc`
-    /// so that type-stage expressions (e.g. `@Integer`) can resolve names from the
-    /// accumulated environment.
-    pub type_stage_eval_group: Option<std::sync::Arc<crate::value::GroupSpine>>,
+    /// Current FD improvement recursion depth. Passed by `&mut` to `try_fd_improvement`,
+    /// which increments it on entry and decrements it on exit (RAII-style depth guard).
+    /// Capped at 32 to prevent infinite fixpoint loops in pathological cases
+    /// (e.g., cyclic FDs or degenerate instance sets).
+    pub fd_depth: u32,
+    /// The BindingId of the dict binding currently being type-checked (T-2060/T-2071 use-def liveness).
+    ///
+    /// Set to `Some(id)` before type-checking each dict entry's value expression, cleared
+    /// to `None` after. When a VarRef resolves `name2` while `current_binding` is `Some(id1)`,
+    /// `use_def[id1].insert(id2)` records the dependency edge.
+    ///
+    /// BindingId = (def_span, name) — uniqueness guaranteed by the source span,
+    /// which is stable across all Arc frame allocations (unlike frame pointers which
+    /// differ between dict_env, scc_env, and new_env_inner). T-2071 fix.
+    ///
+    /// Reset to `None` at the start of each Sequential's intermediate dict processing.
+    pub current_binding: Option<BindingId>,
+    /// Use-def liveness graph for Sequential intermediate dict bindings (T-2060/T-2071).
+    ///
+    /// `use_def[A]` = set of BindingIds that binding A's value expression directly references.
+    /// Populated during dict entry inference via `current_binding` tracking.
+    ///
+    /// The AfterSequentialFinal handler performs BFS on this graph (starting from names
+    /// directly referenced by the final expression) to compute the live set, then emits
+    /// lost-binding warnings for intermediate bindings not reachable from the live set.
+    ///
+    /// Saved and restored (via std::mem::take) at the start of each Sequential so that
+    /// nested Sequentials do not corrupt the enclosing Sequential's liveness graph. The
+    /// saved value is carried in AfterSequentialFinal and restored when it fires.
+    pub use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
+    /// Narrowing refinements for the current branch scope (T-2083).
+    ///
+    /// Maps BindingId → narrowed TypeValue for bindings whose type has been refined
+    /// by a type guard (e.g., `[if [int? x] ...]` narrows `x` to Int in the true branch).
+    ///
+    /// Narrowing is a TYPE REFINEMENT of an existing slot binding, not a new binding.
+    /// `infer_var_ref` checks this map after a successful slot lookup and returns the
+    /// narrowed TypeValue if one is present.
+    ///
+    /// Scoped via AfterBlock: `saved_narrowing_map` is stored in the AfterBlock continuation
+    /// when pushed before a match arm body, and restored when AfterBlock fires. Same
+    /// mechanism as `saved_use_def` and `saved_current_binding`.
+    pub narrowing_map: std::collections::HashMap<BindingId, TypeValue>,
+    /// The innermost env frame whose bindings resolve to VarAddr::Parameter(i) (T-2084).
+    ///
+    /// Set by `infer_fn_push_cont` (to fn_env_arc) and by MatchScrutinee/MatchArm arm
+    /// setup (to the case arm env frame). `infer_var_ref` uses this directly for
+    /// VarAddr::Parameter lookup instead of the broken level=2 depth hack.
+    ///
+    /// Saved/restored via `AfterBlock.saved_parameter_frame` so nested functions and
+    /// nested matches correctly restore the enclosing frame when the block exits.
+    pub current_parameter_frame: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
+    /// Flat accumulated type env — a single-frame Env containing all type-stage and
+    /// document-level entries at their absolute LGM slot positions (T-2085).
+    /// Mirrors the evaluator's frame.group: every entry in the accumulated group is
+    /// accessible at get_scheme_at(0, slot) from within any dict_env that includes it.
+    ///
+    /// Seeded in typecheck_program_bootstrap from type_stage_scope (type-stage entries
+    /// at their root_frame slots). Updated by the Sequential handler as each document-level
+    /// dict is processed. Copied into dict_env at the start of run_typecheck_dict so that
+    /// get_scheme_at(0, slot) works for all accumulated entries regardless of nesting depth.
+    pub flat_type_env: std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+    /// TypeValue substitution and level tracking (S-1003 TypeValue-native inference context).
+    /// Replaces the deleted `Substitution` and `type_vars` fields.
+    pub ctx: InferenceContext,
 }
 
 impl InferState {
@@ -401,14 +1725,7 @@ impl InferState {
     /// environments via `Env::with_parent` chains).
     pub fn with_env(env: Arc<RwLock<crate::env::Env>>) -> Self {
         Self {
-            level: 0,
-            levels: HashMap::new(),
-            cached_instance_env: None,
-            working_instance_env: None,
-            cached_class_env: None,
-            subst: Substitution::new(),
             constraints: Vec::new(),
-            kind_env: HashMap::new(),
             env,
             failed_bindings: HashMap::new(),
             scheme_map: None,
@@ -416,21 +1733,23 @@ impl InferState {
             expected_fn_params: None,
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
-            fd_depth: 0,
-            instance_resolution_depth: 0,
             type_var_source_names: HashMap::new(),
-            t013_emitted: std::collections::HashSet::new(),
             resolution_table: std::sync::Arc::new(std::collections::HashMap::new()),
             resolver_frames: Vec::new(),
             eval_ctx: None,
             type_stage_scope: Vec::new(),
-            type_vars: indexmap::IndexMap::new(),
-            bounds: std::collections::HashMap::new(),
-            fd_in_progress: std::collections::HashSet::new(),
+            type_stage_fns: std::collections::HashMap::new(),
+            type_stage_type_vars: std::collections::HashMap::new(),
             tycon_env: std::collections::HashMap::new(),
             scope_frames: None,
             dispatch_obligations: Vec::new(),
-            type_stage_eval_group: None,
+            fd_depth: 0,
+            current_binding: None,
+            use_def: std::collections::HashMap::new(),
+            narrowing_map: std::collections::HashMap::new(),
+            current_parameter_frame: None,
+            flat_type_env: std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+            ctx: InferenceContext::new(),
         }
     }
 
@@ -439,191 +1758,92 @@ impl InferState {
     /// Falls back gracefully: if the class is not in `env`, just skips the constraint.
     pub fn add_constraint_to(
         &mut self,
-        constraints: &mut Vec<Constraint>,
+        constraints: &mut Vec<Arc<crate::value::Value>>,
         class_name: impl Into<String>,
         var: impl Into<String>,
     ) {
         let class_name = class_name.into();
+        let var_name = var.into();
         let env_arc = Arc::clone(&self.env);
         let env_guard = env_arc.read().unwrap();
-        if let Some(class_decl) = env_guard.get_class(&class_name) {
-            constraints.push(Constraint::Class {
-                class: Arc::new(class_decl.clone()),
-                vars: vec![crate::type_class::ConstraintArg::Var(var.into())],
-                origin_name: None,
-                origin_span: None,
-            });
+        if env_guard.get_class(&class_name).is_some() {
+            // Build a ConstraintDecl TypeValue via make_constraint_decl.
+            let class_tv = crate::type_class::make_type_op(&class_name);
+            let var_tv = make_typevar_value(&var_name);
+            let c = crate::type_class::make_constraint_decl(class_tv, vec![var_tv]);
+            constraints.push(c);
         }
         // Unknown classes are deferred — instance resolution will report an error.
     }
 
     // ── TypeVar name generation ──────────────────────────────────────────────────
 
-    /// Generate a TypeVar name from a source name, kind, and source span.
+    /// Generate a TypeVar name from a source name, kind name string, and source span.
     ///
     /// Format:
-    ///   Kind::Type:  `{source}⧼{file}:{line}:{col}⧽`   e.g. `a⧼main.llt:42:7⧽`
-    ///   Kind::Label: `ʟᴀʙᴇʟ∷{source}⧼{file}:{line}:{col}⧽`
+    ///   kind != "Label":  `{source}⧼{file}:{line}:{col}⧽`   e.g. `a⧼main.llt:42:7⧽`
+    ///   kind == "Label":  `ʟᴀʙᴇʟ∷{source}⧼{file}:{line}:{col}⧽`
     ///
     /// The span MUST always have file/line/col information — tinct source positions come from
     /// the parsed AST; Rust-internal creation sites use `rust_span!()` to embed the Rust
     /// source location. No 0:0 or empty-file spans are permitted.
-    pub fn typevar_name(source: &str, kind: &Kind, span: &Span) -> String {
+    pub fn typevar_name(source: &str, kind: &str, span: &Span) -> String {
         let file = span.file.as_ref();
         let line = span.start_line;
         let col = span.start_col;
-        match kind {
-            Kind::Label => format!("ʟᴀʙᴇʟ∷{}⧼{}:{}:{}⧽", source, file, line, col),
-            _ => format!("{}⧼{}:{}:{}⧽", source, file, line, col),
+        if kind == "Label" {
+            format!("ʟᴀʙᴇʟ∷{}⧼{}:{}:{}⧽", source, file, line, col)
+        } else {
+            format!("{}⧼{}:{}:{}⧽", source, file, line, col)
         }
     }
 
-    /// Extract only the raw source name from a TypeVar name, stripping both the kind prefix
-    /// and the position suffix. Used when deriving scheme variable names for instantiation.
+    /// Create a fresh TypeVar at the given (or current) level.
     ///
-    /// `a⧼main.llt:42:7⧽`          → `a`
-    /// `ʟᴀʙᴇʟ∷k⧼main.llt:5:3⧽`   → `k`  (strips kind prefix AND position suffix)
-    /// `a`                           → `a`  (already bare)
-    pub fn typevar_source_only(name: &str) -> &str {
-        // Strip position suffix first (everything from ⧼ onward)
-        let without_pos = if let Some(bracket) = name.find('⧼') {
-            &name[..bracket]
-        } else {
-            name
-        };
-        // Strip kind prefix (ʟᴀʙᴇʟ∷ for Label kind)
-        if let Some(rest) = without_pos.strip_prefix("ʟᴀʙᴇʟ∷") {
-            rest
-        } else {
-            without_pos
-        }
-    }
-
-    /// The single TypeVar creation entry point.
-    ///
-    /// Creates a fresh TypeVar at the given (or current) level with the specified kind.
-    /// The name is derived from `source_name` and the call site `span` — no monotonic
-    /// counter. Every call site must supply a real span: tinct-source sites pass the
-    /// AST node span; Rust-internal sites use `rust_span!()`.
-    ///
-    /// Returns `(name, Type::Var(name, level))`.
+    /// Returns `(name, TypeValue)` where TypeValue is a `TypeValue.Var` with the given name.
+    /// The name is derived from `source_name` and the call site `span`.
+    /// Registers the level in `self.ctx.levels`.
     pub fn fresh_type_var_with(
         &mut self,
         source_name: Option<&str>,
         level: Option<u32>,
-        kind: Kind,
+        kind: &str,
         span: &Span,
-    ) -> (String, Type) {
+    ) -> (String, TypeValue) {
         let src = source_name.unwrap_or("?");
-        let lvl = level.unwrap_or(self.level);
-        let name = Self::typevar_name(src, &kind, span);
-        self.levels.insert(name.clone(), lvl);
-        self.type_vars
-            .entry(name.clone())
-            .or_insert_with(|| TypeVarEntry::blank(lvl, kind));
-        let ty = Type::Var(name.clone(), lvl);
-        (name, ty)
+        let lvl = level.unwrap_or(self.ctx.current_level);
+        let name = Self::typevar_name(src, kind, span);
+        self.ctx.levels.insert(name.clone(), lvl);
+        let tv = make_typevar_value(&name);
+        (name, tv)
     }
 
-    /// Convenience: fresh Kind::Type TypeVar using the current level. Pass a real span.
-    pub fn fresh_type_var(&mut self, span: &Span) -> Type {
-        self.fresh_type_var_with(None, None, Kind::Type, span).1
+    /// Convenience: fresh TypeVar using the current level. Pass a real span.
+    pub fn fresh_type_var(&mut self, span: &Span) -> TypeValue {
+        self.fresh_type_var_with(None, None, "Type", span).1
     }
 
-    // fresh_row_var_name removed — BAS Step 4: no RowVar tails exist
+    /// Invalidate the cached env snapshots (no-op — caches were removed).
+    pub fn invalidate_env_caches(&mut self) {}
 
-    /// Invalidate the cached InstanceEnv and ClassEnv snapshots.
-    ///
-    /// Must be called after every `insert_instance` or `insert_class` call so that
-    /// subsequent `build_instance_env_snapshot` / `build_class_env_snapshot` calls
-    /// rebuild against the updated env rather than serving stale data.
-    pub fn invalidate_env_caches(&mut self) {
-        self.cached_instance_env = None;
-        self.working_instance_env = None;
-        self.cached_class_env = None;
-    }
-
-    /// Build a temporary `ClassEnv` from `self.env` for backward-compatible callers.
-    ///
-    /// This is a bridge for code that still needs a `ClassEnv` reference (e.g., `entails`,
-    /// `satisfies_constraint`). The returned ClassEnv is a snapshot — it does not update
-    /// when `self.env` changes. Use sparingly; prefer direct `self.env.read().get_class()`.
-    ///
-    /// The result is cached: repeated calls with no intervening `insert_class` return
-    /// a reference to the same snapshot without rebuilding. Call `invalidate_env_caches`
-    /// after any `insert_class` to flush the cache.
-    pub fn build_class_env_snapshot(&mut self) -> &crate::types::ClassEnv {
-        if self.cached_class_env.is_none() {
-            let mut class_env = crate::types::ClassEnv::new();
-            let env_guard = self.env.read().unwrap();
-            for decl in env_guard.all_classes() {
-                class_env.insert(decl);
-            }
-            self.cached_class_env = Some(class_env);
-        }
-        self.cached_class_env.as_ref().unwrap()
-    }
-
-    /// Build a temporary `InstanceEnv` from `self.env` for backward-compatible callers.
-    ///
-    /// This is a bridge for code that still calls `InstanceEnv::resolve_instance`,
-    /// `lookup_mptc`, or `reverse_lookup_mptc`. The returned InstanceEnv is a snapshot.
-    ///
-    /// The result is cached: repeated calls with no intervening `insert_instance` return
-    /// a reference to the same snapshot without rebuilding. Call `invalidate_env_caches`
-    /// after any `insert_instance` to flush the cache.
-    ///
-    /// When you need an owned copy for async consumers, use `get_working_instance_env` instead
-    /// to avoid cloning on every call site.
-    pub(crate) fn build_instance_env_snapshot(&mut self) -> &crate::types::InstanceEnv {
-        if self.cached_instance_env.is_none() {
-            let mut inst_env = crate::types::InstanceEnv::new();
-            let env_guard = self.env.read().unwrap();
-            for (_mangled, decl) in env_guard.all_instances() {
-                inst_env
-                    .insert(decl)
-                    .expect("duplicate instance during env cache rebuild — env invariant violated");
-            }
-            self.cached_instance_env = Some(inst_env);
-        }
-        self.cached_instance_env.as_ref().unwrap()
-    }
-
-    /// Get a working copy of InstanceEnv for async constraint resolution.
-    /// Clones from cached_instance_env ONCE per inference pass, wraps in Arc, then returns
-    /// Arc clones (cheap - just increments ref count) on subsequent calls. This avoids 2500+
-    /// full InstanceEnv clones per document when checking constraints.
-    /// Call this instead of `build_instance_env_snapshot().clone()` at constraint check sites.
-    ///
-    /// Returns an Arc<InstanceEnv> that can be moved into async functions across await points.
-    pub fn get_working_instance_env(&mut self) -> std::sync::Arc<crate::types::InstanceEnv> {
-        if self.working_instance_env.is_none() {
-            self.working_instance_env = Some(std::sync::Arc::new(
-                self.build_instance_env_snapshot().clone(),
-            ));
-        }
-        std::sync::Arc::clone(self.working_instance_env.as_ref().unwrap())
-    }
-
-    /// Compact the levels map by removing entries for TypeVars that have been unified.
-    /// A TypeVar is considered unified if its name appears in the substitution's type_map.
+    /// Compact the levels map by removing entries for TypeVars that have been bound in ctx.
     /// This prevents unbounded growth of the levels HashMap during long inference sessions.
     ///
     /// Call this periodically after unification rounds (e.g., at the end of infer_dict).
     pub fn compact_levels(&mut self) {
-        let type_map = self.subst.type_map.borrow();
-        self.levels
-            .retain(|name, _level| !type_map.contains_key(name));
+        self.ctx
+            .levels
+            .retain(|name, _level| !self.ctx.subst.contains_key(name));
     }
 
     /// Check if the substitution has no bindings (all type variables are free).
     pub fn subst_is_empty(&self) -> bool {
-        self.subst.type_map.borrow().is_empty()
+        self.ctx.subst.is_empty()
     }
 
-    /// Apply the current substitution to a type, resolving all bound type variables.
-    pub fn apply(&self, ty: &Type) -> Type {
-        self.subst.apply(ty)
+    /// Apply the current substitution to a TypeValue, resolving bound type variables.
+    pub fn apply(&self, ty: &TypeValue) -> TypeValue {
+        self.ctx.apply_subst(ty)
     }
 
     /// Return a reference to the type constructor environment.
@@ -633,105 +1853,23 @@ impl InferState {
         &self.tycon_env
     }
 
-    /// Register or update the Kind for a TypeVar name in `kind_env`.
-    pub fn set_kind(&mut self, name: impl Into<String>, kind: Kind) {
-        self.kind_env.insert(name.into(), kind);
-    }
-
-    /// Get a filtered view of the kind environment that excludes `Kind::Type` entries.
-    ///
-    /// `Kind::Type` is the default kind for regular type variables and is therefore not
-    /// stored explicitly — callers that enumerate the kind environment expect to see only
-    /// *non-default* kinds (`Kind::Operator`, `Kind::Label`, `Kind::Arrow`, …).  Returning
-    /// `Kind::Type` entries would cause `test_kind_env_view` to fail and would confuse
-    /// callers that use the kind environment to identify operator-kinded variables.
-    pub fn kind_env(&self) -> HashMap<String, Kind> {
-        self.kind_env
-            .iter()
-            .filter(|(_, k)| !matches!(k, Kind::Type))
-            .map(|(name, kind)| (name.clone(), kind.clone()))
-            .collect()
-    }
-
-    /// Get the Kind for a TypeVar name.
-    ///
-    /// Returns the explicitly-set kind from `kind_env` when present; returns
-    /// `Some(Kind::Type)` as the default when the variable exists in `levels` (i.e.
-    /// has been registered as a TypeVar) but has no explicit kind entry; returns
-    /// `None` only when the variable is completely unknown.
-    ///
-    /// This matches the semantics described in `TypeVarEntry.kind`: every registered
-    /// TypeVar has a kind, and `Kind::Type` is the default for ordinary type variables.
-    pub fn get_kind(&self, name: &str) -> Option<Kind> {
-        if let Some(kind) = self.kind_env.get(name) {
-            return Some(kind.clone());
-        }
-        // Default: if the variable is registered (has a level), its kind is Type.
-        if self.levels.contains_key(name) {
-            return Some(Kind::Type);
-        }
-        None
-    }
-
-    /// Look up the binding for a TypeVar name from the unified `type_vars` table.
-    ///
-    /// Returns `Some(ty)` if the variable has been bound (via `bind_type_var`), `None` if
-    /// the variable is unbound or not registered.  `type_vars` is the single canonical
-    /// source for this lookup — the separate `subst.type_map` is NOT consulted.  This
-    /// means that `state.type_vars = saved_snapshot` correctly hides bindings added after
-    /// the snapshot was taken (see `test_type_vars_snapshot_restore_pattern`).
-    ///
-    /// All TypeVar creation paths (`fresh_type_var`, `fresh_type_var_with_source`,
-    /// `fresh_type_var_with_origin`, `alloc_type_var_at_level`, `set_level`,
-    /// and `instantiate_scheme`) register the variable in `type_vars`, so every
-    /// TypeVar that can be bound is visible here.
-    pub fn lookup_binding(&self, name: &str) -> Option<Type> {
-        self.type_vars.get(name).and_then(|e| e.binding.clone())
-    }
-
-    /// Bind a TypeVar to a type.
-    ///
-    /// Writes the binding to both `type_vars[name].binding` (so that snapshot/restore
-    /// patterns on `type_vars` correctly capture and discard bindings) and to
-    /// `subst.type_map` (for the existing unification and substitution application paths).
-    pub fn bind_type_var(&mut self, name: String, ty: Type) {
-        if let Some(entry) = self.type_vars.get_mut(&name) {
-            entry.binding = Some(ty.clone());
-        }
-        self.subst.type_map.borrow_mut().insert(name, ty);
-    }
-
-    /// Set the level for a TypeVar name and ensure it exists in `type_vars`.
-    ///
-    /// Writes to `levels` (for backward-compatible callers) and also inserts a blank entry
-    /// into `type_vars` if one does not already exist.  This ensures that `type_vars` is
-    /// the canonical unified table: any TypeVar registered via `set_level` can later be
-    /// found and bound via `bind_type_var`, and its binding will be preserved through
-    /// snapshot/restore patterns on `type_vars`.
+    /// Set the level for a TypeVar name.
     pub fn set_level(&mut self, name: impl Into<String>, level: u32) {
-        let name = name.into();
-        self.levels.insert(name.clone(), level);
-        self.type_vars
-            .entry(name)
-            .or_insert_with(|| TypeVarEntry::blank(level, Kind::Type));
+        self.ctx.levels.insert(name.into(), level);
     }
 
-    /// Get the level of a TypeVar name (compatibility with new InferState API).
+    /// Get the level of a TypeVar name.
     pub fn get_level(&self, name: &str) -> Option<u32> {
-        self.levels.get(name).copied()
+        self.ctx.levels.get(name).copied()
     }
 
-    /// Returns the level of a TypeVar, or 0 if the name is not registered.
+    /// Look up a TypeVar binding by name (test helper).
     ///
-    /// Level 0 is the correct default for unregistered TypeVar names. These occur as
-    /// binder variables in `Type::Recursive { var, body }` — the binder name is a
-    /// string, not a fresh TypeVar created by `fresh_type_var_with`, so it is never in
-    /// `state.levels`. The correct level for a binder is 0 (outermost scope), which
-    /// causes `lower_levels_check_occurs` to correctly cap any TypeVars in the body
-    /// to the binder's scope. Level 0 is also a safe default for TypeVars created
-    /// directly in tests without going through `fresh_type_var_with`.
-    pub fn get_level_for_occurs_check(&self, name: &str) -> u32 {
-        self.levels.get(name).copied().unwrap_or(0)
+    /// Delegates to `self.ctx.subst`. Returns `Some(TypeValue)` if bound, `None` otherwise.
+    /// Production code should use `self.apply()` which follows chains to fixpoint.
+    #[cfg(test)]
+    pub fn lookup_binding(&self, name: &str) -> Option<TypeValue> {
+        self.ctx.subst.get(name).cloned()
     }
 }
 
@@ -744,15 +1882,253 @@ impl Default for InferState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Type;
 
-    /// `compact_levels()` removes entries for TypeVars that have been unified
-    /// (i.e., whose names appear in `state.subst.type_map`), while keeping entries
-    /// for unbound TypeVars.
+    // ── InferenceContext tests ─────────────────────────────────────────────────
+
+    /// InferenceContext::fresh_typevar creates a TypeValue.Var with a unique name,
+    /// registers the level in ctx.levels, and increments the gensym counter.
+    ///
+    /// Mutation resistance: if fresh_typevar returned the same name twice or did not
+    /// register the level, these assertions would fail.
+    #[test]
+    fn test_inference_context_fresh_typevar_unique() {
+        let mut ctx = InferenceContext::new();
+        ctx.current_level = 2;
+
+        let tv0 = ctx.fresh_typevar("a");
+        let tv1 = ctx.fresh_typevar("a");
+
+        // Both are TypeValue.Var
+        let name0 = typevalue_var_name(&tv0).expect("tv0 must be TypeValue.Var");
+        let name1 = typevalue_var_name(&tv1).expect("tv1 must be TypeValue.Var");
+
+        // Names must be different (gensym counter distinguishes them)
+        assert_ne!(name0, name1, "fresh TypeVars must have distinct names");
+
+        // Both must have their level registered as 2
+        assert_eq!(ctx.get_level(&name0), 2, "tv0 level must be 2");
+        assert_eq!(ctx.get_level(&name1), 2, "tv1 level must be 2");
+    }
+
+    /// InferenceContext::bind enforces monotonicity: binding the same name twice returns Err.
+    ///
+    /// Mutation resistance: if bind() permitted overwriting, the second call would succeed
+    /// and the assert_true(result.is_err()) would fail.
+    #[test]
+    fn test_inference_context_bind_monotonic() {
+        let mut ctx = InferenceContext::new();
+        let tv = ctx.fresh_typevar("x");
+        let name = typevalue_var_name(&tv).unwrap();
+
+        // First bind: must succeed
+        let r1 = ctx.bind(name.clone(), make_typevalue_unknown());
+        assert!(r1.is_ok(), "first bind must succeed");
+
+        // Second bind to the same name: must fail (monotonicity)
+        let r2 = ctx.bind(name.clone(), make_typevalue_never());
+        assert!(r2.is_err(), "second bind must fail — monotonicity violated");
+    }
+
+    /// InferenceContext::apply_subst follows binding chains.
+    ///
+    /// If α → β → TypeValue.Unknown, then apply_subst on α must return TypeValue.Unknown.
+    ///
+    /// Mutation resistance: if apply_subst only followed one level of indirection,
+    /// it would return the β TypeValue.Var rather than Unknown.
+    #[test]
+    fn test_inference_context_apply_subst_chain() {
+        let mut ctx = InferenceContext::new();
+        let alpha = ctx.fresh_typevar("alpha");
+        let beta = ctx.fresh_typevar("beta");
+        let alpha_name = typevalue_var_name(&alpha).unwrap();
+        let beta_name = typevalue_var_name(&beta).unwrap();
+
+        // Bind α → β
+        ctx.bind(alpha_name.clone(), std::sync::Arc::clone(&beta))
+            .unwrap();
+        // Bind β → TypeValue.Unknown
+        ctx.bind(beta_name.clone(), make_typevalue_unknown())
+            .unwrap();
+
+        // apply_subst on α should follow α → β → Unknown and return Unknown
+        let result = ctx.apply_subst(&alpha);
+        assert_eq!(
+            typevalue_ctor(&result),
+            Some(TV_UNKNOWN),
+            "apply_subst must follow binding chains to fixpoint"
+        );
+    }
+
+    /// InferenceContext::lower_var_level lowers the level of a TypeVar.
+    ///
+    /// Mutation resistance: if lower_var_level were a no-op, the level would remain 5
+    /// and the assert_eq!(ctx.get_level(&name), 2) would fail.
+    #[test]
+    fn test_inference_context_lower_var_level() {
+        let mut ctx = InferenceContext::new();
+        ctx.current_level = 5;
+        let tv = ctx.fresh_typevar("t");
+        let name = typevalue_var_name(&tv).unwrap();
+
+        assert_eq!(ctx.get_level(&name), 5, "initial level must be 5");
+
+        ctx.lower_var_level(&name, 2);
+        assert_eq!(ctx.get_level(&name), 2, "level must be lowered to 2");
+
+        // Lowering to a higher level is a no-op
+        ctx.lower_var_level(&name, 7);
+        assert_eq!(
+            ctx.get_level(&name),
+            2,
+            "level must not be raised by lower_var_level"
+        );
+    }
+
+    /// make_typevalue_unknown, make_typevalue_never, make_typevalue_top return unit variants
+    /// with the correct ctor tags.
+    #[test]
+    fn test_typevalue_unit_constructors() {
+        let unknown = make_typevalue_unknown();
+        let never = make_typevalue_never();
+        let top = make_typevalue_top();
+
+        assert_eq!(
+            typevalue_ctor(&unknown),
+            Some(TV_UNKNOWN),
+            "unknown must have ctor TypeValue.Unknown"
+        );
+        assert_eq!(
+            typevalue_ctor(&never),
+            Some(TV_NEVER),
+            "never must have ctor TypeValue.Never"
+        );
+        assert_eq!(
+            typevalue_ctor(&top),
+            Some(TV_TOP),
+            "top must have ctor TypeValue.Top"
+        );
+    }
+
+    /// typevalue_eq on unit variants uses ctor-tag equality.
+    #[test]
+    fn test_typevalue_eq_unit_variants() {
+        let u1 = make_typevalue_unknown();
+        let u2 = make_typevalue_unknown();
+        let n = make_typevalue_never();
+
+        // Same ctor → equal
+        assert!(
+            typevalue_eq(&u1, &u2),
+            "two Unknown TypeValues must be equal"
+        );
+        // Different ctor → not equal
+        assert!(
+            !typevalue_eq(&u1, &n),
+            "Unknown and Never must not be equal"
+        );
+    }
+
+    /// typevalue_eq on TypeValue.Var uses name equality.
+    #[test]
+    fn test_typevalue_eq_var_by_name() {
+        let tv1 = make_typevar_value("foo");
+        let tv2 = make_typevar_value("foo");
+        let tv3 = make_typevar_value("bar");
+
+        assert!(
+            typevalue_eq(&tv1, &tv2),
+            "two Vars with same name must be equal"
+        );
+        assert!(
+            !typevalue_eq(&tv1, &tv3),
+            "Vars with different names must not be equal"
+        );
+    }
+
+    /// make_typevalue_repr creates a TypeValue.Repr variant with the correct repr field.
+    #[test]
+    fn test_make_typevalue_repr() {
+        let repr = make_typevalue_repr(REPR_INT);
+        assert_eq!(
+            typevalue_ctor(&repr),
+            Some(TV_REPR),
+            "repr must have ctor TypeValue.Repr"
+        );
+        // The variant has a non-None payload
+        match repr.as_ref() {
+            crate::value::Value::Variant { payload, .. } => {
+                assert!(payload.is_some(), "TypeValue.Repr must have a payload");
+            }
+            _ => panic!("expected Value::Variant"),
+        }
+    }
+
+    /// make_typevalue_int_lit creates a TypeValue.IntLit with a settled Int payload.
+    #[test]
+    fn test_make_typevalue_int_lit() {
+        let lit = make_typevalue_int_lit(42);
+        assert_eq!(typevalue_ctor(&lit), Some(TV_INT_LIT));
+        match lit.as_ref() {
+            crate::value::Value::Variant {
+                payload: Some(thunk),
+                ..
+            } => {
+                // Payload thunk must be settled (we used Thunk::value)
+                assert!(thunk.is_settled(), "IntLit payload must be settled");
+                // Payload dict must have 'value' key with Int(42)
+                match thunk.peek_result() {
+                    Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+                        let key =
+                            crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_VALUE));
+                        let val_thunk = entries
+                            .get(&key)
+                            .expect("IntLit dict must have 'value' key");
+                        match val_thunk.peek_result() {
+                            Some(Ok(crate::value::Value::Int { n: 42, .. })) => {}
+                            other => panic!("expected Int(42), got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected settled Dict payload, got {:?}", other),
+                }
+            }
+            _ => panic!("expected Value::Variant with Some payload"),
+        }
+    }
+
+    /// InferenceContext::free_vars correctly identifies unbound TypeVars.
+    #[test]
+    fn test_inference_context_free_vars() {
+        let mut ctx = InferenceContext::new();
+
+        // Two unbound TypeVars
+        let alpha = ctx.fresh_typevar("alpha");
+        let beta = ctx.fresh_typevar("beta");
+        let alpha_name = typevalue_var_name(&alpha).unwrap();
+        let beta_name = typevalue_var_name(&beta).unwrap();
+
+        // Both are free in an unbound alpha TypeValue
+        let free = ctx.free_vars(&alpha);
+        assert!(free.contains(&alpha_name), "alpha must be free in itself");
+        assert!(
+            !free.contains(&beta_name),
+            "beta must not appear when walking alpha"
+        );
+
+        // Bind alpha → Unknown; now alpha is not free (it's bound)
+        ctx.bind(alpha_name.clone(), make_typevalue_unknown())
+            .unwrap();
+        let free_after = ctx.free_vars(&alpha);
+        assert!(
+            !free_after.contains(&alpha_name),
+            "bound alpha must not appear in free_vars"
+        );
+    }
+
+    /// `compact_levels()` removes entries for TypeVars that have been bound in ctx.subst,
+    /// while keeping entries for unbound TypeVars.
     ///
     /// Mutation resistance: if `compact_levels()` were a no-op, the unified var
-    /// would still be present in `state.levels` after the call, failing the
-    /// `!state.levels.contains_key("_t0")` assertion.
+    /// would still be present in `state.ctx.levels` after the call.
     #[test]
     fn test_compact_levels_removes_unified_var() {
         use crate::ast::Span;
@@ -764,41 +2140,33 @@ mod tests {
         let tv0 = state.fresh_type_var(&span_a); // registers name in levels at level 0
         let tv1 = state.fresh_type_var(&span_b); // registers name in levels at level 0
 
-        let name0 = match &tv0 {
-            Type::Var(n, _) => n.clone(),
-            _ => panic!("not a TypeVar"),
-        };
-        let name1 = match &tv1 {
-            Type::Var(n, _) => n.clone(),
-            _ => panic!("not a TypeVar"),
-        };
+        let name0 = typevalue_var_name(&tv0).expect("tv0 must be TypeValue.Var");
+        let name1 = typevalue_var_name(&tv1).expect("tv1 must be TypeValue.Var");
 
         assert!(
-            state.levels.contains_key(&name0),
+            state.ctx.levels.contains_key(&name0),
             "tv0 should be in levels before compaction"
         );
         assert!(
-            state.levels.contains_key(&name1),
+            state.ctx.levels.contains_key(&name1),
             "tv1 should be in levels before compaction"
         );
 
-        // Bind tv0 → Int by inserting it into the substitution's type_map.
-        // This simulates what unification does when it solves a TypeVar.
+        // Bind tv0 → Unknown via ctx.subst (simulates what unification does).
         state
+            .ctx
             .subst
-            .type_map
-            .borrow_mut()
-            .insert(name0.clone(), Type::Int);
+            .insert(name0.clone(), make_typevalue_unknown());
 
-        // compact_levels() should remove tv0 (now in type_map) but keep tv1 (unbound).
+        // compact_levels() should remove tv0 (now in ctx.subst) but keep tv1 (unbound).
         state.compact_levels();
 
         assert!(
-            !state.levels.contains_key(&name0),
+            !state.ctx.levels.contains_key(&name0),
             "tv0 should be removed from levels after compaction (it is unified)"
         );
         assert!(
-            state.levels.contains_key(&name1),
+            state.ctx.levels.contains_key(&name1),
             "tv1 should remain in levels after compaction (it is still unbound)"
         );
     }
@@ -814,54 +2182,13 @@ mod tests {
         state.fresh_type_var(&span_a);
         state.fresh_type_var(&span_b);
 
-        let count_before = state.levels.len();
+        let count_before = state.ctx.levels.len();
         state.compact_levels();
-        let count_after = state.levels.len();
+        let count_after = state.ctx.levels.len();
 
         assert_eq!(
             count_before, count_after,
             "compact_levels() must not remove unbound TypeVars"
         );
-    }
-
-    /// Substitution::apply_row must substitute through RowTail::Uniform
-    /// to prevent TypeVars from leaking out of their scope during generalization.
-    #[test]
-    fn test_apply_row_substitutes_uniform_tail() {
-        use crate::type_def::{Row, RowTail};
-        use indexmap::IndexMap;
-        use std::collections::HashMap;
-
-        // Create a substitution: _t7 → Type::Str
-        let mut type_map = HashMap::new();
-        type_map.insert("_t7".to_string(), Type::Str);
-        let subst = Substitution {
-            type_map: std::cell::RefCell::new(type_map),
-        };
-
-        // Create a Row with RowTail::Uniform { key: Type::Str, value: TypeVar("_t7") }
-        let row = Row {
-            fields: IndexMap::new(),
-            tail: RowTail::Uniform {
-                key: None,
-                value: Box::new(Type::Var("_t7".to_string(), 0)),
-            },
-        };
-
-        // Apply the substitution
-        let result_row = Substitution::apply_row(&row, &subst.type_map.borrow());
-
-        // Verify the result has value: Type::Str (substitution applied)
-        match &result_row.tail {
-            RowTail::Uniform { key, value } => {
-                assert_eq!(key, &None, "key should remain None");
-                assert_eq!(
-                    **value,
-                    Type::Str,
-                    "value should be Type::Str after substitution"
-                );
-            }
-            _ => panic!("tail should be RowTail::Uniform after substitution"),
-        }
     }
 }

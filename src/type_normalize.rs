@@ -1,431 +1,17 @@
 //! Type normalization and Display implementations.
 //!
-//! This module contains normalization logic for union/intersection types
-//! and Display implementations for the Type enum.
+//! This module contains normalization logic for TypeValues and Display implementations.
 
-use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 
-use indexmap::IndexMap;
-
-use crate::type_def::Type;
-use crate::type_infer::TypeVarEntry;
+// TypeVarEntry deleted in S-1003 T-2004
+use crate::type_tags::*;
 use crate::value::Value;
+// Type import removed — Type enum deleted in S-1003 T-1986.
+// All functions that used &Type have been replaced with Arc<Value> equivalents.
 
-/// Normalization context for type expressions.
-///
-/// Tracks state for TypeStageApp reduction and caching.
-#[derive(Debug, Clone)]
-pub struct NormCtxt {
-    /// Cache for normalized types (ground types only)
-    pub cache: HashMap<Type, Type>,
-    /// Current normalization depth
-    pub depth: u32,
-    /// Maximum normalization depth before aborting
-    pub max_depth: u32,
-    /// Call stack for cycle detection (resolver function names)
-    pub call_stack: Vec<String>,
-    /// EvalContext for accessing the scope arena (ScopeArena) and type-stage function thunks.
-    pub eval_ctx: Option<Arc<crate::eval::EvalContext>>,
-    /// Type-stage scope chain for resolver lookup.
-    /// Populated from `InferState.type_stage_scope` by production callers in type_unify.rs.
-    /// Empty Vec in test/bootstrap contexts — TypeStageApp nodes remain stuck.
-    pub type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeStageEntry>>,
-    /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
-    /// Set to false inside unify() to prevent evaluation failures from causing type errors.
-    pub allow_eval: bool,
-}
-
-impl NormCtxt {
-    /// Create a normalization context with the given eval context.
-    ///
-    /// Production callers pass `state.eval_ctx.clone()` so that resolver functions
-    /// are looked up via the type-stage scope chain. Test callers and bootstrap contexts
-    /// pass `None`, which causes `TypeStageApp` nodes to remain stuck.
-    pub fn new(eval_ctx: Option<Arc<crate::eval::EvalContext>>) -> Self {
-        Self {
-            cache: HashMap::new(),
-            depth: 0,
-            max_depth: 64,
-            call_stack: Vec::new(),
-            eval_ctx,
-            type_stage_scope: Vec::new(),
-            allow_eval: true,
-        }
-    }
-}
-
-/// Normalize a type expression.
-///
-/// Performs the following steps in order:
-/// 1. Apply current substitution to resolve bound TypeVars
-/// 2. If the type is TypeStageApp { fn_name, args }:
-///    - Normalize each arg recursively
-///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
-///      a. Look up `fn_name` in the type-stage scope chain via `ctx.eval_ctx`.
-///      b. Materialize the resolver thunk and call `call_strict_resolver`.
-///      c. If evaluation fails or the name is not found, return stuck TypeStageApp
-///      (caller can retry via deferred_equalities)
-///    - If depth exceeded or cycle detected, return stuck TypeStageApp
-/// 3. Cache the result (only for ground types)
-///
-/// Returns the normalized type.
-pub fn normalize<'a>(
-    ty: &'a Type,
-    type_vars: &'a IndexMap<String, TypeVarEntry>,
-    ctx: &'a mut NormCtxt,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::EvalResult<Type>> + Send + 'a>>
-{
-    Box::pin(async move {
-        // Step 1: Apply current substitution
-        let ty_substituted = crate::types::apply_substitution(ty, type_vars);
-
-        // Check cache before computing (only for ground types)
-        if !ty_substituted.has_inference_vars() {
-            if let Some(cached) = ctx.cache.get(&ty_substituted) {
-                return Ok(cached.clone());
-            }
-        }
-
-        // Step 2: TypeStageApp reduction
-        let result = match &ty_substituted {
-            Type::StageApp { fn_name, args } => {
-                // Depth guard: if we've exceeded max depth, return stuck
-                if ctx.depth >= ctx.max_depth {
-                    return Ok(ty_substituted.clone());
-                }
-
-                // Cycle detection: if fn_name is already in the call stack, return stuck
-                if ctx.call_stack.contains(fn_name) {
-                    return Ok(ty_substituted.clone());
-                }
-
-                // Normalize each arg recursively
-                ctx.depth += 1;
-                let mut normalized_args: Vec<Type> = Vec::with_capacity(args.len());
-                for arg in args.iter() {
-                    normalized_args.push(Box::pin(normalize(arg, type_vars, ctx)).await?);
-                }
-                ctx.depth -= 1;
-
-                // Check if all args are ground
-                let all_ground = normalized_args.iter().all(|arg| !arg.has_inference_vars());
-
-                if all_ground {
-                    // All args are ground — attempt reduction via resolver cache lookup
-                    // Push fn_name to call stack for cycle detection
-                    ctx.call_stack.push(fn_name.clone());
-
-                    let result = if ctx.allow_eval {
-                        // Walk the type-stage scope chain looking for fn_name.
-                        let mut found_type: Option<Type> = None;
-                        for scope in &ctx.type_stage_scope {
-                            if let Some(entry) = scope.get(fn_name) {
-                                match entry {
-                                    crate::type_infer::TypeStageEntry::Resolved(ty) => {
-                                        found_type = Some(ty.clone());
-                                        break;
-                                    }
-                                    crate::type_infer::TypeStageEntry::Function(thunk) => {
-                                        if let Some(eval_ctx) = ctx.eval_ctx.clone() {
-                                            match evaluate_resolver_with_thunk(
-                                                Arc::clone(thunk),
-                                                &normalized_args,
-                                                &eval_ctx,
-                                            )
-                                            .await
-                                            {
-                                                Ok(Some(ty)) => {
-                                                    found_type = Some(ty);
-                                                    break;
-                                                }
-                                                Ok(None) => {
-                                                    // Resolver value not applicable — continue to
-                                                    // next scope entry.
-                                                }
-                                                Err(e) => {
-                                                    // Pop call stack before propagating the error.
-                                                    ctx.call_stack.pop();
-                                                    return Err(e);
-                                                }
-                                            }
-                                        }
-                                        // eval_ctx unavailable or resolver returned None — continue
-                                    }
-                                    // TypeVar and Class are not used in normalize —
-                                    // they are annotation-resolution-only entries.
-                                    _ => continue,
-                                }
-                            }
-                        }
-                        found_type.unwrap_or_else(|| Type::StageApp {
-                            fn_name: fn_name.clone(),
-                            args: normalized_args,
-                        })
-                    } else {
-                        // allow_eval is false (inside unify/constrain) — return stuck TypeStageApp.
-                        // This path never produces Err because evaluate_resolver_with_thunk is not
-                        // called when allow_eval is false.
-                        Type::StageApp {
-                            fn_name: fn_name.clone(),
-                            args: normalized_args,
-                        }
-                    };
-
-                    // Pop fn_name from call stack
-                    ctx.call_stack.pop();
-
-                    result
-                } else {
-                    // Not all args are ground — return stuck TypeStageApp with normalized args
-                    Type::StageApp {
-                        fn_name: fn_name.clone(),
-                        args: normalized_args,
-                    }
-                }
-            }
-            _ => ty_substituted.clone(),
-        };
-
-        // Step 3: Cache the result (only for ground types)
-        if !result.has_inference_vars() {
-            ctx.cache.insert(ty_substituted.clone(), result.clone());
-        }
-
-        Ok(result)
-    }) // end Box::pin(async move {
-}
-
-// normalize_union and normalize_intersection moved to impl Type in type_def.rs
-
-/// Convert a `Type` to a TypeNode `Value`.
-///
-/// Resolver functions receive TypeNode Variant values as arguments.
-/// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
-pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
-    // Build a leaf TypeNode Variant (no payload) for the given constructor name.
-    // The ctor field stores the fully qualified tag "TypeNode.<ctor>".
-    let leaf = |ctor: &str| -> Value {
-        Value::Variant {
-            type_val: crate::value::unknown_type_val(),
-            ctor: Arc::from(format!("TypeNode.{}", ctor).as_str()),
-            payload: None,
-        }
-    };
-
-    match ty {
-        Type::Int => Some(leaf("Int")),
-        Type::IntLiteral(n) => {
-            let mut payload = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("n")),
-                Arc::new(crate::value::Thunk::value(
-                    Value::Int {
-                        n: *n,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                )),
-            );
-            Some(Value::Variant {
-                type_val: crate::value::unknown_type_val(),
-                ctor: Arc::from("TypeNode.IntLiteral"),
-                payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: payload,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                ))),
-            })
-        }
-        Type::Float => Some(leaf("Float")),
-        Type::FloatLiteral(f) => {
-            let mut payload = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("value")),
-                Arc::new(crate::value::Thunk::value(
-                    Value::Float {
-                        n: *f,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                )),
-            );
-            Some(Value::Variant {
-                type_val: crate::value::unknown_type_val(),
-                ctor: Arc::from("TypeNode.FloatLit"),
-                payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: payload,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                ))),
-            })
-        }
-        Type::Str => Some(leaf("String")),
-        Type::StringLiteral(s) => {
-            let mut payload = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("s")),
-                Arc::new(crate::value::Thunk::value(
-                    Value::String {
-                        source: Arc::from(s.as_str()),
-                        start: 0,
-                        end: s.len(),
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                )),
-            );
-            Some(Value::Variant {
-                type_val: crate::value::unknown_type_val(),
-                ctor: Arc::from("TypeNode.StringLiteral"),
-                payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: payload,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                ))),
-            })
-        }
-        Type::Unknown => Some(leaf("Unknown")),
-        Type::Never => Some(leaf("Never")),
-        Type::Any => Some(leaf("Top")),
-        Type::Dict(row) => {
-            let mut fields_dict = indexmap::IndexMap::new();
-            for (field_name, field_type) in &row.fields {
-                let typenode_val = type_to_typenode(field_type).unwrap_or_else(|| leaf("Unknown"));
-                fields_dict.insert(
-                    crate::value::HashableValue::Str(Arc::from(field_name.as_str())),
-                    Arc::new(crate::value::Thunk::value(
-                        typenode_val,
-                        crate::rust_span!(),
-                    )),
-                );
-            }
-            let open_val = match &row.tail {
-                crate::type_def::RowTail::Empty => Value::Int {
-                    n: 0,
-                    type_val: crate::value::unknown_type_val(),
-                },
-                _ => Value::Int {
-                    n: 1,
-                    type_val: crate::value::unknown_type_val(),
-                },
-            };
-            let mut payload = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("fields")),
-                Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: fields_dict,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                )),
-            );
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("open")),
-                Arc::new(crate::value::Thunk::value(open_val, crate::rust_span!())),
-            );
-            // key-type and value-type from Uniform tail
-            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
-                if let Some(key_type) = key {
-                    let kt_val = type_to_typenode(key_type).unwrap_or_else(|| leaf("Unknown"));
-                    payload.insert(
-                        crate::value::HashableValue::Str(Arc::from("key-type")),
-                        Arc::new(crate::value::Thunk::value(kt_val, crate::rust_span!())),
-                    );
-                }
-                let vt_val = type_to_typenode(value).unwrap_or_else(|| leaf("Unknown"));
-                payload.insert(
-                    crate::value::HashableValue::Str(Arc::from("value-type")),
-                    Arc::new(crate::value::Thunk::value(vt_val, crate::rust_span!())),
-                );
-            }
-            Some(Value::Variant {
-                type_val: crate::value::unknown_type_val(),
-                ctor: Arc::from("TypeNode.Dict"),
-                payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: payload,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                ))),
-            })
-        }
-        Type::Union(members) => {
-            let mut types_dict = indexmap::IndexMap::new();
-            for (i, member) in members.iter().enumerate() {
-                let member_val = type_to_typenode(member).unwrap_or_else(|| leaf("Unknown"));
-                types_dict.insert(
-                    crate::value::HashableValue::Int(i as i64),
-                    Arc::new(crate::value::Thunk::value(member_val, crate::rust_span!())),
-                );
-            }
-            let mut payload = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("types")),
-                Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: types_dict,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                )),
-            );
-            Some(Value::Variant {
-                type_val: crate::value::unknown_type_val(),
-                ctor: Arc::from("TypeNode.Union"),
-                payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: payload,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                ))),
-            })
-        }
-        Type::Intersection(members) => {
-            let mut types_dict = indexmap::IndexMap::new();
-            for (i, member) in members.iter().enumerate() {
-                let member_val = type_to_typenode(member).unwrap_or_else(|| leaf("Unknown"));
-                types_dict.insert(
-                    crate::value::HashableValue::Int(i as i64),
-                    Arc::new(crate::value::Thunk::value(member_val, crate::rust_span!())),
-                );
-            }
-            let mut payload = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str(Arc::from("types")),
-                Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: types_dict,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                )),
-            );
-            Some(Value::Variant {
-                type_val: crate::value::unknown_type_val(),
-                ctor: Arc::from("TypeNode.Intersect"),
-                payload: Some(Arc::new(crate::value::Thunk::value(
-                    Value::Dict {
-                        entries: payload,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    crate::rust_span!(),
-                ))),
-            })
-        }
-        _ => None,
-    }
-}
+// type_to_typenode and typenode_leaf_to_type: deleted in S-1003 (Type enum deleted).
+// Use typenode_leaf_to_typevalue / make_typevalue_* functions instead.
 
 /// Call a type-stage resolver function strictly (no lazy evaluation machinery).
 ///
@@ -440,20 +26,25 @@ pub(crate) fn type_to_typenode(ty: &Type) -> Option<Value> {
 /// - `Ok(Some(ty))` — the resolver produced a recognized TypeNode and it was converted.
 /// - `Ok(None)` — the resolver value is not applicable (wrong shape, args mismatch, etc.).
 /// - `Err(e)` — materialization of the resolver body failed with an evaluation error.
+/// Call a resolver function or TypeNode value with TypeValue arguments.
+///
+/// After S-1003 migration: args are `Arc<Value>` TypeValues instead of `Type`.
+/// Returns `Ok(Some(tv))` where `tv` is a TypeValue, or `Ok(None)` if the resolver
+/// is not applicable.
 pub(crate) async fn call_strict_resolver(
     resolver_val: Value,
-    args: &[crate::type_def::Type],
+    args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
-) -> crate::error::EvalResult<Option<crate::type_def::Type>> {
-    // Leaf value: convert directly without calling anything.
-    if let Some(ty) = typenode_leaf_to_type(&resolver_val) {
+) -> crate::error::EvalResult<Option<Arc<Value>>> {
+    // Leaf value (TypeNode Variant): convert to TypeValue directly without calling.
+    if let Some(tv) = typenode_leaf_to_typevalue(&resolver_val) {
         if args.is_empty() {
-            return Ok(Some(ty));
+            return Ok(Some(tv));
         }
-        // Leaf with args: apply them as App chain.
-        let mut result = ty;
+        // Leaf with args: apply them as TypeValue.App chain.
+        let mut result = tv;
         for arg in args {
-            result = crate::type_def::Type::App(Box::new(result), Box::new(arg.clone()));
+            result = make_typevalue_app(result, Arc::clone(arg));
         }
         return Ok(Some(result));
     }
@@ -477,20 +68,15 @@ pub(crate) async fn call_strict_resolver(
         return Ok(None);
     }
 
-    // Convert Type args to TypeNode values.
-    let type_args: Vec<Value> = args.iter().filter_map(type_to_typenode).collect();
-    if type_args.len() != args.len() {
-        return Ok(None);
-    }
-
-    // Build an EvalFrame for the function call: params become the params vector.
-    // ScopeArena has been deleted — use EvalFrame-based call setup.
-    let param_thunks: Vec<Arc<crate::value::Thunk>> = type_args
-        .into_iter()
+    // Pass TypeValue args directly as TypeNode values (TypeValue IS the TypeNode after migration).
+    // Each arg is already an Arc<Value> TypeValue — use it directly as the param thunk value.
+    let param_thunks: Vec<Arc<crate::value::Thunk>> = args
+        .iter()
         .zip(params.iter())
-        .map(|(val, param)| {
+        .map(|(tv, param)| {
             let span = crate::rust_span!().with_name(std::sync::Arc::from(param.name.as_str()));
-            Arc::new(crate::value::Thunk::value(val, span))
+            // TypeValue IS the TypeNode — pass it directly.
+            Arc::new(crate::value::Thunk::value(Value::clone(tv.as_ref()), span))
         })
         .collect();
     let call_frame = crate::value::EvalFrame::for_function_call(closure_env, param_thunks);
@@ -504,109 +90,128 @@ pub(crate) async fn call_strict_resolver(
     ));
     let result_val = crate::eval::materialize(&body_thunk, None, eval_ctx).await?;
 
+    // The result is already a TypeValue — typenode_value_to_type returns Arc<Value> TypeValue.
     crate::typecheck::typecheck_annot::typenode_value_to_type(&result_val, eval_ctx, &[]).await
 }
 
 /// Evaluate a resolver by Arc<Thunk> — materializes the thunk then delegates to `call_strict_resolver`.
-/// Used by the `type_stage_scope` Function path in `resolve_type_head` which has a pre-located thunk.
 ///
 /// Returns:
-/// - `Ok(Some(ty))` — the resolver produced a recognized TypeNode and it was converted.
+/// - `Ok(Some(tv))` — the resolver produced a TypeValue.
 /// - `Ok(None)` — the resolver value is not applicable (wrong shape, args mismatch, etc.).
 /// - `Err(e)` — materialization of the thunk or the resolver body failed with an evaluation error.
 pub(crate) async fn evaluate_resolver_with_thunk(
     thunk: Arc<crate::value::Thunk>,
-    args: &[crate::type_def::Type],
+    args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
-) -> crate::error::EvalResult<Option<crate::type_def::Type>> {
+) -> crate::error::EvalResult<Option<Arc<Value>>> {
     let resolver_val = crate::eval::materialize(&thunk, None, eval_ctx).await?;
     call_strict_resolver(resolver_val, args, eval_ctx).await
 }
 
-/// Convert a TypeNode variant value to a Type.
-/// Handles leaf constructors (Int, String, Float, etc.) and opaque TyCon sentinels.
-/// Also handles TypeNode.Dict as a bootstrap fallback — when payload thunks have closure
-/// captures that can't be evaluated (bootstrap scenario), TypeNode.Dict produces a generic
-/// open dict. `classify_type_stage_entry` calls `typenode_value_to_type` first for the full
-/// structural conversion; this function is the fallback when that returns None.
-pub(crate) fn typenode_leaf_to_type(val: &Value) -> Option<Type> {
+/// Create a TypeValue.App { op: TypeValue, arg: TypeValue } — type constructor application.
+pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> {
+    use crate::value::{HashableValue, Thunk};
+    let mut entries = indexmap::IndexMap::new();
+    entries.insert(
+        HashableValue::Str(Arc::from(FIELD_OP)),
+        Arc::new(Thunk::value(Value::clone(op.as_ref()), crate::rust_span!())),
+    );
+    entries.insert(
+        HashableValue::Str(Arc::from(FIELD_ARG)),
+        Arc::new(Thunk::value(
+            Value::clone(arg.as_ref()),
+            crate::rust_span!(),
+        )),
+    );
+    let payload = Value::Dict {
+        entries,
+        type_val: crate::value::unknown_type_val(),
+    };
+    Arc::new(Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(TV_APP),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Convert a TypeNode leaf Variant value to a TypeValue (Arc<Value>).
+/// Used by `call_strict_resolver` after S-1003 migration.
+/// Parallel to `typenode_leaf_to_type` but returns TypeValue instead of Type.
+pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
+    use crate::type_infer::{
+        make_typevalue_never, make_typevalue_op, make_typevalue_repr, make_typevalue_top,
+        make_typevalue_unknown,
+    };
     let tag = match val {
         Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
         _ => return None,
     };
     match tag.as_str() {
-        "TypeNode.Int" => Some(Type::Int),
-        "TypeNode.Float" => Some(Type::Float),
-        "TypeNode.String" => Some(Type::Str),
-        "TypeNode.Bytes" => Some(Type::Bytes),
-        "TypeNode.Never" => Some(Type::Never),
-        "TypeNode.Unknown" => Some(Type::Unknown),
-        "TypeNode.Top" => Some(Type::Any),
-        // Absent: the empty closed dict type. Runtime value [] is Value::Dict({}); @Absent is its static type.
-        "TypeNode.Absent" => Some(Type::Dict(crate::types::Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Empty,
-        })),
-        "TypeNode.Proxy" => Some(Type::Proxy),
-        // Any callable — variadic function with zero required params (top of the function lattice).
-        "TypeNode.Callable" => Some(Type::Function {
-            params: vec![],
-            ret: Box::new(Type::Any),
-            typed_variadics: vec![],
-            rest: Some(Box::new(("rest".to_string(), Type::Any))),
-            required_count: 0,
-        }),
-        // Opaque builtin types — each maps to a TyCon that value_matches_type dispatches
-        // via TyConDef.builtin_type. The discriminant string here must match the string
-        // registered in build_builtin_core_envs_inner and the arm in value_matches_type.
-        "TypeNode.Program" => Some(Type::TyCon("Program".to_string())),
-        "TypeNode.Document" => Some(Type::TyCon("Document".to_string())),
-        "TypeNode.CoreDocument" => Some(Type::TyCon("CoreDocument".to_string())),
-        "TypeNode.TypeContext" => Some(Type::TyCon("TypeContext".to_string())),
-        "TypeNode.DirCap" => Some(Type::TyCon("DirCap".to_string())),
-        "TypeNode.NetCap" => Some(Type::TyCon("NetCap".to_string())),
-        "TypeNode.Handle" => Some(Type::TyCon("Handle".to_string())),
-        "TypeNode.File" => Some(Type::TyCon("File".to_string())),
-        "TypeNode.BuilderHandle" => Some(Type::TyCon("BuilderHandle".to_string())),
-        "TypeNode.Task" => Some(Type::TyCon("Task".to_string())),
-        "TypeNode.Channel" => Some(Type::TyCon("Channel".to_string())),
-        "TypeNode.Context" => Some(Type::TyCon("Context".to_string())),
-        "TypeNode.ReactiveCell" => Some(Type::TyCon("ReactiveCell".to_string())),
-        "TypeNode.ClockCap" => Some(Type::TyCon("ClockCap".to_string())),
-        "TypeNode.Timezone" => Some(Type::TyCon("Timezone".to_string())),
-        "TypeNode.Timestamp" => Some(Type::TyCon("Timestamp".to_string())),
-        "TypeNode.Duration" => Some(Type::TyCon("Duration".to_string())),
-        "TypeNode.Decimal" => Some(Type::TyCon("Decimal".to_string())),
-        "TypeNode.BigInt" => Some(Type::TyCon("BigInt".to_string())),
-        "TypeNode.QuicSession" => Some(Type::TyCon("QuicSession".to_string())),
-        "TypeNode.QuicDatagramHandle" => Some(Type::TyCon("QuicDatagramHandle".to_string())),
-        "TypeNode.Http2Session" => Some(Type::TyCon("Http2Session".to_string())),
-        "TypeNode.Http3Session" => Some(Type::TyCon("Http3Session".to_string())),
-        "TypeNode.Uri" => Some(Type::TyCon("Uri".to_string())),
-        "TypeNode.Urn" => Some(Type::TyCon("Urn".to_string())),
+        TN_INT => Some(make_typevalue_repr(REPR_INT)),
+        TN_FLOAT => Some(make_typevalue_repr(REPR_FLOAT)),
+        TN_STRING => Some(make_typevalue_repr(REPR_STRING)),
+        TN_BYTES => Some(make_typevalue_repr(REPR_BYTES)),
+        TN_NEVER => Some(make_typevalue_never()),
+        TN_UNKNOWN => Some(make_typevalue_unknown()),
+        TN_TOP => Some(make_typevalue_top()),
+        TN_ABSENT => {
+            // Empty closed record TypeValue
+            let fields: indexmap::IndexMap<String, Arc<Value>> = indexmap::IndexMap::new();
+            Some(crate::typecheck::make_typevalue_record_pub(fields, None))
+        }
+        // Opaque builtin types — each maps to TypeValue.Op
+        TN_PROGRAM => Some(make_typevalue_op(OP_PROGRAM)),
+        TN_DOCUMENT => Some(make_typevalue_op(OP_DOCUMENT)),
+        TN_CORE_DOCUMENT => Some(make_typevalue_op(OP_CORE_DOCUMENT)),
+        TN_TYPE_CONTEXT => Some(make_typevalue_op(OP_TYPE_CONTEXT)),
+        TN_DIR_CAP => Some(make_typevalue_op(OP_DIR_CAP)),
+        TN_NET_CAP => Some(make_typevalue_op(OP_NET_CAP)),
+        TN_HANDLE => Some(make_typevalue_op(OP_HANDLE)),
+        TN_FILE => Some(make_typevalue_op(OP_FILE)),
+        TN_BUILDER_HANDLE => Some(make_typevalue_op(OP_BUILDER_HANDLE)),
+        TN_TASK => Some(make_typevalue_op(OP_TASK)),
+        TN_CHANNEL => Some(make_typevalue_op(OP_CHANNEL)),
+        TN_CONTEXT => Some(make_typevalue_op(OP_CONTEXT)),
+        TN_REACTIVE_CELL => Some(make_typevalue_op(OP_REACTIVE_CELL)),
+        TN_CLOCK_CAP => Some(make_typevalue_op(OP_CLOCK_CAP)),
+        TN_TIMEZONE => Some(make_typevalue_op(OP_TIMEZONE)),
+        TN_TIMESTAMP => Some(make_typevalue_op(OP_TIMESTAMP)),
+        TN_DURATION => Some(make_typevalue_op(OP_DURATION)),
+        TN_DECIMAL => Some(make_typevalue_op(OP_DECIMAL)),
+        TN_BIG_INT => Some(make_typevalue_op(OP_BIG_INT)),
+        TN_QUIC_SESSION => Some(make_typevalue_op(OP_QUIC_SESSION)),
+        TN_QUIC_DATAGRAM_HANDLE => Some(make_typevalue_op(OP_QUIC_DATAGRAM_HANDLE)),
+        TN_HTTP2_SESSION => Some(make_typevalue_op(OP_HTTP2_SESSION)),
+        TN_HTTP3_SESSION => Some(make_typevalue_op(OP_HTTP3_SESSION)),
+        TN_URI => Some(make_typevalue_op(OP_URI)),
+        TN_URN => Some(make_typevalue_op(OP_URN)),
         _ => None,
     }
 }
 
-/// Extract the Kind from a TypeNode.TypeVar sentinel value.
+/// Extract the kind name from a TypeNode.TypeVar sentinel value.
 ///
+/// After S-1003: `Kind` enum is deleted. This function returns `Option<String>` (the kind name).
 /// `TypeNode.TypeVar kind: "Operator"` and `TypeNode.TypeVar kind: "Label"` are produced
 /// by builtin_core.llt's type-stage section for the `Operator` and `Label` type names.
-/// This helper converts them to `crate::type_def::Kind` values so that the type-stage
-/// scope population code (builtins_meta.rs, lib.rs) can produce `TypeStageEntry::TypeVar`.
+/// The returned kind name is used to populate `InferState::type_stage_type_vars`.
 ///
-/// Returns `Ok(Some(Kind))` for recognised kind strings, `Ok(None)` for unrecognised values,
+/// Returns `Ok(Some(kind_name))` for recognised kind strings, `Ok(None)` for unrecognised values,
 /// and `Err(e)` when a thunk inside the TypeVar payload has settled with an evaluation error.
 pub(crate) fn typenode_typevar_kind(
     val: &Value,
-) -> Result<Option<crate::type_def::Kind>, std::sync::Arc<crate::error::EvalError>> {
-    // Only matches Value::Variant { ctor: "TypeNode.TypeVar", payload: Some(thunk) }
+) -> Result<Option<String>, std::sync::Arc<crate::error::EvalError>> {
+    // Only matches Value::Variant { ctor: TN_TYPE_VAR, payload: Some(thunk) }
     // where the thunk resolves to Value::Dict containing kind: "Operator" | "Label".
     let (ctor, payload_opt) = match val {
         Value::Variant { ctor, payload, .. } => (ctor.as_ref(), payload),
         _ => return Ok(None),
     };
-    if ctor != "TypeNode.TypeVar" {
+    if ctor != TN_TYPE_VAR {
         return Ok(None);
     }
     // The payload is an Arc<Thunk> that resolves to a Dict with a "kind" string field.
@@ -624,7 +229,7 @@ pub(crate) fn typenode_typevar_kind(
         _ => return Ok(None),
     };
     // Extract the "kind" field value.
-    let kind_key = crate::value::HashableValue::Str(std::sync::Arc::from("kind"));
+    let kind_key = crate::value::HashableValue::Str(std::sync::Arc::from(TN_FIELD_KIND));
     let kind_thunk = match dict.get(&kind_key) {
         Some(t) => t,
         None => return Ok(None),
@@ -641,711 +246,11 @@ pub(crate) fn typenode_typevar_kind(
         _ => return Ok(None),
     };
     match kind_str {
-        "Operator" => Ok(Some(crate::type_def::Kind::Operator)),
-        "Label" => Ok(Some(crate::type_def::Kind::Label)),
+        KIND_OPERATOR | KIND_LABEL | KIND_TYPE | KIND_ARROW => Ok(Some(kind_str.to_string())),
         _ => Ok(None),
     }
 }
 
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Type::Int => write!(f, "Integer"),
-            Type::IntLiteral(n) => write!(f, "{}", n),
-            Type::Float => write!(f, "Float"),
-            Type::FloatLiteral(v) => write!(f, "{}", v),
-            Type::Str => write!(f, "String"),
-            Type::StringLiteral(s) => write!(f, "\"{}\"", s),
-            Type::Bytes => write!(f, "Bytes"),
-            Type::Dict(row) => {
-                write!(f, "[")?;
-                let mut sorted: Vec<_> = row.fields.iter().collect();
-                sorted.sort_by_key(|(k, _)| *k);
-                for (i, (key, ty)) in sorted.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}: {}", key, ty)?;
-                }
-                // Display RowTail::Uniform as `...@[Dict K V]` where K is the key type
-                // (Any when unconstrained). Mirrors tinct's annotation convention and uses
-                // Dict — a type programmers already know — rather than Map (not user-visible).
-                if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
-                    if !row.fields.is_empty() {
-                        write!(f, " ")?;
-                    }
-                    let key_str = key
-                        .as_ref()
-                        .map(|k| format!("{}", k))
-                        .unwrap_or_else(|| "Any".to_string());
-                    write!(f, "...@[Dict {} {}]", key_str, value)?;
-                }
-                write!(f, "]")
-            }
-            Type::Function {
-                params,
-                typed_variadics,
-                rest,
-                ret,
-                required_count: _,
-            } => {
-                // Parenthesize nested function return types for clarity
-                match **ret {
-                    Type::Function { .. } => write!(f, "Fn@({}) [", ret)?,
-                    _ => write!(f, "Fn@{} [", ret)?,
-                }
-                for (i, (name_opt, param_ty)) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    // Parenthesize nested function types in parameter position
-                    match param_ty {
-                        Type::Function { .. } => {
-                            if let Some(name) = name_opt {
-                                write!(f, "{}: ({})", name, param_ty)?
-                            } else {
-                                write!(f, "({})", param_ty)?
-                            }
-                        }
-                        _ => {
-                            if let Some(name) = name_opt {
-                                write!(f, "{}: {}", name, param_ty)?
-                            } else {
-                                write!(f, "{}", param_ty)?
-                            }
-                        }
-                    }
-                }
-                for (name, ty) in typed_variadics {
-                    write!(f, " ...{}@{}", name, ty)?;
-                }
-                if let Some(r) = rest {
-                    write!(f, " ...{}", r.0)?;
-                }
-                write!(f, "]")
-            }
-            Type::Proxy => write!(f, "Proxy"),
-            Type::Var(name, _level) => write!(f, "{}", name),
-            Type::Unknown => write!(f, "Unknown"),
-            Type::Any => write!(f, "Any"),
-            Type::Error(errs) => {
-                if let Some(first) = errs.first() {
-                    write!(f, "<error: {}>", first.message)
-                } else {
-                    write!(f, "<error>")
-                }
-            }
-            Type::Union(types) => {
-                // Use tinct annotation syntax: [or T1 T2 ...]
-                write!(f, "[or")?;
-                for ty in types.iter() {
-                    write!(f, " {}", ty)?;
-                }
-                write!(f, "]")
-            }
-            Type::Intersection(types) => {
-                // Use tinct annotation syntax: [all T1 T2 ...]
-                write!(f, "[all")?;
-                for ty in types.iter() {
-                    write!(f, " {}", ty)?;
-                }
-                write!(f, "]")
-            }
-            Type::DirCap => write!(f, "DirCap"),
-            Type::NetCap => write!(f, "NetCap"),
-            Type::Uri => write!(f, "Uri"),
-            Type::Timestamp => write!(f, "Timestamp"),
-            Type::Duration => write!(f, "Duration"),
-            Type::ClockCap => write!(f, "ClockCap"),
-            Type::Timezone => write!(f, "Timezone"),
-            Type::QuicSession => write!(f, "QuicSession"),
-            Type::Http2Session => write!(f, "Http2Session"),
-            Type::Http3Session => write!(f, "Http3Session"),
-            Type::QuicDatagramHandle => write!(f, "QuicDatagramHandle"),
-            Type::DatagramHandle => write!(f, "DatagramHandle"),
-            Type::Negation(inner) => {
-                // Parenthesize complex inner types for clarity
-                match **inner {
-                    Type::Union(_) | Type::Intersection(_) | Type::Negation(_) => {
-                        write!(f, "~({})", inner)
-                    }
-                    _ => write!(f, "~{}", inner),
-                }
-            }
-            Type::Never => write!(f, "Never"),
-            Type::NominalVariant { tycon, ctor, .. } => {
-                if tycon.is_empty() {
-                    write!(f, "{}", ctor)
-                } else {
-                    write!(f, "{}.{}", tycon, ctor)
-                }
-            }
-            Type::App(func, arg) => {
-                if let Some((k, v)) = self.as_map() {
-                    return write!(f, "Map[{} {}]", k, v);
-                }
-                if let Some(cap) = self.as_handle() {
-                    if matches!(cap, Type::Unknown) {
-                        return write!(f, "Handle");
-                    }
-                    return write!(f, "Handle[{}]", cap);
-                }
-
-                // General case: TyCon applications show as Name[Arg, ...] instead of App[TyCon(Name) Arg].
-                // Collect the full curried spine: App(App(...App(TyCon(name), a1)..., an-1), an).
-                {
-                    let mut args_rev: Vec<&Type> = vec![arg.as_ref()];
-                    let mut cur: &Type = func.as_ref();
-                    loop {
-                        match cur {
-                            Type::App(inner_func, inner_arg) => {
-                                args_rev.push(inner_arg.as_ref());
-                                cur = inner_func.as_ref();
-                            }
-                            Type::TyCon(name) => {
-                                args_rev.reverse();
-                                write!(f, "{name}[")?;
-                                for (i, a) in args_rev.iter().enumerate() {
-                                    if i > 0 {
-                                        write!(f, ", ")?;
-                                    }
-                                    write!(f, "{a}")?;
-                                }
-                                return write!(f, "]");
-                            }
-                            Type::TyConResolved(name, _def) => {
-                                args_rev.reverse();
-                                write!(f, "{name}[")?;
-                                for (i, a) in args_rev.iter().enumerate() {
-                                    if i > 0 {
-                                        write!(f, ", ")?;
-                                    }
-                                    write!(f, "{a}")?;
-                                }
-                                return write!(f, "]");
-                            }
-                            _ => break,
-                        }
-                    }
-                }
-                write!(f, "[{} {}]", func, arg)
-            }
-            Type::TyCon(name) => write!(f, "{}", name),
-            Type::TyConResolved(name, _def) => write!(f, "{}", name),
-            Type::Operator(name) => write!(f, "{}", name),
-            Type::StageApp { fn_name, args } => {
-                write!(f, "{}(", fn_name)?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, ")")
-            }
-            // S-860: equirecursive-types-core
-            // Display as `μVarName.Body`, extracting the human-readable alias name from the
-            // gensym'd binder (e.g., "𝜇ꜱʏᴍ⧼IntList⧽42" → displayed as "μIntList").
-            // This matches the notation used in doc/whatif/equirecursive-types.md.
-            Type::Recursive { var, body } => {
-                // Extract the alias name from the gensym tag: "𝜇ꜱʏᴍ⧼NAME⧽N" → "NAME".
-                // Falls back to the full var name if the format doesn't match.
-                let display_name = var
-                    .strip_prefix('𝜇')
-                    .and_then(|s| s.strip_prefix("ꜱʏᴍ⧼"))
-                    .and_then(|s| s.find('⧽').map(|i| &s[..i]))
-                    .unwrap_or(var.as_str());
-                write!(f, "μ{}.{}", display_name, body)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::Kind;
-    use std::collections::HashSet;
-
-    /// Helper: create an empty type_vars map for testing
-    fn empty_type_vars() -> IndexMap<String, TypeVarEntry> {
-        IndexMap::new()
-    }
-
-    async fn norm(
-        ty: &Type,
-        type_vars: &IndexMap<String, TypeVarEntry>,
-        ctx: &mut NormCtxt,
-    ) -> crate::error::EvalResult<Type> {
-        normalize(ty, type_vars, ctx).await
-    }
-
-    /// Test: normalize(Int, type_vars, ctx) returns Int unchanged
-    #[tokio::test]
-    async fn test_normalize_identity_concrete_type() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-        let ty = Type::Int;
-        let result = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result, Type::Int);
-        Ok(())
-    }
-
-    /// Test: normalize(TypeVar("a"), type_vars, ctx) returns the bound type if "a" is bound
-    #[tokio::test]
-    async fn test_normalize_substitution() -> crate::error::EvalResult<()> {
-        let mut tv = IndexMap::new();
-        {
-            let mut entry = TypeVarEntry::blank(0, Kind::Type);
-            entry.binding = Some(Type::Str);
-            tv.insert("a".to_string(), entry);
-        }
-        let mut ctx = NormCtxt::new(None);
-        let ty = Type::Var("a".to_string(), 0);
-        let result = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result, Type::Str);
-        Ok(())
-    }
-
-    /// Test: normalize() cache - second call returns cached result
-    #[tokio::test]
-    async fn test_normalize_cache() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-        let ty = Type::Int;
-
-        // First call - populates cache
-        let result1 = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result1, Type::Int);
-
-        // Second call - should return cached result
-        let result2 = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result2, Type::Int);
-
-        // Verify cache entry exists (use concrete Int, not Seq)
-        assert!(ctx.cache.contains_key(&Type::Int));
-        Ok(())
-    }
-
-    /// Test: normalize() cycle detection - TypeStageApp with fn_name already in call_stack returns stuck
-    #[tokio::test]
-    async fn test_normalize_cycle_detection() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-
-        // Manually push "Recursive" to call_stack to simulate cycle
-        ctx.call_stack.push("Recursive".to_string());
-
-        let ty = Type::StageApp {
-            fn_name: "Recursive".to_string(),
-            args: vec![Type::Int],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-
-        // Should return stuck (unchanged) due to cycle detection
-        assert_eq!(
-            result,
-            Type::StageApp {
-                fn_name: "Recursive".to_string(),
-                args: vec![Type::Int],
-            }
-        );
-        Ok(())
-    }
-
-    /// Test: normalize() depth guard - depth > max_depth returns stuck
-    #[tokio::test]
-    async fn test_normalize_depth_guard() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-
-        // Set depth to max_depth
-        ctx.depth = ctx.max_depth;
-
-        let ty = Type::StageApp {
-            fn_name: "Deep".to_string(),
-            args: vec![Type::Int],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-
-        // Should return stuck (unchanged) due to depth exceeded
-        assert_eq!(
-            result,
-            Type::StageApp {
-                fn_name: "Deep".to_string(),
-                args: vec![Type::Int],
-            }
-        );
-        Ok(())
-    }
-
-    /// Test: has_type_stage_app() returns true for TypeStageApp
-    #[tokio::test]
-    async fn test_has_type_stage_app_true_for_type_stage_app() {
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        assert!(ty.has_type_stage_app());
-    }
-
-    /// Test: has_type_stage_app() returns false for concrete types
-    #[tokio::test]
-    async fn test_has_type_stage_app_false_for_concrete() {
-        assert!(!Type::Int.has_type_stage_app());
-        assert!(!Type::Str.has_type_stage_app());
-        assert!(!Type::Float.has_type_stage_app());
-    }
-
-    /// Test: has_type_stage_app() returns true for App(TyCon, TypeStageApp)
-    #[tokio::test]
-    async fn test_has_type_stage_app_true_for_app_containing_type_stage_app() {
-        let ty = Type::App(
-            Box::new(Type::TyCon("Box".into())),
-            Box::new(Type::StageApp {
-                fn_name: "AddResult".to_string(),
-                args: vec![Type::Int, Type::Float],
-            }),
-        );
-        assert!(ty.has_type_stage_app());
-    }
-
-    /// Test: has_type_stage_app() returns false for App(TyCon, Int)
-    #[tokio::test]
-    async fn test_has_type_stage_app_false_for_app_of_concrete() {
-        let ty = Type::App(Box::new(Type::TyCon("Box".into())), Box::new(Type::Int));
-        assert!(!ty.has_type_stage_app());
-    }
-
-    /// Test: TypeStageApp PartialEq - same fn_name+args equal
-    #[tokio::test]
-    async fn test_type_stage_app_partial_eq_same() {
-        let ty1 = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let ty2 = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        assert_eq!(ty1, ty2);
-    }
-
-    /// Test: TypeStageApp PartialEq - different fn_name not equal
-    #[tokio::test]
-    async fn test_type_stage_app_partial_eq_different_fn_name() {
-        let ty1 = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let ty2 = Type::StageApp {
-            fn_name: "SubResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        assert_ne!(ty1, ty2);
-    }
-
-    /// Test: TypeStageApp PartialEq - different args not equal
-    #[tokio::test]
-    async fn test_type_stage_app_partial_eq_different_args() {
-        let ty1 = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let ty2 = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Float, Type::Int],
-        };
-        assert_ne!(ty1, ty2);
-    }
-
-    /// Test: TypeStageApp Display format
-    #[tokio::test]
-    async fn test_type_stage_app_display() {
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let formatted = format!("{}", ty);
-        assert_eq!(formatted, "AddResult(Integer, Float)");
-    }
-
-    /// Test: TypeStageApp Display format with single arg
-    #[tokio::test]
-    async fn test_type_stage_app_display_single_arg() {
-        let ty = Type::StageApp {
-            fn_name: "Singleton".to_string(),
-            args: vec![Type::Int],
-        };
-        let formatted = format!("{}", ty);
-        assert_eq!(formatted, "Singleton(Integer)");
-    }
-
-    /// Test: TypeStageApp Display format with no args
-    #[tokio::test]
-    async fn test_type_stage_app_display_no_args() {
-        let ty = Type::StageApp {
-            fn_name: "Nullary".to_string(),
-            args: vec![],
-        };
-        let formatted = format!("{}", ty);
-        assert_eq!(formatted, "Nullary()");
-    }
-
-    /// Test: normalize() with non-ground TypeStageApp args returns stuck
-    #[tokio::test]
-    async fn test_normalize_type_stage_app_non_ground_args() -> crate::error::EvalResult<()> {
-        let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Var("a".to_string(), 0), Type::Float],
-        };
-        let result = norm(&ty, &subst, &mut ctx).await?;
-        // Non-ground args - should return TypeStageApp with normalized args (but stuck)
-        assert_eq!(
-            result,
-            Type::StageApp {
-                fn_name: "AddResult".to_string(),
-                args: vec![Type::Var("a".to_string(), 0), Type::Float],
-            }
-        );
-        Ok(())
-    }
-
-    /// Test: NormCtxt::new() initializes with correct defaults
-    #[tokio::test]
-    async fn test_norm_ctxt_new_defaults() {
-        let ctx = NormCtxt::new(None);
-
-        assert!(ctx.cache.is_empty());
-        assert_eq!(ctx.depth, 0);
-        assert_eq!(ctx.max_depth, 64);
-        assert!(ctx.call_stack.is_empty());
-    }
-
-    /// Test: cache only stores ground types
-    #[tokio::test]
-    async fn test_normalize_cache_only_ground_types() -> crate::error::EvalResult<()> {
-        let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-
-        // Normalize a type with inference variables
-        let ty_with_var = Type::App(
-            Box::new(Type::TyCon("Box".into())),
-            Box::new(Type::Var("a".to_string(), 0)),
-        );
-        norm(&ty_with_var, &subst, &mut ctx).await?;
-
-        // Cache should NOT contain this type (has inference vars)
-        assert!(!ctx.cache.contains_key(&ty_with_var));
-
-        // Normalize a ground type
-        let ty_ground = Type::App(Box::new(Type::TyCon("Box".into())), Box::new(Type::Int));
-        norm(&ty_ground, &subst, &mut ctx).await?;
-
-        // Cache SHOULD contain this type (ground)
-        assert!(ctx.cache.contains_key(&ty_ground));
-        Ok(())
-    }
-
-    /// Test: TypeStageApp collect_type_vars
-    #[tokio::test]
-    async fn test_type_stage_app_collect_type_vars() {
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![
-                Type::Var("a".to_string(), 0),
-                Type::Int,
-                Type::Var("b".to_string(), 1),
-            ],
-        };
-
-        let mut vars = HashSet::new();
-        ty.collect_type_vars(&mut vars);
-
-        assert_eq!(vars.len(), 2);
-        assert!(vars.contains("a"));
-        assert!(vars.contains("b"));
-    }
-
-    /// Test: TypeStageApp has_inference_vars
-    #[tokio::test]
-    async fn test_type_stage_app_has_inference_vars_true() {
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Var("a".to_string(), 0), Type::Int],
-        };
-        assert!(ty.has_inference_vars());
-    }
-
-    /// Test: TypeStageApp has_inference_vars false for ground args
-    #[tokio::test]
-    async fn test_type_stage_app_has_inference_vars_false() {
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        assert!(!ty.has_inference_vars());
-    }
-
-    /// Test: unknown resolver returns stuck TypeStageApp (no env → allow_eval path skipped)
-    #[tokio::test]
-    async fn test_unknown_resolver_returns_stuck() -> crate::error::EvalResult<()> {
-        let subst = empty_type_vars();
-        let mut ctx = NormCtxt::new(None);
-        let ty = Type::StageApp {
-            fn_name: "UnknownResolver".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let result = norm(&ty, &subst, &mut ctx).await?;
-        assert_eq!(
-            result,
-            Type::StageApp {
-                fn_name: "UnknownResolver".to_string(),
-                args: vec![Type::Int, Type::Float],
-            }
-        );
-        Ok(())
-    }
-
-    // ── Type-stage resolver tests ────────────────────────
-
-    /// TypeStageApp with ground args resolves via type_stage_scope
-    #[tokio::test]
-    async fn test_normalize_type_stage_app_ground_args_resolves() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-
-        // Create a simple type-stage resolver that returns Int when called
-        use crate::type_infer::TypeStageEntry;
-        let mut type_stage_map = std::collections::HashMap::new();
-        type_stage_map.insert("AddResult".to_string(), TypeStageEntry::Resolved(Type::Int));
-
-        let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_scope = vec![type_stage_map];
-
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Int],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-
-        // Should resolve to Int (both args are Int)
-        assert_eq!(result, Type::Int);
-        Ok(())
-    }
-
-    /// TypeStageApp with recursive arg normalization
-    #[tokio::test]
-    async fn test_normalize_type_stage_app_with_arg_substitution() -> crate::error::EvalResult<()> {
-        let mut tv = IndexMap::new();
-        {
-            let mut entry = TypeVarEntry::blank(0, Kind::Type);
-            entry.binding = Some(Type::Float);
-            tv.insert("a".to_string(), entry);
-        }
-
-        use crate::type_infer::TypeStageEntry;
-        let mut type_stage_map = std::collections::HashMap::new();
-        type_stage_map.insert(
-            "AddResult".to_string(),
-            TypeStageEntry::Resolved(Type::Float),
-        );
-
-        let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_scope = vec![type_stage_map];
-
-        // AddResult(Int, TypeVar("a")) where a is bound to Float → should normalize to Float
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Var("a".to_string(), 0)],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-
-        // Should resolve to Float (Int + Float → Float per resolver)
-        assert_eq!(result, Type::Float);
-        Ok(())
-    }
-
-    /// Resolver cache - AddResult(Int, Int) → Int
-    #[tokio::test]
-    async fn test_type_stage_app_resolver_caching_add_int_int() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-
-        use crate::type_infer::TypeStageEntry;
-        let mut type_stage_map = std::collections::HashMap::new();
-        type_stage_map.insert("AddResult".to_string(), TypeStageEntry::Resolved(Type::Int));
-
-        let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_scope = vec![type_stage_map];
-
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Int],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result, Type::Int);
-
-        // Verify the result was cached (cache should contain the TypeStageApp → Int mapping)
-        assert!(ctx.cache.contains_key(&ty));
-        Ok(())
-    }
-
-    /// Resolver cache - AddResult(Int, Float) → Float
-    #[tokio::test]
-    async fn test_type_stage_app_resolver_caching_add_int_float() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-
-        use crate::type_infer::TypeStageEntry;
-        let mut type_stage_map = std::collections::HashMap::new();
-        type_stage_map.insert(
-            "AddResult".to_string(),
-            TypeStageEntry::Resolved(Type::Float),
-        );
-
-        let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_scope = vec![type_stage_map];
-
-        let ty = Type::StageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result, Type::Float);
-
-        // Verify caching
-        assert!(ctx.cache.contains_key(&ty));
-        Ok(())
-    }
-
-    /// Resolver cache - DivResult(Int, Int) → Int
-    #[tokio::test]
-    async fn test_type_stage_app_resolver_caching_div_int_int() -> crate::error::EvalResult<()> {
-        let tv = empty_type_vars();
-
-        use crate::type_infer::TypeStageEntry;
-        let mut type_stage_map = std::collections::HashMap::new();
-        type_stage_map.insert("DivResult".to_string(), TypeStageEntry::Resolved(Type::Int));
-
-        let mut ctx = NormCtxt::new(None);
-        ctx.type_stage_scope = vec![type_stage_map];
-
-        let ty = Type::StageApp {
-            fn_name: "DivResult".to_string(),
-            args: vec![Type::Int, Type::Int],
-        };
-
-        let result = norm(&ty, &tv, &mut ctx).await?;
-        assert_eq!(result, Type::Int);
-
-        // Verify caching
-        assert!(ctx.cache.contains_key(&ty));
-        Ok(())
-    }
-}
+// T-1986/S-1003: impl fmt::Display for Type deleted — Type enum no longer exists.
+// TypeValue formatting is handled by typevalue_display_string() and related helpers
+// in this file and in type_infer.rs.
