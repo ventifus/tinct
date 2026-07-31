@@ -52,7 +52,7 @@ pub type TypeMap = HashMap<(u32, u32, u32, u32), Arc<Value>>;
 pub(crate) struct ClassDeclSurface<'a> {
     pub name: &'a str,
     pub params: &'a [String],
-    pub superclasses: &'a [(String, String)],
+    pub superclasses: &'a [(String, Vec<String>)],
     pub determines: &'a [Arc<SurfaceNode>],
     pub structural: &'a str,
     pub span: Span,
@@ -787,7 +787,7 @@ pub(crate) fn infer_class_decl_from_surface(
             .collect(),
         superclasses: superclasses
             .iter()
-            .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
+            .map(|(class_name, params)| (class_name.clone(), params.clone()))
             .collect(),
         determines: fd_indices,
         resolver: resolver.clone(),

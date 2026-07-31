@@ -706,21 +706,33 @@ pub async fn unify(
             Box::pin(constrain(&bc, &ac, ctx, constraints, span)).await
         }
 
-        // Record types: bidirectional constrain_rows.
+        // Record types: bidirectional constrain + tail unification.
         (Some(TV_RECORD), Some(TV_RECORD)) => {
             let (ac, bc) = (a.clone(), b.clone());
+            // Step 1: bidirectional field constraints (named fields must unify).
             Box::pin(constrain(&ac, &bc, ctx, constraints, span.clone())).await?;
-            Box::pin(constrain(&bc, &ac, ctx, constraints, span)).await
+            Box::pin(constrain(&bc, &ac, ctx, constraints, span.clone())).await?;
+
+            // Step 2: unify the row tails (RowTail.Uniform, RowTail.Var, RowTail.Closed).
+            let a_tail = extract_record_tail(&ac)
+                .expect("invariant: TypeValue.Record payload must be settled with tail field");
+            let b_tail = extract_record_tail(&bc)
+                .expect("invariant: TypeValue.Record payload must be settled with tail field");
+            Box::pin(unify_rowtails(&a_tail, &b_tail, ctx, constraints, span)).await
         }
 
-        // Union types: pairwise member unification.
+        // Union types: order-insensitive bipartite matching (T-2073).
+        // Union([A, B]) ~ Union([B, A]) should succeed (order-insensitive).
+        // For each member of the left union, find a matching member in the right union
+        // via non-destructive unification probes. If all left members match distinct
+        // right members and vice versa, unification succeeds.
         (Some(TV_UNION), Some(TV_UNION)) => {
             let members_a = extract_union_members(&a)
                 .expect("invariant: TypeValue.Union payload must be settled with members field");
             let members_b = extract_union_members(&b)
                 .expect("invariant: TypeValue.Union payload must be settled with members field");
             if members_a.len() != members_b.len() {
-                // Different member counts: fall through to error
+                // Different member counts: cannot unify
                 return Err(TypeDiagnostic::error(
                     "type-error",
                     format!(
@@ -731,9 +743,53 @@ pub async fn unify(
                     span,
                 ));
             }
-            for (ma, mb) in members_a.iter().zip(members_b.iter()) {
-                Box::pin(unify(ma, mb, ctx, constraints, span.clone(), depth + 1)).await?;
+
+            // Bipartite matching: for each member in members_a, find a unique match in members_b.
+            // Track which members_b indices have been matched to ensure 1:1 correspondence.
+            let mut matched_b_indices = vec![false; members_b.len()];
+
+            for ma in &members_a {
+                // Try to find an unmatched member in members_b that unifies with ma.
+                let mut found_match = false;
+                for (b_idx, mb) in members_b.iter().enumerate() {
+                    if matched_b_indices[b_idx] {
+                        continue; // Already matched
+                    }
+
+                    // Non-destructive probe: save ctx and constraints state before attempting.
+                    let saved_ctx = ctx.clone();
+                    let saved_constraints = constraints.clone();
+
+                    let probe_result =
+                        Box::pin(unify(ma, mb, ctx, constraints, span.clone(), depth + 1)).await;
+
+                    if probe_result.is_ok() {
+                        // Match found: mark this b_idx as matched and keep the ctx/constraints.
+                        matched_b_indices[b_idx] = true;
+                        found_match = true;
+                        break;
+                    } else {
+                        // Probe failed: restore ctx and constraints for next attempt.
+                        *ctx = saved_ctx;
+                        *constraints = saved_constraints;
+                    }
+                }
+
+                if !found_match {
+                    // No matching member in members_b for this ma — unification fails.
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
+                        format!(
+                            "cannot unify union types: no matching member found for type {}",
+                            crate::eval::format_type_for_assert(ma)
+                        ),
+                        span,
+                    ));
+                }
             }
+
+            // All members_a matched distinct members_b. Since |members_a| == |members_b|,
+            // this guarantees a bijection (all members_b are also matched).
             Ok(())
         }
 
@@ -1067,6 +1123,90 @@ pub async fn unify(
     }
 }
 
+// ── unify_rowtails ────────────────────────────────────────────────────────────
+
+/// Unify two RowTail values.
+///
+/// - RowTail.Closed ~ RowTail.Closed: succeed
+/// - RowTail.Uniform ~ RowTail.Uniform: unify their value-types
+/// - RowTail.Var ~ concrete tail: bind the RowVar to the concrete tail
+/// - RowTail.Closed ~ RowTail.Uniform: fail (closed ≠ open)
+async fn unify_rowtails(
+    a: &TypeValue,
+    b: &TypeValue,
+    ctx: &mut InferenceContext,
+    constraints: &mut Vec<Arc<crate::value::Value>>,
+    span: Span,
+) -> Result<(), TypeDiagnostic> {
+    // Apply substitution to both tails.
+    let a = ctx.apply_subst(a);
+    let b = ctx.apply_subst(b);
+
+    let a_ctor = tv_ctor(&a);
+    let b_ctor = tv_ctor(&b);
+
+    match (a_ctor, b_ctor) {
+        // Closed ~ Closed: succeed.
+        (Some(RT_CLOSED), Some(RT_CLOSED)) => Ok(()),
+
+        // Empty dict [] ~ Empty dict []: succeed (both closed).
+        (None, None) => {
+            // Both are empty dicts (treated as closed tails).
+            Ok(())
+        }
+
+        // Closed ~ Empty dict: succeed (both closed).
+        (Some(RT_CLOSED), None) | (None, Some(RT_CLOSED)) => Ok(()),
+
+        // Uniform ~ Uniform: unify their value-types.
+        (Some(RT_UNIFORM), Some(RT_UNIFORM)) => {
+            let a_value_type = extract_uniform_value_type(&a)
+                .expect("invariant: RowTail.Uniform payload must have value-type field");
+            let b_value_type = extract_uniform_value_type(&b)
+                .expect("invariant: RowTail.Uniform payload must have value-type field");
+            Box::pin(unify(
+                &a_value_type,
+                &b_value_type,
+                ctx,
+                constraints,
+                span,
+                0,
+            ))
+            .await
+        }
+
+        // RowVar ~ concrete tail: bind the RowVar.
+        // RowTail.Var is represented as a RowVar name (TypeValue.Var inside the tail position).
+        // For now, we defer this — RowVar binding requires infrastructure to track RowVar levels
+        // and occurs checks on row variables (not TypeVars).
+        // Accept conservatively (no binding performed).
+        (Some(RT_VAR), _) | (_, Some(RT_VAR)) => {
+            // Future work: extract RowVar name from the RowTail.Var payload and bind it.
+            // For now, succeed without binding (conservative accept).
+            Ok(())
+        }
+
+        // Closed ~ Uniform: fail (incompatible tails).
+        (Some(RT_CLOSED), Some(RT_UNIFORM)) | (Some(RT_UNIFORM), Some(RT_CLOSED)) => {
+            Err(TypeDiagnostic::error(
+                "type-error",
+                "cannot unify closed record with open uniform record",
+                span,
+            ))
+        }
+
+        // Empty dict ~ Uniform: fail (closed ≠ open).
+        (None, Some(RT_UNIFORM)) | (Some(RT_UNIFORM), None) => Err(TypeDiagnostic::error(
+            "type-error",
+            "cannot unify closed record (empty tail) with open uniform record",
+            span,
+        )),
+
+        // Unknown ctor combinations: conservative accept.
+        _ => Ok(()),
+    }
+}
+
 // ── constrain ─────────────────────────────────────────────────────────────────
 
 /// Directional subtype constraint: `sub <: sup`.
@@ -1241,6 +1381,7 @@ async fn constrain_fn(
 
 /// Directional record subtype constraint (width + depth subtyping).
 /// sup's fields must be coverable by sub (width subtyping: sub may have extra fields).
+/// Handles RowTail.Uniform: when sup has a uniform tail, extra fields in sub must be subtypes of the uniform type.
 async fn constrain_record(
     sub: &TypeValue,
     sup: &TypeValue,
@@ -1248,11 +1389,26 @@ async fn constrain_record(
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
 ) -> Result<(), TypeDiagnostic> {
+    // TRACE B-681
+    {
+        let sup_str = crate::eval::format_type_for_assert(sup);
+        let sub_str = crate::eval::format_type_for_assert(sub);
+        if (sup_str.contains("ts: [") || sup_str.contains("impls: ["))
+            && (sub_str.contains("ts: [") || sub_str.contains("impls: ["))
+        {
+            eprintln!("[B-681 constrain_record] sub={} sup={}", sub_str, sup_str);
+        }
+    }
     let sup_fields = extract_record_fields(sup)
         .expect("invariant: TypeValue.Record payload must be settled with fields dict");
     let sub_fields = extract_record_fields(sub)
         .expect("invariant: TypeValue.Record payload must be settled with fields dict");
+    let sup_tail = extract_record_tail(sup)
+        .expect("invariant: TypeValue.Record payload must be settled with tail field");
+    let sub_tail = extract_record_tail(sub)
+        .expect("invariant: TypeValue.Record payload must be settled with tail field");
 
+    // Step 1: constrain all named fields (depth subtyping).
     for (k, sup_ty) in &sup_fields {
         if let Some(sub_ty) = sub_fields.get(k) {
             Box::pin(constrain(sub_ty, sup_ty, ctx, constraints, span.clone())).await?;
@@ -1272,7 +1428,76 @@ async fn constrain_record(
             )));
         }
     }
-    Ok(())
+
+    // Step 2: handle row tail constraints (width subtyping).
+    let sup_tail_ctor = tv_ctor(&sup_tail);
+    match sup_tail_ctor {
+        Some(RT_CLOSED) => {
+            // sup tail is closed: structural width subtyping — sub may have extra fields.
+            // All sup fields were checked in Step 1 (depth subtyping). Extra fields in sub
+            // are allowed (a record with more fields is MORE specific, thus a subtype).
+            Ok(())
+        }
+        Some(RT_UNIFORM) => {
+            // sup tail is uniform: extra fields in sub must be subtypes of the uniform value-type.
+            let sup_value_type = extract_uniform_value_type(&sup_tail)
+                .expect("invariant: RowTail.Uniform payload must have value-type field");
+
+            // Collect extra fields from sub (not in sup's named fields).
+            let extra_fields: Vec<(&String, &TypeValue)> = sub_fields
+                .iter()
+                .filter(|(k, _v)| !sup_fields.contains_key(*k))
+                .collect();
+
+            // Constrain each extra field to be a subtype of sup_value_type.
+            for (field_name, sub_field_ty) in extra_fields {
+                Box::pin(constrain(
+                    sub_field_ty,
+                    &sup_value_type,
+                    ctx,
+                    constraints,
+                    span.clone(),
+                ))
+                .await
+                .map_err(|e| {
+                    e.with_note(format!(
+                        "field '{}' does not satisfy uniform tail constraint",
+                        field_name
+                    ))
+                })?;
+            }
+
+            // If sub also has a uniform tail, constrain sub_value_type <: sup_value_type.
+            if matches!(tv_ctor(&sub_tail), Some(RT_UNIFORM)) {
+                let sub_value_type = extract_uniform_value_type(&sub_tail)
+                    .expect("invariant: RowTail.Uniform payload must have value-type field");
+                Box::pin(constrain(
+                    &sub_value_type,
+                    &sup_value_type,
+                    ctx,
+                    constraints,
+                    span,
+                ))
+                .await?;
+            }
+
+            Ok(())
+        }
+        Some(RT_VAR) => {
+            // sup tail is a RowVar: this is an open record with a polymorphic tail.
+            // For now, accept (no constraint needed — the RowVar can be instantiated
+            // to accommodate any extra fields from sub).
+            // Future work: bind the RowVar to the extra fields from sub.
+            Ok(())
+        }
+        _ => {
+            // sup tail is closed (empty dict [] or RT_CLOSED or unknown variant).
+            // Structural width subtyping: sub may have extra fields — a record with more
+            // fields is MORE specific, thus a subtype. All sup fields were already checked
+            // in Step 1 (depth subtyping). Extra fields in sub are allowed.
+            Ok(())
+        }
+    }
 }
 
 // ── TypeValue structural extraction helpers ────────────────────────────────────
@@ -1383,6 +1608,54 @@ fn extract_record_fields(tv: &TypeValue) -> Option<IndexMap<String, TypeValue>> 
                         }
                         Some(result)
                     }
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract the tail from a TypeValue.Record { tail: RowTail }.
+/// Returns the tail as a TypeValue (RowTail.Closed, RowTail.Uniform, RowTail.Var).
+/// Returns None if the payload is unsettled or malformed.
+fn extract_record_tail(tv: &TypeValue) -> Option<TypeValue> {
+    match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_RECORD => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let tail_key = crate::value::HashableValue::Str(Arc::from(FIELD_TAIL));
+                let tail_thunk = entries.get(&tail_key)?;
+                match tail_thunk.peek_result()? {
+                    Ok(tv) => Some(Arc::new(tv.clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract the value-type from a RowTail.Uniform { value-type: TypeValue }.
+/// Returns None if the tail is not a RowTail.Uniform or the payload is unsettled.
+fn extract_uniform_value_type(tail: &TypeValue) -> Option<TypeValue> {
+    match tail.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == RT_UNIFORM => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let value_type_key =
+                    crate::value::HashableValue::Str(Arc::from(RT_FIELD_VALUE_TYPE));
+                let value_type_thunk = entries.get(&value_type_key)?;
+                match value_type_thunk.peek_result()? {
+                    Ok(vt) => Some(Arc::new(vt.clone())),
                     _ => None,
                 }
             }

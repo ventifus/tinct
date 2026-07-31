@@ -902,15 +902,6 @@ async fn infer_step(
                     resolver_injective,
                     structural,
                 } => {
-                    let sc_flat: Vec<(String, String)> = superclasses
-                        .iter()
-                        .flat_map(|(sc_name, sc_params)| {
-                            sc_params
-                                .iter()
-                                .map(|p| (sc_name.clone(), p.clone()))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect();
                     let resolver_name: Option<String> =
                         resolver.as_ref().and_then(|rnode| match &rnode.expr {
                             crate::ast::SurfaceExpression::VarRef { name: rname, .. } => {
@@ -925,7 +916,7 @@ async fn infer_step(
                         &super::ClassDeclSurface {
                             name,
                             params,
-                            superclasses: &sc_flat,
+                            superclasses,
                             determines,
                             structural,
                             span: node.span.clone(),
@@ -4573,15 +4564,6 @@ pub(crate) async fn run_typecheck_dict(
                         resolver_injective,
                         structural,
                     } => {
-                        let sc_flat: Vec<(String, String)> = superclasses
-                            .iter()
-                            .flat_map(|(sc_name, sc_params)| {
-                                sc_params
-                                    .iter()
-                                    .map(|p| (sc_name.clone(), p.clone()))
-                                    .collect::<Vec<_>>()
-                            })
-                            .collect();
                         let resolver_name: Option<String> =
                             resolver.as_ref().and_then(|rnode| match &rnode.expr {
                                 crate::ast::SurfaceExpression::VarRef { name: rname, .. } => {
@@ -4596,7 +4578,7 @@ pub(crate) async fn run_typecheck_dict(
                             &super::ClassDeclSurface {
                                 name,
                                 params,
-                                superclasses: &sc_flat,
+                                superclasses,
                                 determines,
                                 structural,
                                 span: entry.node.value.span.clone(),
@@ -5259,6 +5241,15 @@ pub(crate) async fn run_typecheck_dict(
         for (key_name, _is_alias, _) in &key_entries {
             if let Some(name) = key_name {
                 if let Some(scheme) = dict_env_guard.get_scheme(name) {
+                    // TRACE B-681
+                    if name == "reduce" {
+                        let is_scheme = typevalue_ctor(&scheme) == Some(TV_SCHEME);
+                        eprintln!(
+                            "[B-681 run_typecheck_dict schemes] reduce is_scheme={} type={}",
+                            is_scheme,
+                            crate::eval::format_type_for_assert(&scheme)
+                        );
+                    }
                     schemes.insert(name.clone(), scheme);
                 }
             }

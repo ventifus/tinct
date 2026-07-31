@@ -1877,7 +1877,7 @@ fn is_conjunction_empty(
 }
 
 /// Check if two TypeValue atoms are disjoint (no value can inhabit both).
-fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &InferenceContext) -> bool {
+pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &InferenceContext) -> bool {
     if Arc::ptr_eq(a, b) {
         return false; // Same atom → not disjoint
     }

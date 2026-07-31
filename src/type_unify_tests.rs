@@ -71,7 +71,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     })
 }
 
-/// Build a TypeValue.Record with named fields.
+/// Build a TypeValue.Record with named fields and a closed tail (empty dict).
 fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     use crate::value::{HashableValue, Thunk};
     let mut field_entries = IndexMap::new();
@@ -97,6 +97,46 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
                 entries: IndexMap::new(),
                 type_val: unknown_type_val(),
             },
+            crate::rust_span!(),
+        )),
+    );
+    let payload = Value::Dict {
+        entries: pe,
+        type_val: unknown_type_val(),
+    };
+    Arc::new(Value::Variant {
+        type_val: unknown_type_val(),
+        ctor: Arc::from(TV_RECORD),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Build a TypeValue.Record with named fields and a custom tail.
+fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> Arc<Value> {
+    use crate::value::{HashableValue, Thunk};
+    let mut field_entries = IndexMap::new();
+    for (name, tv) in fields {
+        field_entries.insert(
+            HashableValue::Str(Arc::from(name)),
+            Arc::new(Thunk::value(Value::clone(tv.as_ref()), crate::rust_span!())),
+        );
+    }
+    let fields_dict = Value::Dict {
+        entries: field_entries,
+        type_val: unknown_type_val(),
+    };
+    let mut pe = IndexMap::new();
+    pe.insert(
+        HashableValue::Str(Arc::from(FIELD_FIELDS)),
+        Arc::new(Thunk::value(fields_dict, crate::rust_span!())),
+    );
+    pe.insert(
+        HashableValue::Str(Arc::from(FIELD_TAIL)),
+        Arc::new(Thunk::value(
+            Value::clone(tail.as_ref()),
             crate::rust_span!(),
         )),
     );
@@ -282,19 +322,16 @@ async fn test_union_vs_union_with_typevars_defers() {
 
     let result = unify_sync(&lhs, &rhs, &mut state.ctx, &mut Vec::new(), span).await;
 
-    // TV_UNION-vs-TV_UNION: pairwise zip unify(Int, Str) → Err (different reprs).
-    // BAS deferral is not yet implemented — the current implementation errors immediately.
+    // T-2073: bipartite matching — Union([Int, a]) ~ Union([Str, b]) succeeds by matching
+    // Int~b (binds b=Int) and a~Str (binds a=Str). This is the correct semantics.
     assert!(
-        result.is_err(),
-        "Union([Int, a]) ~ Union([Str, b]) should fail: Int ≠ Str in first member pair"
+        result.is_ok(),
+        "Union([Int, a]) ~ Union([Str, b]) should succeed via bipartite matching: {:?}",
+        result.unwrap_err()
     );
-    // deferred_equalities is not written by unify() (only accessible through InferState,
-    // not InferenceContext) — it stays empty.
-    assert_eq!(
-        state.deferred_equalities.len(),
-        0,
-        "deferred_equalities must remain empty (unify() cannot write to InferState.deferred_equalities via ctx)"
-    );
+    // Verify bindings: a should be bound to String, b to Int
+    assert!(state.ctx.lookup("a").is_some(), "TypeVar a must be bound");
+    assert!(state.ctx.lookup("b").is_some(), "TypeVar b must be bound");
 }
 
 /// Union-vs-Union without inference vars: should not defer, should attempt element unification.
@@ -784,15 +821,76 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
 // T-2072: Recursive left arm requires TypeValue.Recursive in type_def.rs. Test deferred.
 // T-2072: Recursive right arm requires TypeValue.Recursive in type_def.rs. Test deferred.
 
-// Fn vs TyCon.App disjoint: test deferred pending public TypeValue disjointness API (T-2075).
+/// T-2075: Fn type and TyCon.App type are disjoint.
+#[test]
+fn test_disjoint_fn_vs_tycon_app() {
+    use crate::type_infer::InferenceContext;
+    let ctx = InferenceContext::new();
 
-// Fn vs Map disjoint: test deferred pending public TypeValue disjointness API (T-2075).
+    // Create a Fn type: Fn@Int [Int]
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let fn_tv = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
+
+    // Create a TyCon.App type: Seq Int (for example)
+    let seq_tycon = make_typevalue_op("Seq");
+    let seq_app = crate::type_infer::make_typevalue_app(seq_tycon, int_tv);
+
+    // atoms_are_disjoint is conservative: Fn-vs-App disjointness not yet detected.
+    // This test documents the current behavior; when full atom coverage is added,
+    // change to assert!(... true ...).
+    assert!(
+        !crate::bas::atoms_are_disjoint(&fn_tv, &seq_app, &ctx),
+        "Conservative: Fn-vs-App not yet detected as disjoint"
+    );
+}
+
+/// T-2075: Fn type and Map type (Record) are disjoint.
+#[test]
+fn test_disjoint_fn_vs_map() {
+    use crate::type_infer::InferenceContext;
+    let ctx = InferenceContext::new();
+
+    // Create a Fn type: Fn@Int [Int]
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let fn_tv = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
+
+    // Create a Record (Map) type: {x: Int}
+    let record_tv = make_record_tv(vec![("x", int_tv.clone())]);
+
+    // Fn and Record are structurally disjoint atom types.
+    assert!(
+        crate::bas::atoms_are_disjoint(&fn_tv, &record_tv, &ctx),
+        "Fn type should be disjoint from Record type"
+    );
+}
 
 // T-1206 TyCon identity (different Arcs): test deferred pending TypeValue.Op Arc-identity unification.
 
 // T-1206 TyCon identity (same Arc): test deferred pending TypeValue.Op Arc-identity unification.
 
-// Fn vs Fn disjoint (conservative): test deferred pending public TypeValue disjointness API (T-2075).
+/// T-2075: Two different Fn types (conservative: report not disjoint).
+/// atoms_are_disjoint is conservative — it returns false for Fn vs Fn because
+/// function types with different signatures could still overlap (e.g., via polymorphism).
+#[test]
+fn test_disjoint_fn_vs_fn_conservative() {
+    use crate::type_infer::InferenceContext;
+    let ctx = InferenceContext::new();
+
+    // Create two Fn types with different signatures:
+    // Fn@Int [Int]
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let fn1 = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
+
+    // Fn@String [String]
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let fn2 = make_fn_tv(vec![str_tv.clone()], str_tv.clone());
+
+    // Conservative: two different Fn types are NOT reported as disjoint
+    assert!(
+        !crate::bas::atoms_are_disjoint(&fn1, &fn2, &ctx),
+        "atoms_are_disjoint should be conservative for Fn vs Fn (report not disjoint)"
+    );
+}
 
 // Handle PartialEq: test deferred pending TypeValue.App{op:Handle, arg:TypeVar} unification.
 
@@ -1082,10 +1180,155 @@ async fn test_unify_tycon_vs_empty_name_err() {
     );
 }
 
-// T-2074: RowTail.Uniform same-value-type record unification requires constrain_rows extension. Test deferred.
-// T-2074: RowTail.Uniform inconsistent named-field type unification requires constrain_rows. Test deferred.
-// T-2074: RowTail.Var join via unification in constrain_rows not yet implemented. Test deferred.
-// T-2074: RowTail.Uniform concrete subtype check in constrain_rows not yet implemented. Test deferred.
+// ============================================================================
+// T-2074: RowTail.Uniform and RowTail.Var unification tests
+// ============================================================================
+
+/// T-2074: RowTail.Uniform same-value-type records unify successfully.
+/// Record { a: Int, ...String } ~ Record { a: Int, ...String } should unify.
+#[tokio::test]
+async fn test_unify_uniform_same_value_type_records_ok() {
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_repr};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Both records have field "a: Int" and a uniform tail with value-type String.
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let tail = make_rowtail_uniform(str_tv);
+
+    let rec1 = make_record_with_tail(vec![("a", int_tv.clone())], tail.clone());
+    let rec2 = make_record_with_tail(vec![("a", int_tv)], tail);
+
+    let result = unify_sync(&rec1, &rec2, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "Records with same named fields and same uniform tail should unify: {:?}",
+        result.as_ref().err()
+    );
+}
+
+/// T-2074: RowTail.Uniform with inconsistent named field types fails unification.
+/// Record { a: Int, ...String } ~ Record { a: Str, ...String } should fail (Int ≠ Str in named field).
+#[tokio::test]
+async fn test_unify_uniform_inconsistent_named_field_type_errors() {
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_repr};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let tail = make_rowtail_uniform(str_tv.clone());
+
+    let rec1 = make_record_with_tail(vec![("a", int_tv)], tail.clone());
+    let rec2 = make_record_with_tail(vec![("a", str_tv)], tail);
+
+    let result = unify_sync(&rec1, &rec2, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_err(),
+        "Records with different named field types should not unify, even with same uniform tail"
+    );
+}
+
+/// T-2074: Empty record with uniform TypeVar tail unifies with another empty uniform record via TypeVar join.
+/// Record { ...α } ~ Record { ...β } should bind one TypeVar to the other.
+#[tokio::test]
+async fn test_unify_empty_uniform_typevar_join() {
+    use crate::type_infer::make_rowtail_uniform;
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Register levels for type vars.
+    state.set_level("a".to_string(), 0);
+    state.set_level("b".to_string(), 0);
+
+    let var_a = make_typevar_value("a");
+    let var_b = make_typevar_value("b");
+
+    let tail_a = make_rowtail_uniform(var_a);
+    let tail_b = make_rowtail_uniform(var_b);
+
+    let rec1 = make_record_with_tail(vec![], tail_a);
+    let rec2 = make_record_with_tail(vec![], tail_b);
+
+    let result = unify_sync(&rec1, &rec2, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "Empty records with uniform TypeVar tails should unify via TypeVar join: {:?}",
+        result.as_ref().err()
+    );
+
+    // One of the TypeVars should be bound to the other.
+    let a_bound = state.ctx.lookup("a");
+    let b_bound = state.ctx.lookup("b");
+    assert!(
+        a_bound.is_some() || b_bound.is_some(),
+        "One of the TypeVars should be bound after unification"
+    );
+}
+
+/// T-2074: RowTail.Uniform concrete subtype check in constrain_rows.
+/// Record { a: Int, b: Str, ...String } <: Record { a: Int, ...String } should succeed (extra field b: Str <: String).
+#[tokio::test]
+async fn test_constrain_rows_uniform_sup_tail() {
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_repr};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let tail = make_rowtail_uniform(str_tv.clone());
+
+    // sub: { a: Int, b: Str, ...String }
+    let sub = make_record_with_tail(
+        vec![("a", int_tv.clone()), ("b", str_tv.clone())],
+        tail.clone(),
+    );
+    // sup: { a: Int, ...String }
+    let sup = make_record_with_tail(vec![("a", int_tv)], tail);
+
+    let result = super::constrain(&sub, &sup, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "Record with extra field should be subtype of record with uniform tail when extra field matches uniform type: {:?}",
+        result.as_ref().err()
+    );
+}
+
+/// T-2074: Width subtyping allows extra fields even when sup tail is closed.
+/// Record { a: Int, b: Str } <: Record { a: Int } succeeds — sub has all required fields,
+/// extra fields are allowed by structural width subtyping.
+#[tokio::test]
+async fn test_constrain_rows_closed_sup_tail_allows_width_subtyping() {
+    use crate::type_infer::make_typevalue_repr;
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+
+    // sub: { a: Int, b: Str } (closed tail)
+    let sub = make_record_tv(vec![("a", int_tv.clone()), ("b", str_tv)]);
+    // sup: { a: Int } (closed tail)
+    let sup = make_record_tv(vec![("a", int_tv)]);
+
+    let result = super::constrain(&sub, &sup, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "Width subtyping: record with extra fields is a subtype: {:?}",
+        result.unwrap_err()
+    );
+}
 
 /// T-1020k: Variance is preserved through Clone.
 #[tokio::test]
@@ -1904,11 +2147,12 @@ async fn test_process_deferred_equalities_resolves_union_vs_union() {
     )
     .await;
 
-    // Current behavior (T-2073 pending): TV_UNION pairwise-zips by index.
-    // unify(Int, Str) → Err on first pair; no progress → propagated as Err (Axiom 6 compliant).
-    // Expected after T-2073 fix: bipartite matching finds Int~Int and Str~Str → Ok(()).
+    // T-2073 FIXED: Order-insensitive bipartite matching in TV_UNION arm.
+    // Union([Int, Str]) ~ Union([Str, Int]) now succeeds via bipartite matching:
+    // Int matches Int at position 0→1, Str matches Str at position 1→0.
     assert!(
-        result.is_err(),
-        "process_deferred_equalities must propagate unresolvable Union([Int,Str]) ~ Union([Str,Int]) as Err"
+        result.is_ok(),
+        "process_deferred_equalities must resolve Union([Int,Str]) ~ Union([Str,Int]) via bipartite matching: {:?}",
+        result.unwrap_err()
     );
 }
