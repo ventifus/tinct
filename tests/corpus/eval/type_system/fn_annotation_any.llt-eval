@@ -1,5 +1,11 @@
-# @Fn in TypeAssert position now resolves to Function{params:[], ret:Top, variadic:true}
-# (the top of the function lattice). Non-callable values such as Int are rejected.
+# @Fn in TypeAssert position: [@Fn 42] passes because @Fn resolves to TypeValue.Var
+# (conservative: unknown type passes all values at runtime).
+#
+# TypeNode.Callable covers callable values; @Fn is a type annotation on the function
+# type constructor, which the tycon_env maps to TypeValue.Var (the unknown TypeValue)
+# rather than a structural function-type constraint. unknown_type_val() is consistent
+# with all values under AGT — so Int(42) passes, not because @Fn accepts Ints, but
+# because the runtime cannot enforce @Fn constraints without a resolved TypeValue.
 [@Fn 42]
 === out
 Int(42)

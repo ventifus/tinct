@@ -277,7 +277,7 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
             name: "noSuchType".into(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         },
@@ -332,7 +332,7 @@ async fn test_property_dict_fn_type_error_propagates() {
             name: "Fn".into(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: Some(Spanned::new(Annotation::Simple("Int".into()), span.clone())),
             do_infer_placeholder: false,
         },
@@ -499,7 +499,7 @@ async fn test_annotation_or_int_literals_resolves_to_union() {
                 name: "or".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             },
@@ -1013,7 +1013,7 @@ fn test_cek_compute_sccs_mutual_recursion_forms_one_scc() {
                 name: name.to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             }),
@@ -1075,7 +1075,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
             name: name.to_string(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         })
@@ -1095,6 +1095,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         body: fn_body,
         desugared: false,
         resolved_captures: crate::ast::CapturesCell::new(),
+        resolved_return_annotation: crate::ast::TypeAnnotation::new(),
     });
     let f_entry = sp(SurfaceEntry {
         key: None,
@@ -1380,7 +1381,9 @@ fn test_type_stage_type_vars_contains_kind_entries() {
     use crate::type_infer::InferState;
 
     let mut state = InferState::new();
-    state.type_stage_type_vars.insert("a".to_string(), "Type".to_string());
+    state
+        .type_stage_type_vars
+        .insert("a".to_string(), "Type".to_string());
 
     // The type_stage_type_vars must contain the kind entry for "a".
     let found = state.type_stage_type_vars.get("a").map(|k| k.as_str()) == Some("Type");

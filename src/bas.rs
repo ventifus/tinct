@@ -126,6 +126,27 @@ fn payload_float_field_bits(payload: &Value, field: &str) -> Option<u64> {
     None
 }
 
+/// Extract a boolean field from a TypeValue payload dict.
+///
+/// Tinct booleans are `Variant { ctor: "true" | "false" }`. Returns `Some(true)` when
+/// the field value is the `"true"` unit variant, `Some(false)` when it is `"false"`, and
+/// `None` when the field is absent or has a non-boolean value.
+fn payload_bool_field(payload: &Value, field: &str) -> Option<bool> {
+    if let Value::Dict { entries, .. } = payload {
+        let key = HashableValue::Str(Arc::from(field));
+        if let Some(thunk) = entries.get(&key) {
+            if let Some(Value::Variant { ctor, .. }) = peek_value(thunk) {
+                return match ctor.as_ref() {
+                    BOOL_TRUE => Some(true),
+                    BOOL_FALSE => Some(false),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
 /// Extract a TypeValue (Arc<Value>) field from a TypeValue payload dict.
 ///
 /// This function returns a **fresh** `Arc<Value>` (via `Arc::new(val.clone())`),
@@ -931,17 +952,42 @@ fn is_fn_subtype(
             let sub_list = collect_indexed_typevalues(&sub_ps);
             let sup_list = collect_indexed_typevalues(&sup_ps);
 
-            // B-672: TypeValue.Fn does not yet have a `required_count` field — it only has
-            // a `variadic` boolean flag in the current payload schema (builtin_core.llt).
-            // A dedicated `required_count` integer field would need to be added to
-            // TypeValue.Fn to support the correct arity subtyping rule: sub <: sup iff
-            // sub.required_count <= sup.required_count AND params match for each position
-            // 0..sup.required_count (contravariant). For now, strict arity equality is used.
-            if sub_list.len() != sup_list.len() {
+            // B-672: Arity subtyping via derived required_count.
+            //
+            // The correct rule is: sub <: sup iff sub.required_count <= sup.required_count,
+            // where required_count = params.len() (positional params declared in the payload).
+            //
+            // A variadic sub with N required positional params can be called with N + k args
+            // (k >= 0). If sup.required_count == M > N, the caller will supply M args; sub
+            // accepts them all via its variadic tail — so sub <: sup holds.
+            //
+            // A non-variadic sub MUST be called with exactly sub.required_count args. If
+            // sup.required_count > sub.required_count, the caller supplies more args than sub
+            // can accept — sub is NOT a valid replacement for sup.
+            let sub_variadic = payload_bool_field(sub_payload, FIELD_VARIADIC).unwrap_or(false);
+
+            let sub_required = sub_list.len();
+            let sup_required = sup_list.len();
+
+            // Arity guard: sub_required must not exceed sup_required (sub must need at most as
+            // many args as sup needs — so anywhere sup is called, sub can also be called).
+            if sub_required > sup_required {
                 return false;
             }
+            // If sub is non-variadic and sup requires more args than sub has, the extra args
+            // have nowhere to go in sub — incompatible.
+            if !sub_variadic && sub_required < sup_required {
+                return false;
+            }
+            // At this point: sub_required <= sup_required AND (sub_variadic OR sub_required == sup_required).
 
-            for (sub_p, sup_p) in sub_list.iter().zip(sup_list.iter()) {
+            // Contravariance check for sup's declared params (positions 0..sup_required).
+            // - Positions 0..sub_required: both have explicit params — check contravariance.
+            // - Positions sub_required..sup_required: sub is variadic (guaranteed by the guards
+            //   above). The variadic tail accepts any type — no contravariance failure here.
+            for i in 0..sub_required {
+                let sub_p = &sub_list[i];
+                let sup_p = &sup_list[i];
                 // Contravariant: sup_param <: sub_param
                 if !is_subtype_bas_with_sigma(sup_p, sub_p, ctx, sigma, depth + 1) {
                     return false;
@@ -949,7 +995,7 @@ fn is_fn_subtype(
             }
             true
         }
-        _ => false, // Arity mismatch
+        _ => false, // Arity mismatch (one has params, other doesn't — treat as incompatible)
     }
 }
 
@@ -1194,7 +1240,57 @@ fn is_record_subtype(
     }
 }
 
+/// Walk the curried App spine to find the root TyCon name and spine depth.
+///
+/// For a type application `App(App(App(TyCon("Map"), K), V), W)`, the current
+/// `is_app_subtype` call sees `op = App(App(TyCon("Map"), K), V)` and `arg = W`.
+/// The spine depth of `W` in `Map[K, V, W]` is 2 (zero-indexed: K=0, V=1, W=2).
+///
+/// This function takes the `op` field of the **current** App node and returns:
+/// - `Some((root_name, spine_depth))` where `root_name` is the `TypeValue.Op`
+///   name at the base of the spine and `spine_depth` is the zero-based parameter
+///   index for the **current** App node's `arg`.
+/// - `None` if the op chain does not terminate at a `TypeValue.Op` (e.g., a
+///   TypeVar-headed application — treat as Invariant at the call site).
+///
+/// ## Spine depth derivation
+///
+/// Given `op` for the current `App(op, arg)`:
+/// - If `op` is `TypeValue.Op { name }`: depth = 0 (first type parameter).
+/// - If `op` is `TypeValue.App { op: inner_op, arg: _ }`: depth = 1 + depth(inner_op).
+///
+/// This mirrors the standard treatment of curried type constructors in HM + row
+/// polymorphism (e.g., Rémy 1994, Leijen 2005): multi-parameter TyCons are encoded
+/// as left-spine curried applications, and the n-th parameter is applied at depth n.
+fn app_spine_root_and_depth(op: &Arc<Value>) -> Option<(String, usize)> {
+    match typevalue_ctor(op) {
+        Some(TV_OP) => {
+            // Root of the spine: this is the TyCon itself.
+            let name = typevalue_payload(op)
+                .and_then(|p| payload_string_field(p, FIELD_NAME))
+                .map(|s| s.to_string())?;
+            Some((name, 0))
+        }
+        Some(TV_APP) => {
+            // Intermediate App node: recurse into its op and add one level.
+            let inner_op =
+                typevalue_payload(op).and_then(|p| payload_typevalue_field(p, FIELD_OP))?;
+            let (name, inner_depth) = app_spine_root_and_depth(&inner_op)?;
+            Some((name, inner_depth + 1))
+        }
+        _ => None, // TypeVar-headed or unknown application — cannot determine variance
+    }
+}
+
 /// Check type application subtyping using variance from TyConEnv.
+///
+/// For a curried App `App(op, arg)`, variance is looked up at the correct spine depth:
+/// - `App(TyCon("Seq"), T)`:         op is TypeValue.Op → depth=0, variance[0] applies to T
+/// - `App(App(TyCon("Map"), K), V)`: op is TypeValue.App → depth=1, variance[1] applies to V
+///
+/// This ensures multi-parameter TyCons with different per-parameter variances are handled
+/// correctly. Before this fix (B-669), `variance.first()` was always used regardless of
+/// depth, incorrectly applying K's variance to V in a `Map[K, V]` application.
 fn is_app_subtype(
     sub: &Arc<Value>,
     sup: &Arc<Value>,
@@ -1223,25 +1319,20 @@ fn is_app_subtype(
                 return false;
             }
 
-            // Look up variance from TyConEnv if available.
-            // typevalue_ctor(&so) returns the ctor tag ("TypeValue.Op"), not the op name.
-            // The actual op name lives in the payload under FIELD_NAME.
-            // B-669: `def.variance.first()` always picks the FIRST variance entry
-            // regardless of curried App spine depth. For multi-parameter type constructors
-            // like `App(App(TyCon("Map"), K), V)`, the outer App's `arg` is V but
-            // `variance.first()` returns K's variance. This is incorrect when K and V
-            // have different variances. Fix: extract the full spine and use
-            // `def.variance.get(spine_depth)` instead. See tracker item B-669.
-            let variance = if let Some(op_name) =
-                typevalue_payload(&so).and_then(|p| payload_string_field(p, FIELD_NAME))
-            {
-                ctx.tycon_env
-                    .get(op_name)
-                    .and_then(|def| def.variance.first().copied())
-                    .unwrap_or(Variance::Invariant)
-            } else {
-                Variance::Invariant
-            };
+            // Look up variance from TyConEnv at the correct spine depth.
+            //
+            // Walk the op spine to find the root TyCon name and the zero-based
+            // parameter index for this App node's `arg`. For single-parameter TyCons
+            // the depth is always 0 (same as the old `.first()` call). For multi-
+            // parameter TyCons like Map[K,V], the outer App for V has depth=1 and
+            // correctly selects variance[1] rather than variance[0] (K's variance).
+            let variance = app_spine_root_and_depth(&so)
+                .and_then(|(name, spine_depth)| {
+                    ctx.tycon_env
+                        .get(&name)
+                        .and_then(|def| def.variance.get(spine_depth).copied())
+                })
+                .unwrap_or(Variance::Invariant);
 
             match variance {
                 Variance::Covariant => is_subtype_bas_with_sigma(&sa, &pa, ctx, sigma, depth + 1),

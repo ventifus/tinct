@@ -306,7 +306,10 @@ pub(crate) fn apply_narrowings(
                         }
                     }
                 }
-                (var, crate::typecheck::make_typevalue_record_pub(fields, None))
+                (
+                    var,
+                    crate::typecheck::make_typevalue_record_pub(fields, None),
+                )
             }
         };
 
@@ -506,7 +509,6 @@ async fn try_unify_probe(
     let saved_constraints = state.constraints.clone();
     let saved_deferred = state.deferred_equalities.clone();
     let saved_ctx = state.ctx.clone();
-    let saved_dispatch_obligations = state.dispatch_obligations.clone();
     let saved_diagnostics = state.diagnostics.clone();
 
     // Attempt actual unification for each TypeValue pair.
@@ -540,7 +542,6 @@ async fn try_unify_probe(
     state.constraints = saved_constraints;
     state.deferred_equalities = saved_deferred;
     state.ctx = saved_ctx;
-    state.dispatch_obligations = saved_dispatch_obligations;
     state.diagnostics = saved_diagnostics;
 
     Ok(unified)

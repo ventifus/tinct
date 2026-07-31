@@ -1456,19 +1456,6 @@ pub fn has_free_type_vars_ctx(tv: &Arc<crate::value::Value>, ctx: &InferenceCont
     !ctx.free_vars(tv).is_empty()
 }
 
-/// A deferred typeclass dispatch: connects a constraint TypeVar to the call-site VarRef.
-/// When check_constraints_on_var resolves the TypeVar to a concrete type, it uses this to
-/// set call_dispatch on the VarRef with the resolved VarAddr (via debruijn_to_var_addr).
-#[derive(Clone, Debug)]
-pub struct DispatchObligation {
-    /// The call-site VarRef node. call_dispatch.set() is called on this.
-    pub varref_node: std::sync::Arc<crate::ast::SurfaceNode>,
-    /// Class name (e.g., "Addable")
-    pub class_name: String,
-    /// Method name (e.g., "+")
-    pub method_name: String,
-}
-
 /// Maps expression spans `(start_offset, end_offset)` to the TypeValue of the variable
 /// referenced there. Only populated for `VarRef` expressions that resolve to a polymorphic
 /// scheme (TypeValue.Scheme variants). Used by LSP hover to display
@@ -1499,9 +1486,7 @@ impl TypeStageData {
 
     /// Return true if no type-stage entries exist in any frame.
     pub fn is_empty(&self) -> bool {
-        self.scope.iter().all(|m| m.is_empty())
-            && self.fns.is_empty()
-            && self.type_vars.is_empty()
+        self.scope.iter().all(|m| m.is_empty()) && self.fns.is_empty() && self.type_vars.is_empty()
     }
 
     /// Check whether a name is present in any frame.
@@ -1638,14 +1623,6 @@ pub struct InferState {
     /// Type constructor environment.
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
-    /// Scope frames derived from parent_scope_id. Used by check_constraints_on_var
-    /// to resolve typeclass dispatch decisions to (level, slot) coordinates.
-    /// Set by builtin-typecheck-doc before inference begins (T-1730).
-    pub scope_frames: Option<Vec<indexmap::IndexMap<String, u32>>>,
-    /// Deferred typeclass dispatch obligations, keyed by TypeVar name.
-    /// Added by T-1731 at VarRef instantiation time; drained by check_constraints_on_var
-    /// when the TypeVar resolves to a concrete type.
-    pub dispatch_obligations: Vec<DispatchObligation>,
     /// Current FD improvement recursion depth. Passed by `&mut` to `try_fd_improvement`,
     /// which increments it on entry and decrements it on exit (RAII-style depth guard).
     /// Capped at 32 to prevent infinite fixpoint loops in pathological cases
@@ -1698,16 +1675,6 @@ pub struct InferState {
     /// Saved/restored via `AfterBlock.saved_parameter_frame` so nested functions and
     /// nested matches correctly restore the enclosing frame when the block exits.
     pub current_parameter_frame: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
-    /// Flat accumulated type env — a single-frame Env containing all type-stage and
-    /// document-level entries at their absolute LGM slot positions (T-2085).
-    /// Mirrors the evaluator's frame.group: every entry in the accumulated group is
-    /// accessible at get_scheme_at(0, slot) from within any dict_env that includes it.
-    ///
-    /// Seeded in typecheck_program_bootstrap from type_stage_scope (type-stage entries
-    /// at their root_frame slots). Updated by the Sequential handler as each document-level
-    /// dict is processed. Copied into dict_env at the start of run_typecheck_dict so that
-    /// get_scheme_at(0, slot) works for all accumulated entries regardless of nesting depth.
-    pub flat_type_env: std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
     /// TypeValue substitution and level tracking (S-1003 TypeValue-native inference context).
     /// Replaces the deleted `Substitution` and `type_vars` fields.
     pub ctx: InferenceContext,
@@ -1741,14 +1708,11 @@ impl InferState {
             type_stage_fns: std::collections::HashMap::new(),
             type_stage_type_vars: std::collections::HashMap::new(),
             tycon_env: std::collections::HashMap::new(),
-            scope_frames: None,
-            dispatch_obligations: Vec::new(),
             fd_depth: 0,
             current_binding: None,
             use_def: std::collections::HashMap::new(),
             narrowing_map: std::collections::HashMap::new(),
             current_parameter_frame: None,
-            flat_type_env: std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
             ctx: InferenceContext::new(),
         }
     }
@@ -1801,8 +1765,12 @@ impl InferState {
     /// Create a fresh TypeVar at the given (or current) level.
     ///
     /// Returns `(name, TypeValue)` where TypeValue is a `TypeValue.Var` with the given name.
-    /// The name is derived from `source_name` and the call site `span`.
-    /// Registers the level in `self.ctx.levels`.
+    /// The name embeds `source_name` and the call site `span` as a human-readable hint, plus
+    /// a gensym counter suffix to guarantee uniqueness across multiple calls at the same source
+    /// position (e.g., polymorphic functions called multiple times).
+    ///
+    /// TypeVar identity is the full name including the counter. Two TypeVars created from the
+    /// same annotation at the same source position are distinct because their counters differ.
     pub fn fresh_type_var_with(
         &mut self,
         source_name: Option<&str>,
@@ -1812,7 +1780,9 @@ impl InferState {
     ) -> (String, TypeValue) {
         let src = source_name.unwrap_or("?");
         let lvl = level.unwrap_or(self.ctx.current_level);
-        let name = Self::typevar_name(src, kind, span);
+        let base = Self::typevar_name(src, kind, span);
+        let name = format!("{}__{}", base, self.ctx.gensym_counter);
+        self.ctx.gensym_counter += 1;
         self.ctx.levels.insert(name.clone(), lvl);
         let tv = make_typevar_value(&name);
         (name, tv)

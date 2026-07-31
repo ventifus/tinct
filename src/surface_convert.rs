@@ -236,7 +236,6 @@ fn dict_to_surface_node_inner(
                         name: name.clone(),
                         escaped,
                         resolution: crate::ast::Resolution::new(),
-                        call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: None,
                         do_infer_placeholder: true,
                     }
@@ -562,13 +561,15 @@ pub fn core_expr_to_expr_value(
         }
 
         // ── TypeAssert ───────────────────────────────────────────────────────────
-        CoreExpr::TypeAssert {
-            annotation, expr, ..
-        } => {
+        CoreExpr::TypeAssert { check, expr, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            let annotation_opt = match check {
+                crate::ast::TypeAssertCheck::Source { annotation } => Some(annotation),
+                crate::ast::TypeAssertCheck::Resolved(_) => None,
+            };
             payload.insert(
                 HashableValue::Str("annotation".into()),
-                alloc_annotation_opt(Some(annotation), ctx),
+                alloc_annotation_opt(annotation_opt, ctx),
             );
             payload.insert(HashableValue::Str("expr".into()), recurse(expr));
             make_variant("TypeAssert", payload)

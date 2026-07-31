@@ -93,8 +93,8 @@ use std::sync::Arc;
 pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
-    CallDispatch, CapturesCell, MacroProvenance, Provenance, Resolution, SurfaceEntry,
-    SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation, VarAddr,
+    CapturesCell, MacroProvenance, Provenance, Resolution, SurfaceEntry, SurfaceExpression,
+    SurfaceNode, SurfaceProgram, TypeAnnotation, VarAddr,
 };
 /// Parser entry points.
 pub use parser::{format_parse_error, parse, parse_surface_expression, ParseOutput};
@@ -142,9 +142,34 @@ pub fn format_type_diagnostic(diag: &TypeDiagnostic, source: &str, file_name: &s
     let col = primary_span.start_col;
     let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
-    if let Some(snippet) = render_span_snippet(source, primary_span.clone()) {
+    let has_snippet = if let Some(snippet) = render_span_snippet(source, primary_span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
+        true
+    } else {
+        false
+    };
+    // Render secondary spans (e.g. the specific argument that failed a type constraint).
+    for (sec_span, label) in diag.spans.iter().skip(1) {
+        out.push('\n');
+        out.push_str(&format!(
+            " --> {file_name}:{}:{}\n",
+            sec_span.start_line, sec_span.start_col
+        ));
+        if let Some(snippet) = render_span_snippet(source, sec_span.clone()) {
+            out.push_str("  |\n");
+            out.push_str(&snippet);
+            if !label.is_empty() {
+                // Label is appended after the last line of the snippet.
+                // Trim trailing newline to append inline, then re-add it.
+                let trimmed = out.trim_end_matches('\n');
+                let new_out = format!("{}  {}\n", trimmed, label);
+                out = new_out;
+            }
+        }
+    }
+    if (has_snippet || !diag.spans.is_empty()) && !diag.notes.is_empty() {
+        out.push('\n');
     }
     for note in &diag.notes {
         out.push_str(&format!("  = note: {note}\n"));
@@ -213,9 +238,8 @@ pub async fn run_loader_pipeline(
     //
     // B-513: Capture the combined scope frames (root_frame + new_frames produced by the
     // resolver) and thread them into a new eval_ctx via with_scope_frames(). This allows
-    // lower() to resolve call_dispatch mangled instance binding names to correct De Bruijn
-    // coordinates at eval time, so typeclass method dispatch works in the production loader
-    // path where typecheck precedes eval.
+    // lower() to resolve scope-frame-dependent names (e.g., builtin-dict-merge for spread
+    // dicts) to correct De Bruijn coordinates at eval time.
     let eval_ctx_with_frames: Arc<eval::EvalContext> = {
         // Build the resolver seed map from the eval context's root group.
         // root_group contains all static builtins (slots 0..N-1) followed by
@@ -270,9 +294,16 @@ pub async fn run_loader_pipeline(
             match ts_val {
                 crate::value::Value::Dict { entries, .. } => {
                     // Force all thunks and classify into the three maps.
-                    let mut scope_map: std::collections::HashMap<String, crate::type_infer::TypeValue> = std::collections::HashMap::new();
-                    let mut fns_map: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>> = std::collections::HashMap::new();
-                    let mut type_vars_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    let mut scope_map: std::collections::HashMap<
+                        String,
+                        crate::type_infer::TypeValue,
+                    > = std::collections::HashMap::new();
+                    let mut fns_map: std::collections::HashMap<
+                        String,
+                        std::sync::Arc<crate::value::Thunk>,
+                    > = std::collections::HashMap::new();
+                    let mut type_vars_map: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
                     for (key, thunk) in &entries {
                         if let crate::value::HashableValue::Str(name) = key {
                             let val = eval::materialize(thunk, None, &eval_ctx_with_frames)

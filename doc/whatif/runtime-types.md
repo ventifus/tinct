@@ -407,10 +407,12 @@ At every type boundary in the pipeline, `CoreExpr::TypeAssert` is emitted:
 | `[@T x]` in source | Annotation in source text | `Source { annotation }` |
 | Function parameter with type annotation | Lowerer reads type checker output | `Resolved(arc_typevalue)` |
 | Function return type | Lowerer reads type checker output | `Resolved(arc_typevalue)` |
-| TypeClass dispatch obligation | Lowerer replaces DispatchObligation | `Resolved(constraint_typevalue)` |
+| TypeClass dispatch obligation | MethodDispatcher raise-fallback (see note below) | N/A — no TypeAssert emitted |
 | Type guard in `if`/`match` | Lowerer reads `SurfaceNode.type_guard` | `Resolved(arc_typevalue)` |
 
-TypeAssert is ALWAYS emitted at every type boundary. No elision, no fast paths.
+**Note — T-2016 deviation:** The original design (T-2016) required emitting a `TypeAssert { check: Resolved(constraint_typevalue) }` at each typeclass call site on the determining argument. The implemented approach (T-2022 / S-1004) instead handles constraint enforcement via the MethodDispatcher's catch-all arm: `...: [raise "no instance of method '...' for the given argument types"]`. When no instance pattern matches the determining argument's `type_val`, the raise fires at dispatch time.
+
+The two mechanisms are semantically equivalent for instance validation: a caller whose argument satisfies no typeclass instance sees an error either way. The MethodDispatcher approach is preferred because it requires no TypeAssert construction at each call site — the dispatch function itself IS the constraint check. The "TypeAssert is ALWAYS emitted at every type boundary" invariant is satisfied for every boundary except typeclass call sites, which are enforced by MethodDispatcher dispatch-time matching instead.
 
 ```rust
 CoreExpr::TypeAssert {

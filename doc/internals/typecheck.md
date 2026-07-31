@@ -16,7 +16,6 @@ Parse → Desugar → Resolve → Typecheck ← here
                          TypeAnnotation OnceLocks on TypeAssert nodes  (Arc<Value> TypeValue)
                          TypeAnnotation OnceLocks on SurfaceParam nodes (Arc<Value> TypeValue)
                          TypeMap               (Span → Arc<Value>, for LSP)
-                         CallDispatch OnceLocks on typeclass call VarRef nodes
 ```
 
 The type checker reads:
@@ -27,7 +26,7 @@ The type checker reads:
 The type checker writes:
 - `TypeAnnotation` OnceLocks on `SurfaceExpression::TypeAssert.resolved_type` nodes — the resolved `Arc<Value>` TypeValue for `[@T expr]`
 - `TypeAnnotation` OnceLocks on `SurfaceParam.resolved_annotation_type` — the resolved `Arc<Value>` TypeValue for each annotated function parameter
-- `CallDispatch` OnceLocks on `VarRef` nodes in call position — the mangled instance binding name for typeclass method calls
+- `TypeAnnotation` OnceLock on `SurfaceExpression::Fn.resolved_return_annotation` — the resolved `Arc<Value>` TypeValue for the function's declared return type, read by the lowerer to emit a `TypeAssert` wrapping the function body (T-2015)
 - `SurfaceNode.type_guard` — a `TypeAnnotation` OnceLock written when the type checker needs to wrap a node with a runtime type assertion that wasn't written by the user
 
 ---
@@ -51,9 +50,11 @@ pub type TypeMap = HashMap<(u32, u32, u32, u32), Arc<Value>>;  // (start_line, s
 
 Span-keyed type map used by the LSP for hover information. Only populated when `enable_hover_map = true` (the LSP path). Not used by the evaluator.
 
-### `CallDispatch` OnceLock
+### `SurfaceExpression::Fn.resolved_return_annotation`
 
-When the type checker determines that a `VarRef` in function call position refers to a typeclass method, it resolves the specific instance and writes the mangled binding name (e.g., `ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⟨Int⟩⧽`) into the node's `call_dispatch` OnceLock. The lowerer reads this to rewrite the call to the concrete instance binding, bypassing runtime dispatch.
+The type checker resolves the function's declared return type during `infer_fn_push_cont` and writes it to `SurfaceExpression::Fn.resolved_return_annotation` (a `TypeAnnotation` OnceLock). The lowerer reads this OnceLock and, when the resolved TypeValue is non-Unknown, wraps the function body in a `CoreExpr::TypeAssert { check: TypeAssertCheck::Resolved(tv) }` node (T-2015). When the annotation is absent or inference fails, the OnceLock is not written and no TypeAssert is emitted.
+
+Typeclass dispatch is handled entirely at runtime by synthesized MethodDispatcher tinct functions emitted by the lowerer (`make_method_dispatcher_fn` in `src/lower.rs`). The `CallDispatch` OnceLock and `VarRef.call_dispatch` field were deleted in T-2022. There is no longer any type-checker involvement in resolving typeclass method calls to specific instances — the MethodDispatcher matches on the determining argument's `type_val` at runtime and calls the appropriate instance binding directly.
 
 ### `CoreParam.resolved_type`
 
@@ -246,10 +247,10 @@ The type checker writes these inline OnceLocks during its walk:
 | `TypeAnnotation` | `SurfaceNode.type_guard` | Type checker needs to add a runtime assertion not written by the user (gradual typing boundary) |
 | `TypeAnnotation` | `SurfaceExpression::TypeAssert.resolved_type` | Resolving the type of a `[@T expr]` annotation |
 | `TypeAnnotation` | `SurfaceParam.resolved_annotation_type` | Resolving an annotated function parameter's type (written by `infer_fn_push_cont`) |
-| `CallDispatch` | `SurfaceExpression::VarRef.call_dispatch` | Resolving a typeclass method call to a specific instance |
+| `TypeAnnotation` | `SurfaceExpression::Fn.resolved_return_annotation` | Resolving a function's declared return type for the lowerer to emit a return-type `TypeAssert` (T-2015) |
 | `MatchableBinding` | `SurfaceMatchArm.guard_matchable_binding` | Resolving the `to-match` Matchable instance for a predicate pattern |
 
-All of these are `OnceLock<Option<...>>` — written at most once. If the type checker does not run (e.g., `--no-typecheck`), all OnceLocks remain at their empty defaults and the lowerer falls back to safe behavior (`TypeValue.Unknown` for type assertions, name-based dispatch for method calls).
+All of these are `OnceLock<Option<...>>` — written at most once. If the type checker does not run (e.g., `--no-typecheck`), all OnceLocks remain at their empty defaults and the lowerer falls back to safe behavior (`TypeValue.Unknown` for type assertions). Typeclass dispatch no longer uses a type-checker OnceLock — the `CallDispatch` field and `VarRef.call_dispatch` were deleted in T-2022. Runtime dispatch is handled entirely by MethodDispatcher tinct functions synthesized by the lowerer.
 
 The lowerer reads `SurfaceParam.resolved_annotation_type` to populate `CoreParam.resolved_type: Option<Arc<Value>>`. The evaluator reads `CoreParam.resolved_type` to enforce parameter type guards at call sites. `TypeValue.Error` (failed inference) is converted to `None` (accept-all) by the lowerer — inference failures do not become runtime rejections.
 
@@ -516,7 +517,7 @@ The key structural difference is that the evaluator operates on `Thunk`s (lazy v
 
 The type checker communicates results to the evaluator through two channels:
 1. **`CoreParam.resolved_type`** — parameter type guards (via `SurfaceParam.resolved_annotation_type` OnceLock → lowerer → `CoreParam`)
-2. **`CoreExpr::TypeAssert.resolved_type`** — resolved TypeValue written by `AfterTypeAssertInner` to the `SurfaceExpression::TypeAssert.resolved_type` OnceLock; read by the lowerer and embedded in `CoreExpr::TypeAssert` for runtime structural validation
+2. **`CoreExpr::TypeAssert.check: TypeAssertCheck`** — the lowerer emits `TypeAssertCheck::Resolved(tv)` when the type checker has written a concrete TypeValue to the `SurfaceExpression::TypeAssert.resolved_type` OnceLock (via `infer_type_assert` in typecheck_cek.rs), and `TypeAssertCheck::Source { annotation }` otherwise (e.g. --no-typecheck mode). At runtime, `Cont::TypeAssertCheck` in eval_materialize.rs reads `check` to obtain the TypeValue and calls `value_matches_type`.
 
 ---
 

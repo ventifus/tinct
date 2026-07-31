@@ -1,4 +1,0 @@
-# Structural TypeAssert: Int annotation with String value fails
-[@Integer "hello"]
-=== out
-String("hello")

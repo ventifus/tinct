@@ -88,7 +88,7 @@ pub fn instantiate_scheme_tv(
         _ => return None,
     };
 
-    // Monomorphic fast path: no vars → return body directly.
+    // Monomorphic case: no type variables to instantiate — return body directly.
     if var_names.is_empty() {
         return Some(body);
     }
@@ -347,7 +347,7 @@ pub fn generalize_tv_with_meta(
         })
         .collect();
 
-    // Monomorphic fast path: no generalizable vars → return ty directly.
+    // Monomorphic case: no generalizable variables — return ty directly.
     if generalizable.is_empty() {
         return Arc::clone(ty);
     }

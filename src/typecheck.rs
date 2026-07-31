@@ -129,7 +129,7 @@ pub async fn typecheck_program_bootstrap(
             .map(|(i, def)| (def.name.to_string(), i as u32))
             .collect()
     };
-    // Keep a reference to root_frame for T-2085 type-stage slot insertion below.
+    // Keep a reference to root_frame for seeding child_env below.
     // The root_frame contains the full accumulated group including TypeNode and other
     // type-stage entries at their absolute LGM slot positions.
     let root_frame_for_ts = root_frame.clone();
@@ -137,101 +137,94 @@ pub async fn typecheck_program_bootstrap(
     state.resolution_table = Arc::new(resolve_table);
     state.resolver_frames = frames;
 
-    // T-2085: Seed flat_type_env with type-stage entries at their absolute LGM slots.
-    // flat_type_env mirrors the evaluator's frame.group: all accumulated entries are
-    // accessible at get_scheme_at(0, slot) from any dict_env that includes it.
-    // type_stage_scope now holds only resolved TypeValues; Function entries are in
-    // type_stage_fns; TypeVar entries are in type_stage_type_vars.
-    // All non-resolved entries use make_typevalue_op(name) as their TypeValue placeholder.
-    for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
-        // Use root_frame_for_ts (has all runtime builtins including type-stage entries)
-        // then fall back to document-level frames for program-defined type-stage entries.
-        let abs_slot = root_frame_for_ts.get(name.as_str()).copied()
-            .or_else(|| state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied()));
-        if let Some(slot) = abs_slot {
-            state.flat_type_env.write().unwrap().insert_at_slot(slot as usize, name.clone(), Arc::clone(tv), None);
-        }
-        // Also insert by name into extras for name-based lookups (resolve_type_head etc.).
-        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), Arc::clone(tv));
-    }
-    // Also seed flat_type_env for Function entries (stored as TypeValue.Op placeholder).
-    for (name, _thunk) in &state.type_stage_fns {
-        use crate::type_infer::make_typevalue_op;
-        let tv = make_typevalue_op(name);
-        let abs_slot = root_frame_for_ts.get(name.as_str()).copied()
-            .or_else(|| state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied()));
-        if let Some(slot) = abs_slot {
-            state.flat_type_env.write().unwrap().insert_at_slot(slot as usize, name.clone(), Arc::clone(&tv), None);
-        }
-        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), tv);
-    }
-    // Also seed flat_type_env for TypeVar entries (stored as TypeValue.Op placeholder).
-    for (name, _kind) in &state.type_stage_type_vars {
-        use crate::type_infer::make_typevalue_op;
-        let tv = make_typevalue_op(name);
-        let abs_slot = root_frame_for_ts.get(name.as_str()).copied()
-            .or_else(|| state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied()));
-        if let Some(slot) = abs_slot {
-            state.flat_type_env.write().unwrap().insert_at_slot(slot as usize, name.clone(), Arc::clone(&tv), None);
-        }
-        state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), tv);
-    }
-
-    // Seed flat_type_env with all root-group entries not already covered by type-stage
-    // classification, so get_scheme_at(0, slot) works for the full accumulated group.
-    //
-    // Priority (highest to lowest):
-    // 1. Type-stage entries — already seeded above with their actual TypeValues.
-    // 2. Prelude entries — walk parent_env's full parent chain; use proper polymorphic
-    //    scheme where available (e.g. reduce, map, filter with their FD constraint types).
-    // 3. Unknown — for any remaining slot (pure-Rust builtins like builtin-make-type-ctx,
-    //    CLI-injected capability vars like %libdir that have no type-checker scheme).
+    // Seed child_env with all root-group entries so that get_scheme_at(N, slot) correctly
+    // finds them at depth N via normal parent-chain traversal. Three priority levels:
+    // 1. Type-stage entries — their actual TypeValues (highest priority).
+    // 2. Entries with proper schemes from parent_env's chain (prelude, builtins).
+    // 3. Unknown for any remaining slot in root_frame_for_ts (capability vars, etc.).
     {
-        use crate::type_infer::make_typevalue_unknown;
-        // Build the set of slots already populated by type-stage seeding.
-        let mut covered: std::collections::HashSet<usize> = {
-            let flat = state.flat_type_env.read().unwrap();
-            flat.slots.iter().enumerate()
-                .filter_map(|(idx, e)| if e.is_some() { Some(idx) } else { None })
-                .collect()
-        };
-        // Walk parent_env's full chain from outermost ancestor to innermost so innermost wins.
-        let mut frames: Vec<Arc<RwLock<Env>>> = Vec::new();
+        use crate::type_infer::{make_typevalue_op, make_typevalue_unknown};
+        let mut child_inner = child_env.write().unwrap();
+        let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        // Type-stage entries get their actual TypeValues (highest priority).
+        // type_stage_scope holds resolved TypeValues; Function entries in type_stage_fns;
+        // TypeVar entries in type_stage_type_vars.
+        for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
+            let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
+                state
+                    .resolver_frames
+                    .iter()
+                    .find_map(|f| f.get(name.as_str()).copied())
+            });
+            if let Some(slot) = abs_slot {
+                let idx = slot as usize;
+                child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
+                covered.insert(idx);
+            }
+            child_inner.insert_scheme_named_only(name.clone(), Arc::clone(tv));
+        }
+        for (name, _thunk) in &state.type_stage_fns {
+            let tv = make_typevalue_op(name);
+            let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
+                state
+                    .resolver_frames
+                    .iter()
+                    .find_map(|f| f.get(name.as_str()).copied())
+            });
+            if let Some(slot) = abs_slot {
+                let idx = slot as usize;
+                child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
+                covered.insert(idx);
+            }
+            child_inner.insert_scheme_named_only(name.clone(), tv);
+        }
+        for (name, _kind) in &state.type_stage_type_vars {
+            let tv = make_typevalue_op(name);
+            let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
+                state
+                    .resolver_frames
+                    .iter()
+                    .find_map(|f| f.get(name.as_str()).copied())
+            });
+            if let Some(slot) = abs_slot {
+                let idx = slot as usize;
+                child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
+                covered.insert(idx);
+            }
+            child_inner.insert_scheme_named_only(name.clone(), tv);
+        }
+
+        // Walk parent_env chain from outermost to innermost (innermost wins on conflict).
+        let mut chain: Vec<Arc<RwLock<Env>>> = Vec::new();
         {
             let mut cursor = Some(Arc::clone(&parent_env));
             while let Some(arc) = cursor {
-                frames.push(Arc::clone(&arc));
+                chain.push(Arc::clone(&arc));
                 cursor = arc.read().unwrap().parent.as_ref().map(Arc::clone);
             }
         }
-        for frame in frames.iter().rev() {
+        for frame in chain.iter().rev() {
             let frame_read = frame.read().unwrap();
             for (idx, slot_entry) in frame_read.slots.iter().enumerate() {
                 if let Some((name, env_slot)) = slot_entry {
                     if let Some(ref scheme) = env_slot.scheme {
                         if !covered.contains(&idx) {
-                            state.flat_type_env.write().unwrap().insert_at_slot(
-                                idx, name.clone(), Arc::clone(scheme), None
-                            );
-                            state.flat_type_env.write().unwrap().insert_scheme_named_only(
-                                name.clone(), Arc::clone(scheme)
-                            );
+                            child_inner.insert_at_slot(idx, name.clone(), Arc::clone(scheme), None);
+                            child_inner.insert_scheme_named_only(name.clone(), Arc::clone(scheme));
                             covered.insert(idx);
                         }
                     }
                 }
             }
         }
-        // Fill remaining slots with Unknown (pure-Rust builtins, capability vars).
+
+        // Fill remaining root-frame slots with Unknown (pure-Rust builtins, capability vars).
         for (name, &slot) in &root_frame_for_ts {
             let idx = slot as usize;
             if !covered.contains(&idx) {
-                state.flat_type_env.write().unwrap().insert_at_slot(
-                    idx, name.clone(), make_typevalue_unknown(), None
-                );
-                state.flat_type_env.write().unwrap().insert_scheme_named_only(
-                    name.clone(), make_typevalue_unknown()
-                );
+                child_inner.insert_at_slot(idx, name.clone(), make_typevalue_unknown(), None);
+                child_inner.insert_scheme_named_only(name.clone(), make_typevalue_unknown());
             }
         }
     }
@@ -239,9 +232,9 @@ pub async fn typecheck_program_bootstrap(
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
         // Skip type-stage documents — they are evaluated before type-checking runs and their
-        // entries are already in state.type_stage_scope / flat_type_env via the caller-supplied
+        // entries are already in state.type_stage_scope / child_env via the caller-supplied
         // type_stage_data. Re-processing them through process_document produces resolver-slot-miss
-        // errors because flat_type_env is seeded for runtime slots, not type-stage eval slots.
+        // errors because child_env is seeded for runtime slots, not type-stage eval slots.
         if doc.header.get("stage").is_some_and(|stage_node| {
             matches!(
                 &stage_node.expr,
@@ -253,22 +246,6 @@ pub async fn typecheck_program_bootstrap(
         }
         let (new_env, _, mut doc_errors) = process_document(doc, &env, &mut state, &mut None).await;
         errors.append(&mut doc_errors);
-        // T-2085: After each document, update flat_type_env with the GENERALIZED schemes
-        // from new_env. process_document calls generalize_tv on all entry schemes, producing
-        // TypeValue.Scheme for polymorphic entries. The Sequential handler (which runs DURING
-        // process_document) adds UN-GENERALIZED TypeVars to flat_type_env. We now override
-        // those with the correct generalized schemes so that subsequent documents see
-        // polymorphic function types (enabling proper per-call-site instantiation).
-        {
-            let new_env_read = new_env.read().unwrap();
-            for (name, slot) in &new_env_read.extras {
-                if let Some(ref scheme) = slot.scheme {
-                    state.flat_type_env.write().unwrap().insert_scheme_named_only(
-                        name.clone(), Arc::clone(scheme)
-                    );
-                }
-            }
-        }
         env = new_env;
     }
 
@@ -354,9 +331,9 @@ fn merge_env_schemes_into_env(
                 .push(std::collections::HashMap::new());
         }
         for (name, _) in &frame.tycon_defs {
-            state.type_stage_scope[0].entry(name.clone()).or_insert_with(|| {
-                crate::type_infer::make_typevalue_op(name)
-            });
+            state.type_stage_scope[0]
+                .entry(name.clone())
+                .or_insert_with(|| crate::type_infer::make_typevalue_op(name));
         }
     }
 }
@@ -504,12 +481,11 @@ pub(crate) async fn process_document(
         .collect();
 
     if nodes.is_empty() {
-        let result_env_inner = Env::with_parent(Arc::clone(parent_env));
-        return (
-            Arc::new(RwLock::new(result_env_inner)),
-            empty_dict_ty,
-            Vec::new(),
-        );
+        // Empty document — return the parent env unchanged so the caller's env chain
+        // continues from where it left off. Creating a fresh Env::with_parent here
+        // would produce an env with 0 slots, breaking slot-based lookups in subsequent
+        // documents that expect to traverse back to the properly seeded root env.
+        return (Arc::clone(parent_env), empty_dict_ty, Vec::new());
     }
 
     let enclosing_level = state.ctx.current_level;
@@ -1206,7 +1182,6 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
 // contains_unknown_or_top removed — check_surface_expr now uses constrain() which handles
 // gradual types internally (Unknown absorption in unify). The helper is no longer needed.
-
 
 #[cfg(test)]
 #[path = "typecheck_tests.rs"]

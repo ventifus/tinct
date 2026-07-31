@@ -1,8 +1,6 @@
 # Class instance dispatch: multi-instance function resolution
-# This test verifies that the type checker's call_dispatch annotation is correctly
-# propagated through lower() to the evaluator. The lowerer (lower.rs:756-766) checks
-# call_dispatch.get() on VarRef nodes. If this test fails, the wiring between type
-# checker and lowerer for multi-instance dispatch is broken.
+# This test verifies that typeclass method calls dispatch to the correct instance
+# based on argument types. If this test fails, multi-instance dispatch is broken.
 [
   Greeter: [class [let Greeter a]]
 

@@ -60,6 +60,12 @@ pub fn class_decl_name(node: &Arc<SurfaceNode>) -> String {
     }
 }
 
+/// Annotation property keys that are protocol-level metadata (not structural record fields).
+/// See doc/05-type-annotations.md for the full annotation protocol.
+pub const ANNOTATION_KEY_DEFAULT: &str = "default";
+pub const ANNOTATION_KEY_TYPE: &str = "type";
+pub const ANNOTATION_KEY_CONSTRUCTOR: &str = "_constructor";
+
 /// Source span (start..end). Carries file path and line/column positions.
 /// Every span must carry its source file — a line/column number without a filename is meaningless.
 #[derive(Debug, Clone)]
@@ -332,6 +338,7 @@ impl fmt::Display for SurfaceExpression {
                 body,
                 desugared: _,
                 resolved_captures: _,
+                resolved_return_annotation: _,
             } => {
                 write!(f, "[fn")?;
                 if let Some(ann) = return_ann {
@@ -621,8 +628,6 @@ pub enum SurfaceExpression {
 
     // Variable reference. escaped: true = $name (pin in patterns), false = bare (bind).
     // Resolution is stored inline in the `resolution` field, written once by the resolver.
-    // call_dispatch is written by the type checker when this VarRef is the function in a
-    // typeclass method call — the lowerer reads it to rewrite the call to the instance binding.
     //
     // do_infer_placeholder: true marks a VarRef that was synthesised by the [do] desugarer
     // as a sentinel monad reference (protocol: `do-infer-placeholder: 1` in the Expr.VarRef
@@ -638,8 +643,6 @@ pub enum SurfaceExpression {
         escaped: bool,
         #[expr(skip, default_fn = "crate::ast::Resolution::new")]
         resolution: Resolution,
-        #[expr(skip, default_fn = "crate::ast::CallDispatch::new")]
-        call_dispatch: CallDispatch,
         /// Type/metadata annotation from `name@annotation` syntax.
         /// `x@Int` → `Simple("Int")`, `x@[type: Int  default: 0]` → `PropertyDict(...)`.
         #[expr(skip, default_fn = "Option::default")]
@@ -724,6 +727,12 @@ pub enum SurfaceExpression {
         /// VarRef nodes inside this function that reference the corresponding outer binding.
         #[expr(skip, default_fn = "crate::ast::CapturesCell::new")]
         resolved_captures: CapturesCell,
+        /// Return type resolved by the type checker from the return annotation.
+        /// Set during `infer_fn_push_cont`; read by the lowerer to emit
+        /// `TypeAssertCheck::Resolved` instead of `TypeAssertCheck::Source`.
+        /// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
+        #[expr(skip, default_fn = "crate::ast::TypeAnnotation::new")]
+        resolved_return_annotation: TypeAnnotation,
     },
 
     // Type assertion — resolved_type is set inline by the type checker, read by the lowerer.
@@ -1021,53 +1030,6 @@ pub struct MacroProvenance {
     pub call_site_span: Span,
 }
 
-/// Inline call dispatch — written once by the type checker for typeclass method VarRef nodes.
-///
-/// Stores the resolved `VarAddr` for the concrete instance binding.  The type checker sets
-/// this after argument-type unification determines the concrete instance; the lowerer reads
-/// it and emits a `CoreExpr::Var` with that address directly, without any de Bruijn conversion.
-///
-/// Written at most once by the type checker (after argument-type unification determines the
-/// concrete instance). Read once by the lowerer when emitting the Call's function sub-expression.
-/// Interior-mutable via `OnceLock` so the type checker can set it through a shared reference
-/// to the `Arc<SurfaceNode>` that owns the VarRef.
-pub struct CallDispatch(std::sync::OnceLock<VarAddr>);
-impl CallDispatch {
-    pub fn new() -> Self {
-        Self(std::sync::OnceLock::new())
-    }
-    /// Returns the resolved `VarAddr` if set, or `None` if not yet dispatched.
-    pub fn get(&self) -> Option<&VarAddr> {
-        self.0.get()
-    }
-    /// Set the resolved `VarAddr`.  Call sites must ensure the write happens at most
-    /// once per VarRef (guaranteed because type-checking is a single forward pass).
-    pub fn set(&self, addr: VarAddr) {
-        // First write wins: shared AST nodes may be visited multiple times.
-        self.0.get_or_init(|| addr);
-    }
-}
-impl Clone for CallDispatch {
-    fn clone(&self) -> Self {
-        Self::new()
-    }
-}
-impl PartialEq for CallDispatch {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-impl Default for CallDispatch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl std::fmt::Debug for CallDispatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CallDispatch({:?})", self.0.get())
-    }
-}
-
 pub struct Provenance(std::sync::OnceLock<Option<MacroProvenance>>);
 impl Provenance {
     pub fn new() -> Self {
@@ -1274,6 +1236,15 @@ pub enum VarAddr {
     Parameter(u32),
 }
 
+/// Specifies how the TypeAssert node obtains its expected type.
+#[derive(Clone, Debug)]
+pub enum TypeAssertCheck {
+    /// User-written `[@T x]` — annotation not resolved at compile time; evaluated at runtime.
+    Source { annotation: Spanned<Annotation> },
+    /// Lowerer-emitted — TypeValue pre-resolved at lower time; skip annotation evaluation.
+    Resolved(Arc<crate::value::Value>),
+}
+
 /// Evaluator-internal expression — produced by lowering a SurfaceExpression.
 /// De Bruijn coordinates are plain fields (no RefCell, no Option).
 /// Never exposed to tinct code. Can be changed freely without affecting the tinct API.
@@ -1340,15 +1311,14 @@ pub enum CoreExpr {
         /// Written by the lowerer from `SurfaceExpression::Fn::resolved_captures`.
         captures: std::sync::Arc<Vec<(String, VarAddr)>>,
     },
-    // Statically type-checked TypeAssert — resolved_type read from the inline TypeAnnotation
-    // on the SurfaceExpression::TypeAssert node during lowering.
-    // Runtime behavior: structural check against resolved_type at force time.
+    // Statically type-checked TypeAssert — check carries either the source annotation (for
+    // user-written `[@T x]` forms) or a pre-resolved TypeValue (for lowerer-emitted nodes).
+    // Runtime behavior: structural check against the resolved TypeValue at force time.
     TypeAssert {
-        annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
-        /// TypeValue resolved by the type checker. Arc<Value> with ctor tag like "TypeValue.Repr",
-        /// "TypeValue.Var", "TypeValue.Fn", etc. (see builtin_core.llt TypeValue type).
-        resolved_type: Arc<crate::value::Value>,
+        /// How to obtain the expected type: Source carries the raw annotation (resolved at
+        /// runtime), Resolved carries a TypeValue pre-resolved at lower time.
+        check: TypeAssertCheck,
         /// Pipeline blame for `--- expects: @Type` contract assertions.
         /// Set when a document's `--- expects:` annotation is resolved for pipeline type validation.
         /// None for all other TypeAssert sites (user-written `[@Type expr]` annotations).

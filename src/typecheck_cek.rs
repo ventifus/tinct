@@ -299,7 +299,8 @@ pub(crate) enum TypeCheckCont {
         saved_current_binding: Option<BindingId>,
         /// Saved state.narrowing_map from before this block's narrowings were applied.
         /// Restored after AfterBlock fires so narrowings from one arm don't leak into others.
-        saved_narrowing_map: std::collections::HashMap<crate::type_infer::BindingId, crate::type_infer::TypeValue>,
+        saved_narrowing_map:
+            std::collections::HashMap<crate::type_infer::BindingId, crate::type_infer::TypeValue>,
         /// Saved state.current_parameter_frame from before this block.
         /// Restored after AfterBlock fires so the enclosing function/arm frame is recovered.
         saved_parameter_frame: Option<Arc<RwLock<Env>>>,
@@ -504,7 +505,6 @@ async fn infer_step(
                         name: "builtin-dict-get".to_string(),
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
-                        call_dispatch: crate::ast::CallDispatch::new(),
                         annotation: None,
                         do_infer_placeholder: false,
                     },
@@ -609,6 +609,12 @@ async fn infer_step(
             // This counter is still advanced per body so it stays correct for fn-body sequential
             // bodies that follow any non-Dict intermediate.
             let mut sequential_slot_offset: u32 = 0;
+            // Tracks the document-level initial_offset: the absolute slot base for body 0.
+            // Learned from the first document-level body's phase-2 slot lookup.
+            // For fn-body sequential this stays None (fn bodies use 0-based sequential_slot_offset).
+            // For document-level sequential: after body 0, doc_initial_offset = body_0_base.
+            // For body N > 0: correct base = doc_initial_offset + sequential_slot_offset_at_N_start.
+            let mut doc_initial_offset: Option<u32> = None;
 
             // T-2060: Save and reset use_def and current_binding at the start of each Sequential
             // so that edges from a previous (or outer) Sequential scope don't contaminate this
@@ -651,42 +657,61 @@ async fn infer_step(
                     let static_keys = crate::resolve::surface_dict_static_keys(entries);
 
                     // Determine the starting LGM slot for this dict body.
+                    // resolver_frames has BlockBody frames from all sequential contexts (both
+                    // document-level and function-body). Multiple functions may have identically-
+                    // named intermediate bodies at different slot positions (e.g. join has
+                    // "loop" at slot 1, env-to-name-set has "loop" at slot 2). Disambiguation:
                     //
-                    // Two cases:
+                    // 1. Prefer frames where computed base == sequential_slot_offset (exact match).
+                    //    For fn-body sequential: sequential_slot_offset IS the expected base.
+                    //    This correctly selects the right function's frame over others with the
+                    //    same key name at a different relative position.
                     //
-                    // 1. Document-level sequential (process_document wraps top-level items into a
-                    //    synthetic Sequential): the resolver's walk_surface_document_with_offset
-                    //    assigns cumulative LGM slots starting at initial_offset (= root_group_len),
-                    //    NOT at 0. These absolute slots are recorded in state.resolver_frames for
-                    //    each document-level intermediate dict scope. Look up the first key in
-                    //    resolver_frames to recover the resolver-assigned base slot.
-                    //
-                    // 2. Fn-body sequential (intermediate dict bodies inside a multi-body function):
-                    //    the resolver assigns slots starting at 0 within the fn body's fresh group
-                    //    (sequential_offset starts at 0 per walk_surface_expr Sequential arm).
-                    //    Fn-body scopes use ScopeKind::FnSequentialBody and are NOT included in
-                    //    state.resolver_frames (only document-level Other scopes are returned).
-                    //    Fall back to sequential_slot_offset (which starts at 0 and advances
-                    //    correctly for each fn-body sequential body).
-                    //
-                    // This lookup eliminates the T-2080 slot mismatch: document-level dicts were
-                    // being inserted at slot j (counter from 0) but the resolver assigned slot
-                    // (initial_offset + j), causing get_scheme_at to miss and emit resolver-slot-miss.
-                    // Determine whether the body_slot_base was found from resolver_frames
-                    // (absolute LGM slots) or fell back to sequential_slot_offset (relative).
-                    // Only update flat_type_env slot-indexed entries when absolute slots are
-                    // known — relative slots would collide with root-group builtin slots.
-                    let abs_body_slot_base: Option<u32> = static_keys
-                        .first()
-                        .and_then(|first_key| {
-                            state
+                    // 2. If no exact match, accept any frame (document-level abs-slot bodies).
+                    //    For document-level body N>0: prefer the frame where base - sequential_slot_offset
+                    //    equals doc_initial_offset (learned from body 0). This disambiguates when
+                    //    multiple bodies share the same first key name (e.g. both Dict1 and Dict2 start
+                    //    with "Boolean"). For body 0 (no prior offset known), use minimum-base frame.
+                    let body_slot_base: u32 = static_keys
+                        .iter()
+                        .enumerate()
+                        .find_map(|(j, key)| {
+                            // Phase 1: look for a frame where the computed base exactly
+                            // equals sequential_slot_offset (fn-body disambiguation).
+                            let exact = state
                                 .resolver_frames
                                 .iter()
-                                .find_map(|frame| frame.get(first_key.as_str()).copied())
-                        });
-                    let body_slot_base: u32 = abs_body_slot_base
+                                .filter_map(|frame| frame.get(key.as_str()).copied())
+                                .map(|slot| slot.saturating_sub(j as u32))
+                                .find(|&base| base == sequential_slot_offset);
+                            if exact.is_some() {
+                                return exact;
+                            }
+                            // Phase 2: document-level body disambiguation.
+                            let candidates: Vec<u32> = state
+                                .resolver_frames
+                                .iter()
+                                .filter_map(|frame| frame.get(key.as_str()).copied())
+                                .map(|slot| slot.saturating_sub(j as u32))
+                                .collect();
+                            if candidates.is_empty() {
+                                return None;
+                            }
+                            if let Some(initial) = doc_initial_offset {
+                                // Body N>0: find the frame where base = initial_offset + sequential_slot_offset.
+                                let expected = initial + sequential_slot_offset;
+                                if let Some(&b) = candidates.iter().find(|&&b| b == expected) {
+                                    return Some(b);
+                                }
+                            }
+                            // Body 0 or no match: use minimum candidate (smallest abs slot = body 0's frame).
+                            candidates.into_iter().min()
+                        })
                         .unwrap_or(sequential_slot_offset);
-                    let has_absolute_slots = abs_body_slot_base.is_some();
+                    // Record doc_initial_offset from body 0's base (for subsequent bodies).
+                    if doc_initial_offset.is_none() && body_slot_base > sequential_slot_offset {
+                        doc_initial_offset = Some(body_slot_base - sequential_slot_offset);
+                    }
 
                     // Extend env with schemes (preserving let-polymorphism).
                     // Insert into SLOTS at the resolver-assigned slot indices so that
@@ -695,12 +720,6 @@ async fn infer_step(
                     // Propagate referenced state from the sub-run: run_typecheck_dict creates
                     // fresh EnvSlots, losing the `referenced` flag set during its internal CEK run.
                     // Re-apply from the returned set to prevent false lost-binding diagnostics.
-                    // Capture the sequential enclosing level for generalization.
-                    // run_typecheck_dict saves/restores the level, so current_level is
-                    // the pre-dict (enclosing) level here. Schemes at level > enclosing_level
-                    // are generalizable into TypeValue.Scheme.
-                    let sequential_enclosing_level = state.ctx.current_level;
-
                     let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
                     for (j, key_name) in static_keys.iter().enumerate() {
                         let slot_idx = (body_slot_base + j as u32) as usize;
@@ -711,31 +730,6 @@ async fn infer_step(
                                 key_name.clone(),
                                 scheme.clone(),
                                 span.clone(),
-                            );
-                            // Generalize the scheme before adding to flat_type_env.
-                            // The sequential handler processes intermediate dict bodies
-                            // (e.g., Dict 1 of a multi-body document). Schemes from
-                            // run_typecheck_dict are raw TypeVars (un-generalized). If stored
-                            // as-is in flat_type_env, they get shared across all subsequent
-                            // dict bodies — causing TypeVar aliasing across reduce calls etc.
-                            // Generalizing here creates TypeValue.Scheme wrappers that
-                            // instantiate fresh TypeVars per call site.
-                            let gen_scheme = crate::types::generalize_tv(
-                                sequential_enclosing_level,
-                                scheme,
-                                &state.ctx,
-                            );
-                            // Only add to flat_type_env at absolute slots (not relative).
-                            // Relative slots (fallback path when resolver_frames is empty) would
-                            // collide with root-group builtin slots, causing wrong type lookups.
-                            if has_absolute_slots {
-                                state.flat_type_env.write().unwrap().insert_at_slot(
-                                    slot_idx, key_name.clone(), gen_scheme.clone(), span
-                                );
-                            }
-                            // Always add to flat_type_env extras for name-based lookups.
-                            state.flat_type_env.write().unwrap().insert_scheme_named_only(
-                                key_name.clone(), gen_scheme
                             );
                             if referenced.contains(key_name.as_str()) {
                                 // Mark referenced on the slot entry directly.
@@ -749,18 +743,8 @@ async fn infer_step(
                             new_env_inner.insert_at_slot(
                                 slot_idx,
                                 key_name.clone(),
-                                unknown_tv.clone(),
-                                span.clone(),
-                            );
-                            // Only add to flat_type_env at absolute slots.
-                            if has_absolute_slots {
-                                state.flat_type_env.write().unwrap().insert_at_slot(
-                                    slot_idx, key_name.clone(), unknown_tv.clone(), span
-                                );
-                            }
-                            // Always add to flat_type_env extras for name-based lookups.
-                            state.flat_type_env.write().unwrap().insert_scheme_named_only(
-                                key_name.clone(), unknown_tv
+                                unknown_tv,
+                                span,
                             );
                         }
                     }
@@ -768,11 +752,6 @@ async fn infer_step(
                     for (name, scheme) in &schemes {
                         if !static_keys.contains(name) {
                             new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
-                            // Generalize and add to flat_type_env extras.
-                            let gen_scheme = crate::types::generalize_tv(
-                                sequential_enclosing_level, scheme, &state.ctx
-                            );
-                            state.flat_type_env.write().unwrap().insert_scheme_named_only(name.clone(), gen_scheme);
                         }
                     }
                     // Advance the cumulative slot counter by this body's static key count.
@@ -1443,7 +1422,6 @@ async fn apply_cont(
             }
         }
 
-
         // ===== TypeAssertInner =====
         TypeCheckCont::TypeAssertInner {
             expected,
@@ -1692,14 +1670,26 @@ async fn infer_var_ref(
                     let slot_scheme = frame.read().unwrap().get_scheme_at(0, *i);
                     if slot_scheme.is_some() {
                         frame.write().unwrap().mark_slot_referenced(0, *i);
-                        if let (Some(ref binder), Some(ref def_span)) = (&state.current_binding, &dep_def_span) {
-                            let dep_id = BindingId { def_span: def_span.clone(), name: name.to_string() };
+                        if let (Some(ref binder), Some(ref def_span)) =
+                            (&state.current_binding, &dep_def_span)
+                        {
+                            let dep_id = BindingId {
+                                def_span: def_span.clone(),
+                                name: name.to_string(),
+                            };
                             if *binder != dep_id {
-                                state.use_def.entry(binder.clone()).or_default().insert(dep_id);
+                                state
+                                    .use_def
+                                    .entry(binder.clone())
+                                    .or_default()
+                                    .insert(dep_id);
                             }
                         }
                         if let Some(ref def_span) = dep_def_span {
-                            let bid = BindingId { def_span: def_span.clone(), name: name.to_string() };
+                            let bid = BindingId {
+                                def_span: def_span.clone(),
+                                name: name.to_string(),
+                            };
                             if let Some(narrowed) = state.narrowing_map.get(&bid) {
                                 return Arc::clone(narrowed);
                             }
@@ -1708,7 +1698,10 @@ async fn infer_var_ref(
                     } else {
                         errors.push(TypeDiagnostic::error(
                             "resolver-param-miss",
-                            format!("parameter '{}' at slot {} not found in current_parameter_frame", name, i),
+                            format!(
+                                "parameter '{}' at slot {} not found in current_parameter_frame",
+                                name, i
+                            ),
                             node.span.clone(),
                         ));
                         None
@@ -1723,49 +1716,38 @@ async fn infer_var_ref(
                 }
             }
             crate::ast::VarAddr::ClosureCapture(_) => {
-                // ClosureCapture(i) in the evaluator means runtime closure_env[i].
-                // The type checker has no "type closure env" indexed by capture position —
-                // closure capture indices do not correspond to type checker env frame slots.
-                // The correct type checker implementation: look up the captured variable by
-                // name in the env chain. After the T-2085 flatten, the enclosing dict_env
-                // contains all accumulated group entries including type-stage bindings and
-                // user-defined names from the same or prior documents.
+                // Nested-function reference: the surface resolver assigns ClosureCapture(i)
+                // when a name is used inside a function but defined in an outer function.
+                // The type checker has no separate closure capture env; look up by name
+                // in the env parent chain, which includes the outer function's scope.
                 env.read().unwrap().get_scheme(name)
-                // Note: get_scheme walks slot_index + extras + parent chain. Returns None if
-                // the variable truly cannot be found (e.g., compiler-internal injections not
-                // in any env frame). None produces "undefined variable" which is correct.
             }
             _ => {
-                let (resolver_level, slot) = match addr {
-                    crate::ast::VarAddr::LetrecGroupMember { depth, slot } => (*depth, *slot),
-                    crate::ast::VarAddr::Parameter(_) | crate::ast::VarAddr::ClosureCapture(_) => unreachable!(),
+                let crate::ast::VarAddr::LetrecGroupMember {
+                    depth: resolver_level,
+                    slot,
+                } = addr
+                else {
+                    unreachable!()
                 };
-                // Two-phase slot lookup for the flat+hierarchical hybrid env model:
-                //
-                // Phase 1: Level 0 — dict_env is pre-seeded from flat_type_env (all accumulated
-                //   group entries at their absolute slots: builtins, prelude, type-stage entries,
-                //   all prior-document entries). The resolver assigns level > 0 for outer-scope
-                //   references, but in the type checker their entries ARE at level 0 (copied into
-                //   dict_env by run_typecheck_dict). Level 0 handles the flat accumulated group.
-                //
-                // Phase 2: resolver_level — function-body intermediate dict bindings (like locals
-                //   from a previous body dict) use relative slots (starting at 0 within the fn
-                //   frame) and are NOT in flat_type_env. They are only accessible at the
-                //   resolver-assigned level via the hierarchical function frame env chain.
-                //
-                // If both fail: genuine setup error — resolver-slot-miss.
-                let (found_level, slot_scheme) = {
+                let (resolver_level, slot) = (*resolver_level, *slot);
+                // Single-phase slot lookup: the env chain mirrors the resolver's frame structure.
+                // get_scheme_at(resolver_level, slot) traverses resolver_level parent links and
+                // looks up the slot there. Root-group entries are in child_env (seeded by
+                // typecheck_program_bootstrap) at their absolute slots; Sequential body entries
+                // are in their respective env frames at the correct depths.
+                let slot_scheme = {
                     let env_read = env.read().unwrap();
-                    if let Some(s) = env_read.get_scheme_at(0, slot) {
-                        (0u32, Some(s))
-                    } else {
-                        (resolver_level, env_read.get_scheme_at(resolver_level, slot))
-                    }
+                    env_read.get_scheme_at(resolver_level, slot)
                 };
                 if slot_scheme.is_some() {
-                    let dep_def_span = env.read().unwrap().get_slot_def_span(found_level, slot);
-                    env.write().unwrap().mark_slot_referenced(found_level, slot);
-                    if let (Some(ref binder), Some(ref def_span)) = (&state.current_binding, &dep_def_span) {
+                    let dep_def_span = env.read().unwrap().get_slot_def_span(resolver_level, slot);
+                    env.write()
+                        .unwrap()
+                        .mark_slot_referenced(resolver_level, slot);
+                    if let (Some(ref binder), Some(ref def_span)) =
+                        (&state.current_binding, &dep_def_span)
+                    {
                         let dep_id = BindingId {
                             def_span: def_span.clone(),
                             name: name.to_string(),
@@ -1779,17 +1761,16 @@ async fn infer_var_ref(
                         }
                     }
                     if let Some(ref def_span) = dep_def_span {
-                        let bid = BindingId { def_span: def_span.clone(), name: name.to_string() };
+                        let bid = BindingId {
+                            def_span: def_span.clone(),
+                            name: name.to_string(),
+                        };
                         if let Some(narrowed) = state.narrowing_map.get(&bid) {
                             return Arc::clone(narrowed);
                         }
                     }
                     slot_scheme
                 } else {
-                    // Both flat (level 0) and hierarchical (resolver level) lookups failed.
-                    // flat_type_env must contain every accumulated-group entry at its absolute
-                    // slot; function-body locals must be accessible via the resolver level in the
-                    // function frame chain. A miss in both indicates a genuine setup gap.
                     errors.push(TypeDiagnostic::error(
                         "resolver-slot-miss",
                         format!(
@@ -2556,7 +2537,7 @@ async fn apply_call_args_poly(
         }
 
         let mut constraints = std::mem::take(&mut ctx.state.constraints);
-        if let Err(e) = constrain(
+        if let Err(mut e) = constrain(
             &widened_arg,
             param_ty,
             &mut ctx.state.ctx,
@@ -2565,6 +2546,11 @@ async fn apply_call_args_poly(
         )
         .await
         {
+            // Attach the specific argument's span as a secondary annotation so users
+            // can navigate to the exact expression that has the wrong type.
+            if let Some(arg_node) = arg_nodes.get(idx) {
+                e = e.with_span(arg_node.span.clone(), "this argument".to_string());
+            }
             ctx.errors.push(e);
         }
         ctx.state.constraints = constraints;
@@ -2979,6 +2965,17 @@ async fn infer_fn_push_cont(
         None
     };
 
+    // Store the resolved return type back onto the Fn SurfaceNode so the lowerer can emit
+    // TypeAssertCheck::Resolved instead of TypeAssertCheck::Source (T-2015).
+    // Same pattern as SurfaceParam.resolved_annotation_type.set() below.
+    if let SurfaceExpression::Fn {
+        resolved_return_annotation,
+        ..
+    } = &node.expr
+    {
+        resolved_return_annotation.set(return_ann_type.clone());
+    }
+
     // Consume expected_fn_params from state (single-use per fn invocation).
     // Set by infer_instance_decl_from_surface for bidirectional type checking of instance methods.
     // Taking it here prevents leaking into nested fn expressions in the body.
@@ -3245,7 +3242,11 @@ async fn setup_match_arm_env(
     state: &mut InferState,
     errors: &mut Vec<TypeDiagnostic>,
     type_map: &mut Option<&mut TypeMap>,
-) -> Option<(Arc<RwLock<Env>>, TypeValue, Vec<typecheck_narrow::Narrowing>)> {
+) -> Option<(
+    Arc<RwLock<Env>>,
+    TypeValue,
+    Vec<typecheck_narrow::Narrowing>,
+)> {
     // If arm.let_bindings is Some(...), this is a [case [let names] pattern body] arm.
     // Build a case arm env with those binding names. Otherwise, the arm env starts as the outer env.
     let arm_env: Arc<RwLock<Env>> = if let Some(let_bindings) = &arm.let_bindings {
@@ -4189,34 +4190,10 @@ pub(crate) async fn run_typecheck_dict(
     let enclosing_level = state.ctx.current_level;
     state.ctx.current_level += 1;
 
-    // For document-level dicts: build dict_env by copying state.flat_type_env's entries
-    // (all accumulated entries at absolute slots) into a fresh env that also has the
-    // standard parent chain for fallback lookups. This makes get_scheme_at(0, slot) work
-    // for any entry in the accumulated group — matching the resolver's flat model.
-    // For fn-body dicts: flat_type_env has the outer accumulated entries which is correct
-    // (functions can reference outer-scope names). The entries don't cause problems.
-    let dict_env: Arc<RwLock<Env>> = {
-        let mut new_inner = Env::with_parent(Arc::clone(env));
-        {
-            let flat = state.flat_type_env.read().unwrap();
-            for (idx, slot_entry) in flat.slots.iter().enumerate() {
-                if let Some((flat_name, flat_slot)) = slot_entry {
-                    if let Some(ref scheme) = flat_slot.scheme {
-                        new_inner.insert_at_slot(
-                            idx, flat_name.clone(), Arc::clone(scheme), flat_slot.definition_span.clone()
-                        );
-                    }
-                }
-            }
-            // Also copy extras by name for name-based lookups.
-            for (flat_name, flat_slot) in &flat.extras {
-                if let Some(ref scheme) = flat_slot.scheme {
-                    new_inner.insert_scheme_named_only(flat_name.clone(), Arc::clone(scheme));
-                }
-            }
-        }
-        Arc::new(RwLock::new(new_inner))
-    };
+    // dict_env is a fresh child of the incoming env. The parent chain already contains all
+    // root-group entries (seeded into child_env by typecheck_program_bootstrap) at their
+    // correct depths. get_scheme_at(depth, slot) traverses the chain naturally.
+    let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
 
     // Extra schemes from ADT constructors — injected in Pass 2, merged into final schemes.
     // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
@@ -4261,13 +4238,12 @@ pub(crate) async fn run_typecheck_dict(
     // base is derived from resolver_frames exactly as the Sequential handler computes
     // body_slot_base: find the first static key's absolute slot in any resolver frame.
     let static_keys_for_slot = crate::resolve::surface_dict_static_keys(entries);
-    let body_slot_base_opt: Option<u32> = static_keys_for_slot
-        .first()
-        .and_then(|first_key| {
-            state.resolver_frames
-                .iter()
-                .find_map(|frame| frame.get(first_key.as_str()).copied())
-        });
+    let body_slot_base_opt: Option<u32> = static_keys_for_slot.first().and_then(|first_key| {
+        state
+            .resolver_frames
+            .iter()
+            .find_map(|frame| frame.get(first_key.as_str()).copied())
+    });
     let mut fresh_vars_by_name: indexmap::IndexMap<String, TypeValue> = indexmap::IndexMap::new();
     let mut static_slot_idx: u32 = 0;
     for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
@@ -4303,7 +4279,10 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     if let Some(slot) = abs_slot {
                         dict_env.write().unwrap().insert_at_slot(
-                            slot as usize, name.clone(), Arc::clone(&fn_type), Some(entry.span.clone()),
+                            slot as usize,
+                            name.clone(),
+                            Arc::clone(&fn_type),
+                            Some(entry.span.clone()),
                         );
                     }
                     dict_env.write().unwrap().insert_scheme_with_span(
@@ -4318,7 +4297,10 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     if let Some(slot) = abs_slot {
                         dict_env.write().unwrap().insert_at_slot(
-                            slot as usize, name.clone(), Arc::clone(&fresh_var), Some(entry.span.clone()),
+                            slot as usize,
+                            name.clone(),
+                            Arc::clone(&fresh_var),
+                            Some(entry.span.clone()),
                         );
                     }
                     dict_env.write().unwrap().insert_scheme_with_span(
@@ -4365,36 +4347,6 @@ pub(crate) async fn run_typecheck_dict(
             }
         }
     }
-
-    // Inject a synthetic innermost scope frame into state.scope_frames for this dict.
-    //
-    // The frame maps each static name (including instance binding mangled names) to its
-    // slot index matching surface_dict_static_keys. During Pass 3, check_constraints_on_var
-    // fires when a TypeVar resolves, calls resolve_name_in_frames to find the mangled
-    // instance binding name, and sets call_dispatch so the lowerer rewrites the VarRef to
-    // the correct runtime slot. Without this frame (or with an incomplete frame), dispatch
-    // is silently skipped and typeclass methods evaluate to class descriptor Dicts at runtime.
-    //
-    // We use surface_dict_static_keys (which the resolver and evaluator also use) to compute
-    // the canonical slot positions, so the type checker's slot numbers match the runtime
-    // GroupSpine layout exactly.  We pop the synthetic frame after run_typecheck_dict to
-    // avoid frame leakage to parent scopes.
-    let pushed_synthetic_frame = if state.scope_frames.is_some() {
-        let synthetic: indexmap::IndexMap<String, u32> =
-            crate::resolve::surface_dict_static_keys(entries)
-                .into_iter()
-                .enumerate()
-                .map(|(i, name)| (name, i as u32))
-                .collect();
-        if let Some(ref mut frames) = state.scope_frames {
-            frames.push(synthetic);
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
 
     // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
@@ -4565,9 +4517,9 @@ pub(crate) async fn run_typecheck_dict(
                                 .type_stage_scope
                                 .push(std::collections::HashMap::new());
                         }
-                        state.type_stage_scope[0].entry(name.clone()).or_insert_with(|| {
-                            make_typevalue_op(&name)
-                        });
+                        state.type_stage_scope[0]
+                            .entry(name.clone())
+                            .or_insert_with(|| make_typevalue_op(&name));
                         if params.is_empty() {
                             let value_scheme_ty = adt_value_type(&alias_ty);
                             let ctor_fields = typevalue_record_fields_pub(&value_scheme_ty);
@@ -5342,31 +5294,6 @@ pub(crate) async fn run_typecheck_dict(
     };
     let record_type = make_typevalue_record(resolved_field_types.clone(), tail_value);
 
-    // Drain remaining dispatch obligations as type errors.
-    for obligation in state.dispatch_obligations.drain(..) {
-        if let crate::ast::SurfaceExpression::VarRef { call_dispatch, .. } =
-            &obligation.varref_node.expr
-        {
-            if call_dispatch.get().is_none() {
-                errors.push(crate::error::TypeDiagnostic::error(
-                    "type-error",
-                    format!(
-                        "no [{}] instance found for method [{}]",
-                        obligation.class_name, obligation.method_name
-                    ),
-                    obligation.varref_node.span.clone(),
-                ));
-            }
-        }
-    }
-
-    // Pop the synthetic scope frame we pushed before Pass 2 (if we pushed one).
-    if pushed_synthetic_frame {
-        if let Some(ref mut frames) = state.scope_frames {
-            frames.pop();
-        }
-    }
-
     // Collect referenced names from the internal dict env before returning.
     // The Sequential arm creates fresh EnvSlots when building new_env_inner, losing the
     // `referenced` flag set during our internal CEK run. Return the set so callers can
@@ -5412,7 +5339,6 @@ mod tests {
             name: name.to_string(),
             escaped: false,
             resolution: Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
             annotation: None,
             do_infer_placeholder: false,
         })
@@ -5437,6 +5363,7 @@ mod tests {
             body,
             desugared: false,
             resolved_captures: crate::ast::CapturesCell::new(),
+            resolved_return_annotation: crate::ast::TypeAnnotation::new(),
         })
     }
 
@@ -5544,5 +5471,4 @@ mod tests {
             "x is free in all scopes, so dep on sibling x must be present: deps = {deps:?}"
         );
     }
-
 }

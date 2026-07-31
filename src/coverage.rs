@@ -1602,7 +1602,7 @@ mod tests {
             name: name.to_string(),
             escaped: false,
             resolution: r,
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         }
@@ -1616,7 +1616,7 @@ mod tests {
             name: name.to_string(),
             escaped: false,
             resolution: r,
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         }
@@ -1628,7 +1628,7 @@ mod tests {
             name: name.to_string(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         }
@@ -1641,7 +1641,7 @@ mod tests {
                 name: type_name.to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             },
@@ -1730,7 +1730,7 @@ mod tests {
                 name: "host".to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             },

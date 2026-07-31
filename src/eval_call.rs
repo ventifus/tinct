@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
+use crate::ast::{
+    CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode, ANNOTATION_KEY_DEFAULT,
+};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::type_tags::*;
 use crate::value::{EvalFrame, HashableValue, Thunk, Value};
@@ -18,7 +20,7 @@ use crate::eval_core::eval_core_expr;
 
 /// Return `true` if `tv` is a TypeValue.Unknown — either the bootstrap sentinel (empty dict)
 /// or a proper `Value::Variant { ctor: "TypeValue.Unknown" }` after the repr protocol runs.
-fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
+pub(crate) fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
     match tv.as_ref() {
         Value::Variant { ctor, .. } => ctor.as_ref() == TV_UNKNOWN,
         // Bootstrap sentinel: unknown_type_val() is an empty dict before repr protocol runs.
@@ -27,7 +29,7 @@ fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
     }
 }
 
-const DEFAULT_ANNOTATION_KEY: &str = "default";
+const DEFAULT_ANNOTATION_KEY: &str = ANNOTATION_KEY_DEFAULT;
 
 /// Extract a human-readable label from a CoreExpr function position for stack frames.
 ///

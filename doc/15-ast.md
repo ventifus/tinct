@@ -174,18 +174,13 @@ pub enum CoreExpr {
         // user-written `[fn [let ...] body]` forms.
         desugared: bool,
     },
-    // Statically type-checked TypeAssert — resolved_type is an Arc<Value> TypeValue written
-    // by the type checker into a SurfaceExpression::TypeAssert OnceLock, then transferred
-    // here by the lowering pass. Runtime behavior: structural check via value_matches_type.
+    // Runtime type assertion — check carries either the user-written annotation (Source)
+    // or a pre-resolved TypeValue (Resolved) written by the lowerer from the type checker.
+    // Runtime behavior: structural check via value_matches_type.
     TypeAssert {
-        annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
-        resolved_type: Arc<Value>,  // TypeValue (Arc<Value>); TypeValue.Unknown for macro-synthesized/error cases
+        check: TypeAssertCheck,
         pipeline_blame: Option<PipelineBlame>,  // None for user-written [@T expr]; Some only at --- expects: boundaries
-    },
-    Annotated {
-        name: String,
-        annotation: Spanned<Annotation>,
     },
     Rest(Option<String>),
     Match {
@@ -240,6 +235,22 @@ pub struct CoreMatchArm {
     pub lowered_pattern: Option<Arc<Spanned<CoreExpr>>>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
+}
+
+/// Carries the type check to perform in CoreExpr::TypeAssert.
+///
+/// Source — the user wrote a type annotation; the annotation is evaluated at runtime
+///   against the tycon_env. Falls back to unknown_type_val() when tycon_env has no
+///   entry (e.g. --no-typecheck mode), which passes all values (gradual typing).
+///
+/// Resolved — the lowerer pre-resolved the TypeValue from the type checker's
+///   OnceLock (resolved_type / resolved_return_annotation). Used for:
+///   - param assertions (always Resolved after typecheck)
+///   - return-type assertions (Resolved when typecheck succeeds)
+///   - inline [@T expr] when the type checker resolved the annotation to a concrete TypeValue
+enum TypeAssertCheck {
+    Source { annotation: Spanned<Annotation> },  // user-written [@T x] — annotation evaluated at runtime
+    Resolved(Arc<Value>),                         // lowerer-emitted, pre-resolved TypeValue
 }
 
 /// An annotation (type or property dict)

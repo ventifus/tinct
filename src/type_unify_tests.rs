@@ -778,44 +778,11 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
     );
 }
 
-/// T-1076 Arm 3 (isomorphic Recursive): TypeValue.Recursive unification deferred to T-2072.
-/// Full coinductive unification requires BAS bounds infrastructure (B-666).
-/// Minimum viable check: two identical `Arc<Value>` Recursive TypeValues that are ptr-eq
-/// must be accepted by unify (already covered by test_is_subtype_recursive_isomorphic_terminates).
-/// Full structural unification of distinct-but-isomorphic Recursive TypeValues: T-2072.
-#[tokio::test]
-async fn test_unify_recursive_isomorphic() {
-    // T-2072: TypeValue.Recursive unification requires coinductive BAS (B-666).
-    // Full test deferred to T-2072. Nothing to assert here that isn't already covered.
-}
-
-/// T-1076 Arm 3 (incompatible Recursive): TypeValue.Recursive unification deferred to T-2072.
-#[tokio::test]
-async fn test_unify_recursive_incompatible() {
-    // T-2072: incompatible Recursive TypeValue unification requires TypeValue.Recursive in type_def.rs.
-    // Full test deferred to T-2072.
-}
-
-/// T-1076 Ordering (TypeVar before Recursive): TypeVar ~ Recursive unification deferred to T-2072.
-#[tokio::test]
-async fn test_unify_typevar_before_recursive() {
-    // T-2072: TypeVar before Recursive arm requires TypeValue.Recursive support.
-    // Full test deferred to T-2072.
-}
-
-/// T-1076 Arm 4 (Recursive left): Recursive on LHS unification deferred to T-2072.
-#[tokio::test]
-async fn test_unify_recursive_left_only() {
-    // T-2072: Recursive left arm requires TypeValue.Recursive in type_def.rs.
-    // Full test deferred to T-2072.
-}
-
-/// T-1076 Arm 5 (Recursive right): Recursive on RHS unification deferred to T-2072.
-#[tokio::test]
-async fn test_unify_recursive_right_only() {
-    // T-2072: Recursive right arm requires TypeValue.Recursive in type_def.rs.
-    // Full test deferred to T-2072.
-}
+// T-2072: TypeValue.Recursive isomorphic unification requires coinductive BAS (B-666). Test deferred.
+// T-2072: TypeValue.Recursive incompatible unification deferred.
+// T-2072: TypeVar before Recursive arm requires TypeValue.Recursive support. Test deferred.
+// T-2072: Recursive left arm requires TypeValue.Recursive in type_def.rs. Test deferred.
+// T-2072: Recursive right arm requires TypeValue.Recursive in type_def.rs. Test deferred.
 
 // Fn vs TyCon.App disjoint: test deferred pending public TypeValue disjointness API (T-2075).
 
@@ -1115,31 +1082,10 @@ async fn test_unify_tycon_vs_empty_name_err() {
     );
 }
 
-/// T-1020j: Uniform-tail record unification deferred to T-2074.
-/// TypeValue.Record with RowTail.Uniform unification is not yet implemented.
-#[tokio::test]
-async fn test_unify_uniform_same_value_type_records_ok() {
-    // T-2074: RowTail.Uniform unification requires constrain_rows extension in type_unify.rs.
-    // Full test deferred to T-2074.
-}
-
-/// T-1020j2: Uniform-tail inconsistent field type unification deferred to T-2074.
-#[tokio::test]
-async fn test_unify_uniform_inconsistent_named_field_type_errors() {
-    // T-2074: RowTail.Uniform with inconsistent field types requires constrain_rows. Deferred to T-2074.
-}
-
-/// T-1116a: RowTail.Var join via unification deferred to T-2074.
-#[tokio::test]
-async fn test_unify_empty_uniform_typevar_join() {
-    // T-2074: RowTail.Var unification in constrain_rows not yet implemented. Deferred to T-2074.
-}
-
-/// T-1116b: RowTail.Uniform concrete subtype failure deferred to T-2074.
-#[tokio::test]
-async fn test_unify_empty_uniform_concrete_subtype_fail() {
-    // T-2074: RowTail.Uniform concrete subtype check in constrain_rows not yet implemented. Deferred to T-2074.
-}
+// T-2074: RowTail.Uniform same-value-type record unification requires constrain_rows extension. Test deferred.
+// T-2074: RowTail.Uniform inconsistent named-field type unification requires constrain_rows. Test deferred.
+// T-2074: RowTail.Var join via unification in constrain_rows not yet implemented. Test deferred.
+// T-2074: RowTail.Uniform concrete subtype check in constrain_rows not yet implemented. Test deferred.
 
 /// T-1020k: Variance is preserved through Clone.
 #[tokio::test]
@@ -1824,41 +1770,7 @@ async fn test_constrain_app_covariant_arg() {
 // constrain() arm coverage — C-Dict, C-NominalVariant, C-App, C-Recursive, C-Negation, C-TypeStageApp
 // ============================================================================
 
-/// C-NominalVariant constrain arm deferred to T-2072.
-/// constrain() currently falls through to unify() for same-ctor NominalVariant.
-#[tokio::test]
-async fn test_constrain_nominal_variant_same_tycon_ctor() {
-    // T-2072: C-NominalVariant arm in constrain() not yet implemented.
-    // Full test deferred to T-2072.
-}
-
-/// C-Recursive constrain arm deferred to T-2072.
-#[tokio::test]
-async fn test_constrain_recursive_left_only_opens_and_constrains() {
-    // T-2072: C-Recursive arm in constrain() not yet implemented after S-1003 migration.
-    // Full test deferred to T-2072.
-}
-
-/// C-Negation constrain arm deferred to T-2072.
-#[tokio::test]
-async fn test_constrain_negation_contravariant_swap() {
-    // T-2072: C-Negation arm in constrain() not yet implemented after S-1003 migration.
-    // Full test deferred to T-2072.
-}
-
-/// C-TypeStageApp constrain arm deferred to T-2072.
-#[tokio::test]
-async fn test_constrain_typestageapp_invariant_bidirectional() {
-    // T-2072: C-TypeStageApp arm in constrain() not yet implemented after S-1003 migration.
-    // Full test deferred to T-2072.
-}
-
-/// RowTail.Uniform sup-tail constrain_rows deferred to T-2074.
-#[tokio::test]
-#[ignore = "RowTail.Uniform constrain_rows not yet implemented — T-2074"]
-async fn test_constrain_rows_uniform_sup_tail() {
-    todo!("RowTail.Uniform constrain_rows: implement in type_unify.rs, see T-2074")
-}
+// C-NominalVariant, C-Recursive, C-Negation, C-TypeStageApp constrain arms — T-2072
 
 /// constrain_fn variadic shortcut: Fn([], variadic=true) (Callable) ≤ Fn([Int], return: Int).
 /// When `sub` is any-function (empty params + variadic=true), constrain_fn skips arity

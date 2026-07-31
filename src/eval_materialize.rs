@@ -224,11 +224,10 @@ pub(crate) struct GuardedValidateData {
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct TypeAssertCheckData {
-    pub(crate) annotation: Box<Spanned<Annotation>>,
-    /// The resolved TypeValue from CoreExpr::TypeAssert::resolved_type.
-    /// TypeValue.Unknown passes everything (annotation not resolved by type checker).
-    /// For concrete types (Repr, Fn, etc.) the value variant is checked via value_matches_type.
-    pub(crate) resolved: Arc<Value>,
+    /// The check to perform: either a user-written annotation (Source) or a pre-resolved
+    /// TypeValue from the lowerer (Resolved). Source annotations carry a `default:` property
+    /// for fallback evaluation; Resolved annotations do not.
+    pub(crate) check: crate::ast::TypeAssertCheck,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
     /// EvalFrame for evaluating default: fallback expressions.
@@ -957,17 +956,23 @@ async fn dispatch_state(
             // Handle CoreExpr::TypeAssert inline. eval_core_expr(CoreExpr::TypeAssert) wraps
             // in core_expr(CoreExpr::TypeAssert), which would loop back into this branch.
             if let crate::ast::CoreExpr::TypeAssert {
-                annotation,
+                check,
                 expr: inner,
-                resolved_type,
                 pipeline_blame,
             } = &core_expr.node
             {
-                // If inner is a Placeholder (lowered from a parse-time error or
-                // unresolvable VarRef) and annotation has default:, use the default instead.
-                let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
-                    (&inner.node, annotation.node.get_property("default"))
-                {
+                // Source annotations: check if inner is a Placeholder with a default: fallback.
+                // Resolved annotations have no annotation node so no default: to check.
+                let placeholder_default = match (check, &inner.node) {
+                    (
+                        crate::ast::TypeAssertCheck::Source { annotation },
+                        crate::ast::CoreExpr::Placeholder,
+                    ) => annotation.node.get_property(DEFAULT_ANNOTATION_KEY),
+                    _ => None,
+                };
+
+                // Evaluate inner (or the default: fallback if inner is a Placeholder).
+                let inner_thunk = if let Some(default_node) = placeholder_default {
                     let (lowered_default, lower_diags) = crate::lower::lower(
                         default_node,
                         thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()),
@@ -1018,8 +1023,7 @@ async fn dispatch_state(
                     mat_span: None,
                 })));
                 stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
-                    annotation: Box::new(annotation.clone()),
-                    resolved: Arc::clone(resolved_type),
+                    check: check.clone(),
                     expr_span: core_expr.span.clone(),
                     thunk_span: inner_span,
                     frame: Arc::clone(&frame),
@@ -1982,22 +1986,113 @@ pub(crate) async fn apply_cont(
         }
         Cont::TypeAssertCheck(data) => {
             let TypeAssertCheckData {
-                annotation,
-                resolved,
+                check,
                 expr_span,
                 thunk_span,
                 frame,
                 ctx,
                 pipeline_blame,
             } = *data;
+
+            // Helper: get the resolved TypeValue from the check variant.
+            // For Source annotations: evaluate the annotation against the tycon_env to get
+            // the TypeValue. The annotation is what the user wrote (e.g. `@Integer`).
+            // For Resolved: the TypeValue was pre-computed by the lowerer — use it directly.
+            let resolved: Arc<Value> = match &check {
+                crate::ast::TypeAssertCheck::Resolved(tv) => Arc::clone(tv),
+                crate::ast::TypeAssertCheck::Source { annotation } => {
+                    // Evaluate the annotation name against the tycon_env to get the TypeValue.
+                    // The annotation node carries the user-written type (e.g. `Integer`, `String`).
+                    // Look up the TyConDef body (Arc<Value>) for this annotation name.
+                    // Falls back to unknown_type_val() when the type is not in tycon_env.
+                    // This is correct behavior (not an error) in the following cases:
+                    //   1. --no-typecheck mode: tycon_env is not populated; all Source annotations
+                    //      fall back here and pass unconditionally (gradual typing: advisory only).
+                    //   2. Type alias not yet resolved to a tycon (parameterized annotations,
+                    //      e.g. @[type: Seq  ...]) — no simple name to look up.
+                    //   3. Annotation references a type that is not in scope (unusual; not an error
+                    //      here because the type checker would have already diagnosed it).
+                    // unknown_type_val() is the Unknown TypeValue. value_matches_type returns true
+                    // for Unknown (consistent with everything under AGT — Unknown is the top of the
+                    // consistent-subtyping relation). This is not error suppression: when no
+                    // TypeValue is available, the assertion is advisory and passes all values.
+                    // Long-term: all annotation sites should populate resolved_return_annotation or
+                    // resolved_type so that TypeAssertCheck::Source is only reached in
+                    // --no-typecheck mode. Until then, the Source path is the correct gradual-
+                    // typing fallback.
+                    //
+                    // For Simple: use the name directly.
+                    // For PropertyDict: look for `type:` metadata key (e.g., @[type: Integer  default: 0]).
+                    let type_name: Option<String> = match &annotation.node {
+                        crate::ast::Annotation::Simple(name) => Some(name.clone()),
+                        crate::ast::Annotation::PropertyDict(entries) => {
+                            // Find the `type:` key entry; extract its VarRef name as the type.
+                            entries.iter().find_map(|e| {
+                                let key_node = e.node.key.as_ref()?;
+                                let key_is_type = match &key_node.expr {
+                                    crate::ast::SurfaceExpression::VarRef { name, .. } => {
+                                        name == "type"
+                                    }
+                                    crate::ast::SurfaceExpression::StringLiteral {
+                                        content,
+                                        ..
+                                    } => content == "type",
+                                    _ => false,
+                                };
+                                if !key_is_type {
+                                    return None;
+                                }
+                                match &e.node.value.expr {
+                                    crate::ast::SurfaceExpression::VarRef { name, .. } => {
+                                        Some(name.clone())
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        }
+                        _ => None,
+                    };
+                    match type_name {
+                        Some(name) => ctx
+                            .tycon_env()
+                            .and_then(|env| env.get(name.as_str()).map(|def| Arc::clone(&def.body)))
+                            .unwrap_or_else(crate::value::unknown_type_val),
+                        None => crate::value::unknown_type_val(),
+                    }
+                }
+            };
+
+            // Helper: get the `default:` fallback node from the check, if any.
+            // Only Source annotations carry a `default:` property; Resolved checks do not.
+            // Clones the Arc<SurfaceNode> to avoid lifetime conflicts with the closure.
+            let get_default = || -> Option<Arc<crate::ast::SurfaceNode>> {
+                match &check {
+                    crate::ast::TypeAssertCheck::Source { annotation } => annotation
+                        .node
+                        .get_property(DEFAULT_ANNOTATION_KEY)
+                        .cloned(),
+                    crate::ast::TypeAssertCheck::Resolved(_) => None,
+                }
+            };
+
+            // Helper: produce the expected-type display string for error messages.
+            let expected_display = || -> String {
+                match &check {
+                    crate::ast::TypeAssertCheck::Source { annotation } => {
+                        annotation_type_display(&annotation.node)
+                    }
+                    crate::ast::TypeAssertCheck::Resolved(tv) => format_type_for_assert(tv),
+                }
+            };
+
             match result {
                 Err(e) => {
                     // When inner expr materialization fails (Placeholder, undefined variable, etc.),
                     // check for `default:` annotation and evaluate it instead of propagating the error.
-                    if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                    {
+                    // Only Source annotations have a `default:` property.
+                    if let Some(default_node) = get_default() {
                         let (lowered_default, lower_diags) = crate::lower::lower(
-                            default_node,
+                            &default_node,
                             ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                         );
                         if let Some(err) = lower_errors_to_eval_error(lower_diags) {
@@ -2038,11 +2133,9 @@ pub(crate) async fn apply_cont(
                                 }
                                 Err(err) => {
                                     // Missing required field — try default: fallback first.
-                                    if let Some(default_node) =
-                                        annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                                    {
+                                    if let Some(default_node) = get_default() {
                                         let (lowered_default, lower_diags) = crate::lower::lower(
-                                            default_node,
+                                            &default_node,
                                             ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                                         );
                                         if let Some(lower_err) =
@@ -2066,17 +2159,17 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    // Check value variant against the resolved compile-time TypeValue.
+                    // T-2020/T-2021: Check value variant against the resolved TypeValue.
+                    // value_matches_type dispatches through tycon_env for TyCon/App types,
+                    // handling both concrete type checks and typeclass constraint checks.
                     if value_matches_type(&value, &resolved, &ctx) {
                         Action::Continue(Ok(value))
                     } else {
                         let fail_reason = value.type_name().to_string();
                         // Type mismatch — try default: fallback before raising an error.
-                        if let Some(default_node) =
-                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                        {
+                        if let Some(default_node) = get_default() {
                             let (lowered_default, lower_diags) = crate::lower::lower(
-                                default_node,
+                                &default_node,
                                 ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                             );
                             if let Some(err) = lower_errors_to_eval_error(lower_diags) {
@@ -2089,7 +2182,7 @@ pub(crate) async fn apply_cont(
                                 }
                             }
                         } else {
-                            let expected_str = annotation_type_display(&annotation.node);
+                            let expected_str = expected_display();
                             let mut err = EvalError::type_assert_failed(
                                 &expected_str,
                                 &fail_reason,

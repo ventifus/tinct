@@ -67,23 +67,23 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
 /// starts from the scope immediately outside the skipped `Dict` scope.
 ///
 /// Also used to determine whether a scope corresponds to a real eval_dict_core frame boundary
-/// at runtime. Only `Dict` scopes (standalone dict literals and fn-body intermediate dicts)
-/// correspond to real runtime frames. Document-level intermediate dicts and fn sequential
-/// body scopes use `Other` or `FnSequentialBody` because they don't create separate frames.
+/// at runtime. Only `Dict` scopes correspond to real runtime frames. `BlockBody` injection
+/// scopes (both document-level and function-body sequential bodies) do not create separate frames.
 #[derive(Clone, Copy, PartialEq)]
 enum ScopeKind {
     /// A letrec dict scope — the scope created when entering a `[k1: v1  k2: v2 ...]` dict
     /// in a standalone or fn-body context. Corresponds to a real runtime eval_dict_core frame.
     /// Leading-dot `.name` skips to above the nearest Dict scope.
     Dict,
-    /// Sequential scope for an fn body intermediate dict body. Same runtime letrec frame as
-    /// the enclosing fn body — NOT a separate eval_dict_core frame. Leading-dot `.name`
-    /// skips these (they sit inside a Dict).
-    FnSequentialBody,
-    /// Any other scope: fn params, let/case arm bindings, root frames, and document-level
-    /// intermediate dict injection scopes (these use cumulative LGM slots in the single
-    /// accumulated_group, so no per-dict frame boundary exists). Leading-dot does not skip
-    /// these when searching for the Dict boundary.
+    /// Sequential block-body injection scope. Used for intermediate dict bodies in any
+    /// sequential context — document-level or function-body. Both are semantically identical:
+    /// inner scope sees outer, only the final expression is returned. NOT a separate runtime
+    /// frame; entries accumulate into the enclosing context's group at their cumulative slots.
+    /// These frames are collected into `SurfaceResolver::block_body_frames` so the type
+    /// checker can always find slot bases via `resolver_frames` without context-specific logic.
+    BlockBody,
+    /// Any other scope: fn params, let/case arm bindings, root frames, env-dict scopes.
+    /// Leading-dot does not skip these when searching for the Dict boundary.
     Other,
 }
 
@@ -144,6 +144,11 @@ struct SurfaceResolver {
     /// - Fn arm (`SurfaceExpression::Fn`): save, reset to 0 (fn call frame has `group = []`),
     ///   restore on exit.
     accumulated_dict_offset: u32,
+    /// All `BlockBody` sequential injection scope frames collected during the walk, in
+    /// order of injection. Includes both document-level and function-body sequential bodies.
+    /// Returned by `resolve_surface_program` as `resolver_frames` so the type checker can
+    /// find the slot base for any sequential intermediate body without context-specific logic.
+    block_body_frames: Vec<indexmap::IndexMap<String, u32>>,
 }
 
 impl SurfaceResolver {
@@ -159,6 +164,7 @@ impl SurfaceResolver {
             fn_capture_lists: Vec::new(),
             accumulated_dict_offset: 0,
             field_getter_name: Arc::from("builtin-dict-get"),
+            block_body_frames: Vec::new(),
         }
     }
 
@@ -179,6 +185,23 @@ impl SurfaceResolver {
                     slot: offset + i as u32,
                 },
             );
+        }
+        if kind == ScopeKind::BlockBody {
+            // Collect BlockBody sequential injection frames so resolve_surface_program can
+            // return them. Dict (letrec) frames are not included here — run_typecheck_dict
+            // reads each key's slot directly from state.resolution_table instead of scanning
+            // frames, avoiding ambiguity when multiple functions share key names.
+            let frame: indexmap::IndexMap<String, u32> = scope
+                .iter()
+                .filter_map(|(k, addr)| {
+                    if let VarAddr::LetrecGroupMember { slot, .. } = addr {
+                        Some((k.clone(), *slot))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.block_body_frames.push(frame);
         }
         self.scopes.push((scope, kind));
     }
@@ -724,20 +747,15 @@ impl SurfaceResolver {
                                 //
                                 // ALWAYS use FnSequentialBody for the accumulated sequential scope
                                 // inside fn bodies. This scope is purely a name-availability
-                                // bookkeeping scope — it does NOT correspond to a separate
-                                // eval_dict_core frame. Inside fn bodies, LetrecChainStep accumulates
-                                // all body entries into a single flat group. LGM(cumulative_slot)
-                                // addresses within this scope are relative to the fn body's own
-                                // LetrecChainStep group — not to the document's accumulated_group.
-                                //
-                                // Note: document-level sequential scopes use ScopeKind::Other with
-                                // cumulative LGM (see walk_surface_document_with_offset), because
-                                // document-level entries are all in the single accumulated_group
-                                // and do not use per-dict eval_dict_core frames at the document level.
+                                // bookkeeping scope — NOT a separate eval_dict_core frame.
+                                // LetrecChainStep accumulates all body entries into a single flat
+                                // group. LGM(cumulative_slot) indexes into that group directly.
+                                // BlockBody is used for ALL sequential intermediate bodies (both
+                                // document-level and function-body) — same semantics, same kind.
                                 self.enter_scope_with_offset(
                                     &all_keys,
                                     sequential_offset,
-                                    ScopeKind::FnSequentialBody,
+                                    ScopeKind::BlockBody,
                                 );
                                 sequential_offset += all_keys.len() as u32;
                                 injected += 1;
@@ -1125,13 +1143,9 @@ impl SurfaceResolver {
     ///
     /// Document-level scopes use `ScopeKind::Other` (not `ScopeKind::Dict`) because there
     /// is no per-dict eval_dict_core frame at document level — all entries are in the single
-    /// accumulated_group at runtime. Using `Other` prevents `resolve_name` from adding
-    /// phantom hop counts for document-level cross-dict references.
-    fn walk_surface_document_with_offset(
-        &mut self,
-        doc: &SurfaceDocument,
-        initial_offset: u32,
-    ) -> Vec<indexmap::IndexMap<String, u32>> {
+    /// accumulated_group at runtime. BlockBody intermediate bodies are collected into
+    /// `self.block_body_frames` automatically via `enter_scope_with_offset`.
+    fn walk_surface_document_with_offset(&mut self, doc: &SurfaceDocument, initial_offset: u32) {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
         let expr_count = items
@@ -1161,16 +1175,14 @@ impl SurfaceResolver {
                     if !is_last_expr {
                         if let Some(keys) = surface_node_static_keys(node) {
                             if !keys.is_empty() {
-                                // Each intermediate dict expression gets a ScopeKind::Other scope
-                                // with cumulative LGM(offset..offset+N-1) slots. ScopeKind::Other
-                                // (not Dict) is used because document-level cross-dict references
-                                // do NOT need OuterGroupRef hop adjustments — all entries are in
-                                // the single accumulated_group at runtime. The absolute LGM slots
-                                // are sufficient for direct frame.group[slot] lookup.
+                                // Document-level sequential intermediate dict: BlockBody scope
+                                // with cumulative LGM(offset..offset+N-1) slots. Same kind as
+                                // function-body sequential intermediates — both are block bodies.
+                                // The frame is collected automatically by enter_scope_with_offset.
                                 self.enter_scope_with_offset(
                                     &keys,
                                     cumulative_offset,
-                                    ScopeKind::Other,
+                                    ScopeKind::BlockBody,
                                 );
                                 cumulative_offset += keys.len() as u32;
                                 injected += 1;
@@ -1185,31 +1197,11 @@ impl SurfaceResolver {
             }
         }
 
-        // Capture injected frames, converting VarAddr back to u32 slot indices for the
-        // public API (callers pass/receive IndexMap<String, u32> frames).
-        // Document-level frames contain LetrecGroupMember(slot) values with cumulative
-        // absolute slot indices across the document's accumulated_group.
-        let start = self.scopes.len() - injected;
-        let frames: Vec<indexmap::IndexMap<String, u32>> = self.scopes[start..]
-            .iter()
-            .map(|(m, _)| {
-                m.iter()
-                    .filter_map(|(k, addr)| {
-                        if let VarAddr::LetrecGroupMember { slot, .. } = addr {
-                            Some((k.clone(), *slot))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-
+        // BlockBody frames are collected automatically by enter_scope_with_offset.
+        // Just exit the injected scopes.
         for _ in 0..injected {
             self.exit_scope();
         }
-
-        frames
     }
 
     fn finish(self) -> ResolutionTable {
@@ -1334,15 +1326,16 @@ pub fn resolve_surface_document_inplace(
         resolver.enter_scope_from_frame(frame);
     }
 
-    let new_frames = resolver.walk_surface_document_with_offset(doc, initial_offset);
+    resolver.walk_surface_document_with_offset(doc, initial_offset);
 
     // Exit seeded scopes
     for _ in initial_frames {
         resolver.exit_scope();
     }
 
+    let block_body_frames = std::mem::take(&mut resolver.block_body_frames);
     let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, new_frames)
+    (table, diagnostics, block_body_frames)
 }
 
 /// Resolve a SurfaceDocument seeded with an env-dict name list.
@@ -1498,11 +1491,9 @@ pub fn resolve_surface_program(
         resolver.enter_scope_from_frame(frame);
     }
 
-    let mut new_frames = Vec::new();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        let doc_frames = resolver.walk_surface_document_with_offset(doc, initial_offset);
-        new_frames.extend(doc_frames);
+        resolver.walk_surface_document_with_offset(doc, initial_offset);
     }
 
     // Exit seeded scopes
@@ -1510,8 +1501,10 @@ pub fn resolve_surface_program(
         resolver.exit_scope();
     }
 
+    // All BlockBody sequential injection frames were collected during the walk.
+    let block_body_frames = std::mem::take(&mut resolver.block_body_frames);
     let table = resolver.finish();
-    (table, new_frames)
+    (table, block_body_frames)
 }
 
 /// T-1742: Extract the static produced keys of a document's final expression.

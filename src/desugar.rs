@@ -216,6 +216,7 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
             body,
             desugared: true,
             resolved_captures: crate::ast::CapturesCell::new(),
+            resolved_return_annotation: crate::ast::TypeAnnotation::new(),
         },
         span,
     ));
@@ -552,7 +553,7 @@ fn apply_pipe_step(
                         name: name.clone(),
                         escaped: *escaped,
                         resolution: crate::ast::Resolution::new(),
-                        call_dispatch: crate::ast::CallDispatch::new(),
+
                         annotation: None,
                         do_infer_placeholder: false,
                     },
@@ -661,7 +662,7 @@ fn build_interpolated_string_node(
                     name: "tmpl".to_string(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
-                    call_dispatch: crate::ast::CallDispatch::new(),
+
                     annotation: None,
                     do_infer_placeholder: false,
                 },
@@ -685,7 +686,7 @@ fn wrap_in_unindent_node(inner: Arc<SurfaceNode>, span: &crate::ast::Span) -> Ar
                     name: "unindent".to_string(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
-                    call_dispatch: crate::ast::CallDispatch::new(),
+
                     annotation: None,
                     do_infer_placeholder: false,
                 },

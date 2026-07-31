@@ -1011,14 +1011,7 @@ pub(crate) async fn resolve_annotation(
             // resolve the outer to a type and produce App(outer_ty, arg).
             match outer.as_ref() {
                 Annotation::Simple(name) => {
-                    Box::pin(resolve_type_head(
-                        name,
-                        &[arg],
-                        state,
-                        constraints,
-                        span,
-                    ))
-                    .await
+                    Box::pin(resolve_type_head(name, &[arg], state, constraints, span)).await
                 }
                 _ => {
                     // Non-Simple outer: resolve outer as a type then apply arg to it.
@@ -1571,13 +1564,7 @@ async fn resolve_type_head(
             return Ok(make_typevalue_op(name));
         }
         if let Some(eval_ctx) = &state.eval_ctx {
-            match crate::type_normalize::evaluate_resolver_with_thunk(
-                thunk,
-                args,
-                eval_ctx,
-            )
-            .await
-            {
+            match crate::type_normalize::evaluate_resolver_with_thunk(thunk, args, eval_ctx).await {
                 Ok(Some(ty)) => return Ok(ty),
                 Ok(None) => {
                     // Resolver value not applicable — fall through.
@@ -1655,8 +1642,7 @@ async fn resolve_type_head(
     };
     if let Some(class_decl) = class_decl_opt {
         let level = state.ctx.current_level;
-        let (fresh, _fresh_ty) =
-            state.fresh_type_var_with(Some(name), Some(level), "Type", &span);
+        let (fresh, _fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), "Type", &span);
         // Build a ConstraintDecl TypeValue using the new Arc<Value> API (T-1988 migration).
         // The class is represented as TypeValue.Op{name: class_name}.
         let class_op = crate::type_class::make_type_op(&class_decl.name);
@@ -1781,14 +1767,7 @@ pub(crate) async fn resolve_type_name(
             } else {
                 // Uppercase type name — route through the unified resolve_type_head.
                 // Lookup order: type_stage_scope, type_stage_fns, type_stage_type_vars, env classes.
-                Box::pin(resolve_type_head(
-                    name,
-                    &[],
-                    state,
-                    constraints,
-                    span,
-                ))
-                .await
+                Box::pin(resolve_type_head(name, &[], state, constraints, span)).await
             }
         }
     }
@@ -2473,7 +2452,10 @@ pub(crate) async fn resolve_type_dict(
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
                     // Check whether this name is a known type head — i.e., it appears in
                     // type_stage_scope, type_stage_fns, type_stage_type_vars, or class env.
-                    let in_scope = state.type_stage_scope.iter().any(|s| s.contains_key(name.as_str()))
+                    let in_scope = state
+                        .type_stage_scope
+                        .iter()
+                        .any(|s| s.contains_key(name.as_str()))
                         || state.type_stage_fns.contains_key(name.as_str())
                         || state.type_stage_type_vars.contains_key(name.as_str())
                         || state.env.read().unwrap().get_class(name.as_str()).is_some();

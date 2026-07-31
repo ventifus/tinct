@@ -7,7 +7,7 @@
 //! Key transformations:
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
-//! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or TypeValue.Unknown)
+//! - `TypeAssert` → `TypeAssert` (TypeAssertCheck::Resolved when type checker ran, Source otherwise)
 //! - `Field` → `Call(builtin-dict-get, [Str/Int(key), target])` (unified key-based lookup)
 //! - `Dict` with spread entries → nested `Call(builtin-dict-merge, [seg, rest])` (Axiom 4: core builtin, not prelude name)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
@@ -19,6 +19,7 @@ use crate::ast::{
     class_decl_name, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Span, Spanned,
     SurfaceEntry, SurfaceExpression, SurfaceNode, VarAddr,
 };
+use crate::eval_call::is_typevalue_unknown;
 use crate::rust_span;
 
 /// The tinct name of the dict-field accessor builtin.
@@ -141,12 +142,9 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 ///
 /// Used for sources that still produce (level, slot) pairs rather than VarAddr directly:
 /// - `resolve_name_in_frames` results (scope frame lookups for spread-dict `builtin-dict-merge`)
-/// - `check_constraints_on_var` in `type_unify.rs` (converts before writing to `CallDispatch`)
 /// - Synthetic addresses for lowerer-generated nodes (constructor functions, builtin-make-annotated)
 ///
 /// Resolver-produced `Resolution` cells now store `VarAddr` directly and do not use this function.
-/// `CallDispatch` now stores `VarAddr` directly — the conversion happens in `type_unify.rs` at
-/// `call_dispatch.set(debruijn_to_var_addr(level, slot))`, not in the lowerer.
 ///
 /// Mapping:
 /// - level=0 → `VarAddr::LetrecGroupMember { depth: 0, slot }` (current letrec group)
@@ -174,9 +172,10 @@ pub(crate) fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
 /// fields on the AST nodes — no external tables are consulted.
 ///
 /// `scope_frames` — when `Some`, provides the accumulated resolver scope frames from the
-/// init program's resolver run. Used to resolve `call_dispatch` mangled instance binding
-/// names to correct De Bruijn coordinates. Pass `None` when the EvalContext was not
-/// initialized via `with_scope_frames()` (test contexts, bootstrap paths).
+/// init program's resolver run. Used to resolve scope-frame-dependent names (e.g.,
+/// `builtin-dict-merge` for spread dicts) to correct De Bruijn coordinates. Pass `None`
+/// when the EvalContext was not initialized via `with_scope_frames()` (test contexts,
+/// bootstrap paths).
 pub fn lower(
     arc: &Arc<SurfaceNode>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
@@ -193,8 +192,8 @@ pub fn lower(
 /// pushed and `CoreExpr::Placeholder` is emitted. Produces the same `Spanned<CoreExpr>`
 /// as the public `lower()`.
 ///
-/// `scope_frames` is threaded through all recursive calls so that `call_dispatch` rewrites
-/// anywhere in the AST subtree can resolve the mangled instance binding name to correct
+/// `scope_frames` is threaded through all recursive calls so that scope-frame-dependent
+/// name resolution (e.g., `builtin-dict-merge` for spread dicts) can resolve to correct
 /// De Bruijn coordinates. Pass `None` when scope frames are not available.
 pub(crate) fn lower_inner(
     arc: &Arc<SurfaceNode>,
@@ -214,15 +213,13 @@ pub(crate) fn lower_inner(
     };
     let core_expr = lower_expr(arc, &arc.expr, diagnostics, scope_frames);
 
-    // Apply type guard if the type checker set one on this node.
+    // Apply type guard if the type checker set one on this node (T-2013).
+    // Use TypeAssertCheck::Resolved — the guard_type is already a resolved TypeValue.
+    // No annotation sentinel needed; the check field carries the TypeValue directly.
     let core_expr = if let Some(guard_type) = arc.type_guard.get() {
         CoreExpr::TypeAssert {
-            annotation: crate::ast::Spanned::new(
-                crate::ast::Annotation::Simple("__guard__".to_string()),
-                span.clone(),
-            ),
             expr: Arc::new(crate::ast::Spanned::new(core_expr, span.clone())),
-            resolved_type: guard_type.clone(),
+            check: crate::ast::TypeAssertCheck::Resolved(guard_type.clone()),
             pipeline_blame: None,
         }
     } else {
@@ -557,6 +554,11 @@ fn lower_expr(
                 }
             }).collect();
 
+            // T-2026: Pre-pass — collect all instances per method before emitting any plain slots.
+            // This allows T-2027 to build a complete MethodDispatcher for the plain slot instead of
+            // emitting an empty dict. The pre-pass scans all InstanceDecl entries once.
+            let all_method_instances = collect_instance_methods_pre_pass(entries, &explicit_keys);
+
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             // Shared across all InstanceDecl entries in this dict — prevents duplicate plain
             // method slots when multiple instances implement the same method (e.g. two
@@ -617,6 +619,10 @@ fn lower_expr(
                                         // Plain method slot — de-duplicated across ALL instances
                                         // in this dict (shared set prevents duplicate keys when
                                         // multiple instances implement the same method).
+                                        //
+                                        // T-2027: instead of emitting an empty dict, emit a
+                                        // MethodDispatcher Fn that selects the correct mangled
+                                        // instance binding based on the first argument's type.
                                         if !explicit_keys.contains(&method_name)
                                             && emitted_instance_method_names
                                                 .insert(method_name.clone())
@@ -625,10 +631,33 @@ fn lower_expr(
                                                 CoreExpr::Str(method_name.clone()),
                                                 se.span.clone(),
                                             )));
-                                            let value = Arc::new(Spanned::new(
-                                                CoreExpr::Dict(vec![]),
-                                                se.span.clone(),
-                                            ));
+                                            // Build the dispatcher from pre-collected instances.
+                                            let dispatcher_instances: Vec<(Vec<String>, String)> =
+                                                all_method_instances
+                                                    .get(&method_name)
+                                                    .map(|v| {
+                                                        v.iter()
+                                                            .map(|(type_args, mangled, _)| {
+                                                                (type_args.clone(), mangled.clone())
+                                                            })
+                                                            .collect()
+                                                    })
+                                                    .unwrap_or_default();
+                                            let param_count = all_method_instances
+                                                .get(&method_name)
+                                                .and_then(|v| v.first())
+                                                .map(|(_, _, n)| *n)
+                                                .unwrap_or(1);
+                                            let dispatcher = make_method_dispatcher_fn(
+                                                &method_name,
+                                                &dispatcher_instances,
+                                                param_count,
+                                                &se.span,
+                                                scope_frames,
+                                                diagnostics,
+                                            );
+                                            let value =
+                                                Arc::new(Spanned::new(dispatcher, se.span.clone()));
                                             core_entries.push(Spanned::new(
                                                 CoreEntry { key, value },
                                                 se.span.clone(),
@@ -782,59 +811,26 @@ fn lower_expr(
             named_args,
             implied,
             ..
-        } => {
-            // Compile-time instance dispatch rewriting: if the VarRef node for the function
-            // has a call_dispatch annotation set by the type checker, rewrite the function
-            // reference to use the resolved VarAddr directly.
-            let lowered_func = if let SurfaceExpression::VarRef {
-                call_dispatch,
-                name,
-                ..
-            } = &func.expr
-            {
-                if let Some(addr) = call_dispatch.get() {
-                    // The type checker resolved this typeclass method call to a concrete instance
-                    // binding and recorded the VarAddr directly. Use it without conversion.
-                    Arc::new(Spanned::new(
-                        CoreExpr::Var {
-                            name: name.clone(),
-                            addr: addr.clone(),
-                            annotation: None,
+        } => CoreExpr::Call {
+            func: Arc::new(lower_inner(func, diagnostics, scope_frames)),
+            args: args
+                .iter()
+                .map(|a| Arc::new(lower_inner(a, diagnostics, scope_frames)))
+                .collect(),
+            named_args: named_args
+                .iter()
+                .map(|na| {
+                    Spanned::new(
+                        CoreNamedArg {
+                            name: na.node.name.clone(),
+                            value: Arc::new(lower_inner(&na.node.value, diagnostics, scope_frames)),
                         },
-                        func.span.clone(),
-                    ))
-                } else {
-                    Arc::new(lower_inner(func, diagnostics, scope_frames))
-                }
-            } else {
-                Arc::new(lower_inner(func, diagnostics, scope_frames))
-            };
-
-            CoreExpr::Call {
-                func: lowered_func,
-                args: args
-                    .iter()
-                    .map(|a| Arc::new(lower_inner(a, diagnostics, scope_frames)))
-                    .collect(),
-                named_args: named_args
-                    .iter()
-                    .map(|na| {
-                        Spanned::new(
-                            CoreNamedArg {
-                                name: na.node.name.clone(),
-                                value: Arc::new(lower_inner(
-                                    &na.node.value,
-                                    diagnostics,
-                                    scope_frames,
-                                )),
-                            },
-                            na.span.clone(),
-                        )
-                    })
-                    .collect(),
-                implied: *implied,
-            }
-        }
+                        na.span.clone(),
+                    )
+                })
+                .collect(),
+            implied: *implied,
+        },
 
         SurfaceExpression::Fn {
             return_ann,
@@ -842,12 +838,39 @@ fn lower_expr(
             body,
             desugared,
             resolved_captures,
-        } => CoreExpr::Fn {
-            return_ann: return_ann.clone(),
-            params: params
+            resolved_return_annotation,
+        } => {
+            // Lower the body first to get its span for wrapping.
+            let lowered_body_spanned = lower_inner(body, diagnostics, scope_frames);
+            let body_span = lowered_body_spanned.span.clone();
+
+            // T-2014: Build params and collect TypeAssert checks for each typed parameter.
+            // For each param with a concrete resolved TypeValue, emit a TypeAssert at the
+            // beginning of the function body so the check fires on every invocation.
+            let mut param_assert_exprs: Vec<Arc<crate::ast::Spanned<CoreExpr>>> = Vec::new();
+            let params_built: Vec<crate::ast::Spanned<crate::ast::CoreParam>> = params
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
+                    let resolved = p.node.resolved_annotation_type.get().cloned();
+                    // Emit a TypeAssert check for this param if the type checker resolved it to a
+                    // concrete (non-Unknown) TypeValue. Unknown passes all checks — no point emitting.
+                    if let Some(ref tv) = resolved {
+                        if !is_typevalue_unknown(tv) {
+                            let param_ref = CoreExpr::Var {
+                                name: p.node.name.clone(),
+                                addr: VarAddr::Parameter(i as u32),
+                                annotation: None,
+                            };
+                            let assert = CoreExpr::TypeAssert {
+                                expr: Arc::new(crate::ast::Spanned::new(param_ref, p.span.clone())),
+                                check: crate::ast::TypeAssertCheck::Resolved(tv.clone()),
+                                pipeline_blame: None,
+                            };
+                            param_assert_exprs
+                                .push(Arc::new(crate::ast::Spanned::new(assert, p.span.clone())));
+                        }
+                    }
                     Spanned::new(
                         CoreParam {
                             name: p.node.name.clone(),
@@ -862,31 +885,81 @@ fn lower_expr(
                         p.span.clone(),
                     )
                 })
-                .collect(),
-            body: Arc::new(lower_inner(body, diagnostics, scope_frames)),
-            desugared: *desugared,
-            captures: resolved_captures
-                .get()
-                .expect("resolved_captures not set")
-                .clone(),
-        },
+                .collect();
+
+            // Prepend param TypeAsserts before the body. If there are no typed params the body
+            // is used directly. If there are typed params, wrap in a Sequential so the checks
+            // execute before the body is forced.
+            let body_with_param_checks = if param_assert_exprs.is_empty() {
+                lowered_body_spanned
+            } else {
+                param_assert_exprs.push(Arc::new(lowered_body_spanned));
+                crate::ast::Spanned::new(
+                    CoreExpr::Sequential(param_assert_exprs),
+                    body_span.clone(),
+                )
+            };
+
+            // T-2015: Wrap body with TypeAssert for the return type annotation.
+            // Use TypeAssertCheck::Resolved when the type checker has populated the resolved type.
+            // Fall back to Source (runtime annotation evaluation) when the type checker did not run.
+            let final_body = if let Some(ann) = return_ann {
+                let check = if let Some(tv) = resolved_return_annotation.get().cloned() {
+                    if !is_typevalue_unknown(&tv) {
+                        crate::ast::TypeAssertCheck::Resolved(tv)
+                    } else {
+                        crate::ast::TypeAssertCheck::Source {
+                            annotation: ann.clone(),
+                        }
+                    }
+                } else {
+                    crate::ast::TypeAssertCheck::Source {
+                        annotation: ann.clone(),
+                    }
+                };
+                crate::ast::Spanned::new(
+                    CoreExpr::TypeAssert {
+                        expr: Arc::new(body_with_param_checks),
+                        check,
+                        pipeline_blame: None,
+                    },
+                    body_span,
+                )
+            } else {
+                body_with_param_checks
+            };
+
+            CoreExpr::Fn {
+                return_ann: return_ann.clone(),
+                params: params_built,
+                body: Arc::new(final_body),
+                desugared: *desugared,
+                captures: resolved_captures
+                    .get()
+                    .expect("resolved_captures not set")
+                    .clone(),
+            }
+        }
 
         SurfaceExpression::TypeAssert {
             annotation,
             expr: inner,
             resolved_type,
         } => {
-            // Read the inline TypeValue set by the type checker.
-            // None (type checker didn't run, or --no-typecheck) → TypeValue.Unknown (accept-all).
-            // TypeValue.Unknown covers both "not inferred" and "Error during inference" cases.
-            let tv = resolved_type
-                .get()
-                .cloned()
-                .unwrap_or_else(crate::value::unknown_type_val);
+            // Select the appropriate TypeAssertCheck variant:
+            // - If the type checker ran and produced a concrete TypeValue → Resolved(tv)
+            //   (skips runtime annotation parsing; check is a pre-resolved Arc<Value>)
+            // - If type checker did not run (resolved_type OnceLock not set) → Source { annotation }
+            //   (runtime evaluates the annotation to determine the type to check against)
+            let check = match resolved_type.get().cloned() {
+                Some(tv) if !is_typevalue_unknown(&tv) => crate::ast::TypeAssertCheck::Resolved(tv),
+                _ => crate::ast::TypeAssertCheck::Source {
+                    annotation: annotation.clone(),
+                },
+            };
             CoreExpr::TypeAssert {
-                annotation: annotation.clone(),
                 expr: Arc::new(lower_inner(inner, diagnostics, scope_frames)),
-                resolved_type: tv,
+                check,
                 pipeline_blame: None,
             }
         }
@@ -934,8 +1007,8 @@ fn lower_expr(
             // Quote captures AST data — VarRefs inside are symbols, not runtime bindings.
             // The resolver intentionally skips Quote bodies, so VarRefs inside will have
             // OnceLock=None. We must not emit "undefined variable" diagnostics for them.
-            // scope_frames is passed as None inside Quote: any call_dispatch in a quoted
-            // expression is a symbol reference, not a runtime dispatch — coordinates are irrelevant.
+            // scope_frames is passed as None inside Quote: quoted expressions are symbol
+            // references, not runtime calls — coordinates are irrelevant.
             let mut quote_diags = Vec::new();
             CoreExpr::Quote(Arc::new(lower_inner(inner, &mut quote_diags, None)))
         }
@@ -1069,7 +1142,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             name: name.clone(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: annotation.clone(),
             do_infer_placeholder: false,
         },
@@ -1125,14 +1198,25 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             body: core_expr_to_surface_node(body),
             desugared: *desugared,
             resolved_captures: crate::ast::CapturesCell::new(),
+            resolved_return_annotation: crate::ast::TypeAnnotation::new(),
         },
-        CoreExpr::TypeAssert {
-            annotation, expr, ..
-        } => SurfaceExpression::TypeAssert {
-            annotation: annotation.clone(),
-            expr: core_expr_to_surface_node(expr),
-            resolved_type: crate::ast::TypeAnnotation::new(),
-        },
+        CoreExpr::TypeAssert { check, expr, .. } => {
+            // Both TypeAssertCheck variants round-trip to SurfaceExpression::TypeAssert.
+            // Source: preserve the original annotation for quote/unquote evaluation.
+            // Resolved: no annotation to preserve — use a synthetic placeholder annotation.
+            let annotation = match check {
+                crate::ast::TypeAssertCheck::Source { annotation } => annotation.clone(),
+                crate::ast::TypeAssertCheck::Resolved(_) => crate::ast::Spanned::new(
+                    crate::ast::Annotation::Simple("_".to_string()),
+                    rust_span!(),
+                ),
+            };
+            SurfaceExpression::TypeAssert {
+                annotation,
+                expr: core_expr_to_surface_node(expr),
+                resolved_type: crate::ast::TypeAnnotation::new(),
+            }
+        }
         CoreExpr::Rest(name) => SurfaceExpression::Placeholder(name.clone(), None),
         CoreExpr::Match { scrutinee, arms } => SurfaceExpression::Match {
             scrutinee: core_expr_to_surface_node(scrutinee),
@@ -1180,7 +1264,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             name: tag.clone(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         },
@@ -1192,7 +1276,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             },
             escaped: false,
             resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
+
             annotation: None,
             do_infer_placeholder: false,
         },
@@ -1224,11 +1308,387 @@ fn lower_let_decl_binding(
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
         SurfaceExpression::Placeholder(None, _) => CoreExpr::Str(String::new()),
         // All other forms: lower normally (will produce Error if unresolvable).
-        // No scope_frames needed here: LetDecl binding names are not call sites and
-        // cannot contain call_dispatch annotations.
+        // No scope_frames needed here: LetDecl binding names are not call sites.
         _ => lower_expr(arc, &arc.expr, diagnostics, None),
     };
     Spanned::new(core_expr, span)
+}
+
+/// Build a MethodDispatcher `CoreExpr::Fn` for a typeclass method (T-2027/T-2028).
+///
+/// The dispatcher accepts the same parameters as the method and dispatches to the correct
+/// mangled instance binding based on the runtime type of the first argument. Uses a match
+/// expression with type-name patterns (e.g., `Integer`, `String`) resolved to type bindings.
+///
+/// # Parameters
+///
+/// - `method_name` — the plain method name (e.g., `+`, `=`)
+/// - `instances` — collected instance arms: `(type_args: Vec<String>, mangled_binding_name: String)`
+/// - `param_count` — number of positional parameters the method takes (from arity detection)
+/// - `span` — span to attribute all generated nodes to
+/// - `scope_frames` — resolver scope frames; used to look up type names and builtin-raise
+/// - `diagnostics` — accumulates any lookup errors
+///
+/// # Return
+///
+/// A `CoreExpr::Fn` that dispatches to the correct mangled binding.
+/// If type names or builtin-raise are not found, diagnostics are emitted.
+///
+/// # Dispatch approach
+///
+/// The generated body is a `[match __d0 Type1: <call1> Type2: <call2> ...: <fallback>]`
+/// match expression that dispatches on the runtime type of the first parameter.
+///
+/// Each instance's primary type_arg (from `extract_dispatch_tags`) becomes a match arm pattern:
+///   - Uppercase type names (e.g., "Integer", "String", "Float", "Bool") → type-name pattern arms
+///   - Lowercase or empty type_args → treated as catch-all (wildcard arm body)
+///
+/// Type-name patterns are VarRef nodes resolved to the type binding. The match evaluator
+/// checks the scrutinee's runtime type against the pattern's type via `match_typenode_pattern`.
+///
+/// For T-2028 (multi-param determining), when there are multiple dispatch type_args,
+/// the primary type_arg is used for the match; each arm calls the specific mangled binding
+/// which already encodes the full signature.
+fn make_method_dispatcher_fn(
+    method_name: &str,
+    instances: &[(Vec<String>, String)],
+    param_count: usize,
+    span: &Span,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
+    diagnostics: &mut Vec<LowerDiagnostic>,
+) -> CoreExpr {
+    // Capture management for synthesized Fn nodes.
+    //
+    // The `captures` field on CoreExpr::Fn is `Vec<(name, original_addr)>`. At function
+    // definition time, `eval_core.rs` builds `closure_env[i]` from `captures[i].original_addr`.
+    // Inside the function body, `ClosureCapture(i)` means `closure_env[i]`.
+    //
+    // CRITICAL: the `i` in `ClosureCapture(i)` is the INDEX IN CAPTURES (not the scope-frame
+    // slot). Synthesized functions must use `ClosureCapture(capture_index)` for outer-scope
+    // references, where capture_index is the position in the captures list.
+    //
+    // For same-letrec-group references (scope level=0), use `LetrecGroupMember { depth: 0, slot }` —
+    // no capture entry needed (resolved directly from `frame.group`).
+
+    // Classify instances by their primary type_arg (dispatch tag).
+    // type_name_to_mangled: type_arg → mangled_binding_name
+    let mut type_name_to_mangled: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+    let mut catch_all_mangled: Option<String> = None;
+
+    for (type_args, mangled) in instances {
+        let primary_tag = type_args.first().map(|s| s.as_str()).unwrap_or("");
+        if primary_tag.is_empty()
+            || !primary_tag
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+        {
+            // No dispatch tag or lowercase (TypeVar) — treat as catch-all
+            catch_all_mangled = Some(mangled.clone());
+        } else {
+            // Uppercase type name — insert into dispatch map (last wins for duplicates)
+            type_name_to_mangled.insert(primary_tag.to_string(), mangled.clone());
+        }
+    }
+
+    // Collect unique type names we need to resolve for match arm patterns.
+    // Also collect "builtin-raise" for the fallback arm.
+    let mut outer_names: Vec<String> = Vec::new();
+    outer_names.push("builtin-raise".to_string());
+    for type_name in type_name_to_mangled.keys() {
+        if !outer_names.contains(type_name) {
+            outer_names.push(type_name.clone());
+        }
+    }
+
+    // Build resolved_addrs: outer_name → VarAddr to use in the body.
+    // Names at level=0 use LGM; level>0 use ClosureCapture(capture_index).
+    // capture_list accumulates (name, original_addr) entries in capture index order.
+    let mut resolved_addrs: indexmap::IndexMap<String, VarAddr> = indexmap::IndexMap::new();
+    let mut capture_list: Vec<(String, VarAddr)> = Vec::new();
+
+    for name in &outer_names {
+        if resolved_addrs.contains_key(name.as_str()) {
+            continue;
+        }
+        match scope_frames.and_then(|frames| resolve_name_in_frames(frames, name)) {
+            Some((0, slot)) => {
+                // Same letrec group — use LGM directly, no capture needed.
+                resolved_addrs.insert(name.clone(), VarAddr::LetrecGroupMember { depth: 0, slot });
+            }
+            Some((level, slot)) => {
+                // Outer scope — must be captured.
+                let cap_idx = capture_list.len() as u32;
+                // original_addr is the address in the immediately enclosing frame.
+                // debruijn_to_var_addr(level - 1, slot) maps: level 1 → LGM(slot) in
+                // the enclosing group, level 2 → ClosureCapture(slot) in outer closure.
+                let original_addr = debruijn_to_var_addr(level - 1, slot);
+                capture_list.push((name.clone(), original_addr));
+                resolved_addrs.insert(name.clone(), VarAddr::ClosureCapture(cap_idx));
+            }
+            None => {
+                // Not found in scope_frames — will use Placeholder at use site.
+            }
+        }
+    }
+
+    // Build param list: __d0, __d1, ... __d_{n-1}
+    let param_count = param_count.max(1);
+    let param_names: Vec<String> = (0..param_count).map(|i| format!("__d{i}")).collect();
+
+    let params_built: Vec<crate::ast::Spanned<crate::ast::CoreParam>> = param_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            crate::ast::Spanned::new(
+                crate::ast::CoreParam {
+                    name: name.clone(),
+                    annotation: None,
+                    variadic: false,
+                    slot: i as u32,
+                    resolved_type: None,
+                },
+                span.clone(),
+            )
+        })
+        .collect();
+
+    // Helper: build args [__d0, __d1, ...] for a forwarding call.
+    let make_call_args = || -> Vec<Arc<Spanned<CoreExpr>>> {
+        param_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                Arc::new(Spanned::new(
+                    CoreExpr::Var {
+                        name: name.clone(),
+                        addr: VarAddr::Parameter(i as u32),
+                        annotation: None,
+                    },
+                    span.clone(),
+                ))
+            })
+            .collect()
+    };
+
+    // Helper: build a call to a mangled binding, resolving its addr from scope_frames.
+    // Mangled bindings are in the same letrec group (level=0 → LGM, no capture needed).
+    let make_mangled_call = |mangled: &str| -> CoreExpr {
+        match scope_frames.and_then(|frames| resolve_name_in_frames(frames, mangled)) {
+            Some((level, slot)) => CoreExpr::Call {
+                func: Arc::new(Spanned::new(
+                    CoreExpr::Var {
+                        name: mangled.to_string(),
+                        addr: debruijn_to_var_addr(level, slot),
+                        annotation: None,
+                    },
+                    span.clone(),
+                )),
+                args: make_call_args(),
+                named_args: vec![],
+                implied: false,
+            },
+            None => CoreExpr::Placeholder,
+        }
+    };
+
+    // Helper: make a type-name pattern SurfaceNode for a match arm.
+    // The pattern is a VarRef with resolution set to the type name's VarAddr.
+    // When the VarRef resolves to a TypeNode variant, the match evaluator calls
+    // match_typenode_pattern which checks the scrutinee value's type.
+    let mut make_type_pattern = |type_name: &str| -> Arc<SurfaceNode> {
+        let resolution = crate::ast::Resolution::new();
+        match resolved_addrs.get(type_name) {
+            Some(addr) => {
+                resolution.set(Some(addr.clone()));
+            }
+            None => {
+                // Type name not found in scope — pattern will not match at runtime.
+                // Emit a diagnostic and resolve to None (arm won't match).
+                diagnostics.push(LowerDiagnostic {
+                    kind: LowerDiagnosticKind::Error,
+                    message: format!(
+                        "make_method_dispatcher_fn: type name '{}' not found in scope_frames \
+                         for method '{}' — instance arm will be unreachable",
+                        type_name, method_name
+                    ),
+                    span: span.clone(),
+                });
+                resolution.set(None);
+            }
+        };
+        Arc::new(SurfaceNode::new(
+            SurfaceExpression::VarRef {
+                name: type_name.to_string(),
+                escaped: false,
+                resolution,
+                annotation: None,
+                do_infer_placeholder: false,
+            },
+            span.clone(),
+        ))
+    };
+
+    // Build match arms: one arm per type_name, plus a wildcard fallback.
+    let mut arms: Vec<CoreMatchArm> = Vec::new();
+
+    // Type-specific arms
+    for (type_name, mangled) in &type_name_to_mangled {
+        let pattern = make_type_pattern(type_name);
+        let body = Arc::new(Spanned::new(make_mangled_call(mangled), span.clone()));
+        arms.push(CoreMatchArm {
+            pattern,
+            let_bindings: None,
+            lowered_pattern: None,
+            guard: None,
+            body,
+            guard_matchable_binding: crate::ast::MatchableBinding::new(),
+            captures: None,
+        });
+    }
+
+    // Wildcard fallback arm: `...: [builtin-raise "no instance..."]` or catch-all mangled.
+    let fallback_body = match catch_all_mangled {
+        Some(ref mangled) => make_mangled_call(mangled),
+        None => {
+            // Use builtin-raise for the error case.
+            match resolved_addrs.get("builtin-raise") {
+                Some(addr) => CoreExpr::Call {
+                    func: Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: "builtin-raise".to_string(),
+                            addr: addr.clone(),
+                            annotation: None,
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![Arc::new(Spanned::new(
+                        CoreExpr::Str(format!(
+                            "no instance of method '{}' for the given argument types",
+                            method_name
+                        )),
+                        span.clone(),
+                    ))],
+                    named_args: vec![],
+                    implied: false,
+                },
+                None => {
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: format!(
+                            "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
+                             for method '{}' — scope_frames must be seeded with builtin_core",
+                            method_name
+                        ),
+                        span: span.clone(),
+                    });
+                    CoreExpr::Placeholder
+                }
+            }
+        }
+    };
+    let wildcard_pattern = Arc::new(SurfaceNode::new(
+        SurfaceExpression::Placeholder(None, None),
+        span.clone(),
+    ));
+    arms.push(CoreMatchArm {
+        pattern: wildcard_pattern,
+        let_bindings: None,
+        lowered_pattern: None,
+        guard: None,
+        body: Arc::new(Spanned::new(fallback_body, span.clone())),
+        guard_matchable_binding: crate::ast::MatchableBinding::new(),
+        captures: None,
+    });
+
+    // Build the match expression: [match __d0 <arms>]
+    let scrutinee = Arc::new(Spanned::new(
+        CoreExpr::Var {
+            name: param_names[0].clone(),
+            addr: VarAddr::Parameter(0),
+            annotation: None,
+        },
+        span.clone(),
+    ));
+
+    let dispatcher_body = CoreExpr::Match { scrutinee, arms };
+
+    CoreExpr::Fn {
+        return_ann: None,
+        params: params_built,
+        body: Arc::new(Spanned::new(dispatcher_body, span.clone())),
+        desugared: true,
+        captures: Arc::new(capture_list),
+    }
+}
+
+/// Pre-scan InstanceDecl entries in a dict to collect all instances per method name.
+///
+/// Returns a map from method name to list of `(type_args, mangled_binding_name)` pairs.
+/// This pre-pass is needed so that when the first instance of a method name triggers plain
+/// method slot emission, we already have ALL instances and can build a MethodDispatcher.
+///
+/// The order in the Vec mirrors appearance order in the entries slice (used to determine
+/// which catch-all instance wins in a fallback, consistent with right-bias).
+fn collect_instance_methods_pre_pass(
+    entries: &[Spanned<SurfaceEntry>],
+    explicit_keys: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, Vec<(Vec<String>, String, usize)>> {
+    // method_name → Vec<(type_args, mangled_binding_name, param_count)>
+    let mut result: std::collections::HashMap<String, Vec<(Vec<String>, String, usize)>> =
+        std::collections::HashMap::new();
+
+    for se in entries {
+        if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
+            if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref()
+            {
+                for (pattern, method_entries) in arms {
+                    let dispatch_tags = extract_dispatch_tags(&pattern.expr);
+                    let type_args: Vec<String> =
+                        dispatch_tags.iter().filter_map(|t| t.clone()).collect();
+
+                    for me in method_entries {
+                        let method_name = match me.node.key.as_ref() {
+                            Some(key_node) => match &key_node.expr {
+                                SurfaceExpression::StringLiteral { content, .. } => content.clone(),
+                                SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                _ => continue,
+                            },
+                            None => continue,
+                        };
+
+                        // Only collect methods that will get a plain slot (same condition as
+                        // the emission pass). Explicit-key methods are not injected by instances.
+                        if explicit_keys.contains(&method_name) {
+                            continue;
+                        }
+
+                        let mangled = crate::type_def::instance_binding_name(
+                            &class_decl_name(class_name),
+                            &method_name,
+                            &type_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                        );
+
+                        // Infer param count from the method body.
+                        // For a function expression, count the params. For anything else, use 1.
+                        let param_count = match &me.node.value.expr {
+                            SurfaceExpression::Fn { params, .. } => params.len().max(1),
+                            _ => 1,
+                        };
+
+                        result.entry(method_name).or_default().push((
+                            type_args.clone(),
+                            mangled,
+                            param_count,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 /// Extract dispatch type tags from an instance arm pattern like `[let a@Int b@Float c]`.
@@ -1961,8 +2421,8 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 mod tests {
     use super::*;
     use crate::ast::{
-        CallDispatch, Provenance, Resolution, Spanned, SurfaceDeclaration, SurfaceExpression,
-        SurfaceItem, SurfaceNode, TypeAnnotation,
+        Provenance, Resolution, Spanned, SurfaceDeclaration, SurfaceExpression, SurfaceItem,
+        SurfaceNode, TypeAnnotation,
     };
     use std::sync::Arc;
 
@@ -1998,7 +2458,7 @@ mod tests {
                 name: "x".into(),
                 escaped: false,
                 resolution,
-                call_dispatch: CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             },
@@ -2027,7 +2487,7 @@ mod tests {
                 name: "unbound".into(),
                 escaped: false,
                 resolution: Resolution::new(), // Not set — resolver never ran
-                call_dispatch: CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             },
@@ -2076,7 +2536,7 @@ mod tests {
                 name: "Int".into(),
                 escaped: false,
                 resolution: Resolution::new(),
-                call_dispatch: CallDispatch::new(),
+
                 annotation: None,
                 do_infer_placeholder: false,
             },
@@ -2124,7 +2584,7 @@ mod tests {
                             name: name.into(),
                             escaped: false,
                             resolution: Resolution::new(),
-                            call_dispatch: CallDispatch::new(),
+
                             annotation: None,
                             do_infer_placeholder: false,
                         },

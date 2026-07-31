@@ -252,8 +252,6 @@ fn eval_quote_preprocess<'a>(
                                                         name: s.to_string(),
                                                         escaped: false,
                                                         resolution: crate::ast::Resolution::new(),
-                                                        call_dispatch:
-                                                            crate::ast::CallDispatch::new(),
                                                         annotation: None,
                                                         do_infer_placeholder: false,
                                                     },
@@ -399,6 +397,7 @@ fn eval_quote_preprocess<'a>(
                 body,
                 desugared,
                 resolved_captures: _,
+                resolved_return_annotation: _,
             } => {
                 let processed_body =
                     eval_quote_preprocess(Arc::clone(body), Arc::clone(&frame), ctx).await?;
@@ -408,6 +407,7 @@ fn eval_quote_preprocess<'a>(
                     body: processed_body,
                     desugared: *desugared,
                     resolved_captures: crate::ast::CapturesCell::new(),
+                    resolved_return_annotation: crate::ast::TypeAnnotation::new(),
                 }))
             }
 

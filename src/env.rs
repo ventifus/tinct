@@ -307,10 +307,7 @@ impl Env {
     ///
     /// Used by `apply_narrowings` to build a `BindingId` for `narrowing_map` insertion
     /// without needing a resolver-assigned slot address.
-    pub fn find_def_span_by_name(
-        env: &Arc<std::sync::RwLock<Env>>,
-        name: &str,
-    ) -> Option<Span> {
+    pub fn find_def_span_by_name(env: &Arc<std::sync::RwLock<Env>>, name: &str) -> Option<Span> {
         let guard = env.read().unwrap();
         // Check slots by name
         if let Some(&pos) = guard.slot_index.get(name) {
@@ -328,7 +325,9 @@ impl Env {
         }
         let parent = guard.parent.clone();
         drop(guard);
-        parent.as_ref().and_then(|p| Self::find_def_span_by_name(p, name))
+        parent
+            .as_ref()
+            .and_then(|p| Self::find_def_span_by_name(p, name))
     }
 
     /// Insert a TypeValue into the extras HashMap (name-only, no slot).

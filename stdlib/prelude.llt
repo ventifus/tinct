@@ -775,7 +775,7 @@ env-to-name-set: [fn [let env]
 # Indexable declared here (dict 1) so it is in scope when type-checking dict 1 helpers.
 # Re-exported in dict 2 as: Indexable: .Indexable
 # builtin-dict-get carries constraint: [$Indexable c k v] (annotated in builtin_core.llt).
-# FieldType fires at Indexable instance dispatch call sites (call_dispatch for typed containers),
+# FieldType fires at Indexable instance dispatch call sites (for typed containers),
 # via builtin-dict-get (used by dot-access desugaring in typecheck_cek.rs),
 # and via the standalone `get` wrapper which also carries constraint: [$Indexable c k v].
 Indexable:
@@ -1062,7 +1062,7 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 #
 # = and < are class methods (Equatable and Comparable respectively).
 # The resolver finds them via method_to_instance — no global wrapper needed.
-# call_dispatch overrides to the correct instance at each call site.
+# Typeclass dispatch resolves to the correct instance at each call site.
 #
 # >, <=, >= are derived functions that call <.
 
@@ -1101,7 +1101,7 @@ Note: Derived as negation of <.
 #
 # +, -, *, / are class methods (Addable, Subtractable, Multipliable, Divisible).
 # The resolver finds them via method_to_instance — no global wrapper needed.
-# call_dispatch overrides to the correct instance at each call site.
+# Typeclass dispatch resolves to the correct instance at each call site.
 
 quot: [fn@[return: Int  doc: """
 Integer quotient (truncate toward zero).

@@ -46,7 +46,6 @@ fn is_error(tv: &TypeValue) -> bool {
     matches!(tv_ctor(tv), Some(TV_ERROR))
 }
 
-
 /// Check if two TypeValues have pointer equality (same Arc allocation).
 fn ptr_eq(a: &TypeValue, b: &TypeValue) -> bool {
     Arc::ptr_eq(a, b)
@@ -440,7 +439,7 @@ pub async fn unify(
     let a = ctx.apply_subst(a);
     let b = ctx.apply_subst(b);
 
-    // Fast path: pointer equality or structural equality for simple variants.
+    // Reflexivity: pointer-equal types are subtypes.
     if typevalue_shallow_eq(&a, &b) {
         return Ok(());
     }
@@ -925,11 +924,11 @@ pub async fn unify(
                 span,
             )
             .with_note(format!(
-                "left:  {}",
+                "actual:   {}",
                 crate::eval::format_type_for_assert(&a)
             ))
             .with_note(format!(
-                "right: {}",
+                "expected: {}",
                 crate::eval::format_type_for_assert(&b)
             )))
         }
@@ -982,11 +981,11 @@ pub async fn unify(
                 span,
             )
             .with_note(format!(
-                "left:  {}",
+                "actual:   {}",
                 crate::eval::format_type_for_assert(&a)
             ))
             .with_note(format!(
-                "right: {}",
+                "expected: {}",
                 crate::eval::format_type_for_assert(&b)
             )))
         }
@@ -1039,11 +1038,11 @@ pub async fn unify(
                 span,
             )
             .with_note(format!(
-                "left:  {}",
+                "actual:   {}",
                 crate::eval::format_type_for_assert(&a)
             ))
             .with_note(format!(
-                "right: {}",
+                "expected: {}",
                 crate::eval::format_type_for_assert(&b)
             )))
         }
@@ -1090,7 +1089,7 @@ pub async fn constrain(
     let sub = ctx.apply_subst(sub);
     let sup = ctx.apply_subst(sup);
 
-    // Fast path: equal types.
+    // Reflexivity: equal types are subtypes.
     if typevalue_shallow_eq(&sub, &sup) {
         return Ok(());
     }
@@ -1262,7 +1261,15 @@ async fn constrain_record(
                 "type-error",
                 format!("missing field '{}': record subtype constraint", k),
                 span,
-            ));
+            )
+            .with_note(format!(
+                "actual:   {}",
+                crate::eval::format_type_for_assert(sub)
+            ))
+            .with_note(format!(
+                "expected: {}",
+                crate::eval::format_type_for_assert(sup)
+            )));
         }
     }
     Ok(())

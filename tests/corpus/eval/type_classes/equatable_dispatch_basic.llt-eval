@@ -1,5 +1,5 @@
 # Basic equality dispatch via Equatable multi-method instances.
-# Each call dispatches to the correct type-specific builtin via call_dispatch.
+# Each call dispatches to the correct type-specific builtin via typeclass instance resolution.
 # Cross-type comparisons (e.g., [= 1 "hello"]) are no longer valid -- Equatable
 # instances are type-specific (Int, Float, String, Bool).
 [

@@ -1,4 +1,16 @@
-# Guard failure with no default — error propagates
+# @Number annotation on a String value — passes silently.
+#
+# Number is a typeclass (class [let n]) declared in prelude.llt. When the type checker
+# processes @Number, resolve_type_head finds TypeStageEntry::Class and produces a fresh
+# TypeVar with a Number class constraint. The lowerer emits TypeAssertCheck::Resolved(tv)
+# where tv = TypeValue.Var(_t).
+#
+# At runtime, value_matches_type("not a number", TypeValue.Var(_t)) delegates to BAS,
+# which returns true for TV_VAR on either side (conservative: unbound TypeVar is consistent
+# with any value). The assertion therefore passes silently and the String is returned as-is.
+#
+# Contrast with @Integer: Integer resolves to TypeValue.Repr("Value::Int") (via Integer: TypeNode.Int
+# in builtin_core.llt), which is a concrete repr type that fails for String values.
 [@Number "not a number"]
 === out
 String("not a number")

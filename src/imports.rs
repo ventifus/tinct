@@ -33,8 +33,7 @@ pub async fn build_builtin_core_envs() -> (Arc<RwLock<Env>>, crate::type_def::Ty
 ///
 /// This is the authoritative source of the type-stage scope; no Rust code should manually
 /// construct this mapping by hardcoding tinct-side type names.
-pub async fn get_builtin_core_type_stage_scope(
-) -> crate::type_infer::TypeStageData {
+pub async fn get_builtin_core_type_stage_scope() -> crate::type_infer::TypeStageData {
     let (_, _, data) = build_builtin_core_envs_inner()
         .await
         .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
@@ -87,7 +86,13 @@ pub(crate) async fn classify_type_stage_entry(
     val: &crate::value::Value,
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
     scope_so_far: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
-) -> crate::error::EvalResult<Option<(crate::type_infer::TypeValue, Option<std::sync::Arc<crate::value::Thunk>>, Option<String>)>> {
+) -> crate::error::EvalResult<
+    Option<(
+        crate::type_infer::TypeValue,
+        Option<std::sync::Arc<crate::value::Thunk>>,
+        Option<String>,
+    )>,
+> {
     // For Variant values: call typenode_value_to_type (full recursive converter that reads
     // payload fields for structural types like Span, Diagnostic, Dict, Union, etc.).
     // typenode_value_to_type returns Ok(None) for non-TypeNode variants, so calling it
@@ -215,9 +220,14 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             crate::value::Value::Dict { entries, .. } => {
                 // scope_map accumulates the resolved TypeValues for already-processed entries.
                 // Used by typenode_value_to_type to resolve recursive TypeNode references.
-                let mut scope_map: std::collections::HashMap<String, crate::type_infer::TypeValue> = std::collections::HashMap::new();
-                let mut fns_map: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>> = std::collections::HashMap::new();
-                let mut type_vars_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                let mut scope_map: std::collections::HashMap<String, crate::type_infer::TypeValue> =
+                    std::collections::HashMap::new();
+                let mut fns_map: std::collections::HashMap<
+                    String,
+                    std::sync::Arc<crate::value::Thunk>,
+                > = std::collections::HashMap::new();
+                let mut type_vars_map: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
                 for (key, thunk) in &entries {
                     if let crate::value::HashableValue::Str(name) = key {
                         let val = crate::eval::materialize(thunk, None, &eval_ctx_with_frames)
@@ -286,11 +296,13 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         }
         // Function entries: insert make_typevalue_op placeholder.
         for (name, _thunk) in &type_stage_data.fns {
-            env_write.insert_scheme_named_only(name.clone(), crate::type_infer::make_typevalue_op(name));
+            env_write
+                .insert_scheme_named_only(name.clone(), crate::type_infer::make_typevalue_op(name));
         }
         // TypeVar entries: insert make_typevalue_op placeholder.
         for (name, _kind) in &type_stage_data.type_vars {
-            env_write.insert_scheme_named_only(name.clone(), crate::type_infer::make_typevalue_op(name));
+            env_write
+                .insert_scheme_named_only(name.clone(), crate::type_infer::make_typevalue_op(name));
         }
     }
 
@@ -298,7 +310,8 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // Each TypeValue.Op in the resolved scope represents an opaque builtin type that needs a
     // TyConDef so value_matches_type can dispatch on it. We scan here (before the move into
     // typecheck_program_bootstrap) and register the TyConDefs after typecheck returns.
-    let opaque_tycon_names: Vec<String> = type_stage_data.scope
+    let opaque_tycon_names: Vec<String> = type_stage_data
+        .scope
         .iter()
         .flat_map(|scope_map| scope_map.iter())
         .filter_map(|(_tname, tv)| {
@@ -316,10 +329,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                         let key =
                             crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_NAME));
                         if let Some(Ok(crate::value::Value::String {
-                            source,
-                            start,
-                            end,
-                            ..
+                            source, start, end, ..
                         })) = entries.get(&key).map(|t| t.peek_result()).flatten()
                         {
                             return Some(source[*start..*end].to_string());
