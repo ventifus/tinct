@@ -277,6 +277,12 @@
   # _fundamental-base-tc, ensuring core types are in place before any
   # downstream module type-checks run.
   # Uses empty env as seed (no scope arena needed — env-dict protocol).
+  #
+  # Note: repr: TypeValue declarations (third document of builtin_core.llt) are
+  # processed at eval time by CoreExpr::ReprDecl, not at type-check time. The
+  # TypeContext sees type-stage aliases (NativeInt: TypeNode.Int, etc.) which is
+  # sufficient for annotation resolution. The repr: types serve the runtime
+  # type_val mechanism only.
   _fundamental-base-tc: [builtin-make-type-ctx]
   fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc []]] 0]
     0: _fundamental-base-tc

@@ -1066,7 +1066,7 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 #
 # >, <=, >= are derived functions that call <.
 
->: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
+>: [fn@[bind: [a]  return: Boolean  constraint: [a: Sortable]  doc: """
 Greater than.
 
 Example: [> 5 3] => True
@@ -1075,7 +1075,7 @@ Example: [> 3 5] => False
 Note: Derived by swapping arguments of <.
 """] [let x@a y@a] [< y x]]
 
-<=: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
+<=: [fn@[bind: [a]  return: Boolean  constraint: [a: Sortable]  doc: """
 Less than or equal.
 
 Example: [<= 3 5] => True
@@ -1085,7 +1085,7 @@ Example: [<= 5 3] => False
 Note: Derived as negation of >.
 """] [let x@a y@a] [not [< y x]]]
 
->=: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
+>=: [fn@[bind: [a]  return: Boolean  constraint: [a: Sortable]  doc: """
 Greater than or equal.
 
 Example: [>= 5 3] => True
@@ -1494,7 +1494,7 @@ conj@[doc: "Append element to end of list"]: [fn@[bind: [a]  return: Dict] [let 
 # cmp is a less-than function: [cmp a b] returns True if a should come before b.
 # sort-asc: delegates to sort-by with < as comparator (O(n log n) mergesort).
 # Callers: sort, sorted.
-sort-asc: [fn@[bind: [a]  return: Dict  constraint: [a: Comparable]] [let xs@Dict]
+sort-asc: [fn@[bind: [a]  return: Dict  constraint: [a: Sortable]] [let xs@Dict]
   [sort-by [fn@Boolean [let x@a y@a] [< x y]] xs]]
 
 # Example: [sort-by [fn [let a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
@@ -1868,7 +1868,7 @@ Example: [product []] => 1
 Note: Returns 1 for empty collections. Inherently materializing: must reduce all elements.
 """] [let xs@[Seq Number]] [reduce [fn [let a b] [* a b]] 1 xs]]
 
-min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: """
+min: [fn@[bind: [a]  return: a  constraint: [a: Sortable]  doc: """
 Minimum element.
 
 Example: [min [3 1 2]] => 1
@@ -1881,7 +1881,7 @@ Note: Errors on empty collection (no sensible default for polymorphic min).
         [@a [dict-first [@Dict xs]]]
         [@Dict [tail [@Dict xs]]]]]
 
-max: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: """
+max: [fn@[bind: [a]  return: a  constraint: [a: Sortable]  doc: """
 Maximum element.
 
 Example: [max [3 1 2]] => 3
@@ -1967,8 +1967,8 @@ Note: Threads initial value v through each function in sequence. Each function r
 # Type predicates — tinct functions returning Boolean.
 # No builtins needed: tinct pattern matching covers all cases.
 # null? uses builtin-eq-int on the length — = would go through Equatable which calls null? (cycle).
-int?@[doc: "Check if value is Integer"]:   [fn@Boolean [let x] [match x Integer: Boolean.True  ...: Boolean.False]]
-float?@[doc: "Check if value is Float"]:   [fn@Boolean [let x] [match x Float:   Boolean.True  ...: Boolean.False]]
+int?@[doc: "Check if value is Integer"  narrows: Integer]:   [fn@Boolean [let x] [match x Integer: Boolean.True  ...: Boolean.False]]
+float?@[doc: "Check if value is Float"  narrows: Float]:     [fn@Boolean [let x] [match x Float:   Boolean.True  ...: Boolean.False]]
 str?@[doc: "Check if value is String"]:    [fn@Boolean [let x] [match x String:  Boolean.True  ...: Boolean.False]]
 bool?@[doc: "Check if value is Boolean"]:  [fn@Boolean [let x] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
 null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False ...: Boolean.True] Boolean.False]]
@@ -1979,6 +1979,9 @@ seq?@[doc: "Check if value is a Seq"]:   [fn@Boolean [let x] [match x Seq.Cons: 
 bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x] [match x Bytes:    Boolean.True  ...: Boolean.False]]
 
 num?@[doc: "Check if value is numeric (Int or Float)"]: [fn@Boolean [let x] [or [int? x] [float? x]]]
+
+integer?@[doc: "Check if value is any Integer type (NativeInt, NativeUInt, BigInt)"  narrows: Integer]: [fn@Boolean [let x]
+  [or [int? x] [match x BigInt: Boolean.True  ...: Boolean.False]]]
 
 # record?: True if the argument is a Dict (Record at type level, Dict at runtime).
 # At runtime, all dicts are Records — the distinction is type-checker-only.
@@ -2489,6 +2492,34 @@ Number@[doc: "Constraint class for numeric types (Int and Float). Empty-method c
 [instance Number [let n@Integer]:   []]
 [instance Number [let n@Float]: []]
 
+# Numeric is an abstract marker class for all numeric types (Integer and Float).
+# It has no methods — it is a pure presence constraint used to mark types that
+# participate in the numeric hierarchy. Integer and Float are subclasses.
+Numeric@[doc: "Abstract marker class for all numeric types (Integer and Float). No methods — pure presence constraint."]:
+  [class [let a]]
+
+[instance Numeric [let n@Integer]: []]
+[instance Numeric [let n@Float]: []]
+
+# Integer is an abstract marker class for all integer types (NativeInt, NativeUInt, BigInt).
+# It has no methods — superclasses provide the behavior (Addable, Equatable, Sortable).
+Integer@[doc: "Abstract marker class for integer types. Requires Numeric, Addable, Equatable, Sortable."]:
+  [class [let a] [superclasses: [[Numeric a] [Addable a a a] [Equatable a] [Sortable a]]]]
+
+# Float is an abstract marker class for all floating-point types (Float64).
+# It has no methods — superclasses provide the behavior (Addable, Sortable).
+# Note: Float is Sortable but NOT Equatable (NaN violates reflexivity of =).
+Float@[doc: "Abstract marker class for floating-point types. Requires Numeric, Addable, Sortable. Not Equatable due to NaN."]:
+  [class [let a] [superclasses: [[Numeric a] [Addable a a a] [Sortable a]]]]
+
+# Integer instances for concrete integer types
+[instance Integer [let k@NativeInt]: []]
+[instance Integer [let k@NativeUInt]: []]
+[instance Integer [let k@BigInt]: []]
+
+# Float instance for Float64
+[instance Float [let k@Float64]: []]
+
 # ============================================================================
 # Type Class Declarations: Arithmetic
 # ============================================================================
@@ -2630,6 +2661,12 @@ Castable@[doc: "Typeclass for values that can be cast to a target type"]:
 
 [instance Castable [let target@String source@Bytes]:
   [cast: [fn [let x] [builtin-bytes-str x]]]]
+
+[instance Castable [let target@Float64 source@Integer]:
+  [cast: [fn [let x] [builtin-int-to-float x]]]]
+
+[instance Castable [let target@Integer source@Float]:
+  [cast: [fn [let x] [builtin-float-to-int x]]]]
 
 [instance Castable [let target@String source@Dict]:
   [cast: [fn [let d]
@@ -3827,7 +3864,7 @@ Note: Returns a new Dict with elements in reverse order, keys reindexed from 0.
        ...: [builtin-builder-finish b]]]
   [fill 0 [builtin-make-builder]]]]
 
-sort: [fn@[bind: [a]  return: Dict  constraint: [a: Comparable]  doc: """
+sort: [fn@[bind: [a]  return: Dict  constraint: [a: Sortable]  doc: """
 Sort collection in natural ascending order.
 
 Example: [sort [3 1 2]] => [0: 1  1: 2  2: 3]
