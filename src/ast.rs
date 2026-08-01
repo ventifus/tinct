@@ -1370,6 +1370,31 @@ pub enum CoreExpr {
         /// The inner constructor dict produced by `lower_type_alias_to_constructor_dict`.
         inner: Arc<Spanned<CoreExpr>>,
     },
+
+    /// A named type declaration — wrapper that creates a stable Arc-level identity for the type.
+    ///
+    /// Produced by `lower_type_alias_to_constructor_dict` for every named type alias
+    /// (i.e., when `type_name_opt` is `Some`). Wraps the inner expression (either a
+    /// `CoreExpr::Dict` or a `CoreExpr::ReprDecl { inner: Dict }`) so the evaluator can:
+    ///   1. Create a fresh `Arc<Value>` identity for this type (`type_id`).
+    ///   2. Register `type_id` in `ctx.type_identity_registry` under `type_name`.
+    ///   3. Evaluate `inner` to obtain the constructor dict.
+    ///   4. Stamp `type_id` as the `type_val` on the returned `Value::Dict`.
+    ///
+    /// `CoreExpr::UnitVariant { tycon, .. }` and `CoreExpr::Variant { tag, .. }` arms in
+    /// `eval_core_expr` look up `ctx.type_identity_registry[tycon]` when constructing
+    /// `Value::Variant` so that every variant produced by this type's constructors carries
+    /// the same `Arc` as the constructor dict. `Arc::ptr_eq` in `match_pattern` then
+    /// correctly identifies whether a scrutinee belongs to a given type.
+    ///
+    /// Transparent to callers — the evaluated value is the same constructor dict that
+    /// `inner` alone would produce, with `type_val` stamped.
+    TypeDecl {
+        /// The declared type name (e.g., `"Color"`).
+        type_name: String,
+        /// The inner expression: `CoreExpr::Dict` or `CoreExpr::ReprDecl { inner: Dict }`.
+        inner: Arc<Spanned<CoreExpr>>,
+    },
 }
 
 /// A dict/list entry in a CoreExpr::Dict.

@@ -743,37 +743,80 @@ pub(crate) fn eval_core_expr<'a>(
             // Unit variants materialize directly; payload variants evaluate their inner expression,
             // materialize it, and store as an Arc<Thunk> — preserving the laziness invariant that
             // the payload dict's fields remain as thunks until accessed.
-            CoreExpr::Variant { tag, payload } => match payload {
-                None => Ok(Arc::new(Thunk::value(
+            //
+            // type_val: look up the type identity from ctx.type_identity_registry using the
+            // tycon prefix of the tag (e.g., tag = "Shape.Circle" → tycon = "Shape").
+            // If no identity is registered (e.g., variants created outside a TypeDecl context,
+            // or tags without a "." separator), fall back to unknown_type_val(). Registered
+            // identities are set by CoreExpr::TypeDecl before any constructor is forced.
+            CoreExpr::Variant { tag, payload } => {
+                let type_val = {
+                    let tycon = crate::value::tycon_name_from_ctor(tag.as_str());
+                    ctx.type_identity_registry
+                        .lock()
+                        .map_err(|e| {
+                            EvalError::internal(
+                                format!("type_identity_registry mutex poisoned: {e}"),
+                                span.clone(),
+                            )
+                        })?
+                        .get(tycon)
+                        .map(Arc::clone)
+                        .unwrap_or_else(crate::value::unknown_type_val)
+                };
+                match payload {
+                    None => Ok(Arc::new(Thunk::value(
+                        Value::Variant {
+                            type_val,
+                            ctor: Arc::from(tag.as_str()),
+                            payload: None,
+                        },
+                        span.clone(),
+                    ))),
+                    Some(inner_expr) => {
+                        let payload_thunk = eval_core_expr(inner_expr, frame, ctx).await?;
+                        let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                        Ok(Arc::new(Thunk::value(
+                            Value::Variant {
+                                type_val,
+                                ctor: Arc::from(tag.as_str()),
+                                payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
+                            },
+                            span.clone(),
+                        )))
+                    }
+                }
+            }
+
+            // Unit variant: look up type identity by tycon name (T-2111).
+            // If CoreExpr::TypeDecl was evaluated first (which it always is, because forcing
+            // Color.Red requires first forcing Color to access its "Red" entry), the registry
+            // entry for `tycon` exists and every variant of that type carries the same Arc.
+            CoreExpr::UnitVariant { tycon, ctor } => {
+                let type_val = if tycon.is_empty() {
+                    crate::value::unknown_type_val()
+                } else {
+                    ctx.type_identity_registry
+                        .lock()
+                        .map_err(|e| {
+                            EvalError::internal(
+                                format!("type_identity_registry mutex poisoned: {e}"),
+                                span.clone(),
+                            )
+                        })?
+                        .get(tycon.as_str())
+                        .map(Arc::clone)
+                        .unwrap_or_else(crate::value::unknown_type_val)
+                };
+                Ok(Arc::new(Thunk::value(
                     Value::Variant {
-                        type_val: crate::value::unknown_type_val(),
-                        ctor: Arc::from(tag.as_str()),
+                        type_val,
+                        ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
                         payload: None,
                     },
                     span.clone(),
-                ))),
-                Some(inner_expr) => {
-                    let payload_thunk = eval_core_expr(inner_expr, frame, ctx).await?;
-                    let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                    Ok(Arc::new(Thunk::value(
-                        Value::Variant {
-                            type_val: crate::value::unknown_type_val(),
-                            ctor: Arc::from(tag.as_str()),
-                            payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
-                        },
-                        span.clone(),
-                    )))
-                }
-            },
-
-            CoreExpr::UnitVariant { tycon, ctor } => Ok(Arc::new(Thunk::value(
-                Value::Variant {
-                    type_val: crate::value::unknown_type_val(),
-                    ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
-                    payload: None,
-                },
-                span.clone(),
-            ))),
+                )))
+            }
 
             // Sequential: evaluate each expression in order, extending the environment
             // with dict bindings from each intermediate dict expression.
@@ -1030,6 +1073,78 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
+
+            // TypeDecl: create a stable Arc-level identity for the type, register it in
+            // ctx.type_identity_registry, evaluate the inner constructor dict, stamp the
+            // identity on the dict's type_val, and return the dict.
+            //
+            // This is the T-2111 implementation of B-712. The identity is a fresh
+            // Arc<Value::Variant { ctor: type_name, ... }> — unique per TypeDecl evaluation.
+            // Storing and retrieving Arc::clone of the same Arc from the registry ensures
+            // that all Value::Variants produced by this type's constructors share the
+            // exact same Arc pointer as the constructor dict, enabling Arc::ptr_eq in
+            // match_pattern to correctly identify type membership.
+            //
+            // Necessary strictness: materializing the inner dict (CoreExpr::Dict or
+            // CoreExpr::ReprDecl wrapping a Dict) produces a Value::Dict with Arc<Thunk>
+            // entries — the entries themselves are NOT materialized. This is the same
+            // strictness point as CoreExpr::ReprDecl (which also materializes for registration).
+            CoreExpr::TypeDecl { type_name, inner } => {
+                // Create the type identity: a fresh Arc<Value> unique to this type declaration.
+                // The value is a unit Variant with ctor = type_name. This makes the identity
+                // self-describing in debug output. Its own type_val is unknown_type_val() —
+                // the identity is not itself typed (it is the identity, not a user value).
+                let type_id: Arc<Value> = Arc::new(Value::Variant {
+                    type_val: crate::value::unknown_type_val(),
+                    ctor: Arc::from(type_name.as_str()),
+                    payload: None,
+                });
+
+                // Register BEFORE evaluating inner so that any constructor thunks created
+                // during inner evaluation (if inner is somehow forced immediately, which
+                // eval_dict_core does not do — it creates lazy thunks) can find the identity.
+                // In practice, unit variant thunks are CoreExpr::UnitVariant and are only
+                // forced when accessed (e.g., Color.Red), which happens AFTER this TypeDecl
+                // evaluation completes and the dict is returned.
+                ctx.type_identity_registry
+                    .lock()
+                    .map_err(|e| {
+                        EvalError::internal(
+                            format!("type_identity_registry mutex poisoned: {e}"),
+                            span.clone(),
+                        )
+                    })?
+                    .insert(type_name.clone(), Arc::clone(&type_id));
+
+                // Evaluate the inner constructor dict (or ReprDecl wrapping a dict).
+                let inner_thunk = eval_core_expr(inner, frame, ctx).await?;
+
+                // Materialize the dict to stamp type_val. This is a necessary strictness
+                // point: we need the Value::Dict to replace its type_val field. The dict's
+                // entries (constructor thunks) are NOT materialized — they remain as
+                // Arc<Thunk> inside the IndexMap. Only the container structure is extracted.
+                let inner_val = materialize(&inner_thunk, Some(&span), ctx).await?;
+
+                // Stamp the type identity on the constructor dict's type_val.
+                let stamped_val = match inner_val {
+                    Value::Dict { entries, .. } => Value::Dict {
+                        entries,
+                        type_val: Arc::clone(&type_id),
+                    },
+                    other => {
+                        return Err(EvalError::internal(
+                            format!(
+                                "CoreExpr::TypeDecl: inner expression evaluated to non-Dict value: {}",
+                                other.type_name()
+                            ),
+                            span.clone(),
+                        )
+                        .into());
+                    }
+                };
+
+                Ok(Arc::new(Thunk::value(stamped_val, span.clone())))
+            }
 
             // ReprDecl: evaluate the inner constructor dict, register in ctx.repr_registry,
             // and return the inner dict thunk. The dict IS the TypeValue — ReprDecl is

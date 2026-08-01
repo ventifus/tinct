@@ -197,6 +197,31 @@ pub enum CoreExpr {
     LetDecl {
         bindings: Vec<Spanned<CoreExpr>>,
     },
+    // Repr declaration — wraps a `repr:` declaration from builtin_core.llt.
+    // Evaluation: registers `repr → Arc<Value>` in `ctx.repr_registry`; optionally
+    // registers `is_pred` in `ctx.is_predicates`; then evaluates `inner` (a Dict)
+    // and returns it transparently to callers. Necessary strictness: materializes
+    // `inner` to obtain the concrete Value before registration.
+    ReprDecl {
+        repr: String,
+        is_pred: Option<Arc<Spanned<CoreExpr>>>,
+        inner: Arc<Spanned<CoreExpr>>,
+    },
+    // Named type declaration — wraps [type Name ...] declarations.
+    // Creates a stable Arc<Value> type identity (registered in EvalContext.type_identity_registry
+    // under `type_name`) and stamps it on the resulting constructor dict's type_val field.
+    // Variants produced by that type's constructors carry the same Arc, enabling
+    // Arc::ptr_eq-based type dispatch in match_pattern.
+    TypeDecl {
+        type_name: String,
+        // Structural invariant: `inner` is always either:
+        //   - CoreExpr::Dict  (plain [type Name ctor1 ctor2 ...] without a repr: wrapper), or
+        //   - CoreExpr::ReprDecl { inner: Dict }  (when the type has an associated repr:
+        //     declaration, wrapping the constructor dict inside a ReprDecl node).
+        // No other CoreExpr variant is valid here. The evaluator relies on this invariant
+        // when it unwraps inner to stamp type_val on the constructor dict entries.
+        inner: Arc<Spanned<CoreExpr>>,
+    },
     Placeholder,
     Error(Span),
 }
@@ -284,6 +309,7 @@ enum Annotation {
 | `TypeAssert` | `[@T expr]` | Type assertion |
 | `Annotated` | `Fn@Number` | Annotated bare word |
 | `LetDecl { bindings }` | `[let x@Integer y]` | Binding declaration list for fn params, case arms, and pattern contexts |
+| `CoreExpr::TypeDecl { type_name, inner }` | `[type Name ...]` declaration | Creates a stable `Arc<Value>` type identity in `EvalContext.type_identity_registry` keyed by `type_name`; stamps it on the constructor dict's `type_val` field; enables `Arc::ptr_eq`-based type dispatch in `match_pattern` when a VarRef resolves to a type-constructor dict |
 | `Placeholder` | `...` | Placeholder expression — type Unknown, evaluates to lazy error on materialization |
 | `Rest(None)` | `...` | Open record marker in type expressions |
 | `Rest(Some("r"))` | `...r` | Named row variable |

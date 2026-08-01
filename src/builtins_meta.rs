@@ -5010,10 +5010,11 @@ pub(crate) fn builtin_cap_env_has(
 /// 1. `resolve_name_in_frames` (for builtin-raise and mangled instance names): searches all
 ///    frames innermost-first to find each name's absolute LGM slot.
 ///
-/// 2. `resolve_name_in_parent_frames` (for cross-dict method chaining): skips the two
-///    innermost frames (env_names at offset 0, current dict at offset 1) and searches
-///    ancestor dicts from offset 2 outward. When dict N's `=` dispatcher has no matching
-///    instance, it chains to dict N-1's `=` dispatcher (the ancestor), not to itself.
+/// 2. `resolve_name_in_parent_frames` (for cross-dict method chaining): unconditionally
+///    skips the two innermost frames (offset 0 = env_names, offset 1 = current dict)
+///    via `.skip(2)` and searches ancestor frames (offset 2+) for the method name.
+///    When dict N's `=` dispatcher has no matching instance, it chains to dict N-1's
+///    `=` dispatcher (the ancestor), not to itself.
 ///    `slot` is the absolute LGM slot — the only value used at runtime (depth is ignored
 ///    by the evaluator and type checker resolves ClosureCapture by name).
 pub(crate) fn builtin_lower(

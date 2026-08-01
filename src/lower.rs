@@ -82,28 +82,40 @@ pub(crate) fn resolve_name_in_frames(
     None
 }
 
-/// Resolve `name` using leading-dot semantics on a pre-computed frame list.
+/// Resolve `name` in ancestor scopes, unconditionally skipping the two innermost frames.
 ///
-/// Implements the same "second occurrence" rule as `resolve_name_parent` in the resolver:
-/// find the innermost binding of `name`, skip it, then return the next binding outward.
-/// Returns `None` — caller emits "undefined variable" — if there is only one binding.
+/// Algorithm: `.skip(2)` on the reversed frame iterator — bypasses offset 0 (env_names)
+/// and offset 1 (current_dict), then searches offset 2+ for the first frame containing `name`.
 ///
-/// Used for MethodDispatcher parent chaining (B-682 / T-2109): finds the next-outer
-/// dispatcher for `method_name` so the wildcard fallback can forward to it.
+/// This is NOT the same algorithm as `resolve_name_parent` in the resolver (which uses
+/// content-based found_first). The positional `.skip(2)` is required here because
+/// env_names always contains every prelude method name: a found_first algorithm would
+/// treat env_names' copy as the "first occurrence," skip it, and return current_dict's
+/// binding at offset 1 — a self-referential capture.
+///
+/// Used for MethodDispatcher parent chaining: the current dict already has a binding for
+/// `method_name` (the dispatcher being synthesized). This function skips that binding and
+/// returns the next-outer one (the parent dispatcher to delegate to).
+///
+/// Returns `None` if no ancestor frame (offset >= 2) contains `name`.
 fn resolve_name_in_parent_frames(
     frames: &[indexmap::IndexMap<String, u32>],
     name: &str,
 ) -> Option<(u32, u32)> {
-    // frames[0] = outermost, frames[n-1] = innermost (iter().rev() searches innermost-first).
-    // Skip the first occurrence of `name` (wherever it lives), then return the next.
-    let mut found_first = false;
-    for (offset, frame) in frames.iter().rev().enumerate() {
-        if !found_first {
-            if frame.contains_key(name) {
-                found_first = true;
-            }
-            continue; // skip the first (innermost) binding
-        }
+    // frames[0] = outermost, frames[n-1] = innermost.
+    // Real-world frame layout after iter().rev():
+    //   offset 0 = env_names_frame (innermost): contains ALL prelude method names
+    //              (including "=", "+", etc.) injected by builtin-lower.
+    //   offset 1 = current_dict: the dict being lowered (has its own dispatcher at slot N).
+    //   offset 2+ = ancestor dicts (where the parent dispatcher lives).
+    //
+    // .skip(2) unconditionally skips env_names (offset 0) and current_dict (offset 1),
+    // reaching the first ancestor at offset 2. This is correct regardless of env_names
+    // content: env_names always contains the method name (prelude method names), so any
+    // found_first-style algorithm would treat env_names as the "first occurrence", skip it,
+    // then return current_dict's binding at offset 1 — self-referential capture. .skip(2)
+    // avoids this by ignoring both fixed positions unconditionally.
+    for (offset, frame) in frames.iter().rev().enumerate().skip(2) {
         if let Some(&slot) = frame.get(name) {
             return Some((offset as u32, slot));
         }
@@ -1375,6 +1387,9 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         // ReprDecl: transparent in quote context — convert as if it were just the inner dict.
         // The repr: metadata is evaluator-only; it has no surface representation in quotes.
         CoreExpr::ReprDecl { inner, .. } => core_expr_to_surface_expr(&inner.node),
+        // TypeDecl: transparent in quote context — convert as if it were just the inner dict.
+        // The type identity mechanism is evaluator-only (ctx.type_identity_registry).
+        CoreExpr::TypeDecl { inner, .. } => core_expr_to_surface_expr(&inner.node),
     }
 }
 
@@ -1510,11 +1525,13 @@ fn make_method_dispatcher_fn(
     // scope_frames (from builtin-lower) = block_body_frames + dict_frames + env_names_frame.
     // After iter().rev(), the frame layout by offset is:
     //   offset 0 = env_names_frame (INNERMOST, searched first by resolve_name_in_frames):
-    //              TypeNode values for type names. Innermost so TypeNode.Int is found before
-    //              ClassDecl {} from the public dict.
-    //   offset 1 = current dict's own letrec frame (skipped by resolve_name_in_parent_frames).
+    //              TypeNode values for type names AND all prelude method names ("=", "+", etc.).
+    //              Innermost so TypeNode.Int is found before ClassDecl {} from the public dict.
+    //   offset 1 = current dict's own letrec frame (skipped by resolve_name_in_parent_frames via .skip(2)).
     //   offset 2+= ancestor dict frames (searched by resolve_name_in_parent_frames).
     //   (deeper offsets) = block_body_frames: sequential injection frames (usually not needed).
+    // env_names contains all prelude method names — resolve_name_in_parent_frames uses .skip(2)
+    // to unconditionally bypass both env_names and current_dict, reaching ancestors directly.
     let mut outer_names: Vec<String> = vec!["builtin-raise".to_string()];
     for (type_name, all_instances) in &type_name_to_all_instances {
         if !outer_names.contains(type_name) {
@@ -1769,9 +1786,10 @@ fn make_method_dispatcher_fn(
     let fallback_body = match catch_all_mangled {
         Some(ref mangled) => make_mangled_call(mangled),
         None => {
-            // T-2109: Check if the method exists in an ancestor scope (offset >= 2, skipping both
-            // env_names_frame and the current dict's own letrec frame). If found, forward to the
-            // parent dispatcher. Otherwise, raise.
+            // T-2109: Check if the method exists in an ancestor scope. Uses .skip(2) semantics:
+            // unconditionally skip env_names (offset 0) and current_dict (offset 1), then search
+            // ancestor frames (offset 2+) for method_name. If found, forward to the parent
+            // dispatcher. Otherwise, raise.
             let parent_dispatcher =
                 scope_frames.and_then(|frames| resolve_name_in_parent_frames(frames, method_name));
             match parent_dispatcher {
@@ -2399,43 +2417,36 @@ fn lower_type_alias_to_constructor_dict(
         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
     }
 
-    // Inject the TYCON_DICT_SENTINEL entry when a type name is available.
-    //
-    // This sentinel distinguishes type-constructor dicts from plain data dicts at
-    // match time (eval.rs VarRef arm). The value is the type name string (e.g.
-    // "Color"), allowing the match evaluator to compare STORED name vs scrutinee
-    // tycon rather than comparing the VarRef binding name. This correctly handles
-    // both shadowing (plain dict has no sentinel → no match) and aliases
-    // (`mycolor = Color` resolves to a dict with sentinel "Color" → match fires).
-    if let Some(ref type_name) = type_name_opt {
-        let sentinel_key = Some(Arc::new(Spanned::new(
-            CoreExpr::Str(crate::type_tags::TYCON_DICT_SENTINEL.to_string()),
-            syn_span.clone(),
-        )));
-        let sentinel_value = Arc::new(Spanned::new(
-            CoreExpr::Str(type_name.clone()),
-            syn_span.clone(),
-        ));
-        core_entries.push(Spanned::new(
-            CoreEntry {
-                key: sentinel_key,
-                value: sentinel_value,
-            },
-            syn_span.clone(),
-        ));
-    }
-
     let inner_dict = CoreExpr::Dict(core_entries);
 
     // If the body had `repr:` metadata, wrap the constructor dict in ReprDecl so the
     // evaluator can register it in ctx.repr_registry when the declaration is first forced.
-    match repr_opt {
+    let inner_expr = match repr_opt {
         Some(repr) => CoreExpr::ReprDecl {
             repr,
             is_pred: is_pred_opt.map(|expr| Arc::new(Spanned::new(expr, syn_span.clone()))),
-            inner: Arc::new(Spanned::new(inner_dict, syn_span)),
+            inner: Arc::new(Spanned::new(inner_dict, syn_span.clone())),
         },
         None => inner_dict,
+    };
+
+    // Wrap in TypeDecl when a type name is available.
+    //
+    // TypeDecl instructs the evaluator (eval_core.rs) to create a stable `Arc<Value>`
+    // identity for this type and register it in `ctx.type_identity_registry["Color"]`.
+    // The identity is stamped on the returned constructor dict (`type_val`) and on every
+    // `Value::Variant` produced by the type's constructors (`UnitVariant` and `Variant`
+    // arms look it up from the registry at construction time).
+    //
+    // This enables `Arc::ptr_eq(variant.type_val, dict.type_val)` in `match_pattern` to
+    // correctly identify whether a scrutinee belongs to a given type — without any hidden
+    // sentinel key in the dict.
+    match type_name_opt {
+        Some(type_name) => CoreExpr::TypeDecl {
+            type_name,
+            inner: Arc::new(Spanned::new(inner_expr, syn_span)),
+        },
+        None => inner_expr,
     }
 }
 
@@ -3128,22 +3139,24 @@ mod tests {
     // Its output (CoreExpr structure) is not surface-observable in tinct. These tests call it
     // directly and assert on capture counts, VarAddr types, and CoreExpr body shape.
     //
-    // End-to-end corpus test for parent dispatch is blocked by B-712: user-defined nominal
-    // type dispatch arms are dead code (the match evaluator's TypeNode path only fires for
-    // builtin types), so the equatable corpus test still shows Boolean.False regardless of
-    // whether parent dispatch fires or not.
-    //
-    // When B-712 is fixed, a corpus test can be added to demonstrate cross-dict dispatch chaining.
+    // End-to-end corpus test for cross-dict parent dispatch chaining lives at:
+    //   tests/corpus/eval/type_classes/equatable_parent_dispatch_chaining.llt-eval
 
-    /// Build a minimal three-frame scope that correctly models the combined_frames layout used
-    /// by `builtin-lower`:
-    ///   frames[0] = outer_parent: the ancestor dict that owns `method` at `slot`
-    ///   frames[1] = current_dict: the dict currently being lowered (its own frame, skipped)
-    ///   frames[2] = env_names_frame: innermost, always skipped by resolve_name_in_parent_frames
+    /// Build a minimal three-frame scope that models the combined_frames layout used by
+    /// `builtin-lower` during MethodDispatcher synthesis:
+    ///   frames[0] = outer_parent: ancestor dict that owns `method` at `slot` (parent dispatcher)
+    ///   frames[1] = current_dict: dict currently being lowered — has `method` too (at slot 100)
+    ///               because the current dict's own dispatcher is already registered in its frame
+    ///   frames[2] = env_names_frame: innermost (builtins/type-names AND all prelude method names)
     ///
-    /// With `.skip(2)` in resolve_name_in_parent_frames:
-    ///   reversed: [env_names(0), current_dict(1), outer_parent(2)]
-    ///   skip(2) starts at outer_parent (offset 2) → finds `method` there at offset 2.
+    /// With `.skip(2)` semantics in resolve_name_in_parent_frames:
+    ///   reversed: [env_names(0, skip), current_dict(1, skip), outer_parent(2, has method→return)]
+    ///   .skip(2) unconditionally bypasses env_names and current_dict, returns the parent's binding.
+    ///
+    /// env_names contains `method` because in the real builtin-lower layout, env_names_frame
+    /// holds ALL prelude method names. Including it here accurately models why found_first fails:
+    /// found_first would treat env_names' occurrence of `method` as the "first" → skip it →
+    /// then return current_dict's at offset 1 (self-referential). .skip(2) avoids this.
     fn make_parent_dispatch_frames(
         method: &str,
         slot: u32,
@@ -3151,21 +3164,25 @@ mod tests {
         let mut outer_parent: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         outer_parent.insert(method.to_string(), slot);
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        // current_dict also has `method` at slot 100 — this is the dispatcher being built.
+        // .skip(2) skips this frame entirely; the parent's binding at offset 2 is returned.
+        current_dict.insert(method.to_string(), 100);
         current_dict.insert("other-current".to_string(), 99);
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         env_names.insert("builtin-raise".to_string(), 0);
+        // env_names contains `method` — models the real layout where env_names_frame holds
+        // all prelude method names. .skip(2) skips env_names (offset 0) unconditionally.
+        env_names.insert(method.to_string(), 200);
         // frames[0]=outermost (outer_parent), frames[1]=current_dict, frames[2]=env_names (innermost)
-        // resolve_name_in_parent_frames skips offsets 0 (env_names) and 1 (current_dict),
-        // finding `method` in outer_parent at offset 2.
         vec![outer_parent, current_dict, env_names]
     }
 
     #[test]
     fn test_make_method_dispatcher_fn_parent_dispatch_fallback_is_call() {
-        // When scope_frames has `=` in the outer_parent frame (offset 2 after .skip(2)),
-        // the wildcard fallback must be a CoreExpr::Call forwarding to the captured parent
-        // dispatcher, not a raise. make_parent_dispatch_frames uses 3 frames:
-        // [outer_parent(=@slot5), current_dict, env_names] so the parent is at offset 2.
+        // When scope_frames has `=` in outer_parent, current_dict, and env_names, the wildcard
+        // fallback must forward to outer_parent's dispatcher. resolve_name_in_parent_frames uses
+        // .skip(2) to bypass env_names (offset 0) and current_dict (offset 1), returning
+        // outer_parent's `=` at offset 2. make_parent_dispatch_frames puts `=` in all three frames.
         let span = rust_span!();
         let frames = make_parent_dispatch_frames("=", 5);
         let mut diags: Vec<LowerDiagnostic> = Vec::new();
@@ -3273,18 +3290,27 @@ mod tests {
 
     // ── resolve_name_in_parent_frames unit tests (T-2109) ─────────────────────
     //
-    // resolve_name_in_parent_frames skips two innermost frames (offset 0 = env_names_frame,
-    // offset 1 = current dict's own letrec frame) and searches from offset 2 outward.
+    // resolve_name_in_parent_frames uses .skip(2) semantics:
+    // after iter().rev(), unconditionally skip offset 0 (env_names_frame) and offset 1
+    // (current_dict), then search offset 2+ for `name`. Returns (offset, slot) of the
+    // first match in an ancestor frame, or None.
+    //
     // frames[0] = outermost, frames[n-1] = innermost.
     //
-    // The minimal real-world layout is 3 frames:
-    //   frames[0] = ancestor_dict (what we search)
-    //   frames[1] = current_dict  (skipped — would cause self-reference)
-    //   frames[2] = env_names     (always skipped — type names, not dispatchers)
+    // Real-world layout (after iter().rev()):
+    //   offset 0 = env_names (innermost): contains ALL prelude method names INCLUDING `name`.
+    //   offset 1 = current_dict: has `name` (the dispatcher being built).
+    //   offset 2+ = ancestor dicts: has `name` (the parent dispatcher to chain to).
+    //
+    // Why found_first fails: env_names contains `name` → found_first treats it as the "first
+    // occurrence" → skips it → returns current_dict's binding at offset 1 (self-referential
+    // capture). .skip(2) is correct: bypasses both env_names and current_dict unconditionally.
+    //
+    // Each test adds `name` ("x") to the innermost frame to model the real layout.
 
     #[test]
     fn test_resolve_name_in_parent_frames_single_frame_returns_none() {
-        // Only one frame — .skip(2) on a 1-element reversed iterator gives empty → None.
+        // Single frame (= env_names at offset 0 after rev). .skip(2) skips it entirely → None.
         let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         frame.insert("x".to_string(), 7);
         let frames = vec![frame];
@@ -3292,131 +3318,146 @@ mod tests {
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result, None,
-            "single frame: skip(2) exhausts iterator, must return None"
+            "single frame at offset 0: .skip(2) skips it entirely → None"
         );
     }
 
     #[test]
     fn test_resolve_name_in_parent_frames_two_frames_always_none() {
-        // Two frames [outer, env_names]: both are skipped (offset 0 = env_names, offset 1 = outer).
-        // This is the case where only one dict exists — no ancestor to chain to.
+        // Two frames: env_names (offset 0) and current_dict (offset 1). .skip(2) skips both.
+        // No ancestor frame exists → None. Models the case where only one dict exists.
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         current_dict.insert("x".to_string(), 5);
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         env_names.insert("builtin-raise".to_string(), 0);
-        // reversed: [env_names(0), current_dict(1)]; skip(2) = empty → None
+        // env_names contains "x" to model real layout (all prelude method names in env_names).
+        env_names.insert("x".to_string(), 99);
+        // reversed: [env_names(offset 0, skip), current_dict(offset 1, skip)]; no offset 2 → None
         let frames = vec![current_dict, env_names];
 
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result, None,
-            "two frames (current_dict + env_names): both skipped, must return None"
+            "two frames: .skip(2) skips env_names and current_dict, no ancestor → None"
         );
     }
 
     #[test]
     fn test_resolve_name_in_parent_frames_name_in_env_names_returns_none() {
-        // Name only in env_names_frame (offset 0) — must be skipped.
+        // `x` in env_names (offset 0). .skip(2) skips offset 0 and offset 1 entirely → None.
+        // This is the key case: found_first would treat env_names' `x` as the "first occurrence",
+        // skip it, then return current_dict's binding at offset 1 (self-referential). .skip(2) avoids this.
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         current_dict.insert("other".to_string(), 0);
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         env_names.insert("x".to_string(), 5);
-        // frames[0] = current_dict, frames[1] = env_names (innermost)
-        // reversed: [env_names(0), current_dict(1)]; skip(2) = empty → None
+        // reversed: [env_names(offset 0, skip), current_dict(offset 1, skip)]; no offset 2 → None
         let frames = vec![current_dict, env_names];
 
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result, None,
-            "name only in env_names_frame (offset 0) must be skipped"
+            "x in env_names (offset 0): .skip(2) bypasses it entirely, no ancestor → None"
         );
     }
 
     #[test]
     fn test_resolve_name_in_parent_frames_name_in_ancestor_returns_offset_2() {
-        // Three frames: [ancestor_dict(x=3), current_dict, env_names].
-        // This is the minimal setup where parent dispatch finds a result.
-        // reversed: [env_names(0), current_dict(1), ancestor_dict(2)]
-        // skip(2) starts at ancestor_dict (offset 2) → Some((2, 3)).
+        // Three frames: [ancestor(x=3), current_dict(x=20), env_names(x=99, builtin-raise=1)].
+        // reversed offsets: env_names(0, skip), current_dict(1, skip), ancestor(2, has x=3→return).
+        // This is the canonical real-world scenario: .skip(2) bypasses env_names and current_dict,
+        // returns ancestor's dispatcher at offset 2.
         let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         ancestor.insert("x".to_string(), 3);
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        current_dict.insert("other".to_string(), 0);
+        current_dict.insert("x".to_string(), 20); // at offset 1 — skipped by .skip(2)
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         env_names.insert("builtin-raise".to_string(), 1);
+        // env_names contains "x" to model real layout (all prelude method names in env_names).
+        // .skip(2) skips env_names at offset 0 unconditionally — "x" here is never examined.
+        env_names.insert("x".to_string(), 99);
         let frames = vec![ancestor, current_dict, env_names];
 
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result,
             Some((2, 3)),
-            "name in ancestor_dict (offset 2) = slot 3"
+            ".skip(2) skips env_names and current_dict, returns ancestor x=3 at offset 2"
         );
     }
 
     #[test]
     fn test_resolve_name_in_parent_frames_name_in_outermost_of_three() {
-        // Three frames: name is in the outermost (offset 2 after skip(2)).
-        // reversed: [inner(0), middle(1), outermost(2)]; skip(2) gives outermost → Some((2, 9)).
+        // Three frames: [outermost(x=9), middle(x=1), inner(z=2, x=99)].
+        // reversed offsets: inner(0, skip), middle(1, skip), outermost(2, has x=9→return).
+        // inner models env_names and contains "x" to match the real layout.
+        // .skip(2) skips inner and middle, returns outermost's x=9 at offset 2.
         let mut outermost: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         outermost.insert("x".to_string(), 9);
         let mut middle: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        middle.insert("y".to_string(), 1);
+        middle.insert("x".to_string(), 1); // at offset 1 — skipped by .skip(2)
         let mut inner: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         inner.insert("z".to_string(), 2);
-        // frames[0]=outermost, frames[1]=middle (current_dict), frames[2]=inner (env_names)
+        // inner (env_names analog) contains "x" to model real layout.
+        inner.insert("x".to_string(), 99);
+        // reversed: [inner(offset 0, skip), middle(offset 1, skip), outermost(offset 2, x=9→return)]
         let frames = vec![outermost, middle, inner];
 
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result,
             Some((2, 9)),
-            "name in outermost of 3 frames = offset 2, slot 9"
+            ".skip(2) skips inner and middle, returns outermost x=9 at offset 2"
         );
     }
 
     #[test]
     fn test_resolve_name_in_parent_frames_current_dict_name_is_skipped() {
-        // Three frames: name `x` exists in both current_dict AND ancestor_dict.
-        // Must find it in ancestor_dict (offset 2), not current_dict (offset 1).
-        // This verifies that self-referential capture is impossible.
+        // Three frames: [ancestor(x=10), current_dict(x=20), env_names(builtin-raise=0, x=99)].
+        // reversed offsets: env_names(0, skip), current_dict(1, skip), ancestor(2, x=10→return).
+        // .skip(2) skips both env_names and current_dict — current_dict slot 20 is never returned.
+        // This verifies that self-referential capture is impossible even when env_names has "x".
         let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         ancestor.insert("x".to_string(), 10); // slot 10 in ancestor
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        current_dict.insert("x".to_string(), 20); // slot 20 in current dict (must be skipped)
+        current_dict.insert("x".to_string(), 20); // slot 20 — at offset 1, skipped by .skip(2)
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         env_names.insert("builtin-raise".to_string(), 0);
-        // reversed: [env_names(0), current_dict(1), ancestor(2)]; skip(2) gives ancestor
+        // env_names contains "x" to model real layout (all prelude method names in env_names).
+        env_names.insert("x".to_string(), 99);
+        // reversed: [env_names(offset 0, skip), current_dict(offset 1, skip), ancestor(offset 2, x=10→return)]
         let frames = vec![ancestor, current_dict, env_names];
 
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result,
             Some((2, 10)),
-            "must find ancestor slot 10, not current-dict slot 20 (self-reference prevention)"
+            ".skip(2) skips env_names and current_dict, returns ancestor slot 10 (self-reference prevented)"
         );
     }
 
     #[test]
     fn test_resolve_name_in_parent_frames_name_only_in_current_dict_returns_none() {
-        // Three frames: name `x` exists ONLY in current_dict (offset 1, skipped).
-        // Ancestor dict does NOT contain `x`. Must return None — no self-referential capture.
-        // This is the direct test case that validates the .skip(2) self-reference prevention.
+        // Three frames: [ancestor(other=5), current_dict(x=42), env_names(builtin-raise=0, x=99)].
+        // reversed offsets: env_names(0, skip), current_dict(1, skip), ancestor(2, no x) → None.
+        // .skip(2) skips both env_names and current_dict. ancestor has no "x" → None.
+        // Verifies that current_dict's "x" at offset 1 is never returned (prevents self-reference).
         let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        ancestor.insert("other".to_string(), 5); // ancestor has something else
+        ancestor.insert("other".to_string(), 5); // ancestor has something else, not "x"
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        current_dict.insert("x".to_string(), 42); // x only in current dict (skipped)
+        current_dict.insert("x".to_string(), 42); // at offset 1 — skipped by .skip(2)
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         env_names.insert("builtin-raise".to_string(), 0);
-        // reversed: [env_names(0), current_dict(1), ancestor(2)]; skip(2) gives ancestor
-        // ancestor has no "x" → None
+        // env_names contains "x" to model real layout (all prelude method names in env_names).
+        env_names.insert("x".to_string(), 99);
+        // reversed: [env_names(offset 0, skip), current_dict(offset 1, skip), ancestor(offset 2, no x)] → None
         let frames = vec![ancestor, current_dict, env_names];
 
         let result = resolve_name_in_parent_frames(&frames, "x");
         assert_eq!(
             result,
             None,
-            "name only in current_dict (offset 1, skipped) must return None — prevents self-reference"
+            ".skip(2) skips env_names and current_dict; ancestor has no x → None (no self-reference)"
         );
     }
 }

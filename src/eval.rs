@@ -632,6 +632,28 @@ pub struct EvalContext {
     /// Shared across all child contexts via `Arc<Mutex<...>>` — same sharing model as
     /// `repr_registry`.
     pub is_predicates: Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
+
+    /// Registry mapping type names to their stable Arc-level identity value.
+    ///
+    /// Populated by `CoreExpr::TypeDecl` evaluation (T-2111): when a named `[type Name ...]`
+    /// declaration is first forced, the evaluator creates a fresh `Arc<Value>` identity and
+    /// inserts it here under the type name (e.g., `"Color"`).
+    ///
+    /// `CoreExpr::UnitVariant` and `CoreExpr::Variant` arms look up this registry to stamp
+    /// the correct `type_val` on every `Value::Variant` produced by the type's constructors.
+    /// The constructor dict's own `type_val` is set to the same Arc by the TypeDecl arm.
+    ///
+    /// `match_pattern` uses `Arc::ptr_eq` on `type_val` fields: if the scrutinee's
+    /// `type_val` and the pinned dict's `type_val` point to the same allocation, the
+    /// scrutinee belongs to that type. Plain dicts (no TypeDecl) carry `unknown_type_val()`
+    /// and do not match.
+    ///
+    /// NOT a global OnceLock: unlike `repr_registry` (populated from `builtin_core.llt` —
+    /// global immutable library), type identities are program-specific. Different programs
+    /// may define different types with the same name; sharing identities across contexts
+    /// would create false matches. Each evaluation context holds its own registry, shared
+    /// only with its child contexts (via `Arc::clone`).
+    pub type_identity_registry: Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
 }
 
 impl EvalContext {
@@ -720,6 +742,7 @@ impl EvalContext {
             }),
             repr_registry,
             is_predicates,
+            type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -763,6 +786,7 @@ impl EvalContext {
             }),
             repr_registry,
             is_predicates,
+            type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -803,6 +827,7 @@ impl EvalContext {
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
+            type_identity_registry: Arc::clone(&self.type_identity_registry),
         });
         (child_ctx, child_token)
     }
@@ -847,6 +872,7 @@ impl EvalContext {
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
+            type_identity_registry: Arc::clone(&self.type_identity_registry),
         })
     }
 
@@ -894,6 +920,7 @@ impl EvalContext {
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
+            type_identity_registry: Arc::clone(&self.type_identity_registry),
         })
     }
 
@@ -936,6 +963,7 @@ impl EvalContext {
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
+            type_identity_registry: Arc::clone(&self.type_identity_registry),
         })
     }
 
@@ -992,6 +1020,7 @@ impl EvalContext {
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
+            type_identity_registry: Arc::clone(&self.type_identity_registry),
         })
     }
 
@@ -2242,40 +2271,52 @@ pub(crate) fn match_pattern<'a>(
                             }
                         }
 
-                        // User-defined nominal type matching for MethodDispatcher arms.
+                        // User-defined nominal type matching via Arc-level type identity (T-2111).
                         //
                         // When the pinned value is a type-constructor Dict (produced by a
-                        // `[type Point ...]` declaration), the dict carries a hidden
-                        // TYCON_DICT_SENTINEL entry whose value is the type name string
-                        // (e.g. "Color"). The match check reads THAT stored name and
-                        // compares it against the scrutinee Variant's tycon.
+                        // `[type Name ...]` declaration), its `type_val` field carries a
+                        // stable `Arc<Value>` identity created by the `CoreExpr::TypeDecl`
+                        // evaluator — one unique allocation per type per evaluation context.
                         //
-                        // Comparing against the STORED name (not the VarRef binding name)
-                        // correctly handles:
+                        // Every `Value::Variant` produced by that type's constructors also
+                        // carries the same `Arc` in its `type_val` field (set by the
+                        // `CoreExpr::UnitVariant` and `CoreExpr::Variant` arms when they
+                        // look up `ctx.type_identity_registry[tycon]`).
+                        //
+                        // `Arc::ptr_eq` on the two `type_val` fields is therefore a correct,
+                        // zero-string-comparison check for type membership. This correctly
+                        // handles:
                         //
                         //   - Shadowing: `[Color: [r:255 g:0 b:0]  [match v  Color: "wrong"]]`
-                        //     The plain dict has no sentinel → falls through to primitive_eq.
+                        //     The plain dict's `type_val` is `unknown_type_val()` (bootstrap
+                        //     singleton), and `unknown_type_val()` is excluded from matching
+                        //     (guard below) → falls through to primitive_eq (no match).
                         //
-                        //   - Aliases: `mycolor = Color` — the dict has sentinel "Color" so
-                        //     matching against `mycolor` still finds tycon "Color" correctly.
+                        //   - Aliases: `mycolor = Color` binds the same dict value (same Arc).
+                        //     dict.type_val is the same Arc as variant.type_val → ptr_eq succeeds.
                         //
-                        // Only dicts with the sentinel are considered type-constructor dicts.
-                        // All other dicts fall through to the primitive_eq check below.
-                        if let Value::Dict { entries, .. } = &pinned_val {
-                            let sentinel_key = crate::value::HashableValue::Str(Arc::from(
-                                crate::type_tags::TYCON_DICT_SENTINEL,
-                            ));
-                            if let Some(sentinel_thunk) = entries.get(&sentinel_key) {
-                                if let Some(Ok(Value::String { ref source, start, end, .. })) =
-                                    sentinel_thunk.peek_result()
+                        // Guard: we must NOT match when dict_type_val is the unknown_type_val()
+                        // singleton, because `unknown_type_val()` is used both by plain dicts
+                        // (non-type-constructor) AND by variants created outside a TypeDecl
+                        // context (e.g., Variant { ctor: "true" } from builtins). If both had
+                        // unknown_type_val(), ptr_eq would be true but the match would be wrong.
+                        // The guard ensures ptr_eq is only checked for REAL type identities
+                        // (unique Arcs created by CoreExpr::TypeDecl, not the shared singleton).
+                        if let Value::Dict {
+                            type_val: dict_type_val,
+                            ..
+                        } = &pinned_val
+                        {
+                            // Only proceed if the dict carries a real type identity (not the
+                            // bootstrap unknown sentinel — which all plain dicts also carry).
+                            if !Arc::ptr_eq(dict_type_val, crate::value::unknown_type_val_ref()) {
+                                if let Value::Variant {
+                                    type_val: variant_type_val,
+                                    ..
+                                } = &value
                                 {
-                                    let stored_type_name = &source[*start..*end];
-                                    if let Value::Variant { ctor, .. } = &value {
-                                        let tycon =
-                                            crate::value::tycon_name_from_ctor(ctor.as_ref());
-                                        if tycon == stored_type_name {
-                                            return Ok(true);
-                                        }
+                                    if Arc::ptr_eq(variant_type_val, dict_type_val) {
+                                        return Ok(true);
                                     }
                                 }
                             }
@@ -6253,32 +6294,24 @@ mod tests {
         );
     }
 
-    // B-712: a plain data dict in a match arm must NOT trigger the tycon-dispatch branch.
+    // -------------------------------------------------------------------------
+    // B-712: Arc::ptr_eq type dispatch — variant match semantics
     //
-    // The tycon-dispatch check fires when pinned_val is a Dict containing the
-    // TYCON_DICT_SENTINEL entry (injected by lower_type_alias_to_constructor_dict).
-    // The sentinel stores the type name "Color"; the evaluator reads THAT value
-    // and compares it against the scrutinee Variant's tycon.
-    //
-    // A plain data dict (`shape: [r: 255 g: 0 b: 0]`) has no sentinel → falls through
-    // to primitive_eq (no match). A type-constructor dict (`Color: [type ...]`) has
-    // sentinel "Color" → tycon "Color" matches → arm fires.
-    //
-    // Two invariants verified:
-    //   1. A plain dict arm does NOT match a Variant (no sentinel).
-    //   2. A type-constructor-dict arm (from `[type ...]`) DOES match (sentinel present).
+    // When a VarRef pin pattern resolves to a type-constructor Dict (from a [type ...]
+    // declaration), match_pattern uses Arc::ptr_eq on the Dict's type_val and the
+    // Variant's type_val. Both carry the same Arc created by CoreExpr::TypeDecl, so
+    // ptr_eq succeeds. Plain dicts (no TypeDecl) carry unknown_type_val() — a different
+    // Arc — so ptr_eq fails and they do not falsely match variants.
+    // -------------------------------------------------------------------------
+
     #[tokio::test]
     async fn test_b712_plain_dict_arm_does_not_match_variant() {
-        // `shape` is a plain data dict (no sentinel) — does not match Color.Red.
-        // `Color` is a type-constructor dict (sentinel "Color") — matches Color.Red.
-        // Scrutinee is `Color.Red` (a Variant with tycon "Color").
-        // The `shape` arm must NOT match.  The `Color` arm MUST match.
         let thunk = eval_str(
             r#"[
-              Color: [type Red Green Blue]
-              shape: [r: 255  g: 0  b: 0]
-              r1: [match Color.Red  shape: "false-positive"  Color: "is-color"  ...: "other"]
-            ]"#,
+          Color: [type Red Green Blue]
+          shape: [r: 255  g: 0  b: 0]
+          r1: [match Color.Red  shape: "false-positive"  Color: "is-color"  ...: "other"]
+        ]"#,
             &test_ctx(),
         )
         .await
@@ -6307,19 +6340,15 @@ mod tests {
         );
     }
 
-    // B-712 companion: a plain data dict does NOT false-match — the sentinel is absent,
-    // so the dispatch block is skipped entirely regardless of any name coincidence.
     #[tokio::test]
     async fn test_b712_plain_dict_does_not_false_match_tycon() {
-        // `coords` is a plain dict (no sentinel) → no tycon dispatch → wildcard fires.
-        // `Color` is a type-constructor dict (sentinel "Color") → tycon dispatch fires.
         let thunk = eval_str(
             r#"[
-              coords: [x: 1  y: 2]
-              Color: [type Red Green Blue]
-              r1: [match Color.Red  coords: "plain-matched"  ...: "wildcard"]
-              r2: [match Color.Red  Color: "type-matched"   ...: "wildcard"]
-            ]"#,
+          coords: [x: 1  y: 2]
+          Color: [type Red Green Blue]
+          r1: [match Color.Red  coords: "plain-matched"  ...: "wildcard"]
+          r2: [match Color.Red  Color: "type-matched"   ...: "wildcard"]
+        ]"#,
             &test_ctx(),
         )
         .await
@@ -6330,163 +6359,190 @@ mod tests {
         let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
-        // r1: plain dict arm must NOT match; wildcard fires.
-        let r1 = d
-            .get(&HashableValue::Str(Arc::from("r1")))
-            .expect("key 'r1' must exist");
+        let r1 = d.get(&HashableValue::Str(Arc::from("r1"))).expect("r1");
         let r1_val = super::materialize(r1, None, &test_ctx())
             .await
-            .expect("r1 must materialize");
+            .expect("r1 materialize");
         assert_eq!(
             r1_val,
             Value::String {
                 source: Arc::from("wildcard"),
                 start: 0,
                 end: 8,
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
-            "plain dict 'coords' must NOT match Variant Color.Red; got: {r1_val:?}"
+            "plain-dict 'coords' must NOT match Color.Red (unknown_type_val); got: {r1_val:?}"
         );
-        // r2: type-constructor-dict arm MUST match.
-        let r2 = d
-            .get(&HashableValue::Str(Arc::from("r2")))
-            .expect("key 'r2' must exist");
+        let r2 = d.get(&HashableValue::Str(Arc::from("r2"))).expect("r2");
         let r2_val = super::materialize(r2, None, &test_ctx())
             .await
-            .expect("r2 must materialize");
+            .expect("r2 materialize");
         assert_eq!(
             r2_val,
             Value::String {
                 source: Arc::from("type-matched"),
                 start: 0,
                 end: 12,
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
             "type-ctor-dict 'Color' must match Variant Color.Red; got: {r2_val:?}"
         );
     }
 
-    // B-712 sentinel: canonical case — type-ctor dict has TYCON_DICT_SENTINEL "Color",
-    // scrutinee is Color.Red, match fires.
     #[tokio::test]
     async fn test_b712_sentinel_canonical_tycon_match() {
-        // Verify: lower_type_alias_to_constructor_dict injects sentinel "Color" into the
-        // type-constructor dict; eval.rs VarRef arm reads it and matches Color.Red.
         let thunk = eval_str(
             r#"[
-              Color: [type Red Green Blue]
-              r: [match Color.Red  Color: "matched"  ...: "other"]
-            ]"#,
+          Color: [type Red Green Blue]
+          r: [match Color.Red  Color: "matched"  ...: "other"]
+        ]"#,
             &test_ctx(),
         )
         .await
         .expect("eval_str must succeed");
         let val = materialize(&thunk, None, &test_ctx())
             .await
-            .expect("materialize must succeed");
+            .expect("materialize");
         let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
-        let r = d
-            .get(&HashableValue::Str(Arc::from("r")))
-            .expect("key 'r' must exist");
+        let r = d.get(&HashableValue::Str(Arc::from("r"))).expect("key 'r'");
         let r_val = super::materialize(r, None, &test_ctx())
             .await
-            .expect("r must materialize");
+            .expect("r materialize");
         assert_eq!(
             r_val,
             Value::String {
                 source: Arc::from("matched"),
                 start: 0,
                 end: 7,
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
             "Color arm must match Color.Red via sentinel; got: {r_val:?}"
         );
     }
 
-    // B-712 sentinel: shadowing case — type name `Color` shadowed by a plain dict in inner
-    // scope. The plain dict has no sentinel so it must NOT match Color.Red.
     #[tokio::test]
     async fn test_b712_sentinel_shadowed_tycon_no_false_match() {
-        // Outer `Color: [type Red Green Blue]` defines the type-constructor dict.
-        // Inner `Color: [r: 255 g: 0 b: 0]` shadows `Color` with a plain dict (no sentinel).
-        // Matching `v` (= Color.Red) against the inner `Color` arm must NOT fire — the plain
-        // dict carries no TYCON_DICT_SENTINEL so the tycon-dispatch block is skipped.
         let thunk = eval_str(
             r#"[
-              Color: [type Red Green Blue]
-              v: Color.Red
-              Color: [r: 255  g: 0  b: 0]
-              r: [match v  Color: "wrong"  ...: "correct"]
-            ]"#,
+          Color: [type Red Green Blue]
+          v: Color.Red
+          test: [fn [let x]
+            [Color: [r: 255  g: 0  b: 0]]
+            [match x  Color: "wrong"  ...: "correct"]]
+          r: [test v]
+        ]"#,
             &test_ctx(),
         )
         .await
         .expect("eval_str must succeed");
         let val = materialize(&thunk, None, &test_ctx())
             .await
-            .expect("materialize must succeed");
+            .expect("materialize");
         let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
-        let r = d
-            .get(&HashableValue::Str(Arc::from("r")))
-            .expect("key 'r' must exist");
+        let r = d.get(&HashableValue::Str(Arc::from("r"))).expect("key 'r'");
         let r_val = super::materialize(r, None, &test_ctx())
             .await
-            .expect("r must materialize");
+            .expect("r materialize");
         assert_eq!(
             r_val,
             Value::String {
                 source: Arc::from("correct"),
                 start: 0,
                 end: 7,
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
             "shadowed plain dict must NOT match Color.Red; got: {r_val:?}"
         );
     }
 
-    // B-712 sentinel: alias case — `mycolor = Color` binds the same type-constructor dict
-    // (with sentinel "Color") to a different name. Matching against `mycolor` must still
-    // fire because the STORED sentinel value "Color" matches the Variant's tycon, not the
-    // VarRef binding name "mycolor".
     #[tokio::test]
     async fn test_b712_sentinel_alias_tycon_match() {
-        // `mycolor` is an alias for `Color` (same type-ctor dict, sentinel "Color").
-        // Matching Color.Red against `mycolor` reads the sentinel "Color" and matches.
         let thunk = eval_str(
             r#"[
-              Color: [type Red Green Blue]
-              mycolor: Color
-              r: [match Color.Red  mycolor: "alias-matched"  ...: "other"]
-            ]"#,
+          Color: [type Red Green Blue]
+          mycolor: Color
+          r: [match Color.Red  mycolor: "alias-matched"  ...: "other"]
+        ]"#,
             &test_ctx(),
         )
         .await
         .expect("eval_str must succeed");
         let val = materialize(&thunk, None, &test_ctx())
             .await
-            .expect("materialize must succeed");
+            .expect("materialize");
         let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
-        let r = d
-            .get(&HashableValue::Str(Arc::from("r")))
-            .expect("key 'r' must exist");
+        let r = d.get(&HashableValue::Str(Arc::from("r"))).expect("key 'r'");
         let r_val = super::materialize(r, None, &test_ctx())
             .await
-            .expect("r must materialize");
+            .expect("r materialize");
         assert_eq!(
             r_val,
             Value::String {
                 source: Arc::from("alias-matched"),
                 start: 0,
                 end: 13,
-                type_val: crate::value::unknown_type_val(),
+                type_val: crate::value::unknown_type_val()
             },
-            "alias dict (sentinel 'Color') must match Color.Red; got: {r_val:?}"
+            "alias dict must match Color.Red via ptr_eq; got: {r_val:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_b712_same_name_different_scopes_independent_identities() {
+        // Outer Color and inner Color are independent types despite sharing the name.
+        // Outer Color.Red must match the outer Color arm; inner Color.Red must NOT
+        // match the outer Color arm (different Arc identity).
+        let thunk = eval_str(
+            r#"[
+          Color: [type Red Green Blue]
+          inner-scope: [Color: [type Red]  val: Color.Red]
+          outer-red: Color.Red
+          inner-red: inner-scope.val
+          r-outer: [match outer-red  Color: "outer-match"  ...: "no-match"]
+          r-inner: [match inner-red  Color: "outer-match"  ...: "no-match"]
+        ]"#,
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize");
+        let Value::Dict { entries: ref d, .. } = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let ro = d
+            .get(&HashableValue::Str(Arc::from("r-outer")))
+            .expect("r-outer");
+        let ro_val = super::materialize(ro, None, &test_ctx())
+            .await
+            .expect("r-outer materialize");
+        assert_eq!(
+            ro_val,
+            Value::String {
+                source: Arc::from("outer-match"),
+                start: 0,
+                end: 11,
+                type_val: crate::value::unknown_type_val()
+            },
+            "outer Color.Red must match outer Color arm; got: {ro_val:?}"
+        );
+        let ri = d
+            .get(&HashableValue::Str(Arc::from("r-inner")))
+            .expect("r-inner");
+        let ri_val = super::materialize(ri, None, &test_ctx())
+            .await
+            .expect("r-inner materialize");
+        assert_eq!(
+            ri_val,
+            Value::String { source: Arc::from("no-match"), start: 0, end: 8, type_val: crate::value::unknown_type_val() },
+            "inner Color.Red must NOT match outer Color arm (independent Arc identity); got: {ri_val:?}"
         );
     }
 

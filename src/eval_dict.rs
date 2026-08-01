@@ -287,8 +287,9 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 ///   — no CoreExpr→Expr round-trip for dict values.
 ///
 /// **Constructor dict**: Constructors (unit and named-field) are produced by the lower.rs
-/// pass as entries in the runtime constructor dict. No runtime pre-scan is needed —
-/// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
+/// pass as entries in the runtime constructor dict. No pre-scan of individual dict entries
+/// is needed — `CoreExpr::TypeDecl` (when present) wraps the entire constructor dict and
+/// is handled by `eval_core_expr` before the dict is returned, not inside `eval_dict_core`.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
     outer_frame: &Arc<EvalFrame>,
