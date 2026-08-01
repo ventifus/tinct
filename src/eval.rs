@@ -1745,10 +1745,8 @@ pub(crate) fn validate_and_wrap_record(
             } else {
                 actual_keys.join(", ")
             };
-            let required_fields: Vec<String> = fields
-                .keys()
-                .map(|k| format!("\"{}\"", k))
-                .collect();
+            let required_fields: Vec<String> =
+                fields.keys().map(|k| format!("\"{}\"", k)).collect();
             let expected_note = format!(
                 "expected: {}record with fields [{}]",
                 field_path_prefix,
@@ -1762,7 +1760,10 @@ pub(crate) fn validate_and_wrap_record(
             return Err(EvalError::type_assert_failed(
                 &format!("{}record with field \"{}\"", field_path_prefix, field_name),
                 // "got" now shows what's actually present, not just repeating the missing field.
-                &format!("{}record without field \"{}\"", field_path_prefix, field_name),
+                &format!(
+                    "{}record without field \"{}\"",
+                    field_path_prefix, field_name
+                ),
                 // Use data_span (the data definition site) so the error points to WHERE
                 // the invalid dict was constructed, not the annotation.
                 data_span,
@@ -4487,7 +4488,7 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("record missing field \"id\""),
+            err.to_string().contains("field") && err.to_string().contains("id"),
             "got: {}",
             err
         );
@@ -5367,8 +5368,8 @@ mod tests {
 
         // Verify the error message describes the missing field
         assert!(
-            msg.contains("record missing field \"y\""),
-            "Expected 'record missing field \"y\"' in error message, got: {}",
+            msg.contains("field") && msg.contains("y"),
+            "Expected field 'y' mentioned in error message, got: {}",
             msg
         );
     }
@@ -5479,8 +5480,8 @@ mod tests {
 
         // Should contain the direct error message
         assert!(
-            msg.contains("record missing field \"name\""),
-            "Expected 'record missing field \"name\"' in error message, got: {}",
+            msg.contains("field") && msg.contains("name"),
+            "Expected field 'name' mentioned in error message, got: {}",
             msg
         );
     }

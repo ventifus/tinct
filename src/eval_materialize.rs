@@ -1745,7 +1745,11 @@ pub(crate) async fn apply_cont(
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
-                            .with_note(format!("actual:   {}{}", field_path_prefix, value.type_name()))
+                            .with_note(format!(
+                                "actual:   {}{}",
+                                field_path_prefix,
+                                value.type_name()
+                            ))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -1799,7 +1803,11 @@ pub(crate) async fn apply_cont(
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
-                            .with_note(format!("actual:   {}{}", field_path_prefix, value.type_name()))
+                            .with_note(format!(
+                                "actual:   {}{}",
+                                field_path_prefix,
+                                value.type_name()
+                            ))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).

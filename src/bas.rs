@@ -999,7 +999,6 @@ fn is_fn_subtype(
     }
 }
 
-
 /// Check whether a tail value represents a closed row (no additional fields allowed).
 ///
 /// Closed = empty dict `[]` OR `RowTail.Closed` variant. Open rows carry `RowTail.Var`
@@ -2189,14 +2188,18 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         let sup_variadic = payload_bool_field(sup_payload, FIELD_VARIADIC).unwrap_or(false);
         let sup_params_val = payload_typevalue_field(sup_payload, FIELD_PARAMS);
         // Callable (variadic with 0 required params) means "any function" → accept always.
-        let sup_list = sup_params_val.as_ref().map(|ps| collect_indexed_typevalues(ps));
+        let sup_list = sup_params_val
+            .as_ref()
+            .map(|ps| collect_indexed_typevalues(ps));
         let sup_required = sup_list.as_ref().map_or(0, |l| l.len());
         if sup_variadic && sup_required == 0 {
             return true;
         }
         // Covariant return.
-        let sub_ret = payload_typevalue_field(sub_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
-        let sup_ret = payload_typevalue_field(sup_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
+        let sub_ret =
+            payload_typevalue_field(sub_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
+        let sup_ret =
+            payload_typevalue_field(sup_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
         if !is_consistent_subtype(&sub_ret, &sup_ret, ctx) {
             return false;
         }
