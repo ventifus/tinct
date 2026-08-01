@@ -5,10 +5,10 @@
 --- uses: ["async"]
 [
   written: [if [seq? %]
-    [reduce [fn [let h x] [write [str [llt-repr x] "\n"] h]] %stdout %]
-    [write [str [llt-repr %] "\n"] %stdout]]
+    [reduce [fn [let h x] [write [builtin-string-concat [llt-repr x] "\n"] h]] %stdout %]
+    [write [builtin-string-concat [llt-repr %] "\n"] %stdout]]
 
-  write-emits: [fn [let h] [reduce [fn [let h v] [write [str [llt-repr v] "\n"] h]] h [recv-all %emit-channel]]]
+  write-emits: [fn [let h] [reduce [fn [let h v] [write [builtin-string-concat [llt-repr v] "\n"] h]] h [recv-all %emit-channel]]]
 ]
 
 [$written | write-emits | flush]

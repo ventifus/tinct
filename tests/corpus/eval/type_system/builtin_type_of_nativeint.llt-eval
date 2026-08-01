@@ -1,0 +1,28 @@
+# T-2059: builtin-type-of integer returns NativeInt TypeValue after S-1004 wiring.
+#
+# After S-1004 wires type_val for integer literals, builtin-type-of 42 returns the
+# NativeInt TypeValue — a TypeValue.Repr variant with repr: "Value::Int" — not the
+# empty dict bootstrap unknown sentinel.
+#
+# Three checks in one dict:
+#   1. The tag of the returned TypeValue is "TypeValue.Repr" (proves it is a real TypeValue,
+#      not the unknown sentinel empty dict whose tag is "").
+#   2. The tag of the repr: field extracted from the payload is "String" (proves the repr
+#      field is present and populated).
+#   3. Float and String values similarly return TypeValue.Repr variants (proves the mechanism
+#      is uniform across numeric and string primitives, not just integers).
+#
+# builtin-tag-of is used rather than builtin-has-key? because TypeValue.Repr is a Variant
+# (not a Dict), so builtin-has-key? would error on the Variant payload. builtin-tag-of
+# returns the variant tag string or "" for non-variants.
+[
+  int-tv:        [builtin-type-of 42]
+  float-tv:      [builtin-type-of 1.5]
+  string-tv:     [builtin-type-of "hello"]
+
+  int-tag:       [builtin-tag-of int-tv]
+  float-tag:     [builtin-tag-of float-tv]
+  string-tag:    [builtin-tag-of string-tv]
+]
+=== out
+Dict({"int-tv": Variant(TypeValue.Repr, Dict({"repr": String("Value::Int"), "is": Dict({})})), "float-tv": Variant(TypeValue.Repr, Dict({"repr": String("Value::Float"), "is": Dict({})})), "string-tv": Variant(TypeValue.Repr, Dict({"repr": String("Value::String"), "is": Dict({})})), "int-tag": String("TypeValue.Repr"), "float-tag": String("TypeValue.Repr"), "string-tag": String("TypeValue.Repr")})

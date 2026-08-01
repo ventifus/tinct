@@ -1,0 +1,11 @@
+# Test direct unindent call (not via triple-quoted string).
+# doc/02-syntax.md:209-214 describes unindent as independently useful.
+# unindent strips leading whitespace using the last line as the baseline.
+# The canonical form has a leading newline; the last line is the indentation anchor.
+# Algorithm: split on \n; last-line = "  " → indent=2; inner = lines[1..-1]; join.
+# Input: "\n  hello\n  world\n  " → ls=["","  hello","  world","  "]
+#   inner = drop 1 [take 3 ls] = ["  hello","  world"]
+#   strip 2 chars each → join "\n" → "hello\nworld" (no trailing newline)
+[unindent "\n  hello\n  world\n  "]
+=== out
+String("hello\nworld")

@@ -227,7 +227,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Group | Stable alias | Primary name | Rationale |
 |-------|-------------|--------------|-----------|
 | Arithmetic | `builtin-add`, `builtin-int-sub`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). `builtin-int-sub` is the stable alias for integer subtraction. `*` is resolved via `Multipliable` typeclass dispatch to monomorphic primitives — it has no single stable alias. |
-| Comparison | `builtin-lt`, `builtin-eq`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Cross-type Int/Float coercion at host level. All five comparison operators have stable `builtin-*` aliases. |
+| Comparison | `builtin-lt`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Ordering comparison via host numeric coercion. `=` uses `Equatable` typeclass dispatch (no single `builtin-eq` alias — dispatches to `builtin-eq-int` / `builtin-eq-string` per type). |
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | `builtin-dict-get`, `builtin-length`, `builtin-append` | `get`, `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. `get`, `length`, and `append` have stable aliases for shadowability. |
@@ -249,7 +249,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | Function | Derivation | Notes |
 |----------|-----------|-------|
 | `<` | `[fn [a b] [builtin-lt a b]]` | Shadowable; calls stable alias `builtin-lt` |
-| `=` | `[fn [a b] [builtin-eq a b]]` | Shadowable; calls stable alias `builtin-eq` |
+| `=` | `Equatable` typeclass dispatch | Resolved via `Equatable` class instances to `builtin-eq-int` / `builtin-eq-string` per concrete type |
 | `+` | `[fn [a b] [builtin-add a b]]` | Shadowable; calls `builtin-add` |
 | `-` | `Subtractable` typeclass dispatch | Resolved via `Subtractable` class instances to `builtin-int-sub` / `builtin-float-sub` |
 | `*` | `Multipliable` typeclass dispatch | Resolved via `Multipliable` class instances to `builtin-int-mul` / `builtin-float-mul` |
@@ -270,7 +270,7 @@ The prelude wraps every primary-name operator that has a stable alias, making it
 | `mod` | `[fn [a b] [- a [* [quot a b] b]]]` | Algebraic identity |
 | `ceil` | `[fn [x] [- 0 [floor [- 0 x]]]]` | `ceil(x) = -floor(-x)` |
 | `trunc` | `[fn [x] [builtin-if [>= x 0] [floor x] [ceil x]]]` | Conditional floor/ceil |
-| `words` | `[builtin-filter [fn [w] [not [builtin-eq w ""]]] [split " " s]]` | Uses stable `builtin-filter`, `builtin-eq` |
+| `words` | `[builtin-filter [fn [w] [not [builtin-eq-string w ""]]] [split " " s]]` | Uses stable `builtin-filter`, `builtin-eq-string` |
 
 **Functions implemented in tinct (not Rust):**
 
@@ -283,8 +283,6 @@ The following functions are tinct implementations in `stdlib/strings.llt` or `st
 | `ends-with?` | `stdlib/prelude.llt` | `str-slice`, `str-length` (char-based; correct for Unicode) |
 | `upper` | `stdlib/strings.llt` | `str-map-chars` + `str-to-upper-char` |
 | `lower` | `stdlib/strings.llt` | `str-map-chars` + `str-to-lower-char` |
-| `copy` | `stdlib/io.llt` | `open`, `read-all`, `write` |
-| `spki-pin` | `stdlib/net.llt` | pure dict construction, no I/O |
 | `has-cap?` | `stdlib/io.llt` | `has?` (checks method key existence on protocol dict handle) |
 
 Type predicates `num?`, `record?`, and `map?` are LLT stdlib functions defined in `prelude.llt`: `num?` is `[or [int? x] [float? x]]`; `record?` and `map?` are both aliases for `dict?` (the runtime makes no key-type distinction).
@@ -356,9 +354,7 @@ The stdlib follows four organizing principles:
 
 ## Stdlib Function Reference
 
-**Architecture:** ~244 Rust-native builtins (with stable `builtin-*` aliases for shadowability) (see `core_builtins()` in `src/builtins_core.rs` (199), `datetime_builtins()` in `src/builtins_datetime.rs` (30), `net_builtins()` in `src/builtins_net.rs` (15), dispatched via `builtin_module()`) + ~117 LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-dict-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
-
-**Total stdlib API:** ~244 Rust builtins + ~140 prelude LLT functions = ~384 functions available after prelude load.
+**Architecture:** See `src/builtins_*.rs` for Rust builtins and `stdlib/prelude.llt` for prelude functions. The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-dict-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
@@ -1449,7 +1445,7 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `<` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` — shadowable wrapper over `builtin-lt` |
-| `=` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` — shadowable wrapper over `builtin-eq` |
+| `=` | `(Comparable -> Comparable -> Bool)` | `Equatable` typeclass dispatch — routes to `builtin-eq-int` / `builtin-eq-string` per concrete type |
 | `>` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` |
 | `<=` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` |
 | `>=` | `(Comparable -> Comparable -> Bool)` | `fn@Boolean [a b]` |

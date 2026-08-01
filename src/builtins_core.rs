@@ -28,6 +28,7 @@ use crate::builtins_math::{
     builtin_float_gte,
     builtin_float_mul,
     builtin_float_sub,
+    builtin_float_to_int,
     // Monomorphic typed variants.
     builtin_int_add,
     builtin_int_gt,
@@ -94,6 +95,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-int-to-float",
             builtin_int_to_float,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            "builtin-float-to-int",
+            builtin_float_to_int,
             [Strictness::Seq],
             1,
             ["n"]

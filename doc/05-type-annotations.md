@@ -899,15 +899,14 @@ Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rath
 
 **`TypeNode-ctor t`** returns the constructor function for a TypeNode value: `[get TypeNode [last [str-split "." [tag-of t]]]]`. This expression appears inline in the traversal protocol functions.
 
-**The `@Child` field annotation** marks a field in a `[type ...]` declaration as containing TypeNode children. The traversal role is inferred from the declared field type:
+**The `@Child` field annotation** marks a field in a `[type ...]` declaration as containing TypeNode children. Bare `@Child` always produces role `"One"`. To declare role `"MapValues"`, write `@Child@[role: "MapValues"]` explicitly:
 
-| Declared field type | Traversal role | Effect in `map-children` |
-|--------------------|---------------|--------------------------|
-| `TypeNode` | One | Apply `f` to the single value |
-| `[Seq TypeNode]` | Seq | Apply `f` to each element |
-| `[Map K TypeNode]` | MapValues | Apply `f` to each map value, preserve keys |
+| Annotation form | Traversal role | Effect in `map-children` |
+|----------------|---------------|--------------------------|
+| `@Child` | `"One"` | Apply `f` to the single child value |
+| `@Child@[role: "MapValues"]` | `"MapValues"` | Apply `f` to each map value, preserve keys |
 
-Fields without `@Child` are non-children and pass through unchanged. The `@Child` annotation is stored in `TyConDef.field_annotations` at desugar time.
+Fields without `@Child` are non-children and pass through unchanged. The `@Child` annotation is stored in `TyConDef.field_annotations` at desugar time. The role is declared by the type author via annotation — it is not inferred from the declared field type.
 
 **`TypeNode.children` and `TypeNode.map-children`** are derived generically from `@Child` field annotations — no per-constructor implementation is required:
 
@@ -917,9 +916,8 @@ TypeNode.children: [fn [let t]
   [flat-map [child-fields [TypeNode-ctor t]] [fn [let field]
     [let val [get t field]]
     [match [child-role [TypeNode-ctor t] field]
-      One:       [Seq val]
-      Seq:       val
-      MapValues: [values val]]]]]
+      "One":       [Seq val]
+      "MapValues": [values val]]]]]
 
 # map-children: apply f to each @Child field, reconstruct same-shaped variant
 TypeNode.map-children: [fn [let f t]
@@ -927,9 +925,8 @@ TypeNode.map-children: [fn [let f t]
     [object-map [fields [TypeNode-ctor t]] [fn [let field val]
       [if [child-field? [TypeNode-ctor t] field]
         [match [child-role [TypeNode-ctor t] field]
-          One:       [f val]
-          Seq:       [map f val]
-          MapValues: [map-values f val]]
+          "One":       [f val]
+          "MapValues": [map-values f val]]
         val]]]]]
 
 # as-type: normalize user-defined constructors to existing forms

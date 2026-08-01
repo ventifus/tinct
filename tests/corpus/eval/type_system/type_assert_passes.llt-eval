@@ -1,0 +1,18 @@
+# B-655: TypeAssert passes when the value satisfies the annotation.
+#
+# After S-1004 wires TypeAssertCheck::Resolved, type assertions that should succeed
+# continue to pass. This is the clean-path contract: correct code produces the expected
+# result with no errors.
+#
+# Three cases in one test (consolidation per §Corpus Test Consolidation):
+#   1. @Integer on an integer value — primitive nominal type, passes.
+#   2. @Integer on an arithmetic result — proves TypeAssert works on computed values.
+#   3. User-declared type annotation — @Color on a Color constructor passes.
+#
+# All three must produce their expected output with zero type warnings and zero errors.
+[Color: [type Red Green Blue]
+ int-pass:   [@Integer 42]
+ arith-pass: [@Integer [+ 1 2]]
+ color-pass: [@Color Color.Red]]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "int-pass": Int(42), "arith-pass": Int(3), "color-pass": Variant(Color.Red, Null)})

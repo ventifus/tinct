@@ -1,0 +1,21 @@
+# is: predicate appends subject as last argument (subject-last semantics).
+# doc/02-syntax.md:432-435: [is: [pred arg1]] appends subject as last arg.
+# [is: [between 1 100]] becomes [between 1 100 subject] — subject is third arg.
+#
+# Uses inline dict annotation form: @[type: Int  is: [between 1 100]]
+# This correctly routes through the is: predicate runtime check (via ReprDecl).
+#
+# NOTE: The positive cases alone do not prove subject-last semantics — a value
+# like 50 passes both [between 1 100 50] (subject-last) and any reasonable
+# ordering. The is_predicate_out_of_range.llt-eval test proves directionality:
+# [<= _ 100] with subject-last gives [<= 50 100]=true; subject-first [<= 100 50]=false.
+[
+  ok-low:  [@[type: Int  is: [between 1 100]] 1]    # between 1 100 1 => true
+  ok-mid:  [@[type: Int  is: [between 1 100]] 50]   # between 1 100 50 => true
+  ok-high: [@[type: Int  is: [between 1 100]] 100]  # between 1 100 100 => true
+  # Subject-last proof: [<= _ 100] applied to 50 → [<= 50 100] = true.
+  # If subject-first: [<= 100 50] = false — this case would fail.
+  subj-last-proof: [@[type: Int  is: [<= _ 100]] 50]
+]
+=== out
+Dict({"ok-low": Int(1), "ok-mid": Int(50), "ok-high": Int(100), "subj-last-proof": Int(50)})

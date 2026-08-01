@@ -1,0 +1,17 @@
+# B-655: TypeAssert on a primitive nominal type fails at runtime when the value does not match.
+#
+# After S-1004 wires the tycon_env and TypeAssertCheck::Resolved path, the type checker
+# resolves @Integer to TypeValue.Repr("Value::Int"). The lowerer emits TypeAssertCheck::Resolved
+# with that TypeValue. At runtime, value_matches_type("wrong", TypeValue.Repr("Value::Int"))
+# returns false because ground_typevalue_of("wrong") = TypeValue.Repr("Value::String") which
+# is not consistent with TypeValue.Repr("Value::Int").
+#
+# This proves the mechanism is uniform: Integer is NOT a privileged Rust type — it is
+# a TyCon in the tycon_env like any other nominal type, and TypeAssert enforces it at runtime.
+#
+# Before S-1004: resolved_type is TypeValue.Unknown (or empty dict) → value_matches_type
+# returns true for all values → assertion passes silently.
+# After S-1004: resolved_type is TypeValue.Repr("Value::Int") → check fires → error.
+[@Integer "wrong"]
+=== error
+type assertion failed: expected Int, got String

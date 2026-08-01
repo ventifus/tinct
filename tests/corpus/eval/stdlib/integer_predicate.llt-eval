@@ -1,0 +1,13 @@
+# Tests the integer? predicate for several value types.
+# integer? delegates to int? for NativeInt and matches BigInt via pattern.
+# NOTE (B-708): int? currently uses [match x Integer: Boolean.True ...] where Integer
+# resolves to the class dict at runtime — this causes TypeNode dispatch to fail.
+# All results are Boolean.False until B-708 is fixed (int? needs TypeNode dispatch).
+# See tests/corpus/eval/typecheck/bas_negation_narrowing.llt-eval for confirmation.
+[
+  r-nativeint: [integer? 42]
+  r-float:     [integer? 3.14]
+  r-string:    [integer? "hello"]
+]
+=== out
+["r-nativeint": Boolean.False  "r-float": Boolean.False  "r-string": Boolean.False]

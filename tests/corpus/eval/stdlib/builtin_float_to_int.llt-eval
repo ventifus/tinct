@@ -1,0 +1,10 @@
+# Tests builtin-float-to-int directly: truncates toward zero.
+# Positive: 3.7 -> 3. Negative: -2.9 -> -2. Near-zero: 0.99 -> 0. Negative near-zero: -0.1 -> 0.
+[
+  r1: [builtin-float-to-int 3.7]
+  r2: [builtin-float-to-int -2.9]
+  r3: [builtin-float-to-int 0.99]
+  r4: [builtin-float-to-int -0.1]
+]
+=== out
+["r1": 3  "r2": -2  "r3": 0  "r4": 0]

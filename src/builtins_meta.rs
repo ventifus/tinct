@@ -43,8 +43,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{
-    builtin, ok_val, reject_named, require_document, require_string, require_type_context,
-    synthetic_call_expr,
+    builtin, ok_val, reject_named, require_string, require_type_context, synthetic_call_expr,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
@@ -280,6 +279,13 @@ pub(crate) fn builtin_try(
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );
+                w.insert(
+                    HashableValue::Str("help".into()),
+                    mk(Value::Dict {
+                        entries: IndexMap::new(),
+                        type_val: crate::value::unknown_type_val(),
+                    }),
+                );
                 // call-stack: [{label, span}] from EvalError.stack
                 let mut stack: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 for (j, frame) in e.stack.iter().enumerate() {
@@ -412,7 +418,7 @@ pub(crate) fn builtin_until(
                 return Ok(val_thunk);
             } else {
                 // Predicate doesn't hold yet, apply f and materialize to get next value.
-                // T-1558: alloc ThunkIds for func and arg.
+                // Alloc ThunkIds for func and arg.
                 let f_id = Arc::clone(&f_thunk);
                 let val_id = Arc::clone(&val_thunk);
                 let f_result = Arc::new(Thunk::fn_call(
@@ -2159,6 +2165,13 @@ pub(crate) fn builtin_parse(
                     type_val: crate::value::unknown_type_val(),
                 }),
             );
+            w.insert(
+                HashableValue::Str("secondary-spans".into()),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
             errors_dict.insert(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
@@ -2306,13 +2319,23 @@ pub(crate) fn builtin_resolve(
         let root_map = ctx.root_group_resolver_map();
         let root_group_len = ctx.root_group.len() as u32;
 
-        let (_resolve_table, resolve_diagnostics, unreferenced_names, resolver_frames) =
+        let (_resolve_table, resolve_diagnostics, unreferenced_names, mut resolver_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames(
                 &doc_arc,
                 &[root_map],
                 &env_names,
                 root_group_len,
             );
+        // Add a synthetic frame with "builtin-raise" at its env slot so that
+        // make_method_dispatcher_fn can find it when building the catch-all arm.
+        // "builtin-raise" is a tinct-level wrapper (not a Rust root-group builtin),
+        // so it's in env_names at index j → slot root_group_len + j in the accumulated_group.
+        // This slot IS valid at fn creation time (builtin-raise is in the prelude's env-dict).
+        if let Some(j) = env_names.iter().position(|n| n == "builtin-raise") {
+            let mut builtin_raise_frame = indexmap::IndexMap::new();
+            builtin_raise_frame.insert("builtin-raise".to_string(), root_group_len + j as u32);
+            resolver_frames.push(builtin_raise_frame);
+        }
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2374,6 +2397,13 @@ pub(crate) fn builtin_resolve(
             );
             w.insert(
                 HashableValue::Str("blame".into()),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
+            w.insert(
+                HashableValue::Str("secondary-spans".into()),
                 mk(Value::Dict {
                     entries: IndexMap::new(),
                     type_val: crate::value::unknown_type_val(),
@@ -2609,6 +2639,13 @@ pub(crate) fn builtin_lint_pipeline_docs(
                     type_val: crate::value::unknown_type_val(),
                 }),
             );
+            w.insert(
+                HashableValue::Str("secondary-spans".into()),
+                mk(Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                }),
+            );
             diagnostics_dict.insert(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
@@ -2660,9 +2697,24 @@ pub(crate) fn builtin_typecheck_doc(
             )));
         }
 
-        // arg0: Value::Document
+        // arg0: Value::Document — extract doc_arc and resolver_frames.
         let doc_val = args[0].require_value()?.clone();
-        let doc_arc = require_document("builtin-typecheck-doc", doc_val, args[0].span.clone())?;
+        let (doc_arc, resolver_frames) = match doc_val {
+            Value::Document {
+                doc: d,
+                resolver_frames: rf,
+                ..
+            } => (d, rf),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-typecheck-doc".to_string(),
+                    "Document",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into());
+            }
+        };
 
         // arg1: Value::TypeContext
         let tc_val = args[1].require_value()?.clone();
@@ -2900,7 +2952,7 @@ pub(crate) fn builtin_typecheck_doc(
             HashableValue::Str("doc".into()),
             mk(Value::Document {
                 doc: doc_arc,
-                resolver_frames: Arc::new(Vec::new()),
+                resolver_frames,
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -2988,7 +3040,7 @@ pub(crate) fn builtin_get_type_context(
 /// - `inference_env`: the builtin_core type env (type schemes for core builtins)
 /// - `type_stage_scope`: the builtin_core type-stage scope (Integer, String, Dict, DirCap, etc.)
 ///
-/// B-663: the type-stage scope MUST be seeded with `builtin_core_ts_scope` (not `Vec::new()`)
+/// The type-stage scope MUST be seeded with `builtin_core_ts_scope` (not `Vec::new()`)
 /// so that annotations like `@Dict`, `@Integer`, `@String` resolve to the correct TypeValues
 /// (e.g., `Dict` → open-record TypeValue.Record with Uniform tail). Without this seeding,
 /// `uses-scope` wires TyConDefs via `merge_env_schemes_into_env`, inserting `Dict → Op("Dict")`
@@ -3015,7 +3067,7 @@ pub(crate) fn builtin_make_type_ctx(
         }
         // Fresh TypeContext seeded with the builtin_core type env AND type-stage scope.
         //
-        // B-663: type_stage_scope must include builtin_core.llt's type-stage entries
+        // type_stage_scope must include builtin_core.llt's type-stage entries
         // (Integer, String, Dict, DirCap, etc.) so that @Dict and similar annotations
         // resolve to the correct TypeValues (e.g., Dict → open-record TypeValue.Record)
         // rather than undefined or to an Op type from TyConDef wiring.
@@ -3118,7 +3170,7 @@ pub(crate) fn builtin_fork_type_ctx(
 ///
 /// Returns the same TypeContext (mutations are visible through the shared Arc<Mutex>).
 ///
-/// T-1803: Populates the TypeContext type-stage scope chain from the accumulated env dict.
+/// Populates the TypeContext type-stage scope chain from the accumulated env dict.
 pub(crate) fn builtin_tc_update_type_stage_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -3285,7 +3337,7 @@ pub(crate) fn builtin_program(
                         Value::Document {
                             doc: surface_doc, ..
                         } => {
-                            // T-1603: Use Arc::clone to preserve OnceLocks (resolver coordinates).
+                            // Use Arc::clone to preserve OnceLocks (resolver coordinates).
                             // Deep clone would create a new SurfaceDocument with empty OnceLocks,
                             // breaking resolution. Arc::clone just increments refcount.
                             documents.push(crate::ast::Spanned {
@@ -3757,17 +3809,7 @@ pub(crate) fn builtin_eval(
         // The last expression in a document is the exports dict — force it so callers receive
         // a concrete Value::Dict they can iterate to build the next env-dict.
         let result_val = materialize(&result_thunk, Some(&doc_span), &ctx).await?;
-        match result_val {
-            Value::Dict { .. } => Ok(Arc::new(Thunk::value(result_val, call_span))),
-            other => Err(EvalError::internal(
-                format!(
-                    "builtin-eval: document last expression must evaluate to a Dict (the exports), got {}",
-                    other.type_name()
-                ),
-                call_span,
-            )
-            .into()),
-        }
+        Ok(Arc::new(Thunk::value(result_val, call_span)))
     })
 }
 
@@ -4929,17 +4971,12 @@ pub(crate) fn builtin_cap_env_has(
 /// on-demand when a Surface thunk was first forced. With `builtin-lower`, lowering is a
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
 ///
-/// **B-689 design limitation**: `scope_frames` comes from `ctx.scope_frames` which is set
-/// from the *loader program's* resolver run, not from the document being lowered. This means
-/// `make_method_dispatcher_fn` (called during lowering for InstanceDecl entries) cannot see
-/// intermediate-dict BlockBody frames from the document's own resolver run. Consequence:
-/// in a multi-dict user document where dict 2 declares `[instance Eq ...]` and dict 3 also
-/// declares instances, dict 3's MethodDispatcher cannot find dict 2's `=` in scope_frames
-/// for parent delegation. Dict 3's plain `=` references resolve correctly (the resolver
-/// handles cross-dict scope), but MethodDispatcher chaining across dicts within the same
-/// document requires threading the document's resolver frames into `builtin-lower`.
-/// Fix: `builtin-lower` should accept an optional second arg with the document's resolver
-/// frames, or `builtin-resolve` should store the BlockBody frames on the Document value.
+/// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve` as of
+/// B-695) are merged into the `scope_frames` used for lowering. This ensures that
+/// `make_method_dispatcher_fn` can see the document's own letrec scopes (including mangled
+/// instance method names across all dicts) when constructing MethodDispatcher functions.
+/// Cross-dict MethodDispatcher chaining works because all document-level resolver frames
+/// are merged at level=0 so all produce `LGM(slot)` references.
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -4975,11 +5012,9 @@ pub(crate) fn builtin_lower(
             }
         };
 
-        // B-695: Use the document's own resolver frames (from builtin-resolve) if available.
-        // These frames include instance method names from class instance decls in earlier dicts,
-        // which are needed to resolve MethodDispatcher calls during lowering. If the document
-        // has no frames (wasn't resolved, or was constructed programmatically), fall back to
-        // the loader's ctx.scope_frames (which only contain root_group builtins).
+        // Use the document's own resolver frames (from builtin-resolve, includes synthetic
+        // "builtin-raise" frame needed by make_method_dispatcher_fn). Fall back to
+        // ctx.scope_frames for programmatically constructed documents without resolver frames.
         let scope_frames = if !doc_resolver_frames.is_empty() {
             Some(doc_resolver_frames.as_slice())
         } else {

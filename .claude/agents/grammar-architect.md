@@ -19,7 +19,7 @@ You are a parser, grammar, and specification expert for the tinct language (file
 - **Hand-written iterative parser** (`src/parser.rs`): `Vec<StackFrame>`-based iterative descent, `ImmediateAt` lexer token, `ParseOutput` comment map
 - **Lexer** (`src/lexer.rs`): tokenization producing `Spanned<Token>` with Position; handles whitespace-sensitive tokens (ImmediateAt)
 - **AST construction** (`src/ast.rs`, `src/parser.rs`): converting token streams into `Spanned<T>` AST nodes
-- **Whitespace sensitivity**: `last_was_identifier: bool` lexer flag determines ImmediateAt; `@` is whitespace-sensitive (`word@ann` vs `word @ann`). `[` is no longer whitespace-sensitive — bracket access was removed in access-pipeline-phase2.
+- **Whitespace sensitivity**: `last_was_nonwhitespace: bool` lexer flag determines ImmediateAt; `@` is whitespace-sensitive (`word@ann` vs `word @ann`). `[` is no longer whitespace-sensitive — bracket access was removed in access-pipeline-phase2.
 - **Keyword disambiguation**: special form keywords (`call`, `fn`, `type`) recognized by colon-ahead detection before `dict_entries`, rejected if followed by `:` so `call: x` is a dict entry
 - **Denylist character sets**: `var_ident` and `bare_word_char` use denylists (not allowlists) for extensibility
 - **annotation_value non-atomic rule**: breaks compound-atomic inheritance to re-enable whitespace inside `[type: Number default: 30]`
@@ -101,7 +101,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 1. **Parser health**: token handler organization in `src/lexer.rs`, StackFrame handling in `src/parser.rs`, naming consistency, dead code, overly complex branches
 2. **Parser construction**: match patterns in `parser.rs` — missing StackFrame variants, redundant code, error-prone patterns
 3. **AST completeness**: every `Expr` variant has parser construction code, tests, and downstream handling
-4. **Whitespace sensitivity**: `last_was_identifier: bool` lexer flag correct for ImmediateAt detection; `@` is the only remaining whitespace-sensitive token. Bracket access was removed in access-pipeline-phase2 — `[` is no longer whitespace-sensitive; `$a[0]` now parses as two separate expressions.
+4. **Whitespace sensitivity**: `last_was_nonwhitespace: bool` lexer flag correct for ImmediateAt detection; `@` is the only remaining whitespace-sensitive token. Bracket access was removed in access-pipeline-phase2 — `[` is no longer whitespace-sensitive; `$a[0]` now parses as two separate expressions.
 5. **Keyword disambiguation**: no collisions between special form keywords and dict entries
 6. **Denylist correctness**: `var_ident` and `bare_word_char` character sets accurate and future-proof
 7. **Unrecorded decisions**: code making design choices not in doc/*.md
@@ -182,7 +182,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - **rust-lang/reference** — `mcp__toolbox__gh_repo_clone(repo="rust-lang/reference", directory=".training/rust-lang-reference")` — skip if `.training/rust-lang-reference` already exists. Key files: `src/attributes.md` (attribute syntax), `src/macros.md` (declarative macros), `src/tokens.md` (token types).
 
 ### Local Documents
-- `src/lexer.rs` — Tokenizer: `Token` enum, `Spanned<Token>`, `had_whitespace_before`, `last_was_identifier` flag, ImmediateAt generation (bracket access removed in access-pipeline-phase2)
+- `src/lexer.rs` — Tokenizer: `Token` enum, `Spanned<Token>`, `had_whitespace_before`, `last_was_nonwhitespace` flag, ImmediateAt generation (bracket access removed in access-pipeline-phase2)
 - `src/parser.rs` — Hand-written iterative parser: `StackFrame`, `ParseOutput`, token dispatch (study the match patterns)
 - `src/ast.rs` — AST node types (study the Spanned<T> wrapper and Expr variants)
 - `doc/02-syntax.md`, `doc/15-ast.md` — Syntax and AST specification (study grammar rules, static constraints, desugaring rules)

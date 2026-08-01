@@ -78,11 +78,12 @@ enum SurfaceExpression {
 ///
 /// For ordinary calls: `[f field: value]` produces `SurfaceNamedArg { name: "field", value: ..., annotation: None }`.
 ///
-/// For constructor record-field declarations in `[type ...]` bodies: `field@Child: Type` produces
-/// `SurfaceNamedArg { name: "field", value: <Type node>, annotation: Some(Simple("Child")) }`.
+/// For constructor record-field declarations in `[type ...]` bodies:
+/// - `field@Child: Type` produces `annotation: Some(Simple("Child"))` — default role "One"
+/// - `field@Child@[role: "MapValues"]: Type` produces `annotation: Some(Annotated(Simple("Child"), PropertyDict([role: "MapValues"])))` — explicit "MapValues" role
 /// The `annotation` field carries any `@[...]` or `@Word` annotation written between the field name
-/// and the `:`. This enables the desugar pass (T-1052/T-1053) to derive `@Child` traversal roles
-/// from field declarations without a separate AST node.
+/// and the `:`. The desugar pass (T-1052/T-1053) reads the explicit `role:` key to determine the
+/// traversal role; no inference from the type expression is performed.
 ///
 /// `annotation` is `None` for all ordinary named arguments outside `[type ...]` bodies.
 struct SurfaceNamedArg {

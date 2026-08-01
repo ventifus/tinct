@@ -1176,7 +1176,7 @@ pub(crate) async fn resolve_annotation(
                                 // kind_env removed in S-1003
                                 v
                             };
-                            debug_assert!(
+                            assert!(
                                 state.get_level(&fresh).is_some(),
                                 "invariant: label var just inserted must be present in state.ctx.levels"
                             );
@@ -1754,7 +1754,7 @@ pub(crate) async fn resolve_type_name(
                         // Already mapped: return the existing TypeVar with its current level
                         // from state.ctx.levels. DO NOT reset the level - unification may have
                         // lowered it, and level lowering must be monotone (Kiselyov 2013).
-                        debug_assert!(
+                        assert!(
                             state.get_level(existing_var).is_some(),
                             "invariant: annotation var registered in mapping must be in state.ctx.levels"
                         );
@@ -2964,7 +2964,7 @@ pub(crate) async fn resolve_type_dict(
         fields.insert(key, ty);
     }
 
-    // B-662: multi-field record annotations always build a single TypeValue.Record.
+    // Multi-field record annotations always build a single TypeValue.Record.
     //
     // `@[file: String  start-line: Integer]` → `Record { fields: {file: Str, start-line: Int} }`
     //
@@ -2977,7 +2977,7 @@ pub(crate) async fn resolve_type_dict(
     // BAS width subtyping handles structural subtyping without splitting.
 
     // Build the record TypeValue. uniform_tail encodes the row tail.
-    // T-2091: When a uniform tail is present, wrap it as RowTail.Uniform with the value type
+    // When a uniform tail is present, wrap it as RowTail.Uniform with the value type
     // and optional key type.
     let tail = match uniform_tail {
         Some((key_ty, val_ty)) => Some(make_rowtail_uniform_with_key_type(val_ty, key_ty)),
@@ -3094,7 +3094,7 @@ async fn collect_typenode_seq(
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
 ) -> crate::error::EvalResult<Option<Vec<TypeValue>>> {
-    // T-1555: Value::Annotated is removed; no unwrapping needed.
+    // Value::Annotated is removed; no unwrapping needed.
     let dict = match dict_val {
         Value::Dict { entries: d, .. } => d,
         _ => return Ok(None),
@@ -3303,7 +3303,7 @@ pub(crate) async fn typenode_value_to_type(
 
                         // Optional key-type: and value-type: fields enable typed-key map encoding.
                         // These are the protocol-defined field names per builtin_core.llt:33.
-                        // T-2091: key-type is resolved and stored in the RowTail.Uniform payload.
+                        // key-type is resolved and stored in the RowTail.Uniform payload.
                         let tail = if let Some(kt_val) =
                             payload_fields.get(TN_FIELD_KEY_TYPE).cloned()
                         {
@@ -3603,7 +3603,7 @@ pub(crate) async fn typenode_value_to_type(
             // Detect the pattern: all values are Variants sharing the same qualified prefix.
             // If so, return TypeValue.Op(prefix) — the name of the declared type.
             //
-            // B-663: when a non-ADT dict is produced by type-stage evaluation for an `@Dict`
+            // When a non-ADT dict is produced by type-stage evaluation for an `@Dict`
             // annotation (e.g., the TypeNode ADT dict when thunks are unsettled, or any other
             // raw Value::Dict appearing in TypeNode position), treat it as the plain Dict type
             // (TypeValue.Repr{repr:"Value::Dict"}) rather than returning Ok(None) which causes

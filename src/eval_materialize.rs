@@ -2555,34 +2555,32 @@ pub(crate) async fn apply_cont(
                                 // Done BEFORE pattern evaluation because the pattern may reference
                                 // external names (pins) as ClosureCapture addresses — the
                                 // pre_arm_frame below provides those thunks for pin lookups.
-                                let closure_env_vec: Vec<Arc<Thunk>> = arm
-                                    .captures
-                                    .as_ref()
-                                    .map(|caps| {
-                                        caps.iter()
-                                            .map(|(name, original_addr)| {
-                                                use crate::ast::VarAddr;
-                                                match original_addr {
-                                                    VarAddr::LetrecGroupMember { slot, .. } => {
-                                                        frame.group.get(*slot as usize)
-                                                    }
-                                                    VarAddr::ClosureCapture(i) => {
-                                                        frame.closure_env.get(*i as usize)
-                                                    }
-                                                    VarAddr::Parameter(i) => {
-                                                        frame.params.get(*i as usize).cloned()
-                                                    }
+                                let closure_env_vec: Vec<Arc<Thunk>> = match arm.captures.as_ref() {
+                                    Some(caps) => caps
+                                        .iter()
+                                        .map(|(name, original_addr)| {
+                                            use crate::ast::VarAddr;
+                                            match original_addr {
+                                                VarAddr::LetrecGroupMember { slot, .. } => {
+                                                    frame.group.get(*slot as usize)
                                                 }
-                                                .unwrap_or_else(|| {
-                                                    panic!(
-                                                        "case arm capture miss for '{}': {:?}",
-                                                        name, original_addr
-                                                    )
-                                                })
+                                                VarAddr::ClosureCapture(i) => {
+                                                    frame.closure_env.get(*i as usize)
+                                                }
+                                                VarAddr::Parameter(i) => {
+                                                    frame.params.get(*i as usize).cloned()
+                                                }
+                                            }
+                                            .unwrap_or_else(|| {
+                                                panic!(
+                                                    "case arm capture miss for '{}': {:?}",
+                                                    name, original_addr
+                                                )
                                             })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
+                                        })
+                                        .collect(),
+                                    None => vec![], // No captures for this case arm — empty closure environment.
+                                };
 
                                 // pre_arm_frame: closure_env populated, params empty.
                                 // Used as pctx.frame in structural pattern matching so that

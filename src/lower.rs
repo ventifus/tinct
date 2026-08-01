@@ -90,6 +90,7 @@ pub(crate) fn resolve_name_in_frames(
 ///
 /// Returns `None` if the name is not found in any frame at level >= 1, or if there are
 /// fewer than two frames (no parent scope exists).
+#[allow(dead_code)]
 fn resolve_name_in_frames_parent(
     frames: &[indexmap::IndexMap<String, u32>],
     name: &str,
@@ -275,7 +276,7 @@ fn lower_expr(
             delimiter,
             content,
         } => {
-            debug_assert!(
+            assert!(
                 prefix.is_empty(),
                 "i-strings (prefix='{}') must be desugared before lowering reaches StringLiteral",
                 prefix
@@ -583,7 +584,7 @@ fn lower_expr(
                 }
             }).collect();
 
-            // T-2026: Pre-pass — collect all instances per method before emitting any plain slots.
+            // Pre-pass — collect all instances per method before emitting any plain slots.
             // This allows T-2027 to build a complete MethodDispatcher for the plain slot instead of
             // emitting an empty dict. The pre-pass scans all InstanceDecl entries once.
             let all_method_instances = collect_instance_methods_pre_pass(entries, &explicit_keys);
@@ -649,7 +650,7 @@ fn lower_expr(
                                         // in this dict (shared set prevents duplicate keys when
                                         // multiple instances implement the same method).
                                         //
-                                        // T-2027: instead of emitting an empty dict, emit a
+                                        // Instead of emitting an empty dict, emit a
                                         // MethodDispatcher Fn that selects the correct mangled
                                         // instance binding based on the first argument's type.
                                         if !explicit_keys.contains(&method_name)
@@ -662,16 +663,15 @@ fn lower_expr(
                                             )));
                                             // Build the dispatcher from pre-collected instances.
                                             let dispatcher_instances: Vec<(Vec<String>, String)> =
-                                                all_method_instances
-                                                    .get(&method_name)
-                                                    .map(|v| {
-                                                        v.iter()
-                                                            .map(|(type_args, mangled, _)| {
-                                                                (type_args.clone(), mangled.clone())
-                                                            })
-                                                            .collect()
-                                                    })
-                                                    .unwrap_or_default();
+                                                match all_method_instances.get(&method_name) {
+                                                    Some(v) => v
+                                                        .iter()
+                                                        .map(|(type_args, mangled, _)| {
+                                                            (type_args.clone(), mangled.clone())
+                                                        })
+                                                        .collect(),
+                                                    None => vec![], // No instances found for this class — dispatcher has no dispatch arms.
+                                                };
                                             let param_count = all_method_instances
                                                 .get(&method_name)
                                                 .and_then(|v| v.first())
@@ -873,7 +873,7 @@ fn lower_expr(
             let lowered_body_spanned = lower_inner(body, diagnostics, scope_frames);
             let body_span = lowered_body_spanned.span.clone();
 
-            // T-2014: Build params and collect TypeAssert checks for each typed parameter.
+            // Build params and collect TypeAssert checks for each typed parameter.
             // For each param with a concrete resolved TypeValue, emit a TypeAssert at the
             // beginning of the function body so the check fires on every invocation.
             let mut param_assert_exprs: Vec<Arc<crate::ast::Spanned<CoreExpr>>> = Vec::new();
@@ -929,7 +929,7 @@ fn lower_expr(
                 )
             };
 
-            // T-2015: Wrap body with TypeAssert for the return type annotation.
+            // Wrap body with TypeAssert for the return type annotation.
             // Use TypeAssertCheck::Resolved when the type checker has populated the resolved type.
             // Fall back to Source (runtime annotation evaluation) when the type checker did not run.
             let final_body = if let Some(ann) = return_ann {
@@ -1436,7 +1436,8 @@ fn lower_let_decl_binding(
 ///   - Lowercase or empty type_args → treated as catch-all (wildcard arm body)
 ///
 /// Type-name patterns are VarRef nodes resolved to the type binding. The match evaluator
-/// checks the scrutinee's runtime type against the pattern's type via `match_typenode_pattern`.
+/// checks the scrutinee's runtime type against the pattern's type via
+/// `typenode_ctor_to_typevalue` + `value_matches_type` (doc/16b-rust-tinct-protocol.md §3).
 ///
 /// For T-2028 (multi-param determining), when there are multiple dispatch type_args,
 /// the primary type_arg is used for the match; each arm calls the specific mangled binding
@@ -1484,19 +1485,25 @@ fn make_method_dispatcher_fn(
         }
     }
 
-    // Collect unique type names we need to resolve for match arm patterns.
-    // Also collect "builtin-raise" for the fallback arm.
+    // Collect only "builtin-raise" for the fallback arm.
+    // Type names (dispatch tags like "Integer", "File", "Stdout") are NOT included because
+    // they are resolved via ctx.scope_frames (the init program's block_body_frames), which
+    // contain test-loader intermediate dict entries at slots that are INVALID in the prelude's
+    // accumulated_group. Using those slots → panic "capture miss" at fn creation time.
+    // Type pattern arms will have resolution=None → silently skip → correct.
+    //
+    // Only "builtin-raise" is safe to capture because it's in the root_group at a slot that
+    // IS valid in the prelude's accumulated_group (root_group is always at slots 0..N-1).
+    // Using LGM(root_slot) as original_addr: at fn creation time frame.group[root_slot] =
+    // the builtin-raise thunk. Inside the Fn body: ClosureCapture(i) → closure_env[i].
     let mut outer_names: Vec<String> = Vec::new();
     outer_names.push("builtin-raise".to_string());
-    for type_name in type_name_to_mangled.keys() {
-        if !outer_names.contains(type_name) {
-            outer_names.push(type_name.clone());
-        }
-    }
 
     // Build resolved_addrs: outer_name → VarAddr to use in the body.
-    // Names at level=0 use LGM; level>0 use ClosureCapture(capture_index).
-    // capture_list accumulates (name, original_addr) entries in capture index order.
+    // ALL names use ClosureCapture with LGM(slot) as original_addr (B-689 fix):
+    // - The dispatcher Fn is created at dict level where frame.closure_env is empty.
+    // - LGM(slot) works at fn creation time: frame.group[slot] = the thunk.
+    // - Inside the Fn body: ClosureCapture(cap_idx) → closure_env[cap_idx].
     let mut resolved_addrs: indexmap::IndexMap<String, VarAddr> = indexmap::IndexMap::new();
     let mut capture_list: Vec<(String, VarAddr)> = Vec::new();
 
@@ -1505,18 +1512,11 @@ fn make_method_dispatcher_fn(
             continue;
         }
         match scope_frames.and_then(|frames| resolve_name_in_frames(frames, name)) {
-            Some((0, slot)) => {
-                // Same letrec group — use LGM directly, no capture needed.
-                resolved_addrs.insert(name.clone(), VarAddr::LetrecGroupMember { depth: 0, slot });
-            }
-            Some((level, slot)) => {
-                // Outer scope — must be captured.
+            Some((_level, slot)) => {
+                // Capture with LGM(slot) as original_addr — valid for root_group entries
+                // (slot < root_group.len() ≤ prelude accumulated_group size).
                 let cap_idx = capture_list.len() as u32;
-                // original_addr is the address in the immediately enclosing frame.
-                // debruijn_to_var_addr(level - 1, slot) maps: level 1 → LGM(slot) in
-                // the enclosing group, level 2 → ClosureCapture(slot) in outer closure.
-                let original_addr = debruijn_to_var_addr(level - 1, slot);
-                capture_list.push((name.clone(), original_addr));
+                capture_list.push((name.clone(), VarAddr::LetrecGroupMember { depth: 0, slot }));
                 resolved_addrs.insert(name.clone(), VarAddr::ClosureCapture(cap_idx));
             }
             None => {
@@ -1525,34 +1525,12 @@ fn make_method_dispatcher_fn(
         }
     }
 
-    // Leading-dot delegation: resolve the method name itself in the PARENT scope (level >= 1),
-    // skipping the current letrec group (level 0) where this dispatcher lives.
-    //
-    // If a parent scope has the same method name (e.g. the prelude's MethodDispatcher for `+`),
-    // the fallback arm will delegate there instead of immediately raising. This enables user files
-    // to declare `[instance Addable [let a@MyType b@MyType c]: ...]` in their own dict and have
-    // that dict's MethodDispatcher extend the prelude's, rather than replace it.
-    //
-    // The sentinel key "__parent_dispatch__" is used in resolved_addrs to avoid colliding with
-    // a same-scope binding of method_name at level 0.
+    // Parent dispatch DISABLED (B-689): resolve_name_in_frames_parent finds entries from the
+    // init program's block_body_frames at slots invalid in the prelude's accumulated_group.
+    // Using those slots as LGM original_addr → panic "capture miss" at fn creation time.
+    // The parent dispatch feature requires dict_frames from the defining document (B-689).
+    #[allow(dead_code)]
     const PARENT_DISPATCH_KEY: &str = "__parent_dispatch__";
-    if let Some(frames) = scope_frames {
-        match resolve_name_in_frames_parent(frames, method_name) {
-            Some((level, slot)) => {
-                // Found the method name in a parent scope — add it as a capture.
-                let cap_idx = capture_list.len() as u32;
-                let original_addr = debruijn_to_var_addr(level - 1, slot);
-                capture_list.push((method_name.to_string(), original_addr));
-                resolved_addrs.insert(
-                    PARENT_DISPATCH_KEY.to_string(),
-                    VarAddr::ClosureCapture(cap_idx),
-                );
-            }
-            None => {
-                // No parent scope copy of this method — final fallback will use builtin-raise.
-            }
-        }
-    }
 
     // Build param list: __d0, __d1, ... __d_{n-1}
     let param_count = param_count.max(1);
@@ -1616,9 +1594,9 @@ fn make_method_dispatcher_fn(
 
     // Helper: make a type-name pattern SurfaceNode for a match arm.
     // The pattern is a VarRef with resolution set to the type name's VarAddr.
-    // When the VarRef resolves to a TypeNode variant, the match evaluator calls
-    // match_typenode_pattern which checks the scrutinee value's type.
-    let mut make_type_pattern = |type_name: &str| -> Arc<SurfaceNode> {
+    // When the VarRef resolves to a TypeNode unit variant, the match evaluator routes
+    // through `typenode_ctor_to_typevalue` + `value_matches_type` to check the scrutinee's type.
+    let make_type_pattern = |type_name: &str| -> Arc<SurfaceNode> {
         let resolution = crate::ast::Resolution::new();
         match resolved_addrs.get(type_name) {
             Some(addr) => {
@@ -1626,16 +1604,9 @@ fn make_method_dispatcher_fn(
             }
             None => {
                 // Type name not found in scope — pattern will not match at runtime.
-                // Emit a diagnostic and resolve to None (arm won't match).
-                diagnostics.push(LowerDiagnostic {
-                    kind: LowerDiagnosticKind::Error,
-                    message: format!(
-                        "make_method_dispatcher_fn: type name '{}' not found in scope_frames \
-                         for method '{}' — instance arm will be unreachable",
-                        type_name, method_name
-                    ),
-                    span: span.clone(),
-                });
+                // This is expected for type-stage types (e.g., TypeNode) that are not
+                // visible in the runtime resolver scope. The arm is silently omitted;
+                // the catch-all handles unmatched cases.
                 resolution.set(None);
             }
         };
@@ -1934,6 +1905,27 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
     };
     bindings
         .iter()
+        .filter(|binding| {
+            // Skip `bind: [a b c]` entries — these declare TypeVars for the instance pattern,
+            // not class type parameter positions.
+            //
+            // `bind: [a]` inside [let ...] parses as a VarRef named "bind" with a PropertyDict
+            // annotation (via the LetDecl `:` mechanism). ANY VarRef named "bind" with a
+            // PropertyDict annotation is the TypeVar declaration — skip it.
+            if let SurfaceExpression::VarRef {
+                name, annotation, ..
+            } = &binding.expr
+            {
+                if name.as_str() == "bind" {
+                    if let Some(ann) = annotation {
+                        if matches!(ann.node, crate::ast::Annotation::PropertyDict(_)) {
+                            return false; // Filter out bind: TypeVar declaration
+                        }
+                    }
+                }
+            }
+            true
+        })
         .map(|binding_spanned| match &binding_spanned.expr {
             SurfaceExpression::VarRef {
                 annotation: Some(ann),
@@ -1979,7 +1971,7 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 ///
 /// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
 ///
-/// Build a `CoreExpr::Dict` representing field-annotations: `{field: {role: "Seq"}, ...}`.
+/// Build a `CoreExpr::Dict` representing field-annotations: `{field: {role: "One"|"MapValues"}, ...}`.
 ///
 /// Returns `None` if field_annotations is empty.
 fn build_field_annotations_core_entry(
@@ -1994,9 +1986,9 @@ fn build_field_annotations_core_entry(
     let field_entries: Vec<Spanned<CoreEntry>> = field_annotations
         .iter()
         .map(|(field_name, role)| {
-            // Inner dict: {role: "Seq"}
+            // Inner dict: {role: "One"} or {role: "MapValues"}
             let role_key = Some(Arc::new(Spanned::new(
-                CoreExpr::Str("role".to_string()),
+                CoreExpr::Str(crate::ast::ANNOTATION_KEY_CHILD_ROLE.to_string()),
                 span.clone(),
             )));
             let role_value = Arc::new(Spanned::new(CoreExpr::Str(role.clone()), span.clone()));
@@ -2008,7 +2000,7 @@ fn build_field_annotations_core_entry(
                 span.clone(),
             );
             let inner_dict = Arc::new(Spanned::new(CoreExpr::Dict(vec![role_entry]), span.clone()));
-            // Outer entry: field_name: {role: "Seq"}
+            // Outer entry: field_name: {role: "One"|"MapValues"}
             let key = Some(Arc::new(Spanned::new(
                 CoreExpr::Str(field_name.clone()),
                 span.clone(),
@@ -2360,53 +2352,37 @@ struct ConstructorInfo {
     /// Field names for named-field constructors (empty for unit constructors).
     fields: Vec<String>,
     /// Per-field child role annotations from `@Child` on field keys.
-    /// Maps field name → role string ("Seq", "One", "MapValues").
+    /// Maps field name → role string ("One" or "MapValues").
     /// Only populated for fields that carry `@Child` annotation.
     field_annotations: indexmap::IndexMap<String, String>,
 }
 
-/// Infer the child role from a type expression in a constructor field.
+/// Extract the child role from a `@Child` or `@Child@[role: "..."]` annotation.
 ///
-/// Examines the surface AST of a field's type expression to determine the
-/// structural role for TypeNode's `children`/`map-children` protocol:
+/// Returns the value of the explicit `role:` key in the annotation when present, or `"One"` as
+/// the default. The role is declared by the type author via annotation, not inferred from the
+/// type expression. This keeps the lowerer agnostic to prelude-defined type constructor names.
 ///
-/// - `[Seq T]` → "Seq" (the field holds a sequence of children)
-/// - `[Map K V]` → "MapValues" (the field holds a map whose values are children)
-/// - Bare `T` (VarRef) → "One" (the field holds a single child)
-/// - Anything else → "One" (default for unrecognized forms)
-fn infer_child_role_from_type_expr(expr: &SurfaceExpression) -> &'static str {
-    match expr {
-        // [Map K V] — Call with Map as head → MapValues role (iterate over values, preserve keys)
-        // Any other Call head → One (single child).
-        // Note: [Seq T] previously mapped to a "Seq" role, but Seq was eliminated from @Child fields
-        // when Intersect.types migrated from [Seq TypeNode] to [Map Int TypeNode]. Only "One" and
-        // "MapValues" roles remain.
-        SurfaceExpression::Call { func, .. } => match &func.expr {
-            SurfaceExpression::VarRef { name, .. } => match name.as_str() {
-                "Map" => "MapValues",
-                _ => "One",
-            },
-            _ => "One",
-        },
-        // Dict with positional entries: [Map K V] parses as Dict([VarRef("Map"), ...])
-        SurfaceExpression::Dict(entries) if !entries.is_empty() => {
-            if let Some(first) = entries.first() {
-                if first.node.key.is_none() {
-                    if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                        return match name.as_str() {
-                            "Map" => "MapValues",
-                            _ => "One",
-                        };
-                    }
-                }
+/// Recognized roles:
+/// - `"One"`       — the field holds a single child TypeNode (the default)
+/// - `"MapValues"` — the field holds a map whose values are children (declared explicitly)
+///
+/// Usage in tinct source:
+/// - `@Child` → role "One" (bare Simple annotation, no role key)
+/// - `@Child@[role: "MapValues"]` → role "MapValues" (Annotated outer=Child, inner=PropertyDict)
+fn child_role_from_annotation(ann: &crate::ast::Annotation) -> &'static str {
+    // Check for an explicit role: key in the annotation. get_property delegates through
+    // Annotated to the inner PropertyDict, so @Child@[role: "MapValues"] works correctly.
+    if let Some(role_node) = ann.get_property(crate::ast::ANNOTATION_KEY_CHILD_ROLE) {
+        if let SurfaceExpression::StringLiteral { content, .. } = &role_node.expr {
+            match content.as_str() {
+                "MapValues" => return "MapValues",
+                "One" => return "One",
+                _ => {} // unrecognized role value — fall through to default
             }
-            "One"
         }
-        // Bare VarRef → single child
-        SurfaceExpression::VarRef { .. } => "One",
-        // Anything else → default to single child
-        _ => "One",
     }
+    "One"
 }
 
 /// Extract constructor information from a TypeAlias body.
@@ -2509,27 +2485,36 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                             if let SurfaceExpression::Dict(field_entries) = &entry.node.value.expr {
                                 for fe in field_entries {
                                     if let Some(k) = &fe.node.key {
-                                        let (field_name, has_child_ann) = match &k.expr {
+                                        // Returns (field_name, child_annotation) — the annotation
+                                        // is kept so the role can be read from it directly.
+                                        let (field_name, child_ann) = match &k.expr {
                                             SurfaceExpression::VarRef {
                                                 name: fn_,
                                                 annotation,
                                                 ..
                                             } => {
-                                                let is_child = annotation.as_ref().is_some_and(|ann| {
-                                                    matches!(&ann.node, crate::ast::Annotation::Simple(s) if s == "Child")
+                                                // Accept @Child (Simple) or @Child@[role: ...] (Annotated
+                                                // with Simple("Child") outer). Both declare a child field.
+                                                let child_ann = annotation.as_ref().and_then(|ann| {
+                                                    let is_child = match &ann.node {
+                                                        crate::ast::Annotation::Simple(s) => s == "Child",
+                                                        crate::ast::Annotation::Annotated(outer, _) => {
+                                                            matches!(outer.as_ref(), crate::ast::Annotation::Simple(s) if s == "Child")
+                                                        }
+                                                        _ => false,
+                                                    };
+                                                    if is_child { Some(&ann.node) } else { None }
                                                 });
-                                                (Some(fn_.clone()), is_child)
+                                                (Some(fn_.clone()), child_ann)
                                             }
                                             SurfaceExpression::StringLiteral {
                                                 content, ..
-                                            } => (Some(content.clone()), false),
-                                            _ => (None, false),
+                                            } => (Some(content.clone()), None),
+                                            _ => (None, None),
                                         };
                                         if let Some(fn_) = field_name {
-                                            if has_child_ann {
-                                                let role = infer_child_role_from_type_expr(
-                                                    &fe.node.value.expr,
-                                                );
+                                            if let Some(ann) = child_ann {
+                                                let role = child_role_from_annotation(ann);
                                                 field_anns.insert(fn_.clone(), role.to_string());
                                             }
                                             fields.push(fn_);

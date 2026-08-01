@@ -131,14 +131,14 @@ Extracts concrete uppercase type annotation names from an instance arm pattern (
 | `Call` with `call_dispatch` on func | `Call(Var(mangled), args, named_args)` | Typeclass call-site dispatch rewrite |
 | `Call` (plain) | `Call(lowered_func, args, named_args)` | Recurses into func, args, named_args |
 | `Fn` | `Fn` | Params → `CoreParam` with slot index; body lowered recursively |
-| `TypeAssert` | `CoreExpr::TypeAssert` with type from `resolved_type` OnceLock | Falls back to `Type::Unknown` if type check skipped or produced `Type::Error` |
+| `TypeAssert` | `CoreExpr::TypeAssert { check: TypeAssertCheck }` — either `TypeAssertCheck::Resolved(TypeValue)` (type checker ran and resolved a non-Unknown type) or `TypeAssertCheck::Source { annotation }` (type checker skipped or produced `TypeValue.Unknown` — TV_UNKNOWN tag) |
 | `Rest(name)` | `CoreExpr::Rest(name)` | Only valid in type expressions |
 | `Match` | `Match` with lowered scrutinee and arms | arm patterns pass through as `Arc<SurfaceNode>`; multi-body arms wrapped in `Sequential` |
 | `Quote` | `Quote` | Inner lowered with a fresh throwaway diagnostic vec; `scope_frames: None` inside |
 | `Unquote` / `UnquoteSplice` | `Unquote` / `UnquoteSplice` | Diagnostics and scope_frames threaded |
 | `LetDecl` | `LetDecl` | Even-index bindings lowered as `Str` (name extraction); odd-index lowered normally |
 | `PatternDecl` | `PatternDecl` | |
-| `CaseArm` | `CaseArm` | Used by match evaluation; not a standalone expression |
+| `CaseArm` | (→ `CoreMatchArm`) | Not a `CoreExpr` variant — the `[case ...]` surface form is lowered into the enclosing `Match` arm list as a `CoreMatchArm` struct with `let_bindings`, `pattern`, and `body` fields; not a standalone expression |
 | `Decl(InstanceDecl)` in expression position | `Dict` with mangled-name entries, or `Placeholder` if empty | Multi-arm InstanceDecl outside a dict entry |
 | `Decl(TypeAlias)` in expression position | `Dict([])` | No name to bind constructors under; empty dict |
 | `Decl(other)` | `Placeholder` | Other declarations not valid as expressions |
@@ -147,18 +147,17 @@ Extracts concrete uppercase type annotation names from an instance arm pattern (
 
 ### Type Guard Wrapping
 
-After lowering the expression, `lower_inner` checks `SurfaceNode.type_guard`. If the type checker set a guard type (via the `TypeAnnotation` OnceLock), the output is wrapped:
+After lowering the expression, `lower_inner` checks `SurfaceNode.type_guard`. If the type checker set a guard type (via the `TypeAnnotation` OnceLock), the output is wrapped directly using `TypeAssertCheck::Resolved`:
 
 ```rust
 CoreExpr::TypeAssert {
-    annotation: Annotation::Simple("__guard__"),
+    check: TypeAssertCheck::Resolved(guard_type.clone()),
     expr: Arc::new(Spanned::new(core_expr, span)),
-    resolved_type: guard_type,
     pipeline_blame: None,
 }
 ```
 
-This produces a runtime type check injected by the type checker, not written by the user. The annotation name `"__guard__"` distinguishes injected guards from user-written `[@Type expr]` annotations.
+This produces a runtime type check injected by the type checker, not written by the user. The `Annotation::Simple("__guard__")` sentinel approach was eliminated in S-994/S-1004 — the `TypeAssertCheck::Resolved` variant directly carries the guard type. No sentinel annotation distinguishes injected guards from user-written `[@Type expr]` annotations at the CoreExpr level; the distinction exists only in the lowering pass, which uses `TypeAssertCheck::Resolved` for guard-injected checks and `TypeAssertCheck::Source { annotation }` for user-written checks that were not resolved by the type checker.
 
 ### TypeAlias Lowering
 
@@ -294,7 +293,7 @@ Key dispatch:
 | `Call { func, args }` | Calls `eval_call_core` — creates a `UnevaluatedState::FnCall` or `UnevaluatedState::BuiltinCall` thunk |
 | `TypeAssert { .. }` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `TypeAssertCheck` continuation |
 | `Sequential` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `LetrecChainStep` continuation |
-| `Match` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `MatchDispatch` continuation |
+| `Match` | `UnevaluatedState::CoreExpr` thunk — CEK machine handles `MatchDispatch` continuation; each `CoreMatchArm` in the arm list is processed inline by the `Match` evaluator (not as a standalone `CoreExpr`) |
 | `Variant { payload: None }` | Materialized `Value::Variant { tycon, ctor, payload: None }` |
 | `Variant { payload: Some(expr) }` | Materializes the payload dict immediately, stores as ThunkId; `Value::Variant { payload: Some(id) }` |
 | `UnitVariant { tycon, ctor }` | Materialized `Value::Variant { tycon, ctor, payload: None }` |
@@ -303,7 +302,6 @@ Key dispatch:
 | `Unquote` / `UnquoteSplice` | Immediate error ("only valid inside quote") |
 | `PatternDecl` | Immediate error ("only valid in instance match arms") |
 | `LetDecl` | Evaluates binding pairs into a `Value::Dict`; dict values are lazy thunks |
-| `CaseArm` | Immediate error ("case arms are not expressions") |
 | `Placeholder` | Immediate `Err(EvalError)` — error propagates to caller of `eval_core_expr` |
 
 **Letrec dict construction (via `eval_dict_core`):** `CoreExpr::Dict` implements letrec in two phases via `ScopeArena`:
@@ -318,7 +316,7 @@ This two-phase protocol allows entries to reference each other by slot before an
 
 1. **Lowering is a pure function.** `lower()` reads inline OnceLocks but never writes them. The same `Arc<SurfaceNode>` can be lowered multiple times (in practice each document-level node is lowered exactly once; `Surface` thunks are lowered once when first forced).
 2. **`CoreExpr::Placeholder` is the error sentinel.** Every lowering error replaces the sub-expression with `Placeholder`. At document boundaries, lower diagnostics are converted to errors eagerly. Inside `Surface` thunks forced by the CEK machine, the placeholder fires lazily when forced.
-3. **`Type::Unknown` is the accept-all fallback.** A `TypeAssert` node whose `resolved_type` OnceLock is empty (typecheck skipped or failed) gets `Type::Unknown`, which passes for any value at runtime.
+3. **`TypeValue.Unknown` is the accept-all fallback.** A `TypeAssert` node with `TypeAssertCheck::Source { annotation }` that cannot resolve the annotation against `tycon_env` falls back to `TypeValue.Unknown` (accept-all) at runtime. This occurs in `--no-typecheck` mode or when the annotation references an unknown type name.
 4. **`Quote` suppresses diagnostics.** Lowering inside `Quote` uses a fresh diagnostic vec that is discarded. `VarRef` nodes inside a quote are symbols, not variable references, so undefined-variable errors must not be reported.
 5. **`eval_surface_file` precondition.** Desugaring and resolution must run before evaluation. The evaluator does not check or re-run them.
 6. **Letrec correctness.** The FlatEnv for a dict scope is allocated before any entry value thunks are created. Each value thunk captures the dict's `env_id`. When any value thunk is forced, it can look up sibling entries by slot — the slots are already allocated, even if not yet evaluated.

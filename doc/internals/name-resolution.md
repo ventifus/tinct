@@ -166,13 +166,13 @@ The same logic applies at the document level: `walk_surface_document` tracks inj
   ...:       "other"]
 ```
 
-For each non-CaseArm match arm, the resolver walks `arm.pattern` with `suppress_depth` incremented by 1. This means:
+For each keyed arm (non-`[case ...]` form) match arm, the resolver walks `arm.pattern` with `suppress_depth` incremented by 1. This means:
 
 - All VarRefs in pattern position whose names are not found in scope produce `Some(None)` (OnceLock set to unresolvable) rather than emitting an "undefined variable" error. The eval dispatch in `match_pattern` treats `Some(None)` as "arm does not match" — the arm is silently skipped for this scrutinee.
 - VarRefs that ARE in scope produce `Some(Some((level, slot)))` as normal — these become pin patterns (equality check against the in-scope value).
 - No scope is created for the arm pattern itself. The arm body and guard see the same scope as the scrutinee.
 
-### CaseArm `[case [let n m] pattern body]`
+### case arms `[case [let n m] pattern body]`
 
 1. Walk `let_bindings` with `suppress_depth += 1` (names in `[let n m]` are declarations).
 2. Extract the declared names from the `LetDecl` bindings.
@@ -201,7 +201,7 @@ Positions that increment `suppress_depth`:
 | `LetDecl`/`PatternDecl` binding names (`[let x]`) | Name declarations |
 | Instance pattern arms (`[let a@String]`) | Type-matching context |
 | Instance method-name keys (in implementation) | Declaration position |
-| Non-CaseArm match arm patterns (`arm.pattern`) | Pattern VarRefs are pins or wildcards, not runtime lookups; unresolvable names produce `Some(None)` → arm silently does not match |
+| Keyed match arm patterns (`arm.pattern`) | Pattern VarRefs are pins or wildcards, not runtime lookups; unresolvable names produce `Some(None)` → arm silently does not match |
 
 Escaped dict keys (`$x:`) and annotation PropertyDict values (in constructor bodies) are intentionally **not** suppressed — they are runtime expressions and must resolve correctly.
 
@@ -239,7 +239,7 @@ Constructor names, field type expressions, and type parameters are type-level �
 
 ### VarRef in pattern position (pin)
 
-A `VarRef` node inside a match arm pattern (or inside a CaseArm's structural pattern) is a pin. The resolver writes the de Bruijn coordinates of the name as found in the scope active at the pattern site. `Some(None)` means the name is not in scope; at runtime the evaluator silently skips the arm (no-match). Named bindings in match arms always require `[case [let n] ...]` — a bare VarRef in pattern position is never a fresh binding.
+A `VarRef` node inside a match arm pattern (or inside a case arm's pattern, the `pattern` field of `CoreMatchArm`) is a pin. The resolver writes the de Bruijn coordinates of the name as found in the scope active at the pattern site. `Some(None)` means the name is not in scope; at runtime the evaluator silently skips the arm (no-match). Named bindings in match arms always require `[case [let n] ...]` — a bare VarRef in pattern position is never a fresh binding.
 
 ---
 

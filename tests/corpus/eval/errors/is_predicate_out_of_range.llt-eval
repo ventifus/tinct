@@ -1,0 +1,8 @@
+# is: predicate — value out of range fails assertion.
+# Uses inline dict annotation form: @[type: Int  is: [between 1 100]]
+# This correctly routes through the is: predicate runtime check (via ReprDecl).
+# [@[type: Int  is: [between 1 100]] 0] fails because between 1 100 0 => false
+# (subject appended last — subject-last semantics).
+[@[type: Int  is: [between 1 100]] 0]
+=== error
+is: predicate failed

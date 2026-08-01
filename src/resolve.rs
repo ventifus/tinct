@@ -186,22 +186,21 @@ impl SurfaceResolver {
                 },
             );
         }
+        // Collect frame as name→slot map for resolver_frames output.
+        let frame: indexmap::IndexMap<String, u32> = scope
+            .iter()
+            .filter_map(|(k, addr)| {
+                if let VarAddr::LetrecGroupMember { slot, .. } = addr {
+                    Some((k.clone(), *slot))
+                } else {
+                    None
+                }
+            })
+            .collect();
         if kind == ScopeKind::BlockBody {
             // Collect BlockBody sequential injection frames so resolve_surface_program can
-            // return them. Dict (letrec) frames are not included here — run_typecheck_dict
-            // reads each key's slot directly from state.resolution_table instead of scanning
-            // frames, avoiding ambiguity when multiple functions share key names.
-            let frame: indexmap::IndexMap<String, u32> = scope
-                .iter()
-                .filter_map(|(k, addr)| {
-                    if let VarAddr::LetrecGroupMember { slot, .. } = addr {
-                        Some((k.clone(), *slot))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            self.block_body_frames.push(frame);
+            // return them.
+            self.block_body_frames.push(frame.clone());
         }
         self.scopes.push((scope, kind));
     }
@@ -1430,6 +1429,8 @@ pub fn resolve_surface_document_with_env_dict(
 /// Used by `builtin-resolve` to include root_group entries in the resolver's scope at
 /// their correct runtime slots, while keeping env-dict names at their own offset
 /// starting at `root_group_len`.
+/// Returns `(table, diagnostics, unreferenced, block_body_frames)`.
+/// `block_body_frames` — BlockBody sequential injection frames for the type checker and builtin-lower.
 pub fn resolve_surface_document_with_seed_frames(
     doc: &crate::ast::SurfaceDocument,
     seed_frames: &[indexmap::IndexMap<String, u32>],
@@ -1464,9 +1465,6 @@ pub fn resolve_surface_document_with_seed_frames(
     }
     resolver.exit_scope();
 
-    // B-695: Collect the resolver frames (block_body_frames) created during the walk.
-    // These include instance method names from class instance decls, which builtin-lower
-    // needs to resolve MethodDispatcher calls across dicts.
     let block_body_frames = std::mem::take(&mut resolver.block_body_frames);
 
     let (table, diagnostics) = resolver.finish_with_errors();
@@ -1517,7 +1515,7 @@ pub fn resolve_surface_program(
     (table, block_body_frames)
 }
 
-/// T-1742: Extract the static produced keys of a document's final expression.
+/// Extract the static produced keys of a document's final expression.
 ///
 /// For a document whose last expression is a Dict (`[k1: v1  k2: v2]`), returns
 /// the list of static string-keyed names that this stage "produces" (makes available
@@ -1544,7 +1542,7 @@ pub fn collect_document_produced_keys(
     }
 }
 
-/// T-1742: Cross-document pipeline lint.
+/// Cross-document pipeline lint.
 ///
 /// After resolving all documents in a pipeline, checks whether keys produced by
 /// non-final stages are consumed by the subsequent document. Keys produced but
@@ -2025,12 +2023,12 @@ mod tests {
     /// Uses [case [let n] _ $n] form: [let n] declares the binding, _ matches anything,
     /// and $n in the body resolves to the case arm's scope as Parameter(0).
     ///
-    /// B-598: case arm bindings use enter_param_scope so they resolve to Parameter(i),
+    /// Case arm bindings use enter_param_scope so they resolve to Parameter(i),
     /// not LetrecGroupMember(i). This avoids collision with root_group builtin slots
     /// (which also start at LGM(0)). At runtime, arm_frame.params[i] holds the bound thunk.
     #[test]
     fn match_arm_pattern_binding() {
-        // T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
+        // Bare lowercase names in match arm patterns are now Pin (not Variable).
         // To bind a variable in a match arm, use [case [let n] pattern body] form.
         // [case [let n] _  $n] — n is declared by [let n], _ matches anything, $n resolves.
         let (program, table) = parse_and_resolve("[match 42 [case [let n] _ $n]]");
@@ -2048,15 +2046,15 @@ mod tests {
     }
 
     /// Case arm bodies see the bindings declared in [let ...].
-    /// T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
+    /// Bare lowercase names in match arm patterns are now Pin (not Variable).
     /// To bind a variable, use [case [let n] pattern body] form.
     ///
-    /// B-598: case arm bindings resolve to Parameter(i) so they don't conflict with
+    /// Case arm bindings resolve to Parameter(i) so they don't conflict with
     /// root_group builtin slots (LGM(0) = builtin-int-add). The arm body accesses `n`
     /// via arm_frame.params[0] which holds the bound thunk from pattern matching.
     #[test]
     fn match_arm_guard_sees_pattern_bindings() {
-        // T-1154: `n:` in match arm position creates a Pin pattern, not a variable binding.
+        // `n:` in match arm position creates a Pin pattern, not a variable binding.
         // Pins in pattern position resolve against the outer scope — n is NOT introduced into
         // the arm body scope. Use [case [let n] _ body] to actually bind n.
         let src = "[match 42 [case [let n] _ [+ $n 1]]]";
@@ -2166,7 +2164,7 @@ mod tests {
         unreferenced
     }
 
-    /// B-600: When some env names are unused, they appear in the unreferenced list.
+    /// When some env names are unused, they appear in the unreferenced list.
     #[test]
     fn unreferenced_includes_unused_env_name() {
         // source: "[result: %]" — references % but not x
@@ -2184,7 +2182,7 @@ mod tests {
         );
     }
 
-    /// B-600: When all env names are referenced, unreferenced is empty.
+    /// When all env names are referenced, unreferenced is empty.
     #[test]
     fn unreferenced_empty_when_all_used() {
         // source: "[result: %]" — references %
@@ -2197,7 +2195,7 @@ mod tests {
         );
     }
 
-    /// B-600: When no env names are referenced, all appear in unreferenced.
+    /// When no env names are referenced, all appear in unreferenced.
     #[test]
     fn unreferenced_lists_all_when_none_used() {
         // source: "[result: 42]" — references neither % nor x
@@ -2215,7 +2213,7 @@ mod tests {
         );
     }
 
-    /// B-604: Shadowed env names must not be falsely marked as referenced.
+    /// Shadowed env names must not be falsely marked as referenced.
     #[test]
     fn unreferenced_shadowed_env_name_not_falsely_marked() {
         // Document declares local "x" that shadows env-dict "x".
@@ -2236,7 +2234,7 @@ mod tests {
 
     // --- T-1742: Pipeline stage lint unit tests ---
 
-    /// T-1742: All keys produced by stage are consumed — no warnings.
+    /// All keys produced by stage are consumed — no warnings.
     #[test]
     fn lint_pipeline_stages_all_consumed_no_warn() {
         let dummy_span = crate::rust_span!();
@@ -2254,7 +2252,7 @@ mod tests {
         );
     }
 
-    /// T-1742: Stage produces a key that the next stage does not consume — warning fires.
+    /// Stage produces a key that the next stage does not consume — warning fires.
     #[test]
     fn lint_pipeline_stages_ignored_key_warns() {
         let dummy_span = crate::rust_span!();
@@ -2283,7 +2281,7 @@ mod tests {
         );
     }
 
-    /// T-1742: Dynamic % access (uses_dynamic = true) suppresses all warnings.
+    /// Dynamic % access (uses_dynamic = true) suppresses all warnings.
     #[test]
     fn lint_pipeline_stages_dynamic_access_no_warn() {
         let dummy_span = crate::rust_span!();
@@ -2301,7 +2299,7 @@ mod tests {
         );
     }
 
-    /// T-1742: Pass-through pattern — next stage consumes a superset of produced keys.
+    /// Pass-through pattern — next stage consumes a superset of produced keys.
     #[test]
     fn lint_pipeline_stages_passthrough_no_warn() {
         let dummy_span = crate::rust_span!();
@@ -2322,7 +2320,7 @@ mod tests {
 
     // --- B-586: Nested dict LGM slot alignment ---
 
-    /// B-586: A nested dict literal (dict as value of an outer dict entry) must use
+    /// A nested dict literal (dict as value of an outer dict entry) must use
     /// `accumulated_dict_offset` as its LGM base, not 0.
     ///
     /// With no initial frame (offset=0): `[x: 1  inner: [ref: $x]]`.
@@ -2355,7 +2353,7 @@ mod tests {
         // (Already verified above — the same VarRef node is found.)
     }
 
-    /// B-586: Nested dict with a non-zero initial frame offset.
+    /// Nested dict with a non-zero initial frame offset.
     ///
     /// Simulates the case where R root entries exist (e.g., builtins) before the document
     /// dict. With initial frame [{builtin-dict-get: 0}] (R=1): outer dict has offset 1.
@@ -2389,7 +2387,7 @@ mod tests {
         );
     }
 
-    /// B-586: Nested dict inside a fn body intermediate dict value.
+    /// Nested dict inside a fn body intermediate dict value.
     ///
     /// `[fn [let x] [a: $x  nested: [c: $x]] ...]`
     /// Fn resets accumulated_dict_offset to 0. Body dict: a→LGM(0), nested→LGM(1),

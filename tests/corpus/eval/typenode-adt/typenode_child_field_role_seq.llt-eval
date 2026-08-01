@@ -1,17 +1,15 @@
 # T-1481: field_annotations implementation — @Child field annotation produces role in annotation dict.
-# Named-field constructor with @Child annotated field and [Seq T] type produces role "Seq".
-# This is the exact pattern used by TypeNode.Union in prelude.llt:
-#   Union@[as-type: [fn [let u] u]  guarding: false]:
-#     [types@Child: [Seq TypeNode]]
+# Named-field constructor with @Child on a compound type expression (no explicit role: key in
+# annotation) produces the default role "One". The role is never inferred from the type name —
+# only an explicit role: key in the annotation determines the role.
 #
-# infer_child_role_from_type_expr detects `[Seq T]` → role string "Seq".
-# The `field-annotations` key is present in annotation-of(Union) and maps to a dict
-# whose "items" key holds {role: "Seq"}.
+# The "Seq" role no longer exists — @Child on [Seq T] produces "One", not "Seq".
+# Use @Child@[role: "MapValues"] to declare MapValues; no other non-default role is recognized.
 [NodeType: [type Union@[as-type: [fn [let u] u]  guarding: False]: [
   items@Child: [Seq NodeType]]]]
 [ann: [annotation-of NodeType.Union]]
 [has-field-anns: [has? "field-annotations" ann]]
 [role: [get "role" [get "items" [get "field-annotations" ann]]]]
-[result: [and has-field-anns [= role "Seq"]]]
+[result: [and has-field-anns [= role "One"]]]
 === out
 Dict({"result": Variant(Boolean.True, Null)})

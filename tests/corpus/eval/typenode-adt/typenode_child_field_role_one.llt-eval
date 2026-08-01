@@ -5,7 +5,7 @@
 #     [var:        String
 #      body@Child: TypeNode]
 #
-# infer_child_role_from_type_expr detects a bare VarRef (not [Seq T] or [Map K T]) → role "One".
+# child_role_from_annotation with no role: key in the annotation returns the default role "One".
 # The `field-annotations` key maps "child" to {role: "One"}.
 # Non-@Child fields (label: String) do NOT appear in field-annotations.
 [TreeNode: [type Branch@[as-type: [fn [let r] r]  guarding: True]: [

@@ -1,0 +1,14 @@
+# ResourceLimitExceeded errors propagate through try (is_catchable() == false).
+# Uses deep recursion to trigger MAX_CONTINUATION_STACK which is uncatchable.
+# The try should NOT catch the error — it should propagate to the test runner.
+[
+  count-down: [fn [let n]
+    [if [= n 0]
+      "done"
+      [count-down [- n 1]]]]
+
+  # try wraps the recursive call, but ResourceLimitExceeded propagates through
+  result: [try [fn [] [count-down 9000]]]
+]
+=== error
+continuation stack depth exceeded

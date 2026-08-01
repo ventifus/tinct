@@ -104,7 +104,9 @@ pub(crate) async fn run_fd_improvement_fixpoint(
             &state.ctx,
             &state.env,
             &mut state.fd_depth,
-            None, // T-2095: EvalContext not available during inference — resolver-based FD skipped.
+            state.eval_ctx.clone(),
+            &state.type_stage_fns,
+            errors,
         )
         .await;
         if pairs.is_empty() {
@@ -129,19 +131,18 @@ pub(crate) async fn run_fd_improvement_fixpoint(
         }
     }
 
-    // Drain deferred resolver equalities (T-2077): pairs from unify() where the resolver
-    // function F is non-injective. We retry each pair after applying the current substitution.
-    // When both sides are ground (no free TypeVars), we unify them directly.
-    // When either side still has free TypeVars, we put the pair back for the next call.
+    // Drain deferred resolver equalities: pairs from unify() where the resolver function F
+    // is non-injective (ctx.non_injective_resolvers contains the op name). For non-injective
+    // F, F(a) = F(b) does not imply a = b, so pairwise unification is unsound. Instead,
+    // unify() pushes (arg_a, arg_b) to ctx.resolver_deferred.
     //
-    // This is a "retry queue": items stay until both sides are concrete. When active, the
-    // queue shrinks monotonically because each FD improvement step grounds at least one
-    // TypeVar, ensuring termination.
+    // Here we drain the queue: apply the current substitution to each pair and, when both
+    // sides are ground (no free TypeVars), unify them directly. When either side still has
+    // free TypeVars, put the pair back for the next fixpoint call.
     //
-    // Drain resolver_deferred: pairs pushed by type_unify.rs when a non-injective
-    // TypeValue.App unification is encountered. Non-injective resolver support requires
-    // threading ClassDecl.resolver_injective through InferenceContext (T-2077/T-2078).
-    // Until that infrastructure is active, this queue is always empty at this point.
+    // The queue shrinks monotonically: each FD improvement step grounds at least one TypeVar,
+    // so pairs eventually become ground and are discharged. This guarantees termination
+    // (combined with the fd_depth guard for the outer fixpoint loop).
     let deferred = std::mem::take(&mut state.ctx.resolver_deferred);
     for (lhs, rhs) in deferred {
         let lhs_applied = state.ctx.apply_subst(&lhs);
@@ -592,7 +593,8 @@ async fn infer_step(
         // ===== Sequential — compound: process intermediate bodies inline, extending env =====
         SurfaceExpression::Sequential(exprs) => {
             if exprs.is_empty() {
-                return TypeCheckAction::Done(make_typevalue_unknown());
+                // Empty sequential: fresh TypeVar (unconstrained position)
+                return TypeCheckAction::Done(state.fresh_type_var(&node.span));
             }
             if exprs.len() == 1 {
                 return TypeCheckAction::Eval(Arc::clone(&exprs[0]), Arc::clone(env));
@@ -620,7 +622,7 @@ async fn infer_step(
             // For body N > 0: correct base = doc_initial_offset + sequential_slot_offset_at_N_start.
             let mut doc_initial_offset: Option<u32> = None;
 
-            // T-2060: Save and reset use_def and current_binding at the start of each Sequential
+            // Save and reset use_def and current_binding at the start of each Sequential
             // so that edges from a previous (or outer) Sequential scope don't contaminate this
             // one. The saved values are restored by AfterBlock so that nested
             // Sequentials do not corrupt the outer Sequential's liveness graph.
@@ -876,7 +878,8 @@ async fn infer_step(
                 entries: entries.to_vec(),
                 env: Arc::clone(env),
             });
-            TypeCheckAction::Done(make_typevalue_unknown())
+            // Placeholder: DictPassZero handler computes the actual record type
+            TypeCheckAction::Done(state.fresh_type_var(&node.span))
         }
 
         // ===== Match — compound: eval scrutinee first =====
@@ -956,7 +959,8 @@ async fn infer_step(
                 Ok(t) => TypeCheckAction::Done(t),
                 Err(mut errs) => {
                     errors.append(&mut errs);
-                    TypeCheckAction::Done(make_typevalue_unknown())
+                    // Decl inference failed: fresh TypeVar (unconstrained)
+                    TypeCheckAction::Done(state.fresh_type_var(&node.span))
                 }
             }
         }
@@ -975,7 +979,8 @@ async fn infer_step(
                 msg.clone(),
                 node.span.clone(),
             ));
-            TypeCheckAction::Done(make_typevalue_unknown())
+            // Unsupported expr: fresh TypeVar (failed inference, unconstrained)
+            TypeCheckAction::Done(state.fresh_type_var(&node.span))
         }
     }
 }
@@ -1282,7 +1287,8 @@ async fn apply_cont(
         TypeCheckCont::MatchScrutinee { arms, env, span } => {
             let scrutinee_ty = state.apply(&child_ty);
             if arms.is_empty() {
-                return TypeCheckAction::Done(make_typevalue_unknown());
+                // Match with no arms: fresh TypeVar (unconstrained)
+                return TypeCheckAction::Done(state.fresh_type_var(&span));
             }
 
             // Run exhaustiveness checking once upfront (using all arms).
@@ -1301,8 +1307,8 @@ async fn apply_cont(
             .await
             {
                 None => {
-                    // Arms is empty after setup — shouldn't happen since we checked above
-                    TypeCheckAction::Done(make_typevalue_unknown())
+                    // Setup failed: fresh TypeVar (unconstrained)
+                    TypeCheckAction::Done(state.fresh_type_var(&span))
                 }
                 Some((arm_env, next_remaining_scrutinee, guard_narrowings)) => {
                     let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].to_vec();
@@ -1368,7 +1374,8 @@ async fn apply_cont(
                 // typevalue_normalize_union flattens, deduplicates, and returns the single type
                 // if all arms agreed, or a union if they differ.
                 let match_ty = if accumulated_types.is_empty() {
-                    make_typevalue_unknown()
+                    // No arms produced types: fresh TypeVar (unconstrained)
+                    state.fresh_type_var(&span)
                 } else {
                     typevalue_normalize_union(accumulated_types)
                 };
@@ -1388,7 +1395,8 @@ async fn apply_cont(
                     None => {
                         // Setup failed — normalize accumulated arm types and stop
                         let match_ty = if accumulated_types.is_empty() {
-                            make_typevalue_unknown()
+                            // No arms: fresh TypeVar (unconstrained)
+                            state.fresh_type_var(&span)
                         } else {
                             typevalue_normalize_union(accumulated_types)
                         };
@@ -1826,7 +1834,8 @@ async fn infer_var_ref(
                         "malformed TypeValue.Scheme: instantiation failed (payload corrupt)",
                         node.span.clone(),
                     ));
-                    make_typevalue_unknown()
+                    // Malformed scheme: fresh TypeVar (failed instantiation, unconstrained)
+                    state.fresh_type_var(&node.span)
                 }
             }
         } else {
@@ -1875,7 +1884,8 @@ async fn infer_var_ref(
                 Ok(ty) => ty,
                 Err(e) => {
                     errors.push(e);
-                    make_typevalue_unknown()
+                    // Annotation resolution failed: fresh TypeVar (unconstrained)
+                    state.fresh_type_var(&node.span)
                 }
             };
             state
@@ -1884,7 +1894,8 @@ async fn infer_var_ref(
             ty
         } else {
             errors.push(err);
-            make_typevalue_unknown()
+            // Undefined variable: fresh TypeVar (unconstrained)
+            state.fresh_type_var(&node.span)
         }
     }
 }
@@ -1966,7 +1977,8 @@ async fn apply_cont_call_func(
                         "malformed TypeValue.Fn: params/return extraction failed (payload corrupt)",
                         call_node.span.clone(),
                     ));
-                        return TypeCheckAction::Done(make_typevalue_unknown());
+                        // Malformed Fn: fresh TypeVar (failed extraction, unconstrained return)
+                        return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
                     }
                 };
 
@@ -2000,7 +2012,7 @@ async fn apply_cont_call_func(
             // Check variadic flag from TypeValue.Fn payload.
             let inst_rest: Option<Box<(String, TypeValue)>> =
                 if crate::type_infer::typevalue_fn_is_variadic(&func_ty) {
-                    Some(Box::new(("...rest".to_string(), make_typevalue_unknown())))
+                    Some(Box::new(("...rest".to_string(), make_typevalue_top())))
                 } else {
                     None
                 };
@@ -2061,7 +2073,8 @@ async fn apply_cont_call_func(
                         call_node.span.clone(),
                     );
                     ctx.errors.push(err.clone());
-                    return TypeCheckAction::Done(make_typevalue_unknown());
+                    // Arity error: fresh TypeVar (failed call, unconstrained return)
+                    return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
                 }
             }
 
@@ -2176,7 +2189,8 @@ async fn apply_cont_call_func(
                     ),
                     call_node.span.clone(),
                 ));
-                return TypeCheckAction::Done(make_typevalue_unknown());
+                // Variant arity error: fresh TypeVar (failed call, unconstrained)
+                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
             }
 
             // Extract the declared payload type (fields record) from the NominalVariant.
@@ -2257,7 +2271,8 @@ async fn apply_cont_call_func(
                         "malformed TypeValue.Inter: members extraction failed (payload corrupt)",
                         call_node.span.clone(),
                     ));
-                    return TypeCheckAction::Done(make_typevalue_unknown());
+                    // Malformed Inter: fresh TypeVar (failed extraction, unconstrained)
+                    return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
                 }
             };
             let fn_members: Vec<TypeValue> = members
@@ -2272,7 +2287,8 @@ async fn apply_cont_call_func(
                     call_node.span.clone(),
                 );
                 ctx.errors.push(err.clone());
-                return TypeCheckAction::Done(make_typevalue_unknown());
+                // Inter with no Fn members: fresh TypeVar (type error, unconstrained)
+                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
             }
 
             let n_positional = args.len();
@@ -2299,7 +2315,8 @@ async fn apply_cont_call_func(
                     call_node.span.clone(),
                 );
                 ctx.errors.push(err.clone());
-                return TypeCheckAction::Done(make_typevalue_unknown());
+                // No matching overload: fresh TypeVar (arity error, unconstrained)
+                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
             }
 
             // Pick the most specific overload: smallest params.len() that fits,
@@ -2313,8 +2330,10 @@ async fn apply_cont_call_func(
 
         Some(TV_UNION) => {
             // Union type at call site: select Fn members matching the arity.
-            let members =
-                crate::type_infer::typevalue_extract_members_pub(&func_ty).unwrap_or_default();
+            let members = match crate::type_infer::typevalue_extract_members_pub(&func_ty) {
+                Some(v) => v,
+                None => vec![], // TypeValue has no members to dispatch (e.g., gradual/Unknown).
+            };
             let fn_members: Vec<TypeValue> = members
                 .into_iter()
                 .filter(|m| typevalue_ctor(m) == Some(TV_FN))
@@ -2336,7 +2355,8 @@ async fn apply_cont_call_func(
                     ctx.type_map,
                 )
                 .await;
-                return TypeCheckAction::Done(make_typevalue_unknown());
+                // Union with no Fn members: fresh TypeVar (type error, unconstrained)
+                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
             }
 
             // Call with the first matching Fn member (simplified for TypeValue migration).
@@ -2366,7 +2386,8 @@ async fn apply_cont_call_func(
                 call_node.span.clone(),
             );
             ctx.errors.push(err);
-            TypeCheckAction::Done(make_typevalue_unknown())
+            // Non-callable type: fresh TypeVar (type error, unconstrained)
+            TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span))
         }
     }
 }
@@ -2398,7 +2419,8 @@ async fn finalize_call_no_positional_args(
             span.clone(),
         );
         ctx.errors.push(err.clone());
-        return make_typevalue_unknown();
+        // Arity error: fresh TypeVar (failed call, unconstrained return)
+        return ctx.state.fresh_type_var(&span);
     }
 
     let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -2517,7 +2539,8 @@ async fn apply_call_args_poly(
             span.clone(),
         );
         ctx.errors.push(err.clone());
-        return TypeCheckAction::Done(make_typevalue_unknown());
+        // Arity error: fresh TypeVar (failed call, unconstrained return)
+        return TypeCheckAction::Done(ctx.state.fresh_type_var(&span));
     }
 
     // Unify positional args against fixed params (Robinson unification via unify())
@@ -3020,7 +3043,7 @@ async fn infer_fn_push_cont(
                     Ok(ty) => ty,
                     Err(e) => {
                         errors.push(e);
-                        // Fall back to a bare TypeVar for the whole dict.
+                        // Annotation resolution failed: fresh TypeVar (unconstrained)
                         state.fresh_type_var(&p.span)
                     }
                 }
@@ -3046,7 +3069,8 @@ async fn infer_fn_push_cont(
                 Ok(ty) => ty,
                 Err(e) => {
                     errors.push(e);
-                    make_typevalue_unknown()
+                    // Annotation resolution failed: fresh TypeVar (unconstrained)
+                    state.fresh_type_var(&p.span)
                 }
             }
         } else {
@@ -3314,8 +3338,10 @@ async fn setup_match_arm_env(
     let next_remaining_scrutinee = if arm.guard.is_none() {
         match &arm.pattern.expr {
             crate::ast::SurfaceExpression::Field { .. } => {
-                let tag =
-                    crate::ast::flatten_dot_access_to_tag_node(&arm.pattern).unwrap_or_default();
+                let tag = match crate::ast::flatten_dot_access_to_tag_node(&arm.pattern) {
+                    Some(t) => t,
+                    None => String::new(), // Non-constructor dot-access (leading-dot or numeric index) — not a tag pattern.
+                };
                 let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
                 let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant(
                     tycon,
@@ -3327,7 +3353,10 @@ async fn setup_match_arm_env(
             crate::ast::SurfaceExpression::Call { func, .. }
                 if matches!(&func.expr, crate::ast::SurfaceExpression::Field { .. }) =>
             {
-                let tag = crate::ast::flatten_dot_access_to_tag_node(func).unwrap_or_default();
+                let tag = match crate::ast::flatten_dot_access_to_tag_node(func) {
+                    Some(t) => t,
+                    None => String::new(), // Non-constructor dot-access (leading-dot or numeric index) — not a tag pattern.
+                };
                 let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
                 let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant(
                     tycon,
@@ -3404,7 +3433,8 @@ fn qualify_typevalue_body(body: &TypeValue, qualify_tag: &impl Fn(&str) -> Strin
             }
         }
         Some(TV_UNION) => {
-            let members = typevalue_extract_members_pub(body).unwrap_or_default();
+            let members = typevalue_extract_members_pub(body)
+                .expect("invariant: TV_UNION TypeValue must have extractable members");
             let qualified: Vec<TypeValue> = members
                 .into_iter()
                 .map(|m| qualify_typevalue_body(&m, qualify_tag))
@@ -3436,7 +3466,8 @@ fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
             }
         }
         Some(TV_UNION) => {
-            let members = typevalue_extract_members_pub(body).unwrap_or_default();
+            let members = typevalue_extract_members_pub(body)
+                .expect("invariant: TV_UNION TypeValue must have extractable members");
             members
                 .iter()
                 .filter_map(|m| {
@@ -3557,7 +3588,8 @@ fn run_match_exhaustiveness_check(
         }
         Some(TV_OP) => {
             // TyCon reference — look up in tycon_env for constructors.
-            let name = typevalue_op_name(scrutinee_ty).unwrap_or_default();
+            let name = typevalue_op_name(scrutinee_ty)
+                .expect("invariant: TV_OP TypeValue must have a name field");
             match tycon_env_ref.get(name.as_str()) {
                 Some(def) if !def.constructors.is_empty() => {
                     let constructors = def
@@ -4077,7 +4109,8 @@ fn literal_expr_to_value(expr: &SurfaceExpression) -> Option<crate::value::Value
 /// `process_document` when reconstructing constructor schemes via tycon_env diff.
 pub(crate) fn adt_value_type(alias_body: &TypeValue) -> TypeValue {
     let members: Vec<TypeValue> = match typevalue_ctor(alias_body) {
-        Some(TV_UNION) => typevalue_extract_members_pub(alias_body).unwrap_or_default(),
+        Some(TV_UNION) => typevalue_extract_members_pub(alias_body)
+            .expect("invariant: TV_UNION TypeValue must have extractable members"),
         Some(TV_NOMINAL_VARIANT) => vec![Arc::clone(alias_body)],
         _ => return Arc::clone(alias_body),
     };
@@ -4440,7 +4473,8 @@ pub(crate) async fn run_typecheck_dict(
                                 Ok(t) => t,
                                 Err(e) => {
                                     errors.push(e);
-                                    make_typevalue_unknown()
+                                    // Type alias body resolution failed: fresh TypeVar
+                                    state.fresh_type_var(&body.span)
                                 }
                             }
                         }
@@ -4458,7 +4492,8 @@ pub(crate) async fn run_typecheck_dict(
                                 Ok(t) => t,
                                 Err(e) => {
                                     errors.push(e);
-                                    make_typevalue_unknown()
+                                    // Type alias body resolution failed: fresh TypeVar
+                                    state.fresh_type_var(&body.span)
                                 }
                             }
                         }
@@ -4806,7 +4841,9 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     Err(mut errs) => {
                         if let Some(name) = key_name {
-                            field_types.insert(name.clone(), make_typevalue_unknown());
+                            // Class/instance decl failed: fresh TypeVar (unconstrained)
+                            let error_ty = state.fresh_type_var(&entry.span);
+                            field_types.insert(name.clone(), error_ty);
                             state
                                 .failed_bindings
                                 .insert(name.clone(), entry.span.clone());
@@ -4879,7 +4916,7 @@ pub(crate) async fn run_typecheck_dict(
             if let Some(name) = key_name {
                 let saved_constraints = std::mem::take(&mut state.constraints);
 
-                // T-2060/T-2071: Record outer→inner use-def edge, then advance current_binding.
+                // Record outer→inner use-def edge, then advance current_binding.
                 // Every dict entry at every nesting depth participates uniformly: before
                 // setting current_binding to this entry's BindingId, record that the current
                 // outer binding depends on this inner entry. current_binding flows naturally
@@ -5002,7 +5039,8 @@ pub(crate) async fn run_typecheck_dict(
                         }
                     }
                     Err(mut errs) => {
-                        let error_ty = make_typevalue_unknown();
+                        // Entry inference failed: fresh TypeVar (unconstrained)
+                        let error_ty = state.fresh_type_var(&entry.span);
                         errors.append(&mut errs);
                         let fallback_ty = error_ty;
                         field_types.insert(name.clone(), fallback_ty.clone());
@@ -5183,7 +5221,8 @@ pub(crate) async fn run_typecheck_dict(
                                             Ok(ty) => ty,
                                             Err(e) => {
                                                 errors.push(e);
-                                                make_typevalue_unknown()
+                                                // Narrowing annotation failed: fresh TypeVar
+                                                state.fresh_type_var(&ann_span.span)
                                             }
                                         };
                                         break 'narrowing vec![Some(narrow_ty)];
@@ -5227,7 +5266,8 @@ pub(crate) async fn run_typecheck_dict(
                                                     Ok(ty) => ty,
                                                     Err(e) => {
                                                         errors.push(e);
-                                                        make_typevalue_unknown()
+                                                        // Narrowing annotation failed: fresh TypeVar
+                                                        state.fresh_type_var(&ann_span.span)
                                                     }
                                                 };
                                             break 'narrowing vec![Some(narrow_ty)];
@@ -5250,7 +5290,10 @@ pub(crate) async fn run_typecheck_dict(
 
                     let saved_constraints = std::mem::replace(
                         &mut state.constraints,
-                        entry_constraints.get(name).cloned().unwrap_or_default(),
+                        match entry_constraints.get(name).cloned() {
+                            Some(v) => v,
+                            None => vec![], // No constraints accumulated for this entry — start fresh.
+                        },
                     );
 
                     let scheme = crate::types::generalize_tv_with_meta(

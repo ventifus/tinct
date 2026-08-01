@@ -148,10 +148,10 @@
   # level annotation. @Child on field names marks TypeNode-valued fields for the
   # traversal protocol (children, map-children) — derived generically by T-1059.
   #
-  # Role inference from @Child field type:
-  #   @Child on TypeNode           → One      (single child)
-  #   @Child on [Map Int TypeNode] → MapValues (map over values, integer-keyed)
-  #   @Child on [Map K TypeNode]   → MapValues (map over values, preserve keys)
+  # Role declaration on @Child fields:
+  #   @Child on TypeNode                     → One      (single child, default)
+  #   @Child@[role: "MapValues"] on [Map K V] → MapValues (map over values, preserve keys)
+  # The role is declared explicitly in the annotation — it is never inferred from the type name.
   # Fields without @Child are NonChild — passed through unchanged by map-children.
   #
   # Protocol functions (children, map-children, as-type) are added in T-1059
@@ -168,12 +168,12 @@
     Never@[as-type: [fn [let t] t]  guarding: 1]:      []
     # Structural
     Dict@[as-type: [fn [let r] r]  guarding: 1]:
-      [fields@Child: [Map String TypeNode]   # @Child on Map → MapValues (map over values, preserve keys)
-       open:         Int]                    # 1 = open, 0 = closed; no @Child → NonChild
+      [fields@Child@[role: "MapValues"]: [Map String TypeNode]  # explicit role: MapValues (map over values, preserve keys)
+       open:                           Int]                    # 1 = open, 0 = closed; no @Child → NonChild
     Union@[as-type: [fn [let u] u]  guarding: 0]:
-      [types@Child: [Map Int TypeNode]]      # @Child on Map → MapValues (map over values)
+      [types@Child@[role: "MapValues"]: [Map Int TypeNode]]  # explicit role: MapValues (map over values)
     Intersect@[as-type: [fn [let i] i]  guarding: 0]:
-      [types@Child: [Map Int TypeNode]]  # @Child on Map → MapValues (map over values)
+      [types@Child@[role: "MapValues"]: [Map Int TypeNode]]  # explicit role: MapValues (map over values)
     Negation@[as-type: [fn [let n] n]  guarding: 0]:
       [inner@Child: TypeNode]                # @Child on TypeNode → One
     # TypeConstructor — two roles:
@@ -182,11 +182,11 @@
     TypeConstructor@[as-type: [fn [let t] t]  guarding: 1]:
       [name: String]                         # no @Child → leaf
     TypeApplication@[as-type: [fn [let a] a]  guarding: 1]:
-      [ctor@Child:  TypeNode                 # @Child on TypeNode → One
-       args@Child:  [Map Int TypeNode]]      # @Child on Map → MapValues
+      [ctor@Child:                     TypeNode                 # @Child on TypeNode → One (default)
+       args@Child@[role: "MapValues"]: [Map Int TypeNode]]    # explicit role: MapValues
     Arrow@[as-type: [fn [let a] a]  guarding: 1]:
-      [params@Child: [Map Int TypeNode]      # @Child on Map → MapValues
-       result@Child: TypeNode]              # @Child on TypeNode → One
+      [params@Child@[role: "MapValues"]: [Map Int TypeNode]  # explicit role: MapValues
+       result@Child:                   TypeNode]            # @Child on TypeNode → One (default)
     # Recursive — equirecursive types; body is a concrete TypeNode with
     # RecursiveRef(var) at recursive positions (not a function)
     Recursive@[as-type: [fn [let r] r]  guarding: 1]:
@@ -1060,7 +1060,7 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 # Comparison (derived from < and =)
 # ============================================================================
 #
-# = and < are class methods (Equatable and Comparable respectively).
+# = and < are class methods (Equatable and Sortable respectively).
 # The resolver finds them via method_to_instance — no global wrapper needed.
 # Typeclass dispatch resolves to the correct instance at each call site.
 #
@@ -2185,11 +2185,11 @@ File: [
 
 # File is Closeable, Readable, and Writable.
 [instance File.Closeable
-  [let h@File]: [close: [fn [let h] [if [builtin-file-close h] h h]]]]
+  [let h@File]: [close: [fn [let h] [match [builtin-file-close h] 0: h 1: h]]]]
 
 [instance File.Writable
   [let h@File]: [write: [fn [let s h] [builtin-file-write h s]]
-                 flush: [fn [let h] [if [builtin-file-flush h] h h]]]]
+                 flush: [fn [let h] [match [builtin-file-flush h] 0: h 1: h]]]]
 
 [instance File.Readable
   [let h@File]: [read-chunk: [fn [let n h] [bytes: [builtin-file-read h n]  handle: h]]]]
@@ -2647,14 +2647,14 @@ Castable@[doc: "Typeclass for values that can be cast to a target type"]:
   [class [let target source]
     cast: [Fn@target [source]]]
 
+[instance Castable [let target@String source@String]:
+  [cast: [fn [let x] x]]]
+
 [instance Castable [let target@String source@Integer]:
   [cast: [fn [let x] [builtin-int->string x]]]]
 
 [instance Castable [let target@String source@Float]:
   [cast: [fn [let x] [builtin-float->string x]]]]
-
-[instance Castable [let target@String source@String]:
-  [cast: [fn [let x] x]]]
 
 [instance Castable [let target@String source@Boolean]:
   [cast: [fn [let x] [if x "true" "false"]]]]
@@ -2665,7 +2665,7 @@ Castable@[doc: "Typeclass for values that can be cast to a target type"]:
 [instance Castable [let target@Float64 source@Integer]:
   [cast: [fn [let x] [builtin-int-to-float x]]]]
 
-[instance Castable [let target@Integer source@Float]:
+[instance Castable [let target@NativeInt source@Float]:
   [cast: [fn [let x] [builtin-float-to-int x]]]]
 
 [instance Castable [let target@String source@Dict]:
@@ -2681,6 +2681,11 @@ Castable@[doc: "Typeclass for values that can be cast to a target type"]:
         [builtin-string-concat [@String [cast k]] [builtin-string-concat ": " [@String [cast [get k m]]]]]]
       [keys m]]]
     [builtin-string-concat "[" [builtin-string-concat [join "  " pairs] "]"]]]]]
+
+# Identity cast: any type casts to itself. Declared in prelude as a fallback;
+# user instances defined later take priority by scope.
+[instance Castable [let bind: [a]  target@a  source@a]:
+  [cast: [fn [let x] x]]]
 
 # str: thin convenience alias for [@String [cast x]].
 # The @String return annotation drives Castable dispatch to the String target.
@@ -3179,21 +3184,21 @@ Example: [merge [x: 1  y: 2] [y: 3  z: 4]] => [x: 1  y: 3  z: 4]
 # Dict iteration — tinct wrappers over single-step Rust primitives
 each@[return: [Seq a]  doc: "Iterate over dict values as a lazy Seq"]: [fn@[bind: [a]  return: [Seq a]] [let d@Dict]
   [step: [fn [let i]
-    [if [builtin-dict-has-nth? d i]
-      [Seq.Cons head: [builtin-dict-nth d i]  tail: [step [+ i 1]]]
-      Seq.End]]]
+    [match [builtin-dict-has-nth? d i]
+      0: Seq.End
+      1: [Seq.Cons head: [builtin-dict-nth d i]  tail: [step [builtin-int-add i 1]]]]]]
   [step 0]]
 each-key@[return: [Seq Any]  doc: "Iterate over dict keys as a lazy Seq"]: [fn@[Seq Any] [let d@Dict]
   [step: [fn [let i]
-    [if [builtin-dict-has-key-nth? d i]
-      [Seq.Cons head: [builtin-dict-key-nth d i]  tail: [step [+ i 1]]]
-      Seq.End]]]
+    [match [builtin-dict-has-key-nth? d i]
+      0: Seq.End
+      1: [Seq.Cons head: [builtin-dict-key-nth d i]  tail: [step [builtin-int-add i 1]]]]]]
   [step 0]]
 each-kv@[return: [Seq Dict]  doc: "Iterate over dict entries as a lazy Seq of [key: k  value: v] dicts"]: [fn@[Seq Dict] [let d@Dict]
   [step: [fn [let i]
-    [if [builtin-dict-has-kv-nth? d i]
-      [Seq.Cons head: [builtin-dict-kv-nth d i]  tail: [step [+ i 1]]]
-      Seq.End]]]
+    [match [builtin-dict-has-kv-nth? d i]
+      0: Seq.End
+      1: [Seq.Cons head: [builtin-dict-kv-nth d i]  tail: [step [builtin-int-add i 1]]]]]]
   [step 0]]
 # each-kv is now defined above (no longer near Iterable typeclass instances)
 build-dict@[return: Dict  doc: "Build a dict from a Seq or Dict of [key: k  value: v] pair dicts"]:
@@ -3324,9 +3329,9 @@ trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 # to ensure it closes over the actual emit channel created in eval-programs.
 env@[doc: "Read an environment variable by name. Returns Absent.Absent if not set or not allowed."]:
   [fn@[or String Absent] [let name@String]
-    [if [builtin-env-has? name]
-      [builtin-env name]
-      Absent.Absent]]
+    [match [builtin-env-has? name]
+      0: Absent.Absent
+      1: [builtin-env name]]]
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
 
 # open: Open a file via DirCap, returning a Value::File handle directly.
@@ -3373,7 +3378,7 @@ write-file-atomic@[doc: "Atomically write a string to a file (via temp file + re
 seek@[doc: "Seek to a position in a seekable file handle."]:
   [fn [let pos h]
     [if [= [builtin-type-of h] "File"]
-      [if [builtin-file-seek h pos] h h]
+      [match [builtin-file-seek h pos] 0: h 1: h]
       [h.seek pos h]]]
 stat@[doc: "Get file metadata under a DirCap"]: builtin-stat
 exists@[doc: "Check if a path exists under a DirCap"]: builtin-exists
@@ -3526,15 +3531,15 @@ chr@[doc: "Return a single-character string for the given Unicode codepoint Int"
 # String inspection (sequence of characters, byte sequence)
 str-chars@[doc: "Return a lazy Seq of single-character strings from a string"]: [fn@[Seq String] [let s@String]
   [step: [fn [let i]
-    [if [builtin-str-has-nth? s i]
-      [Seq.Cons head: [builtin-str-nth-char s i]  tail: [step [+ i 1]]]
-      Seq.End]]]
+    [match [builtin-str-has-nth? s i]
+      0: Seq.End
+      1: [Seq.Cons head: [builtin-str-nth-char s i]  tail: [step [+ i 1]]]]]]
   [step 0]]
 str-bytes@[doc: "Return a lazy Seq of UTF-8 byte values (Ints 0–255) from a string"]: [fn@[Seq Integer] [let s@String]
   [step: [fn [let i]
-    [if [builtin-str-has-nth-byte? s i]
-      [Seq.Cons head: [builtin-str-nth-byte s i]  tail: [step [+ i 1]]]
-      Seq.End]]]
+    [match [builtin-str-has-nth-byte? s i]
+      0: Seq.End
+      1: [Seq.Cons head: [builtin-str-nth-byte s i]  tail: [step [+ i 1]]]]]]
   [step 0]]
 str-bytes-raw@[doc: "Return the raw Bytes value for a string (UTF-8 encoded)"]: builtin-str-bytes
 bytes-str@[doc: "Return a String decoded from a Bytes value (UTF-8)"]: builtin-bytes-str

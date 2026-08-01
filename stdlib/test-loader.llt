@@ -141,15 +141,15 @@
   env-to-name-set: [fn [let env@Dict]
     [keys: [builtin-keys env]]
     [n:    [builtin-dict-length keys]]
-    [loop: [fn [let i builder]
+    [loop: [fn [let i@Integer builder]
       [match [builtin-eq-int i n]
         0: [loop [builtin-int-add i 1]
-                 [builtin-builder-set [builtin-dict-get i keys] 1 builder]]
+                 [builtin-builder-set [@String [builtin-dict-get i keys]] 1 builder]]
         1: [builtin-builder-finish builder]]]]
     [loop 0 [builtin-make-builder]]]
 
   merge: [fn [let a b]
-    [_copy: [fn [let builder d@Dict n i]
+    [_copy: [fn [let builder d@Dict n@Integer i@Integer]
       [match [builtin-int-gte i n]
         0: [_copy
               [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
@@ -299,7 +299,7 @@
         # result is forced via the has-key? check in impls: so that the TypeContext side-effect runs.
         # Callers access .impls; that access forces result and thus the typecheck.
         [path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
-         result: [@Any [builtin-try [call [fn []
+         result: [builtin-try [call [fn []
                        [decl-handle:  [builtin-file-open %libdir path ["read"] -1 -1]]
                        [decl-bytes:   [read-file decl-handle [builtin-bytes]]]
                        [parse-result: [builtin-parse decl-bytes path]]
@@ -311,7 +311,7 @@
                            [res: [builtin-resolve doc name-set]]
                            [builtin-int-add acc [builtin-dict-length [@Dict [builtin-typecheck-doc res.doc tc env].diagnostics]]]]
                          0
-                         docs]]]]]]
+                         docs]]]]]
         # Return value: merge module runtime bindings into acc.impls.
         # Force result via the impls: field (TypeContext side-effect runs before impls is returned).
         # Callers that access uses-result.impls force this chain; core-tc accesses .impls explicitly.
@@ -591,16 +591,15 @@
   # builtin-eval errors ARE caught via a nested builtin-try per-document.
   # Adds: env, last-result, diagnostics, doc-results, documents.
   eval-docs: [fn [let base-env@Dict state@[stderr: Any  parsed: [documents: Dict]]]
-    [test-state: [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-results: Any] [reduce
-      [fn [let s@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Any  doc-results: Any] doc]
-        # Extract s fields with explicit types to avoid Indexable-dependent type inference.
-        [env:     [@Any  [builtin-dict-get "env"         s]]]
-        [prev:    [@Any  [builtin-dict-get "last-result" s]]]
-        [tc:      [@Any  [builtin-dict-get "tc"          s]]]
-        [err:     [@Any  [builtin-dict-get "stderr"      s]]]
-        [diags:   [@Dict [builtin-dict-get "diagnostics" s]]]
-        [idx:     [@Any  [builtin-dict-get "doc-index"   s]]]
-        [history: [@Any  [builtin-dict-get "doc-results" s]]]
+    [test-state: [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Integer  doc-results: Any] [reduce
+      [fn [let s@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Integer  doc-results: Any] doc]
+        [env:     [builtin-dict-get "env"         s]]
+        [prev:    [builtin-dict-get "last-result" s]]
+        [tc:      [builtin-dict-get "tc"          s]]
+        [err:     [builtin-dict-get "stderr"      s]]
+        [diags:   [@Dict    [builtin-dict-get "diagnostics" s]]]
+        [idx:     [@Integer [builtin-dict-get "doc-index"   s]]]
+        [history: [builtin-dict-get "doc-results" s]]
         # Short-circuit: if a previous doc already has errors, skip remaining docs.
         [match [builtin-eq-int [count-errors diags] 0]
           0: s
@@ -649,7 +648,10 @@
                           # Update next state via merge so the return inherits s's annotated type.
                           # The type checker accepts [] initial values for diagnostics/doc-results
                           # through the s@[...] parameter annotation rather than re-verifying literals.
-                          [merge s [env:         [merge scope [merge result [%: result]]]
+                          # result may be non-Dict (e.g. %.x selects a field value). Only merge
+                          # result's entries into scope when it IS a Dict; always inject %: result.
+                          [scope-ext: [match result Dict: result  ...: []]]
+                          [merge s [env:         [merge scope [merge scope-ext [%: result]]]
                                     last-result:  result
                                     stderr:      err
                                     doc-index:   [builtin-int-add idx 1]
@@ -659,7 +661,7 @@
                      ...: [call [fn [let]
                        [merge s [diagnostics: [append-diags diags [$evaled]]
                                   stderr: err]]]]]]]]]]]]
-      [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Any  doc-results: Any]
+      [@[env: Any  last-result: Any  tc: Any  stderr: Any  diagnostics: Dict  doc-index: Integer  doc-results: Any]
        [env:         base-env
         last-result: []
         tc:         [get-or core-tc "tc" state]
@@ -715,6 +717,7 @@
                           span: res.doc-span
                           notes: []
                           help: []
+                          secondary-spans: []
                           call-stack: []
                           macro-expand: []
                           blame: []]]]]]]
@@ -795,7 +798,7 @@
     # llt.llt writes llt-repr(%) to it. The flushed writer is last-result;
     # .cells contains the formatted output string.
     [match [builtin-eq-int [count-errors test-result.diagnostics] 0]
-      0: [merge test-result [output: ""]]
+      0: [merge test-result [output: ""  tc-diagnostics: []]]
       1: [call [fn [let]
            [sw: [StringWriter.Writer cells: ""]]
            [fmt-scope: [merge scope [%: test-result.last-result  %stdout: sw  %emit-channel: emit-ch]]]
@@ -998,10 +1001,10 @@
   # B-688: TypeAssert weakened to [diagnostics: Dict  stderr: Any] — the fields that are
   # always present regardless of which if-ok stage short-circuits. full-env and tc-ready are
   # only added by export/set-tc-ready (late stages); on early failure they don't exist.
-  # %prelude threading also removed: [%prelude: prelude-env] in the eval-program seed
-  # created a circular dependency — prelude runtime docs access %prelude which forces
-  # prelude-env which reads prel.full-env which isn't built yet. Without %prelude in scope,
-  # [include] won't work inside prelude during its own loading, but corpus tests don't need it.
+  # Dummy %prelude: [] seed — breaks the B-688 cycle (prelude-env → prel.full-env →
+  # eval-program → prelude-env). During prelude's own loading, %prelude is only captured
+  # in the `include` closure, never forced. A [] placeholder satisfies the resolver so
+  # prelude docs can reference %prelude without a resolve error.
   prel: [@[diagnostics: Dict  stderr: Any] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
     | [if-ok log-step "prelude: loading"]
     | [if-ok load-bytes %libdir]
@@ -1009,7 +1012,7 @@
     | [if-ok parse-source]
     | [if-ok log-step "prelude: evaluating"]
     | [if-ok eval-program
-        []
+        [%prelude: []]
         core-tc]
     | [if-ok export]
     | [if-ok set-tc-ready core-tc]

@@ -217,28 +217,22 @@ pub const INTERNAL_PREFIX_LABEL: char = 'ʟ';
 // ── Tinct boolean variant ctors ──────────────────────────────────────────────
 //
 // Tinct booleans are represented as unit Variants: `Variant { ctor: "true" }`
-// and `Variant { ctor: "false" }`. These match the prelude convention where
-// `true` and `false` are bare-word unit constructors of the Bool type.
-// If the prelude encoding of Bool ever changes, update these constants only.
+// and `Variant { ctor: "false" }`. This encoding is defined in `stdlib/builtin_core.llt`
+// as the protocol for Rust builtins that return boolean results (e.g., equality checks).
+// These constants are the authoritative spelling — update them if `builtin_core.llt` changes.
 
 /// Unit-variant ctor for tinct `true`.
 pub const BOOL_TRUE: &str = "true";
 /// Unit-variant ctor for tinct `false`.
 pub const BOOL_FALSE: &str = "false";
 
-// ── TypeNode tycon name ──────────────────────────────────────────────────────
-//
-// The evaluator's pattern-matching path special-cases variants whose tycon
-// (the portion before the last `.`) is "TypeNode" and dispatches them to
-// `match_typenode_pattern`. This constant names that tycon so the string
-// literal does not appear directly in eval.rs.
-//
-// Architectural note: this coupling (eval branches on a prelude-defined tycon
-// name) is a known bridge to the future bind-primitive protocol described in
-// doc/whatif/matchable-patterns.md. The coupling is tracked as a design item;
-// changing or removing it requires revisiting the protocol design.
+// ── TypeNode / TypeValue tycon name prefixes ─────────────────────────────────
 
 /// The tycon prefix used by TypeNode constructors (e.g. `"TypeNode.Int"`).
+///
+/// Used by `typenode_value_to_type` (the authorized TypeNode→TypeValue translator) and
+/// `typevalue_to_typenode` (the inverse) to identify TypeNode values. No other Rust code
+/// should branch on this prefix — route through the authorized translators instead.
 pub const TYCON_TYPENODE: &str = "TypeNode";
 
 /// The tycon prefix used by TypeValue constructors (e.g. `"TypeValue.Repr"`).

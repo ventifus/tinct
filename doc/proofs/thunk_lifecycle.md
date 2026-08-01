@@ -24,13 +24,13 @@ A `Thunk` (`src/value.rs`) has two fields inside `ThunkInner`:
 ThunkInner {
     unevaluated: Mutex<(Option<UnevaluatedState>, Option<task::Id>)>,
     result:      tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
-    notify:      Arc<tokio::sync::Notify>,
+    notify:      std::sync::OnceLock<Arc<tokio::sync::Notify>>,
 }
 ```
 
 - `unevaluated` holds the expression to evaluate plus the claiming task's id.
 - `result` is a write-once cell for the terminal value or error.
-- `notify` wakes tasks awaiting settlement.
+- `notify` wakes tasks awaiting settlement. The `OnceLock` provides lazy initialization — the `Notify` is created on first await, not at thunk construction time.
 
 ## State Machine
 

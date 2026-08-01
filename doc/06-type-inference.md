@@ -1082,6 +1082,11 @@ pub struct InferenceContext {
     pub subst: HashMap<String, Arc<Value>>,                           // monotonic TypeVar → TypeValue binding
     pub tycon_env: HashMap<String, Arc<TyConDef>>,                    // type constructor definitions for BAS variance
     pub resolver_deferred: Vec<(Arc<Value>, Arc<Value>)>,             // deferred equality pairs for non-injective resolver FDs; drained by run_fd_improvement_fixpoint
+    pub lower_bounds: HashMap<String, Vec<TypeValue>>,                // accumulated lower bounds for TypeVars (from constrain(sub, α) path)
+    pub upper_bounds: HashMap<String, Vec<TypeValue>>,                // accumulated upper bounds for TypeVars (from C-UB constrain path)
+    pub row_lower_bounds: HashMap<String, Vec<TypeValue>>,            // accumulated lower bounds for RowVars (from constrain_record sup-tail path)
+    pub protected_vars: HashSet<String>,                              // TypeVars protected from level-lowering by Unknown (declared via bind: annotations)
+    pub non_injective_resolvers: HashSet<String>,                     // resolver names whose class has resolver_injective = false
     gensym_counter: u64,                                              // private, for globally unique fresh names
 }
 ```
@@ -1089,6 +1094,10 @@ pub struct InferenceContext {
 `InferenceContext.subst` is a monotonic binding map: once a TypeVar is bound, the binding is never removed or overwritten. Level lowering mutates `ctx.levels[name]` without touching `ctx.subst`. The level in `ctx.levels[name]` is the *current* (possibly lowered) level; it is this value that `generalize_tv` consults, not any level embedded in the TypeValue itself.
 
 `InferState.subst` and `InferState.levels` no longer exist as top-level fields — all substitution and level state is accessed via `state.ctx`.
+
+**`upper_bounds: HashMap<String, Vec<TypeValue>>`** accumulates upper bounds for TypeVars from the C-UB constrain path (`constrain(α, sup)`). When a TypeVar receives its first upper bound (exactly one in the accumulator), it is bound eagerly after verifying all accumulated lower bounds satisfy `lb <: sup`. When multiple upper bounds arrive before a lower-bound binding site, they accumulate here until the TypeVar is bound from a lower-bound constraint that checks each accumulated upper bound. `ctx.add_upper_bound(name, ty)` pushes a bound; `ctx.take_upper_bounds(name)` drains and returns all bounds (used at binding time to discard stale data).
+
+**`row_lower_bounds: HashMap<String, Vec<TypeValue>>`** accumulates lower bounds for RowVars from `constrain_record()`. When a RowVar ρ appears as the sup tail in `constrain_record(sub_row, sup_row)`, the sub tail is pushed here as a lower bound for ρ. This preserves directionality: `sub_row <: {... ρ}` means ρ must accommodate at least the sub tail. When exactly one lower bound exists, `constrain_record` binds ρ eagerly to that bound. When multiple lower bounds accumulate before a binding site, they remain here until resolved. `ctx.add_row_lower_bound(name, tail)` pushes a bound; `ctx.take_row_lower_bounds(name)` drains and returns all bounds.
 
 When a fresh TypeVar is created (`ctx.fresh_typevar(prefix)`), its name is registered in `ctx.levels` at the current level. During unification, level lowering mutates `ctx.levels[name]` without rebuilding the TypeValue. This matches the authoritative-level model from Kiselyov (2013): the level embedded at creation time is a lower bound; the authoritative current level is always in `ctx.levels`.
 
@@ -1251,7 +1260,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `generalize_tv()` | `fn(enclosing_level: u32, ty: &TypeValue, ctx: &InferenceContext) -> TypeValue` — `type_env.rs` |
 | `constrain()` U-VAR | Bind via `ctx.bind()` + symmetric level lowering via `ctx.lower_var_level()` |
 | `constrain()` U-ANY + TypeVar | Level set to 0 via `ctx.lower_var_level(name, 0)` to prevent generalization |
-| `InferenceContext` | `{ current_level: u32, levels: HashMap<String, u32>, subst: HashMap<String, Arc<Value>>, tycon_env: HashMap<String, Arc<TyConDef>>, resolver_deferred: Vec<(Arc<Value>, Arc<Value>)>, gensym_counter: u64 }` — in `type_infer.rs` |
+| `InferenceContext` | `{ current_level: u32, levels: HashMap<String, u32>, subst: HashMap<String, Arc<Value>>, tycon_env: HashMap<String, Arc<TyConDef>>, resolver_deferred: Vec<(Arc<Value>, Arc<Value>)>, lower_bounds: HashMap<String, Vec<TypeValue>>, upper_bounds: HashMap<String, Vec<TypeValue>>, row_lower_bounds: HashMap<String, Vec<TypeValue>>, protected_vars: HashSet<String>, non_injective_resolvers: HashSet<String>, gensym_counter: u64 (private) }` — in `type_infer.rs` |
 | `ctx.free_vars()` | Collects unbound TypeVar names from a TypeValue; walks settled Dict payloads recursively |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).

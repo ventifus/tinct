@@ -121,8 +121,8 @@ pub struct TyConDef {
     /// Maps each annotated field name to its `@[...]` annotation dict (e.g.
     /// `host@[required: true  doc: "hostname"]: String` → `{"host": {"required": true, "doc": "hostname"}}`).
     /// Used by the TypeNode protocol to derive `children`/`map-children` roles from `@Child`
-    /// field annotations. Populated by lower.rs::infer_child_role_from_type_expr
-    /// from @Child field annotations.
+    /// field annotations. Populated by lower.rs::child_role_from_annotation from the explicit
+    /// `role:` key in `@Child` or `@Child@[role: "MapValues"]` field annotations.
     ///
     /// Both outer and inner maps use `IndexMap` to preserve annotation key insertion order.
     pub field_annotations: IndexMap<String, IndexMap<String, crate::value::Value>>,

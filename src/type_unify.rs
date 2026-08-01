@@ -354,8 +354,44 @@ fn lower_levels_check_occurs_tv(
                 .iter()
                 .any(|m| lower_levels_check_occurs_tv(m, var_name, cap_level, ctx))
         }
+        Some(TV_RECORD) => {
+            // Check field types AND the tail RowVar for occurs check + level lowering.
+            let fields = extract_record_fields(&ty)
+                .expect("invariant: TypeValue.Record payload must be settled with fields dict");
+            let tail = extract_record_tail(&ty)
+                .expect("invariant: TypeValue.Record payload must be settled with tail field");
+
+            // Check occurs in field types (standard traversal).
+            let occurs_in_fields = fields
+                .values()
+                .any(|field_ty| lower_levels_check_occurs_tv(field_ty, var_name, cap_level, ctx));
+
+            if occurs_in_fields {
+                return true;
+            }
+
+            // Check the tail RowVar.
+            if let Some(row_var_name) = extract_rowtail_var_name(&tail) {
+                // RowVar occurs check: if the tail is the var we're checking, that's a cycle.
+                let found = row_var_name == var_name;
+                // Level lowering for the RowVar.
+                ctx.lower_var_level(&row_var_name, cap_level);
+                found
+            } else if tv_ctor(&tail).as_deref() == Some(RT_UNIFORM) {
+                // Tail is a Uniform tail — recursively check its value-type for TypeVar
+                // occurrences and perform level lowering on any TypeVars found inside it.
+                if let Some(value_type) = extract_uniform_value_type(&tail) {
+                    lower_levels_check_occurs_tv(&value_type, var_name, cap_level, ctx)
+                } else {
+                    false
+                }
+            } else {
+                // Tail is Closed (Empty dict) or unknown — no TypeVars present.
+                false
+            }
+        }
         _ => {
-            // For compound variants (Fn, Record, App, Neg, Recursive, etc.),
+            // For compound variants (Fn, App, Neg, Recursive, etc.),
             // inspect the settled payload dict recursively.
             if let Some(members) = extract_payload_typevalue_fields(&ty) {
                 members
@@ -701,6 +737,30 @@ pub async fn unify(
             }
         }
 
+        // FloatLiteral promotes to Float (mirrors IntLiteral promotion).
+        (Some(TV_FLOAT_LIT), Some(TV_REPR)) => {
+            if extract_repr_string(&b).as_deref() == Some(REPR_FLOAT) {
+                Ok(())
+            } else {
+                Err(TypeDiagnostic::error(
+                    "type-error",
+                    "cannot unify FloatLiteral with non-Float repr type",
+                    span,
+                ))
+            }
+        }
+        (Some(TV_REPR), Some(TV_FLOAT_LIT)) => {
+            if extract_repr_string(&a).as_deref() == Some(REPR_FLOAT) {
+                Ok(())
+            } else {
+                Err(TypeDiagnostic::error(
+                    "type-error",
+                    "cannot unify non-Float repr type with FloatLiteral",
+                    span,
+                ))
+            }
+        }
+
         // Function types: bidirectional constrain (contravariant params, covariant return).
         (Some(TV_FN), Some(TV_FN)) => {
             let (ac, bc) = (a.clone(), b.clone());
@@ -716,7 +776,7 @@ pub async fn unify(
         // when a has more named fields than b — b cannot satisfy a's named-field
         // requirement even though b is structurally compatible as a supertype.
         //
-        // B-680: the original bidirectional call
+        // The original bidirectional call
         //   constrain(a, b) + constrain(b, a)
         // fired "missing field 'ts'" for reduce calls in test-loader.llt where one union
         // branch returns an empty record and another returns {ts: Dict, rt: Dict}.
@@ -872,10 +932,19 @@ pub async fn unify(
 
         // App types: structural unification on the op and arg.
         //
-        // TypeValue.App ~ TypeValue.App: pairwise structural unification (injective case).
-        // Standard type constructors (Seq, Result, etc.) are injective by construction.
-        // Non-injective resolver support (T-2077) requires threading ClassDecl.resolver_injective
-        // through InferenceContext; that infrastructure is tracked separately.
+        // TypeValue.App ~ TypeValue.App: behavior splits on injectivity of the op.
+        //
+        // Standard type constructors (Seq, Result, etc.) are injective by construction:
+        // equal results imply equal arguments, so pairwise unification of op and arg is sound.
+        //
+        // Resolver-based type constructors (e.g. AddResult for Addable) may be non-injective:
+        // AddResult(Int, Float) = Float = AddResult(Float, Float). Pairwise unification of args
+        // would falsely conclude Int ~ Float. For non-injective ops, argument pairs are pushed to
+        // ctx.resolver_deferred and retried once both sides reduce to concrete types.
+        //
+        // Injectivity is tracked in ctx.non_injective_resolvers, populated by
+        // infer_class_decl_from_surface (typecheck.rs) when a ClassDecl with
+        // resolver_injective = false is registered.
         (Some(TV_APP), Some(TV_APP)) => {
             let (op_a, arg_a) = extract_app_parts(&a).ok_or_else(|| {
                 TypeDiagnostic::error("type-error", "malformed TypeValue.App", span.clone())
@@ -890,23 +959,33 @@ pub async fn unify(
             let op_name_b = extract_op_name(&op_b);
             let same_op_name = op_name_a.is_some() && op_name_a == op_name_b;
 
-            // Injectivity guard (T-2077): non-injective resolver support requires threading
-            // ClassDecl.resolver_injective through InferenceContext so unify() can look up
-            // injectivity at unification time. Until that infrastructure exists (tracked as
-            // a prerequisite for activating ctx.resolver_deferred), all TypeValue.App
-            // unifications use the injective structural path.
             if same_op_name {
-                // Same op name: injective structural unification — unify op and arg pairwise.
-                Box::pin(unify(
-                    &op_a,
-                    &op_b,
-                    ctx,
-                    constraints,
-                    span.clone(),
-                    depth + 1,
-                ))
-                .await?;
-                Box::pin(unify(&arg_a, &arg_b, ctx, constraints, span, depth + 1)).await
+                // Same op name: check injectivity before deciding how to unify args.
+                let is_non_injective = op_name_a
+                    .as_deref()
+                    .map(|name| ctx.non_injective_resolvers.contains(name))
+                    .expect("invariant: same_op_name guard ensures op_name_a is Some");
+
+                if is_non_injective {
+                    // Non-injective resolver: defer arg equality check until both sides are
+                    // concrete (ground). Pairwise unification of args is unsound here because
+                    // F(a) = F(b) does not imply a = b. The pair is retried by
+                    // run_fd_improvement_fixpoint once both args have no free TypeVars.
+                    ctx.resolver_deferred.push((arg_a, arg_b));
+                    Ok(())
+                } else {
+                    // Injective op: pairwise structural unification — unify op and arg.
+                    Box::pin(unify(
+                        &op_a,
+                        &op_b,
+                        ctx,
+                        constraints,
+                        span.clone(),
+                        depth + 1,
+                    ))
+                    .await?;
+                    Box::pin(unify(&arg_a, &arg_b, ctx, constraints, span, depth + 1)).await
+                }
             } else {
                 // UNIFY-TYCON-EXPAND (T-1112): different op names — try expanding both via tycon_env.
                 // When both ops are registered type constructors with a single-parameter body,
@@ -1215,6 +1294,33 @@ pub async fn unify(
 
 // ── unify_rowtails ────────────────────────────────────────────────────────────
 
+/// Occurs check for RowVar binding: returns true if the RowVar named `name` occurs
+/// free in `tail`. Prevents constructing infinite row types.
+///
+/// Direct self-reference: ρ occurs in RowTail.Var("ρ").
+///
+/// For RowTail.Uniform, the value-type is itself a TypeValue that may contain Records
+/// with RowVar tails — so we recursively check into it. This covers the case where
+/// binding ρ = RowTail.Uniform { value-type: Record { tail: ρ } } would construct
+/// an infinite row type via nesting rather than direct self-reference.
+pub(crate) fn rowvar_occurs_in_tail(name: &str, tail: &TypeValue) -> bool {
+    // Direct self-reference: ρ appears as RowTail.Var("ρ").
+    if extract_rowtail_var_name(tail).as_deref() == Some(name) {
+        return true;
+    }
+    // Indirect reference: ρ occurs inside a Uniform value-type's nested Record tail.
+    if tv_ctor(tail).as_deref() == Some(RT_UNIFORM) {
+        if let Some(value_type) = extract_uniform_value_type(tail) {
+            if tv_ctor(&value_type).as_deref() == Some(TV_RECORD) {
+                if let Some(nested_tail) = extract_record_tail(&value_type) {
+                    return rowvar_occurs_in_tail(name, &nested_tail);
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Unify two RowTail values.
 ///
 /// - RowTail.Closed ~ RowTail.Closed: succeed
@@ -1265,7 +1371,7 @@ async fn unify_rowtails(
             .await
         }
 
-        // T-2088: RowVar ~ RowVar: bind the higher-level RowVar to the lower-level one.
+        // RowVar ~ RowVar: bind the higher-level RowVar to the lower-level one.
         // Analogous to U-VAR-VAR for TypeVars (level comparison, keep the lower-level one).
         (Some(RT_VAR), Some(RT_VAR)) => {
             let name_a = extract_rowtail_var_name(&a);
@@ -1293,14 +1399,22 @@ async fn unify_rowtails(
             }
         }
 
-        // T-2088: RowVar ~ concrete tail: bind the RowVar to the concrete tail.
+        // RowVar ~ concrete tail: bind the RowVar to the concrete tail.
         // Analogous to U-VAR-LEVEL for TypeVars (bind variable to concrete type).
-        // TODO: occurs checking on RowVars (row variables rarely self-reference, but
-        // a fully correct implementation should check). Skipped for now per T-2088 scope.
+        // Occurs check: binding ρ = tail is rejected if ρ appears free in tail (infinite row type).
         (Some(RT_VAR), _) => {
             match extract_rowtail_var_name(&a) {
                 Some(name) => {
-                    // No occurs check (see TODO above).
+                    if rowvar_occurs_in_tail(&name, &b) {
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
+                            format!(
+                                "infinite row type: row variable '{}' occurs in its own binding",
+                                name
+                            ),
+                            span,
+                        ));
+                    }
                     ctx.bind(name, b.clone())?;
                     Ok(())
                 }
@@ -1311,7 +1425,16 @@ async fn unify_rowtails(
         (_, Some(RT_VAR)) => {
             match extract_rowtail_var_name(&b) {
                 Some(name) => {
-                    // No occurs check (see TODO above).
+                    if rowvar_occurs_in_tail(&name, &a) {
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
+                            format!(
+                                "infinite row type: row variable '{}' occurs in its own binding",
+                                name
+                            ),
+                            span,
+                        ));
+                    }
                     ctx.bind(name, a.clone())?;
                     Ok(())
                 }
@@ -1496,10 +1619,10 @@ pub async fn constrain(
     // C-UB (upper bound / narrowing): constrain(α, sup) where α is a free TypeVar and
     // sup is a concrete type.
     //
-    // T-2096: Instead of eagerly binding α = sup, accumulate sup as an upper bound. This
-    // allows multiple upper bounds to be recorded before resolution. For THIS sprint, we
-    // eagerly resolve when there's exactly one upper bound (same behavior as before). Full
-    // deferred resolution across multiple upper bounds is future work.
+    // Instead of eagerly binding α = sup, accumulate sup as an upper bound. This
+    // allows multiple upper bounds to be recorded before resolution. When exactly one upper
+    // bound exists, binds α eagerly. When multiple upper bounds exist, they are accumulated;
+    // the first upper bound triggers binding with lb verification (B-705).
     //
     // Invariant: `sub` has already been fully resolved through apply_subst at the top of
     // this function. If sub is a TypeVar here, it is guaranteed to be free (not in subst).
@@ -1512,27 +1635,66 @@ pub async fn constrain(
             return Box::pin(constrain(&resolved, &sup, ctx, constraints, span)).await;
         }
 
-        // Add sup as an upper bound. For now (T-2096 simple version), if this is the first
-        // and only upper bound, bind eagerly. Full deferred resolution (computing MEET of
-        // multiple upper bounds at generalization boundaries) is future work.
+        // Add sup as an upper bound (T-2096). If this is the first and only upper bound,
+        // bind eagerly after verifying all accumulated lower bounds. When multiple upper
+        // bounds exist, they accumulate in ctx.upper_bounds for resolution at the binding site.
         ctx.add_upper_bound(&alpha_name, sup.clone());
         let all_upper_bounds = ctx
             .upper_bounds
             .get(&alpha_name)
             .map(|v| v.len())
-            .unwrap_or(0);
+            .expect("invariant: add_upper_bound just inserted alpha_name; entry must be Some");
 
         if all_upper_bounds == 1 {
-            // Single upper bound — bind eagerly (same as old behavior). Discard lower bounds
+            // Verify all accumulated lower bounds are subtypes of the upper bound
+            // before binding. This ensures that binding α = sup doesn't violate earlier
+            // constraints like constrain(String, α).
+            let lower_bounds = ctx.take_lower_bounds(&alpha_name);
+            for lb in &lower_bounds {
+                // Verify lb <: sup holds.
+                if !crate::bas::is_subtype_bas(lb, &sup, ctx) {
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
+                        format!(
+                            "accumulated lower bound is not a subtype of upper bound (incompatible constraints on type variable)"
+                        ),
+                        span.clone(),
+                    ));
+                }
+            }
+
+            // Single upper bound — bind eagerly (same as old behavior). Discard upper bounds
             // to prevent stale data accumulation (they become dead once α is bound).
-            drop(ctx.take_lower_bounds(&alpha_name));
             drop(ctx.take_upper_bounds(&alpha_name));
             ctx.bind(alpha_name, sup.clone())?;
         }
-        // Multiple upper bounds: accumulated but not yet resolved. Resolution at generalization
-        // boundaries (computing MEET) is future work.
+        // When `all_upper_bounds > 1`, the TypeVar was already bound by the first upper bound
+        // call above. This branch is effectively unreachable: apply_subst at the top of
+        // constrain() resolves bound TypeVars before reaching C-UB.
 
         return Ok(());
+    }
+
+    // Reject Top in sub position after TypeVar cases are handled above.
+    // constrain(Top, TypeVar) is handled by C-LB above (TypeVar in sup).
+    // constrain(Top, concrete) is rejected here — Top is not a subtype of any concrete type.
+    if is_top(&sub) {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!("Top (⊤) is not a subtype of a specific type"),
+            span.clone(),
+        ));
+    }
+
+    // Reject Never in sup position after TypeVar cases are handled above.
+    // constrain(TypeVar, Never) is handled by C-UB above (TypeVar in sub).
+    // constrain(concrete, Never) is rejected here — no specific type is a subtype of Never.
+    if is_never(&sup) {
+        return Err(TypeDiagnostic::error(
+            "type-error",
+            format!("a specific type is not a subtype of Never (⊥)"),
+            span.clone(),
+        ));
     }
 
     // Fall through to unify() for symmetric cases (both sides concrete, structural
@@ -1682,32 +1844,30 @@ async fn constrain_record(
             Ok(())
         }
         Some(RT_VAR) => {
-            // T-2097: sup tail is a RowVar ρ. Accumulate sub_tail as a lower bound for ρ.
+            // sup tail is a RowVar ρ. Accumulate sub_tail as a lower bound for ρ.
             // This preserves directionality: "sub_row <: {... ρ}" means ρ must accommodate
-            // at least the sub tail. For THIS sprint, eagerly resolve when there's exactly
-            // one lower bound (same behavior as the old direct binding). Full deferred
-            // resolution across multiple bounds is future work.
+            // at least the sub tail. When exactly one lower bound exists, binds ρ eagerly.
+            // When multiple lower bounds exist, they accumulate in ctx.row_lower_bounds.
             match extract_rowtail_var_name(&sup_tail) {
                 Some(name) => {
                     ctx.add_row_lower_bound(&name, sub_tail.clone());
-                    let all_row_bounds = ctx
-                        .row_lower_bounds
-                        .get(&name)
-                        .map(|v| v.len())
-                        .unwrap_or(0);
+                    let all_row_bounds = ctx.row_lower_bounds.get(&name).map(|v| v.len()).expect(
+                        "invariant: add_row_lower_bound just inserted name; entry must be Some",
+                    );
 
                     if all_row_bounds == 1 {
-                        // Single lower bound — bind eagerly (same as old behavior).
+                        // Single lower bound — bind eagerly.
                         drop(ctx.take_row_lower_bounds(&name));
                         ctx.bind(name, sub_tail.clone())?;
                     }
-                    // Multiple lower bounds: accumulated but not yet resolved. Resolution
-                    // at generalization boundaries (computing JOIN) is future work.
+                    // Multiple lower bounds: accumulated in ctx.row_lower_bounds.
 
                     Ok(())
                 }
-                // Malformed RowTail.Var — conservative accept.
-                None => Ok(()),
+                None => panic!(
+                    "invariant violation: RowTail.Var payload has no name field — \
+                     all RowVar values must be constructed via make_rowtail_var"
+                ),
             }
         }
         _ => {
@@ -1789,7 +1949,7 @@ fn is_fn_variadic(tv: &TypeValue) -> bool {
                     if let Some(Ok(crate::value::Value::Variant { ctor: b_ctor, .. })) =
                         vt.peek_result()
                     {
-                        return b_ctor.as_ref() == "true";
+                        return b_ctor.as_ref() == BOOL_TRUE;
                     }
                 }
             }

@@ -1180,6 +1180,59 @@ pub(crate) fn builtin_int_to_float(
     })
 }
 
+pub(crate) fn builtin_float_to_int(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx: _,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-float-to-int", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let thunk0 = args[0].clone();
+        let v = thunk0.require_value()?.clone();
+        match v {
+            Value::Float { n, .. } => {
+                if n.is_nan() {
+                    return Err(EvalError::user_error(
+                        "Float→Integer cast: NaN has no integer representation".to_string(),
+                        call_span,
+                    )
+                    .into());
+                }
+                if n.is_infinite() {
+                    return Err(EvalError::user_error(
+                        "Float→Integer cast: infinity has no integer representation".to_string(),
+                        call_span,
+                    )
+                    .into());
+                }
+                if n > i64::MAX as f64 || n < i64::MIN as f64 {
+                    return Err(EvalError::user_error(
+                        format!("Float→Integer cast: {} is out of Integer range", n),
+                        call_span,
+                    )
+                    .into());
+                }
+                ok_val(
+                    Value::Int {
+                        n: n.trunc() as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    call_span,
+                )
+            }
+            _ => Err(EvalError::type_mismatch("Float", v.type_name(), call_span).into()),
+        }
+    })
+}
+
 pub(crate) fn builtin_int_sub(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {

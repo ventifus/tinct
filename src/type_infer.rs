@@ -64,6 +64,45 @@ pub fn make_typevalue_top() -> TypeValue {
     })
 }
 
+/// Map a TypeNode bare constructor name to its canonical TypeValue.
+///
+/// This is the **third authorized translator** listed in `doc/16b-rust-tinct-protocol.md §3`.
+/// It covers the unit (no-payload) TypeNode constructors that have a direct primitive TypeValue
+/// equivalent — `Int`, `Float`, `String`, `Bytes`, `Proxy`, and `Callable`. These are the
+/// constructors that can appear as a *pin value* in a match pattern without any payload.
+///
+/// `bare_ctor` is the unqualified constructor name — the part after `"TypeNode."`. For example,
+/// given the fully-qualified ctor `"TypeNode.Int"`, pass `"Int"`.
+///
+/// Returns `None` for unknown or payload-carrying constructors (those require async
+/// `typenode_value_to_type` which reads payload fields). Returns `None` for `Dict` because the
+/// runtime type check for `@Dict` is a structural record check, not a `Repr` check, and the
+/// payload-free `TypeNode.Dict` variant in a pin position has no field information to inspect.
+///
+/// This function is **pure and synchronous** — no evaluation context or async required.
+/// Its sole job is the constant table mapping bare names to `make_typevalue_*` calls.
+pub fn typenode_ctor_to_typevalue(bare_ctor: &str) -> Option<TypeValue> {
+    match bare_ctor {
+        TN_BARE_INT => Some(make_typevalue_repr(REPR_INT)),
+        TN_BARE_FLOAT => Some(make_typevalue_repr(REPR_FLOAT)),
+        TN_BARE_STRING => Some(make_typevalue_repr(REPR_STRING)),
+        TN_BARE_BYTES => Some(make_typevalue_repr(REPR_BYTES)),
+        TN_BARE_PROXY => Some(make_typevalue_repr(REPR_PROXY)),
+        TN_BARE_CALLABLE => Some(make_typevalue_fn_with_flags(
+            vec![],
+            make_typevalue_top(),
+            Some(0), // required_count — no fixed params
+            true,    // variadic — accepts any number of arguments
+            Vec::new(),
+        )),
+        // All other TypeNode constructors either have payloads (Dict, Union, Intersect, Arrow,
+        // Recursive, …) or are abstract lattice types (Top, Unknown, Never, Absent) that cannot
+        // usefully appear as no-payload pin patterns in match. None signals that the caller
+        // should fall through to value equality.
+        _ => None,
+    }
+}
+
 /// Create a TypeValue.Repr Arc<Value> for a primitive type.
 ///
 /// `repr` is the Rust variant discriminant string, e.g. `"Value::Int"`, `"Value::Float"`.
@@ -322,7 +361,7 @@ pub fn make_rowtail_closed() -> TypeValue {
 /// The payload is a Dict with a single "name" field containing the RowVar name string,
 /// mirroring TypeValue.Var { name: String } structure for consistency with `typevalue_var_name`.
 ///
-/// T-2088: RowVar names participate in the same level-tracking and substitution infrastructure
+/// RowVar names participate in the same level-tracking and substitution infrastructure
 /// as TypeVar names. Register the name in `ctx.levels` before calling `make_rowtail_var`.
 #[cfg(test)]
 pub fn make_rowtail_var(name: &str) -> TypeValue {
@@ -370,7 +409,7 @@ pub fn make_rowtail_uniform(value_type: TypeValue) -> TypeValue {
     make_rowtail_uniform_with_key_type(value_type, None)
 }
 
-/// T-2091: Create a RowTail.Uniform with an optional key-type constraint.
+/// Create a RowTail.Uniform with an optional key-type constraint.
 ///
 /// When `key_type` is `Some(ty)`, the RowTail.Uniform payload includes a `key-type` field
 /// that constrains the key type of additional map entries. This enables typed-key maps
@@ -413,6 +452,17 @@ pub fn make_typevalue_record(
     tail: Option<TypeValue>,
 ) -> TypeValue {
     use crate::value::HashableValue;
+
+    // Validate tail is a RowTail Variant (Closed/Var/Uniform).
+    if let Some(ref t) = tail {
+        let ctor = typevalue_ctor(t);
+        assert!(
+            matches!(ctor, Some(RT_CLOSED) | Some(RT_VAR) | Some(RT_UNIFORM)),
+            "make_typevalue_record: tail must be a RowTail Variant (Closed/Var/Uniform), got {:?}",
+            ctor
+        );
+    }
+
     // Build fields dict
     let mut fields_entries = indexmap::IndexMap::new();
     for (name, tv) in fields {
@@ -645,7 +695,7 @@ pub fn typevalue_normalize_union(mut members: Vec<TypeValue>) -> TypeValue {
         }
     }
     flat.reverse();
-    // Deduplicate by structural equality (ptr_eq fast path, then typevalue_eq for unit
+    // Deduplicate by structural equality (reflexivity check via ptr_eq, then typevalue_eq for unit
     // variants, TypeValue.Var by name, TypeValue.Repr by repr string).
     let mut deduped: Vec<TypeValue> = Vec::new();
     for tv in flat {
@@ -680,7 +730,7 @@ pub fn typevalue_normalize_intersection(mut members: Vec<TypeValue>) -> TypeValu
         }
     }
     flat.reverse();
-    // Deduplicate by structural equality (ptr_eq fast path, then typevalue_eq for unit
+    // Deduplicate by structural equality (reflexivity check via ptr_eq, then typevalue_eq for unit
     // variants, TypeValue.Var by name, TypeValue.Repr by repr string).
     let mut deduped: Vec<TypeValue> = Vec::new();
     for tv in flat {
@@ -1258,16 +1308,16 @@ pub fn typevalue_nominal_variant_has_fields(v: &TypeValue) -> bool {
 
 /// Check structural equality of two TypeValues.
 ///
-/// Uses pointer equality as a fast path. For unit variants (no payload), equality
-/// is determined by constructor tag. For `TypeValue.Var`, equality is by name.
-/// For TypeValue.Repr, equality is by repr string.
+/// Reflexivity: pointer-identical TypeValues are definitionally equal. For unit
+/// variants (no payload), equality is determined by constructor tag. For `TypeValue.Var`,
+/// equality is by name. For TypeValue.Repr, equality is by repr string.
 /// For all other variants, this is conservative: falls back to pointer equality
 /// (no thunk forcing — structural walking would require async).
 ///
 /// Available in production (not test-only) so normalize_union/intersection can use it
 /// for structural deduplication.
 pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
-    // Fast path: same Arc<Value> pointer — definitionally equal.
+    // Reflexivity: pointer-identical TypeValues are definitionally equal.
     if Arc::ptr_eq(a, b) {
         return true;
     }
@@ -1409,10 +1459,10 @@ pub struct InferenceContext {
     /// "α <: sup" means α must be AT MOST as general as sup. Multiple upper bounds from
     /// different call sites narrow α rather than conflict.
     ///
-    /// At bound resolution time (generalization or explicit solve), α is bound to the
-    /// MEET of all its upper bounds. For now, the implementation eagerly binds when there
-    /// is exactly one upper bound (same as current behavior). Full deferred resolution
-    /// across multiple upper bounds is future work.
+    /// At bound resolution time, α is bound eagerly when exactly one upper bound exists,
+    /// after verifying all accumulated lower bounds are subtypes of that upper bound (B-705).
+    /// When multiple upper bounds exist, they accumulate here until the TypeVar is bound
+    /// from a lower-bound constraint that checks each.
     pub upper_bounds: HashMap<String, Vec<TypeValue>>,
     /// Directional lower bounds accumulated for RowVars by `constrain_record()`.
     ///
@@ -1421,16 +1471,26 @@ pub struct InferenceContext {
     /// "sub_row <: {... ρ}" means ρ must accommodate at least the sub tail. Multiple lower
     /// bounds from different call sites widen ρ rather than conflict.
     ///
-    /// For THIS sprint, we eagerly resolve when there's exactly one lower bound (same
-    /// behavior as the current direct binding). Full deferred resolution across multiple
-    /// bounds (computing JOIN) is future work.
+    /// When exactly one lower bound exists, ρ is bound eagerly to that bound. When multiple
+    /// lower bounds exist, they accumulate here until resolved from a subsequent binding site.
     pub row_lower_bounds: HashMap<String, Vec<TypeValue>>,
     /// TypeVars declared via `bind:` annotations (explicit polymorphic type parameters).
     /// These are protected from `lower_var_level` calls triggered by `constrain(Unknown, α)`.
     /// Without protection, Unknown flowing into a `bind:` TypeVar lowers its level to 0,
     /// preventing generalization even though the TypeVar is explicitly declared as a
     /// polymorphic type parameter (B-681 root cause).
-    pub protected_vars: std::collections::HashSet<String>,
+    pub protected_vars: HashSet<String>,
+    /// Resolver names whose associated class has `resolver_injective = false`.
+    ///
+    /// Populated by `infer_class_decl_from_surface` when a ClassDecl with a non-injective
+    /// resolver is inserted into the environment. Used by `unify()` in the TV_APP~TV_APP
+    /// arm: when two `App(F, _)` types with the same op name `F` are compared, injectivity
+    /// determines whether arguments can be unified pairwise.
+    ///
+    /// - **Injective F**: `unify(arg_a, arg_b)` is sound — equal results imply equal args.
+    /// - **Non-injective F**: `F(a) == F(b)` does not imply `a == b`. Args are pushed to
+    ///   `resolver_deferred` instead, where they are retried once both sides are ground.
+    pub non_injective_resolvers: HashSet<String>,
 }
 
 impl InferenceContext {
@@ -1446,7 +1506,8 @@ impl InferenceContext {
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
             row_lower_bounds: HashMap::new(),
-            protected_vars: std::collections::HashSet::new(),
+            protected_vars: HashSet::new(),
+            non_injective_resolvers: HashSet::new(),
         }
     }
 
@@ -1465,7 +1526,8 @@ impl InferenceContext {
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
             row_lower_bounds: HashMap::new(),
-            protected_vars: std::collections::HashSet::new(),
+            protected_vars: HashSet::new(),
+            non_injective_resolvers: HashSet::new(),
         }
     }
 
@@ -1491,7 +1553,8 @@ impl InferenceContext {
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
             row_lower_bounds: HashMap::new(),
-            protected_vars: std::collections::HashSet::new(),
+            protected_vars: HashSet::new(),
+            non_injective_resolvers: HashSet::new(),
         }
     }
 
@@ -1574,16 +1637,19 @@ impl InferenceContext {
     /// caller verifies each lower bound satisfies `lb <: sup`. Also used by
     /// `resolve_lower_bounds()` to compute the JOIN.
     pub fn take_lower_bounds(&mut self, name: &str) -> Vec<TypeValue> {
-        self.lower_bounds.remove(name).unwrap_or_default()
+        match self.lower_bounds.remove(name) {
+            Some(v) => v,
+            None => vec![], // Key absent means no bounds were ever accumulated.
+        }
     }
 
     /// Record an upper bound for a free TypeVar.
     ///
     /// Called by `constrain(α, sup)` when α is free. Instead of binding α = sup via
     /// equality (which would prevent accumulating multiple upper bounds), the upper
-    /// bound is accumulated here. For THIS sprint, we eagerly resolve when there's
-    /// exactly one upper bound. Full deferred resolution across multiple bounds is
-    /// future work.
+    /// bound is accumulated here. When exactly one upper bound exists, `constrain`
+    /// binds α eagerly after verifying all lower bounds. Multiple upper bounds accumulate
+    /// and are checked against lower bounds at the binding site.
     pub fn add_upper_bound(&mut self, name: &str, ty: TypeValue) {
         self.upper_bounds
             .entry(name.to_string())
@@ -1596,15 +1662,18 @@ impl InferenceContext {
     /// Used when binding α from a lower-bound constraint (`constrain(sub, α)`): the
     /// caller verifies each upper bound satisfies `sub <: ub`.
     pub fn take_upper_bounds(&mut self, name: &str) -> Vec<TypeValue> {
-        self.upper_bounds.remove(name).unwrap_or_default()
+        match self.upper_bounds.remove(name) {
+            Some(v) => v,
+            None => vec![], // Key absent means no bounds were ever accumulated.
+        }
     }
 
     /// Record a lower bound for a free RowVar.
     ///
     /// Called by `constrain_record()` when a RowVar ρ appears as the sup tail. Instead
-    /// of binding ρ = sub_tail via equality, the sub tail is accumulated here. For THIS
-    /// sprint, we eagerly resolve when there's exactly one lower bound. Full deferred
-    /// resolution across multiple bounds is future work.
+    /// of binding ρ = sub_tail via equality, the sub tail is accumulated here. When
+    /// exactly one lower bound exists, `constrain_record` binds ρ eagerly. Multiple
+    /// lower bounds accumulate here until resolved from a subsequent binding site.
     pub fn add_row_lower_bound(&mut self, name: &str, tail: TypeValue) {
         self.row_lower_bounds
             .entry(name.to_string())
@@ -1614,22 +1683,27 @@ impl InferenceContext {
 
     /// Drain and return all accumulated lower bounds for a RowVar.
     pub fn take_row_lower_bounds(&mut self, name: &str) -> Vec<TypeValue> {
-        self.row_lower_bounds.remove(name).unwrap_or_default()
+        match self.row_lower_bounds.remove(name) {
+            Some(v) => v,
+            None => vec![], // Key absent means no bounds were ever accumulated.
+        }
     }
 
     /// Walk a TypeValue and apply the current substitution, resolving bound TypeVars.
     ///
     /// Follows TypeVar binding chains to fixpoint (cycle-safe via a visited set).
-    /// Unit variants and non-Var variants are returned as-is (via Arc::clone).
-    ///
-    /// NOTE: Does NOT recursively walk complex variant payloads (which are async thunks).
-    /// This resolves the top-level TypeVar chain only. Full structural apply requires
-    /// forcing thunks asynchronously.
+    /// Also recursively substitutes into TypeValue.Record's RowTail.Uniform payload
+    /// (the value-type and key-type fields), since those payloads are created with
+    /// `Thunk::value(...)` and are synchronously peekable via `peek_result()`.
+    /// Other compound TypeValue variants (Fn, Union, Inter, App) are returned as-is —
+    /// TypeVar components within those are resolved when the compound type is itself
+    /// unified or instantiated.
     pub fn apply_subst(&self, ty: &TypeValue) -> TypeValue {
         self.apply_subst_inner(ty, &mut HashSet::new())
     }
 
     fn apply_subst_inner(&self, ty: &TypeValue, visited: &mut HashSet<String>) -> TypeValue {
+        // Follow TypeVar binding chains to fixpoint.
         if let Some(name) = typevalue_var_name(ty) {
             if visited.contains(&name) {
                 // Cycle detected — return the TypeVar itself.
@@ -1639,8 +1713,202 @@ impl InferenceContext {
                 visited.insert(name);
                 return self.apply_subst_inner(bound, visited);
             }
+            // Unbound TypeVar — return as-is.
+            return Arc::clone(ty);
         }
+
+        // Special case: TypeValue.Record with RowTail.Uniform tail.
+        // The Uniform tail contains value-type and optional key-type fields that may
+        // contain TypeVars. We must recursively apply substitution to those fields.
+        if let Some(TV_RECORD) = typevalue_ctor(ty) {
+            // Extract the tail field from the Record payload.
+            let tail_opt = self.extract_tail_for_subst(ty);
+            if let Some(tail) = tail_opt {
+                if let Some(RT_UNIFORM) = typevalue_ctor(&tail) {
+                    // Extract value-type and key-type from the Uniform payload.
+                    let (value_type_opt, key_type_opt) = self.extract_uniform_fields(&tail);
+
+                    // Apply substitution to value-type and key-type.
+                    let new_value_type = if let Some(ref vt) = value_type_opt {
+                        Some(self.apply_subst_inner(vt, visited))
+                    } else {
+                        None
+                    };
+                    let new_key_type = if let Some(ref kt) = key_type_opt {
+                        Some(self.apply_subst_inner(kt, visited))
+                    } else {
+                        None
+                    };
+
+                    // Check if substitution changed anything.
+                    let changed = match (&value_type_opt, &new_value_type) {
+                        (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                        _ => false,
+                    } || match (&key_type_opt, &new_key_type) {
+                        (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                        _ => false,
+                    };
+
+                    if changed {
+                        // Reconstruct the Record with the substituted tail.
+                        return self.reconstruct_record_with_new_tail(
+                            ty,
+                            new_value_type,
+                            new_key_type,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Binding chains for TypeVars are resolved above. Other TypeValues (Fn, Union, Inter,
+        // App) are returned as-is — their TypeVar components are resolved when those compound
+        // types are themselves unified or instantiated.
         Arc::clone(ty)
+    }
+
+    /// Extract the tail field from a TypeValue.Record payload.
+    pub(crate) fn extract_tail_for_subst(&self, tv: &TypeValue) -> Option<TypeValue> {
+        use crate::value::HashableValue;
+        match tv.as_ref() {
+            crate::value::Value::Variant {
+                payload: Some(thunk),
+                ..
+            } => {
+                if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
+                    let tail_key = HashableValue::Str(Arc::from(FIELD_TAIL));
+                    if let Some(tail_thunk) = entries.get(&tail_key) {
+                        if let Some(Ok(tail_val)) = tail_thunk.peek_result() {
+                            return Some(Arc::new(tail_val.clone()));
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract value-type and key-type fields from a RowTail.Uniform payload.
+    pub(crate) fn extract_uniform_fields(
+        &self,
+        tail: &TypeValue,
+    ) -> (Option<TypeValue>, Option<TypeValue>) {
+        use crate::value::HashableValue;
+        match tail.as_ref() {
+            crate::value::Value::Variant {
+                payload: Some(thunk),
+                ..
+            } => match thunk.peek_result() {
+                Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+                    let value_type_key = HashableValue::Str(Arc::from(RT_FIELD_VALUE_TYPE));
+                    let key_type_key = HashableValue::Str(Arc::from(RT_FIELD_KEY_TYPE));
+
+                    let value_type = entries.get(&value_type_key).and_then(|t| {
+                        t.peek_result().and_then(|r| match r {
+                            Ok(v) => Some(Arc::new(v.clone())),
+                            Err(e) => panic!(
+                                "type field thunk in error state (invariant violation): {:?}",
+                                e
+                            ),
+                        })
+                    });
+
+                    let key_type = entries.get(&key_type_key).and_then(|t| {
+                        t.peek_result().and_then(|r| match r {
+                            Ok(v) => Some(Arc::new(v.clone())),
+                            Err(e) => panic!(
+                                "type field thunk in error state (invariant violation): {:?}",
+                                e
+                            ),
+                        })
+                    });
+
+                    return (value_type, key_type);
+                }
+                Some(Err(e)) => panic!(
+                    "TypeValue thunk in error state (invariant violation): TypeValue thunks \
+                         created via Thunk::value() must never be in error state: {:?}",
+                    e
+                ),
+                _ => return (None, None),
+            },
+            _ => (None, None),
+        }
+    }
+
+    /// Reconstruct a TypeValue.Record with a new RowTail.Uniform tail.
+    fn reconstruct_record_with_new_tail(
+        &self,
+        original_record: &TypeValue,
+        new_value_type: Option<TypeValue>,
+        new_key_type: Option<TypeValue>,
+    ) -> TypeValue {
+        use crate::value::HashableValue;
+
+        // Extract the existing fields dict from the original Record.
+        let fields_dict = match original_record.as_ref() {
+            crate::value::Value::Variant {
+                payload: Some(thunk),
+                ..
+            } => {
+                if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
+                    let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
+                    entries.get(&fields_key).and_then(|t| {
+                        t.peek_result().and_then(|r| match r {
+                            Ok(v) => Some(v.clone()),
+                            Err(e) => panic!(
+                                "type field thunk in error state (invariant violation): {:?}",
+                                e
+                            ),
+                        })
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        // Build new RowTail.Uniform with substituted fields.
+        let new_tail = if let Some(vt) = new_value_type {
+            make_rowtail_uniform_with_key_type(vt, new_key_type)
+        } else {
+            panic!(
+                "invariant violation: new_value_type must be Some when reconstructing Uniform tail"
+            )
+        };
+
+        // Reconstruct the Record with the existing fields and new tail.
+        let mut payload_entries = indexmap::IndexMap::new();
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_FIELDS)),
+            Arc::new(crate::value::Thunk::value(
+                fields_dict.expect("invariant violation: TypeValue.Record payload must have a fields entry when reconstructing Uniform tail"),
+                crate::rust_span!(),
+            )),
+        );
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_TAIL)),
+            Arc::new(crate::value::Thunk::value(
+                new_tail.as_ref().clone(),
+                crate::rust_span!(),
+            )),
+        );
+
+        let payload_dict = crate::value::Value::Dict {
+            entries: payload_entries,
+            type_val: crate::value::unknown_type_val(),
+        };
+
+        Arc::new(crate::value::Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_RECORD),
+            payload: Some(Arc::new(crate::value::Thunk::value(
+                payload_dict,
+                crate::rust_span!(),
+            ))),
+        })
     }
 
     /// Collect all free TypeVar names directly reachable from a TypeValue.

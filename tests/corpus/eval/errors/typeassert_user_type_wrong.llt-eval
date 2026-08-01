@@ -1,0 +1,15 @@
+# B-655: TypeAssert on a user-declared nominal type fails at runtime when the value does not match.
+#
+# After S-1004 wires the tycon_env, a user-declared type annotation @Color resolves via
+# TypeAssertCheck::Resolved to TypeValue.Op("Color"). At runtime, value_matches_type
+# ("wrong", TypeValue.Op("Color"), ctx) delegates to BAS:
+#   ground_typevalue_of("wrong") = TypeValue.Repr("Value::String")
+#   is_consistent_subtype(Repr("String"), Op("Color"), ctx) = false (String is not Color)
+# → error.
+#
+# This proves that user-declared types and primitive types use the SAME TypeAssert
+# enforcement mechanism — no privileged category exists after S-1004 wiring.
+[Color: [type Red Green Blue]
+ result: [@Color "wrong"]]
+=== error
+type assertion failed: expected Color, got String

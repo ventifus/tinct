@@ -226,7 +226,7 @@ async fn test_types_are_disjoint_single_field_records() {
     // Verify fields are distinct: rec1 has "x", rec2 has "y".
     // Unifying them (as records) should fail because rec2 lacks "x" from rec1's perspective
     // under width subtyping (constrain_record requires sub to have all of sup's fields).
-    // T-2075: the intended API is bas::atoms_are_disjoint (TypeValue-level disjointness
+    // The intended API is bas::atoms_are_disjoint (TypeValue-level disjointness
     // checking). This test verifies the correct structural behavior (constrain rejects
     // mismatched-field records) which is correct at this stage.
     let mut state = crate::types::InferState::new();
@@ -273,7 +273,7 @@ async fn test_types_are_not_disjoint_same_key_records() {
 async fn test_types_are_not_disjoint_multi_field_records() {
     let int_tv = make_typevalue_repr(REPR_INT);
     let str_tv = make_typevalue_repr(REPR_STRING);
-    let bool_tv = make_typevalue_op("Boolean");
+    let bool_tv = make_typevalue_op("TestBool");
     let float_tv = make_typevalue_repr(REPR_FLOAT);
     let rec1 = make_record_tv(vec![("x", int_tv), ("a", bool_tv)]);
     let rec2 = make_record_tv(vec![("y", str_tv), ("b", float_tv)]);
@@ -334,7 +334,7 @@ async fn test_union_vs_union_with_typevars_defers() {
 
     let result = unify_sync(&lhs, &rhs, &mut state.ctx, &mut Vec::new(), span).await;
 
-    // T-2073: bipartite matching — Union([Int, a]) ~ Union([Str, b]) succeeds by matching
+    // Bipartite matching — Union([Int, a]) ~ Union([Str, b]) succeeds by matching
     // Int~b (binds b=Int) and a~Str (binds a=Str). This is the correct semantics.
     assert!(
         result.is_ok(),
@@ -431,7 +431,7 @@ async fn test_unify_variadic_zero_with_concrete_arity() {
     let any_function = make_fn_tv(vec![], make_typevalue_unknown());
     let concrete_fn = make_fn_tv(
         vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("Boolean"),
+        make_typevalue_op("TestBool"),
     );
 
     let result = unify_sync(
@@ -485,7 +485,7 @@ async fn test_unify_variadic_zero_with_multi_param() {
         vec![
             make_typevalue_repr(REPR_INT),
             make_typevalue_repr(REPR_STRING),
-            make_typevalue_op("Boolean"),
+            make_typevalue_op("TestBool"),
         ],
         make_typevalue_repr(REPR_FLOAT),
     );
@@ -509,7 +509,7 @@ async fn test_is_subtype_concrete_to_any_function() {
     // A Fn type IS a subtype of itself (reflexivity via constrain).
     let concrete_fn = make_fn_tv(
         vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("Boolean"),
+        make_typevalue_op("TestBool"),
     );
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
 
@@ -534,7 +534,7 @@ async fn test_is_subtype_concrete_to_any_function() {
     // concrete_fn IS a subtype of itself (reflexivity).
     let concrete_fn2 = make_fn_tv(
         vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("Boolean"),
+        make_typevalue_op("TestBool"),
     );
     let mut constraints_ok = Vec::new();
     let result_ok = super::constrain(
@@ -594,7 +594,7 @@ async fn test_unify_concrete_fn_with_any_function_symmetric() {
     // Symmetric to test_unify_variadic_zero_with_concrete_arity.
     let concrete_fn = make_fn_tv(
         vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("Boolean"),
+        make_typevalue_op("TestBool"),
     );
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let result = unify_sync(&concrete_fn, &any_fn, &mut state.ctx, &mut Vec::new(), span).await;
@@ -623,7 +623,7 @@ async fn test_is_consistent_any_function_with_concrete() {
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let concrete_fn = make_fn_tv(
         vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("Boolean"),
+        make_typevalue_op("TestBool"),
     );
     assert!(
         matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
@@ -707,7 +707,7 @@ async fn test_types_are_disjoint_function_vs_int() {
     // because they have different ctor tags and neither is Unknown.
     let fn_tv = make_fn_tv(
         vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("Boolean"),
+        make_typevalue_op("TestBool"),
     );
     let int_tv = make_typevalue_repr(REPR_INT);
     assert!(
@@ -812,7 +812,7 @@ async fn test_types_are_disjoint_function_vs_record() {
 // TypeValue.Recursive uses de Bruijn indexing (RecursiveRef), not named binders.
 // ============================================================================
 
-/// T-1077: Unifying TypeValue.Recursive does not bind any named TypeVar for the binder.
+/// Unifying TypeValue.Recursive does not bind any named TypeVar for the binder.
 /// TypeValue.Recursive uses de Bruijn RecursiveRef(0) instead of a named bound variable.
 /// When unify opens a Recursive type, it introduces a fresh TypeVar (e.g. "rec0") via
 /// ctx.fresh_typevar("rec") and substitutes it for RecursiveRef(0) — but that fresh var
@@ -854,7 +854,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
     );
 }
 
-/// T-2075: Fn type and TyCon.App type are disjoint.
+/// Fn type and TyCon.App type are disjoint.
 #[test]
 fn test_disjoint_fn_vs_tycon_app() {
     use crate::type_infer::InferenceContext;
@@ -865,7 +865,7 @@ fn test_disjoint_fn_vs_tycon_app() {
     let fn_tv = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
 
     // Create a TyCon.App type: Seq Int (for example)
-    let seq_tycon = make_typevalue_op("Seq");
+    let seq_tycon = make_typevalue_op("TestSeq");
     let seq_app = crate::type_infer::make_typevalue_app(seq_tycon, int_tv);
 
     // Fn-vs-App: a function type and a type-constructor application are structurally
@@ -876,7 +876,7 @@ fn test_disjoint_fn_vs_tycon_app() {
     );
 }
 
-/// T-2075: Fn type and Map type (Record) are disjoint.
+/// Fn type and Map type (Record) are disjoint.
 #[test]
 fn test_disjoint_fn_vs_map() {
     use crate::type_infer::InferenceContext;
@@ -896,7 +896,7 @@ fn test_disjoint_fn_vs_map() {
     );
 }
 
-/// T-2075: Two different Fn types (conservative: report not disjoint).
+/// Two different Fn types (conservative: report not disjoint).
 /// atoms_are_disjoint is conservative — it returns false for Fn vs Fn because
 /// function types with different signatures could still overlap (e.g., via polymorphism).
 #[test]
@@ -921,11 +921,11 @@ fn test_disjoint_fn_vs_fn_conservative() {
 }
 
 // ============================================================================
-// T-913: Reverse functional dependency (bidirectional FD) inference tests
+// Reverse functional dependency (bidirectional FD) inference tests
 // ============================================================================
 
 // ============================================================================
-// T-994: Level semantics unit tests (type-system-health-s841-followup sprint)
+// Level semantics unit tests
 // ============================================================================
 
 /// TypeVarEntry stores level, binding, and kind in one place.
@@ -1031,11 +1031,11 @@ async fn test_type_vars_snapshot_restore_pattern() {
 }
 
 // ============================================================================
-// T-996: fd_in_progress cycle guard unit test
+// fd_in_progress cycle guard unit test
 // ============================================================================
 
 // ============================================================================
-// T-1020: Variance/TyConDef/UNIFY-TYCON/UNIFY-UNIFORM unit tests
+// Variance/TyConDef/UNIFY-TYCON/UNIFY-UNIFORM unit tests
 // ============================================================================
 
 /// T-1020a: Variance enum Display — each variant has the expected display string.
@@ -1128,14 +1128,14 @@ async fn test_tycondef_builtin_type() {
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: Some("Seq".to_string()),
+        builtin_type: Some("TestSeq".to_string()),
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     };
 
-    assert_eq!(def.builtin_type, Some("Seq".to_string()));
+    assert_eq!(def.builtin_type, Some("TestSeq".to_string()));
 }
 
 /// T-1020g: UNIFY-TYCON — same name unifies successfully.
@@ -1197,10 +1197,10 @@ async fn test_unify_tycon_vs_empty_name_err() {
 }
 
 // ============================================================================
-// T-2074: RowTail.Uniform and RowTail.Var unification tests
+// RowTail.Uniform and RowTail.Var unification tests
 // ============================================================================
 
-/// T-2074: RowTail.Uniform same-value-type records unify successfully.
+/// RowTail.Uniform same-value-type records unify successfully.
 /// Record { a: Int, ...String } ~ Record { a: Int, ...String } should unify.
 #[tokio::test]
 async fn test_unify_uniform_same_value_type_records_ok() {
@@ -1226,7 +1226,7 @@ async fn test_unify_uniform_same_value_type_records_ok() {
     );
 }
 
-/// T-2074: RowTail.Uniform with inconsistent named field types fails unification.
+/// RowTail.Uniform with inconsistent named field types fails unification.
 /// Record { a: Int, ...String } ~ Record { a: Str, ...String } should fail (Int ≠ Str in named field).
 #[tokio::test]
 async fn test_unify_uniform_inconsistent_named_field_type_errors() {
@@ -1250,7 +1250,7 @@ async fn test_unify_uniform_inconsistent_named_field_type_errors() {
     );
 }
 
-/// T-2074: Empty record with uniform TypeVar tail unifies with another empty uniform record via TypeVar join.
+/// Empty record with uniform TypeVar tail unifies with another empty uniform record via TypeVar join.
 /// Record { ...α } ~ Record { ...β } should bind one TypeVar to the other.
 #[tokio::test]
 async fn test_unify_empty_uniform_typevar_join() {
@@ -1289,7 +1289,7 @@ async fn test_unify_empty_uniform_typevar_join() {
     );
 }
 
-/// T-2074: RowTail.Uniform concrete subtype check in constrain_rows.
+/// RowTail.Uniform concrete subtype check in constrain_rows.
 /// Record { a: Int, b: Str, ...String } <: Record { a: Int, ...String } should succeed (extra field b: Str <: String).
 #[tokio::test]
 async fn test_constrain_rows_uniform_sup_tail() {
@@ -1319,7 +1319,7 @@ async fn test_constrain_rows_uniform_sup_tail() {
     );
 }
 
-/// T-2074: Width subtyping allows extra fields even when sup tail is closed.
+/// Width subtyping allows extra fields even when sup tail is closed.
 /// Record { a: Int, b: Str } <: Record { a: Int } succeeds — sub has all required fields,
 /// extra fields are allowed by structural width subtyping.
 #[tokio::test]
@@ -1346,7 +1346,7 @@ async fn test_constrain_rows_closed_sup_tail_allows_width_subtyping() {
     );
 }
 
-/// B-680: unify(Record{ts, rt}, empty_record) must NOT fire "missing field" for the reverse direction.
+/// unify(Record{ts, rt}, empty_record) must NOT fire "missing field" for the reverse direction.
 ///
 /// S-1003 added bidirectional constrain(a,b) + constrain(b,a) in unify(TV_RECORD, TV_RECORD).
 /// This fires "missing field 'ts'" when a = {ts: Dict, rt: Dict} and b = {} because
@@ -1491,7 +1491,7 @@ async fn test_tycondef_partialeq_different_variance() {
 }
 
 // ============================================================================
-// T-1112: UNIFY-TYCON-EXPAND tests
+// UNIFY-TYCON-EXPAND tests
 // ============================================================================
 
 // ============================================================================
@@ -1534,7 +1534,7 @@ async fn test_constrain_error_absorption() {
 
 /// unify() Error absorption: unify(Error, T) must return Ok(()) and not propagate
 /// a cascade error. This covers the `(Type::Error(_), _) | (_, Type::Error(_)) => Ok(())` arm.
-/// T-1645: Type::Error unifies with everything.
+/// Type::Error unifies with everything.
 #[tokio::test]
 async fn test_unify_error_absorption() {
     let mut state = InferState::new();
@@ -1600,14 +1600,12 @@ async fn test_unify_error_absorption() {
     );
 }
 
-/// C-Var1: constrain(Int, Union([Str, TypeVar(α), TypeVar(β)])) falls through to
-/// unify(Int, Union([Str, α, β])). The (_, TV_UNION) arm tries concrete members first
-/// (Str → fail), then TypeVars in order (α → binds α=Int via U-VAR-LEVEL-SYM → Ok).
-/// The first TypeVar (α) is bound in ctx.subst; β is never tried.
-///
-/// Current behavior: α is bound in ctx.subst via equality (unify() fallthrough).
-/// The Union-containing-TypeVar case is not covered by the C-LB arm (which only fires
-/// when sup is a bare TypeVar, not a Union). Tracked as B-686.
+/// C-LB-Union: constrain(Int, Union([Str, TypeVar(α), TypeVar(β)])) is handled by the
+/// C-LB-Union arm added in B-686. Concrete members are tried first via non-destructive
+/// probe: constrain(Int, Str) fails, so no concrete member satisfies the constraint.
+/// Int is then accumulated as a lower bound for α (the first TypeVar member) via
+/// ctx.add_lower_bound. β is never touched. Neither α nor β is bound in ctx.subst —
+/// the constraint is directional ("Int <: Union([Str, α, β])"), not an equality.
 #[tokio::test]
 async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let mut state = InferState::new();
@@ -1650,7 +1648,12 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     );
 
     // The lower bound must be recorded in ctx.lower_bounds["α"].
-    let lbs = state.ctx.lower_bounds.get("α").cloned().unwrap_or_default();
+    let lbs = state
+        .ctx
+        .lower_bounds
+        .get("α")
+        .cloned()
+        .expect("invariant: α lower bound was just accumulated; entry must be Some");
     assert_eq!(
         lbs.len(),
         1,
@@ -1701,7 +1704,12 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     );
 
     // The lower bound must be recorded in ctx.lower_bounds["α"].
-    let lbs = state.ctx.lower_bounds.get("α").cloned().unwrap_or_default();
+    let lbs = state
+        .ctx
+        .lower_bounds
+        .get("α")
+        .cloned()
+        .expect("invariant: α lower bound was just accumulated; entry must be Some");
     assert_eq!(
         lbs.len(),
         1,
@@ -1710,7 +1718,7 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     );
 }
 
-/// B-686: constrain(Int, Union([Int, α])) matches concrete member — no TypeVar binding.
+/// constrain(Int, Union([Int, α])) matches concrete member — no TypeVar binding.
 /// When a concrete member in the Union matches sub, the constraint is satisfied without
 /// accumulating lower bounds for TypeVars. This tests the early-exit path in C-LB-Union.
 #[tokio::test]
@@ -1747,12 +1755,9 @@ async fn test_constrain_union_concrete_member_matches_no_typevar_binding() {
     );
 
     // No lower bounds should be accumulated for α.
-    let lbs = state.ctx.lower_bounds.get("α").cloned().unwrap_or_default();
-    assert_eq!(
-        lbs.len(),
-        0,
-        "No lower bounds should be added when concrete member matches, got: {:?}",
-        lbs.len()
+    assert!(
+        state.ctx.lower_bounds.get("α").is_none_or(|v| v.is_empty()),
+        "No lower bounds should be added when concrete member matches"
     );
 }
 
@@ -1790,7 +1795,12 @@ async fn test_constrain_typevar_lower_bound_added() {
     );
 
     // The lower bound must be recorded in ctx.lower_bounds.
-    let lbs = state.ctx.lower_bounds.get("β").cloned().unwrap_or_default();
+    let lbs = state
+        .ctx
+        .lower_bounds
+        .get("β")
+        .cloned()
+        .expect("invariant: β lower bound was just accumulated; entry must be Some");
     assert_eq!(
         lbs.len(),
         1,
@@ -1814,13 +1824,14 @@ async fn test_constrain_typevar_lower_bound_added() {
 
 /// C-FN: constrain(Fn(Int→Int), Fn(α→α)) calls constrain_fn with contravariant params
 /// and covariant return.
-///   - Contravariant param: constrain(α, Int) → sub=α is TypeVar → C-UB arm → binds α=Int
+///   - Contravariant param: constrain(α, Int) → sub=α is TypeVar → C-UB arm → accumulates
+///     Int as upper bound; exactly one upper bound → verifies lower bounds → binds α=Int.
 ///   - Covariant return:    constrain(Int, α) → apply_subst(α)=Int → constrain(Int,Int) → Ok
 ///
-/// B-687 PRAGMATIC FIX: C-UB now checks if α is already bound before attempting to bind.
-/// When α appears in multiple positions (as in Fn(α→α)), the first constraint binds α via C-UB,
-/// and subsequent constraints re-check using the bound value. This prevents double-binding errors.
-/// Full directional upper-bound accumulation is future work (tracked separately).
+/// C-UB accumulates upper bounds before binding (T-2096). When α appears in multiple positions
+/// (Fn(α→α)), the contravariant-param constraint records the first upper bound and eagerly binds
+/// α=Int (single-upper-bound case). The covariant-return constraint resolves α via apply_subst
+/// before constrain() is called, so no second C-UB fires on an already-bound α.
 #[tokio::test]
 async fn test_constrain_cfn_typevar_accumulates_bounds() {
     let mut state = InferState::new();
@@ -1850,24 +1861,27 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
         result.unwrap_err()
     );
 
-    // B-687 PRAGMATIC FIX: α IS bound in ctx.subst via C-UB arm (equality binding).
-    // The pragmatic fix handles multiple occurrences of α (contravariant param + covariant return)
-    // by checking if α is already bound before attempting to bind again.
+    // C-UB (T-2096): α IS bound in ctx.subst. The contravariant-param constraint
+    // constrain(α, Int) records Int as the first (and only) upper bound, then eagerly
+    // binds α=Int. The covariant-return constraint resolves α to Int via apply_subst
+    // before entering constrain(), so C-UB does not fire a second time.
     assert!(
         state.ctx.lookup("α").is_some(),
-        "C-FN: α is bound in ctx.subst via C-UB arm (B-687 pragmatic fix handles re-binding)"
+        "C-FN: α is bound in ctx.subst via C-UB arm (single upper bound → eager bind)"
     );
 }
 
 /// C-FN init@a reducer pattern: constrain(Fn(Int,Int→Int), Fn(α,Int→α)).
 /// constrain_fn applies:
-///   - Param 1 (contravariant): constrain(α, Int) → sub=α is TypeVar → C-UB → binds α=Int
+///   - Param 1 (contravariant): constrain(α, Int) → sub=α is TypeVar → C-UB arm →
+///     accumulates Int as upper bound; exactly one upper bound → binds α=Int.
 ///   - Param 2 (contravariant): constrain(Int, Int) → Ok (trivial)
 ///   - Return (covariant):      constrain(Int, α) → apply_subst(α)=Int → constrain(Int,Int) → Ok
 ///
-/// B-687 PRAGMATIC FIX: C-UB checks if α is already bound before attempting to bind.
-/// The first contravariant param constraint binds α=Int via C-UB, and the covariant return
-/// constraint re-checks using the bound value (apply_subst resolves α to Int).
+/// C-UB (T-2096) accumulates upper bounds and binds eagerly when exactly one upper bound
+/// exists. α appears in both param and return positions; the first contravariant constraint
+/// records the sole upper bound and binds α=Int. The covariant-return constraint resolves α
+/// via apply_subst, so C-UB does not fire again on an already-bound variable.
 #[tokio::test]
 async fn test_constrain_cfn_init_reducer_pattern() {
     let mut state = InferState::new();
@@ -1902,11 +1916,11 @@ async fn test_constrain_cfn_init_reducer_pattern() {
         result.unwrap_err()
     );
 
-    // α IS bound in ctx.subst via C-UB arm after the first contravariant param constraint.
-    // Regression guard: B-687 tracks correct directional accumulation for this case.
+    // C-UB (T-2096): α IS bound in ctx.subst after the first contravariant-param constraint
+    // constrain(α, Int) records the sole upper bound and eagerly binds α=Int.
     assert!(
         state.ctx.lookup("α").is_some(),
-        "C-FN init@a: α is bound in ctx.subst via C-UB arm (regression guard for B-687)"
+        "C-FN init@a: α is bound in ctx.subst via C-UB arm (single upper bound → eager bind)"
     );
 }
 
@@ -2050,17 +2064,18 @@ async fn test_constrain_dict_missing_field() {
     );
 }
 
-/// unify(Fn, Fn) bidirectionality: unify(Fn(Int→Int), Fn(TypeVar(a)→TypeVar(a)))
-/// must NOT bind TypeVar(a) directly in the substitution.
+/// unify(Fn, Fn) bidirectionality: unify(Fn(Int→Int), Fn(TypeVar(a)→TypeVar(a))).
 /// unify(Fn(Int→Int), Fn(a→a)) uses bidirectional constrain:
 ///   constrain(Fn(Int→Int), Fn(a→a)) then constrain(Fn(a→a), Fn(Int→Int)).
 /// First constrain (via constrain_fn):
-///   - Contravariant param: constrain(a, Int) → sub=a is TypeVar → C-UB → binds a=Int
-///   - Covariant return:    constrain(Int, a) → apply_subst(a)=Int → Ok
+///   - Contravariant param: constrain(a, Int) → sub=a is TypeVar → C-UB arm →
+///     accumulates Int as upper bound; exactly one upper bound → binds a=Int.
+///   - Covariant return:    constrain(Int, a) → apply_subst(a)=Int → constrain(Int,Int) → Ok
 /// Second constrain: both sides resolve to Fn(Int→Int) → trivially Ok.
 ///
-/// Current behavior: a IS bound to Int in ctx.subst via C-UB arm (equality binding).
-/// Correct directional accumulation (a should accumulate upper+lower bounds) is tracked as B-687.
+/// C-UB (T-2096) accumulates upper bounds and binds eagerly when exactly one exists.
+/// a IS bound to Int in ctx.subst: the single upper bound case triggers eager binding
+/// after verifying any accumulated lower bounds.
 #[tokio::test]
 async fn test_unify_fn_uses_bidirectional_constrain() {
     let mut state = InferState::new();
@@ -2087,12 +2102,12 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
         result.unwrap_err()
     );
 
-    // TypeVar 'a' IS bound to Int in ctx.subst via C-UB arm (contravariant param constraint
-    // constrain(a, Int) binds a=Int via equality). Regression guard: B-687 tracks the fix
-    // to accumulate directional bounds instead of equality-binding in ctx.subst.
+    // TypeVar 'a' IS bound to Int in ctx.subst: C-UB (T-2096) accumulates Int as the sole
+    // upper bound for 'a' from the contravariant-param constraint, then binds a=Int eagerly
+    // (single-upper-bound path, with lower-bound verification).
     assert!(
         lookup_binding(&state.ctx, "a").is_some(),
-        "unify(Fn, Fn): 'a' is bound in ctx.subst via C-UB arm (regression guard for B-687)"
+        "unify(Fn, Fn): 'a' is bound in ctx.subst via C-UB single-upper-bound eager bind"
     );
 }
 
@@ -2315,10 +2330,10 @@ async fn test_process_deferred_equalities_resolves_union_vs_union() {
 }
 
 // ============================================================================
-// T-1076: TypeValue.Recursive unification tests
+// TypeValue.Recursive unification tests
 // ============================================================================
 
-/// T-1076: Two structurally identical recursive types unify successfully.
+/// Two structurally identical recursive types unify successfully.
 ///
 /// Mu = Record { value: Repr(Int), next: RecursiveRef(0) }
 /// Both recursive types have the same body structure, so they should unify via
@@ -2355,7 +2370,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
     );
 }
 
-/// T-1076: Two recursive types with incompatible field types fail to unify.
+/// Two recursive types with incompatible field types fail to unify.
 ///
 /// Mu(a) = Record { value: Int, next: RecursiveRef(0) }
 /// Mu(b) = Record { value: String, next: RecursiveRef(0) }
@@ -2394,7 +2409,7 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
     );
 }
 
-/// T-1076: TypeVar ~ Recursive binds the TypeVar to the Recursive type.
+/// TypeVar ~ Recursive binds the TypeVar to the Recursive type.
 ///
 /// The U-VAR-LEVEL arm fires when a is a free TypeVar and the Recursive type is on the right.
 /// After unification, a must be bound to the Recursive type.
@@ -2440,7 +2455,7 @@ async fn test_unify_typevar_binds_to_recursive_type() {
     );
 }
 
-/// T-1076: Recursive (left) ~ TypeVar (right) -- symmetric to the above.
+/// Recursive (left) ~ TypeVar (right) -- symmetric to the above.
 ///
 /// The U-VAR-LEVEL-SYM arm fires when a is a free TypeVar on the right and the Recursive
 /// type is on the left. After unification, a must be bound to the Recursive type.
@@ -2483,7 +2498,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
     );
 }
 
-/// T-1076: Concrete type ~ Recursive fails when the types are structurally incompatible.
+/// Concrete type ~ Recursive fails when the types are structurally incompatible.
 ///
 /// unify(Repr(Int), Recursive(Record{value:Int, next:RecursiveRef(0)})):
 /// The (_, TV_RECURSIVE) arm opens the recursive type with a fresh TypeVar and
@@ -2518,7 +2533,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
 // T-913 / T-996: FD / resolver_deferred back-propagation tests
 // ============================================================================
 
-/// T-913: When both App(F, X) sides become ground after substitution,
+/// When both App(F, X) sides become ground after substitution,
 /// process_deferred_equalities resolves the deferred pair by unifying X_a ~ X_b.
 ///
 /// Scenario: inject App(F, alpha) ~ App(F, beta) into deferred_equalities, then bind
@@ -2577,7 +2592,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     );
 }
 
-/// T-996: A deferred FD pair with distinct ground args fails -- args do not agree.
+/// A deferred FD pair with distinct ground args fails -- args do not agree.
 ///
 /// Scenario: App(F, alpha) ~ App(F, beta) deferred; alpha=Int, beta=String.
 /// After substitution: App(F, Int) ~ App(F, String).
@@ -2628,7 +2643,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     );
 }
 
-/// T-996: process_deferred_equalities terminates when equalities are permanently unresolvable.
+/// process_deferred_equalities terminates when equalities are permanently unresolvable.
 ///
 /// A ground pair App(F, Int) ~ App(F, String) that cannot be resolved:
 /// - First iteration: unify fails, no progress made -> fixpoint exits.
@@ -2667,10 +2682,10 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
 }
 
 // ============================================================================
-// T-1206: TypeValue.Op Arc-identity unification tests
+// TypeValue.Op Arc-identity unification tests
 // ============================================================================
 
-/// T-1206: Two TypeValue.Op values with the same name and different Arcs unify via name equality.
+/// Two TypeValue.Op values with the same name and different Arcs unify via name equality.
 ///
 /// TypeValue.Op stores only a name string -- no Arc<TyConDef> is embedded.
 /// Arc-identity was relevant for Type::TyConResolved (old Type-enum, archived in S-919).
@@ -2702,10 +2717,10 @@ async fn test_tycon_resolved_different_arcs_reject_unification() {
     );
 }
 
-/// T-1206: Two TypeValue.Op values sharing the same Arc unify via ptr_eq fast path.
+/// Two TypeValue.Op values sharing the same Arc unify via pointer identity (reflexivity).
 ///
-/// When both sides are the same Arc<Value>, `typevalue_shallow_eq` returns true via ptr_eq
-/// before dispatching on the ctor. This verifies the reflexivity fast path.
+/// When both sides are the same Arc<Value>, `typevalue_shallow_eq` returns true immediately
+/// via the reflexivity axiom — pointer-identical values are definitionally equal.
 #[tokio::test]
 async fn test_tycon_resolved_same_arc_unifies() {
     let mut state = InferState::new();
@@ -2730,10 +2745,10 @@ async fn test_tycon_resolved_same_arc_unifies() {
 }
 
 // ============================================================================
-// T-1112: UNIFY-TYCON-EXPAND tests
+// UNIFY-TYCON-EXPAND tests
 // ============================================================================
 
-/// T-1112: App(Alias, Int) ~ App(Alias, Int) -- same op name, structural unification.
+/// App(Alias, Int) ~ App(Alias, Int) -- same op name, structural unification.
 ///
 /// When both sides have the same op name, the injective structural path fires:
 /// unify(Op(Alias), Op(Alias)) succeeds, then unify(Int, Int) succeeds.
@@ -2758,7 +2773,7 @@ async fn test_unify_tycon_expand_same_op_same_args_succeeds() {
     );
 }
 
-/// T-1112: App(AliasA, Int) ~ App(AliasB, Int) where both ops expand via tycon_env to
+/// App(AliasA, Int) ~ App(AliasB, Int) where both ops expand via tycon_env to
 /// the same type (the parameter itself -- AliasA[a]=a, AliasB[a]=a, so both become Int).
 ///
 /// The UNIFY-TYCON-EXPAND path fires: expand_tycon_app substitutes Int for "a" in each
@@ -2821,7 +2836,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     );
 }
 
-/// T-1112: App(AliasA, Int) ~ App(AliasB, Int) where the bodies expand to different concrete types.
+/// App(AliasA, Int) ~ App(AliasB, Int) where the bodies expand to different concrete types.
 ///
 /// AliasA body = Repr(Int) (ignores arg, always Int).
 /// AliasB body = Repr(String) (ignores arg, always String).
@@ -2880,7 +2895,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
     );
 }
 
-/// T-1112: App(KnownAlias, Int) ~ App(UnknownOp, Int) -- one op not in tycon_env.
+/// App(KnownAlias, Int) ~ App(UnknownOp, Int) -- one op not in tycon_env.
 ///
 /// expand_tycon_app returns None for UnknownOp (not registered).
 /// The fallback structural unification fires: unify(Op(KnownAlias), Op(UnknownOp)).
@@ -2922,7 +2937,7 @@ async fn test_unify_tycon_expand_one_op_not_registered_fails() {
     );
 }
 
-/// T-2089: App(Handle, a) ~ App(Handle, a) must unify successfully.
+/// App(Handle, a) ~ App(Handle, a) must unify successfully.
 ///
 /// Handle PartialEq uses Arc::ptr_eq which can return false for identical TypeVar names
 /// if they were created at different times. Unification must rely on structural equality.
@@ -2949,7 +2964,7 @@ async fn test_unify_app_handle_same_typevar() {
     );
 }
 
-/// T-2088: make_rowtail_var roundtrip — construct and extract RowVar name.
+/// make_rowtail_var roundtrip — construct and extract RowVar name.
 #[test]
 fn test_make_rowtail_var_roundtrip() {
     let rv = crate::type_infer::make_rowtail_var("r");
@@ -2957,10 +2972,456 @@ fn test_make_rowtail_var_roundtrip() {
     assert_eq!(name, Some("r".to_string()));
 }
 
-/// T-2090: typevalue_to_typenode converts Repr(Int) to a TypeNode variant.
+/// typevalue_to_typenode converts Repr(Int) to a TypeNode variant.
 #[test]
 fn test_typevalue_to_typenode_repr_int() {
     let int_tv = make_typevalue_repr(REPR_INT);
     let result = crate::type_class::typevalue_to_typenode(&int_tv);
     assert!(result.is_some(), "Repr(Int) should convert to TypeNode.Int");
+}
+
+// ── Top/Never soundness in constrain() ────────────────────────────────
+
+/// constrain(Top, Int) should reject — Top is not a subtype of a specific type.
+#[tokio::test]
+async fn test_constrain_top_sub_rejected() {
+    use crate::type_infer::make_typevalue_top;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let top = make_typevalue_top();
+    let int = make_typevalue_repr(REPR_INT);
+
+    let result = constrain(&top, &int, &mut state.ctx, &mut constraints, rust_span!()).await;
+    assert!(
+        result.is_err(),
+        "constrain(Top, Int) should reject: Top is not a subtype of Int"
+    );
+}
+
+/// constrain(Int, Never) should reject — a specific type is not a subtype of Never.
+#[tokio::test]
+async fn test_constrain_never_sup_rejected() {
+    use crate::type_infer::make_typevalue_never;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let int = make_typevalue_repr(REPR_INT);
+    let never = make_typevalue_never();
+
+    let result = constrain(&int, &never, &mut state.ctx, &mut constraints, rust_span!()).await;
+    assert!(
+        result.is_err(),
+        "constrain(Int, Never) should reject: Int is not a subtype of Never"
+    );
+}
+
+/// constrain(Never, Int) should succeed — Never is a subtype of all types (bottom).
+#[tokio::test]
+async fn test_constrain_never_sub_accepted() {
+    use crate::type_infer::make_typevalue_never;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let never = make_typevalue_never();
+    let int = make_typevalue_repr(REPR_INT);
+
+    let result = constrain(&never, &int, &mut state.ctx, &mut constraints, rust_span!()).await;
+    assert!(
+        result.is_ok(),
+        "constrain(Never, Int) should succeed: Never <: Int (bottom type)"
+    );
+}
+
+/// constrain(Int, Top) should succeed — all types are subtypes of Top.
+#[tokio::test]
+async fn test_constrain_top_sup_accepted() {
+    use crate::type_infer::make_typevalue_top;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let int = make_typevalue_repr(REPR_INT);
+    let top = make_typevalue_top();
+
+    let result = constrain(&int, &top, &mut state.ctx, &mut constraints, rust_span!()).await;
+    assert!(
+        result.is_ok(),
+        "constrain(Int, Top) should succeed: Int <: Top (top type)"
+    );
+}
+
+// ── FloatLiteral ↔ Float promotion ────────────────────────────────────
+
+/// unify(FloatLiteral(3.14), Float) should succeed — FloatLiteral promotes to Float.
+#[tokio::test]
+async fn test_unify_float_literal_with_float() {
+    use crate::type_infer::make_typevalue_float_lit;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let float_lit = make_typevalue_float_lit(3.14);
+    let float = make_typevalue_repr(REPR_FLOAT);
+
+    let result = unify_sync(
+        &float_lit,
+        &float,
+        &mut state.ctx,
+        &mut constraints,
+        rust_span!(),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "unify(FloatLiteral(3.14), Float) should succeed: FloatLiteral promotes to Float"
+    );
+}
+
+/// unify(Float, FloatLiteral(3.14)) should succeed — symmetric promotion.
+#[tokio::test]
+async fn test_unify_float_with_float_literal() {
+    use crate::type_infer::make_typevalue_float_lit;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let float = make_typevalue_repr(REPR_FLOAT);
+    let float_lit = make_typevalue_float_lit(3.14);
+
+    let result = unify_sync(
+        &float,
+        &float_lit,
+        &mut state.ctx,
+        &mut constraints,
+        rust_span!(),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "unify(Float, FloatLiteral(3.14)) should succeed: FloatLiteral promotes to Float"
+    );
+}
+
+/// unify(FloatLiteral(3.14), Int) should reject — FloatLiteral does not promote to Int.
+#[tokio::test]
+async fn test_unify_float_literal_with_int() {
+    use crate::type_infer::make_typevalue_float_lit;
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let float_lit = make_typevalue_float_lit(3.14);
+    let int = make_typevalue_repr(REPR_INT);
+
+    let result = unify_sync(
+        &float_lit,
+        &int,
+        &mut state.ctx,
+        &mut constraints,
+        rust_span!(),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "unify(FloatLiteral(3.14), Int) should reject: FloatLiteral does not promote to Int"
+    );
+}
+
+// ── RowVar occurs check + level lowering ──────────────────────────────────────
+
+/// Occurs check detects a RowVar cycle when binding a RowVar to a Record containing itself.
+#[tokio::test]
+async fn test_rowvar_occurs_check() {
+    use crate::type_infer::{make_rowtail_var, make_typevar_value};
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    // Register "rho" at a non-zero level so the level-lowering assertion is non-vacuous.
+    // Without this, get_level("rho") returns 0 by default even if no lowering occurred.
+    state.ctx.levels.insert("rho".to_string(), 5);
+
+    // Create a TypeVar α and a RowVar ρ.
+    let alpha = make_typevar_value("alpha");
+    let row_var = make_rowtail_var("rho");
+
+    // Build a Record { x: Int, tail: ρ }.
+    let int = make_typevalue_repr(REPR_INT);
+    let record_with_rowvar = {
+        use crate::value::{HashableValue, Thunk};
+        let mut fields = IndexMap::new();
+        fields.insert(
+            HashableValue::Str(Arc::from("x")),
+            Arc::new(Thunk::value(Value::clone(int.as_ref()), rust_span!())),
+        );
+        let fields_dict = Value::Dict {
+            entries: fields,
+            type_val: crate::value::unknown_type_val(),
+        };
+        let mut payload_entries = IndexMap::new();
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_FIELDS)),
+            Arc::new(Thunk::value(fields_dict, rust_span!())),
+        );
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_TAIL)),
+            Arc::new(Thunk::value(Value::clone(row_var.as_ref()), rust_span!())),
+        );
+        let payload = Value::Dict {
+            entries: payload_entries,
+            type_val: crate::value::unknown_type_val(),
+        };
+        Arc::new(Value::Variant {
+            type_val: crate::value::unknown_type_val(),
+            ctor: Arc::from(TV_RECORD),
+            payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),
+        })
+    };
+
+    // Attempt to unify α with Record { x: Int, tail: ρ }.
+    // Then attempt to bind ρ to itself (simulating a cycle).
+    // The occurs check in lower_levels_check_occurs_tv should detect this.
+    //
+    // To trigger the occurs check, we need to unify the RowVar with a record tail containing itself.
+    // For this test, we simulate by trying to unify a TypeVar with the record containing the RowVar,
+    // then checking if the RowVar is correctly traversed.
+    //
+    // Simplified: unify α with the record. The occurs check should NOT fire (α ≠ ρ).
+    // Then, if we were to bind ρ to a tail containing ρ, the occurs check should fire.
+    //
+    // For a proper test, we need to construct a scenario where a RowVar appears in its own binding.
+    // This is difficult to trigger directly via public APIs. Instead, we verify that the
+    // lower_levels_check_occurs_tv function correctly handles Records by checking that
+    // unifying a TypeVar with a Record containing a RowVar does NOT cause errors and
+    // that the RowVar's level is correctly lowered.
+
+    let result = unify_sync(
+        &alpha,
+        &record_with_rowvar,
+        &mut state.ctx,
+        &mut constraints,
+        rust_span!(),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "unify(α, Record{{x:Int, tail:ρ}}) should succeed (no occurs violation for α)"
+    );
+
+    // Verify that ρ's level was lowered from 5 (pre-inserted above) to α's level (0).
+    // This is a non-vacuous assertion: "rho" was registered at level 5 before the unify call,
+    // so get_level("rho") == 0 only if lower_levels_check_occurs_tv actually fired and lowered it.
+    let rho_level = state.ctx.get_level("rho");
+    assert_eq!(
+        rho_level, 0,
+        "RowVar ρ's level should be lowered from 5 to 0 during occurs check traversal (B-702 level-lowering)"
+    );
+}
+
+/// RowVar occurs check correctly identifies cycle — verifies that rowvar_occurs_in_tail,
+/// the function used by unify_rowtails to prevent infinite row types, returns true when
+/// the named RowVar appears in the tail and false otherwise.
+///
+/// The occurs check in unify_rowtails fires in the (RT_VAR, _) arm when a RowVar ρ is
+/// about to be bound to a target `b`. Binding ρ = RowTail.Var("ρ") would create an
+/// infinite row type; the occurs check detects this and returns Err("infinite row type").
+///
+/// This test verifies rowvar_occurs_in_tail directly because the (RT_VAR, _) arm is
+/// preceded by the (RT_VAR, RT_VAR) arm — both-RowVar unification is handled there first
+/// (same-name: Ok; different-name: bind). The occurs check guards the (RT_VAR, _) arm
+/// where a RowVar is unified with a non-RowVar concrete tail.
+#[test]
+fn test_rowvar_occurs_check_detects_cycle() {
+    use crate::type_infer::{extract_rowtail_var_name, make_rowtail_closed, make_rowtail_var};
+
+    let rho = make_rowtail_var("rho");
+    let sigma = make_rowtail_var("sigma");
+    let closed = make_rowtail_closed();
+
+    // Verify roundtrip: make_rowtail_var produces a value recognized by extract_rowtail_var_name.
+    assert_eq!(
+        extract_rowtail_var_name(&rho),
+        Some("rho".to_string()),
+        "make_rowtail_var roundtrip must hold"
+    );
+
+    // Cycle detection: rowvar_occurs_in_tail("rho", RowTail.Var("rho")) = true.
+    // This is the check that prevents binding ρ = ρ (infinite row type).
+    assert!(
+        super::rowvar_occurs_in_tail("rho", &rho),
+        "rowvar_occurs_in_tail must return true when tail IS the same RowVar (direct self-reference)"
+    );
+
+    // No cycle: a different RowVar name does not trigger the check.
+    assert!(
+        !super::rowvar_occurs_in_tail("rho", &sigma),
+        "rowvar_occurs_in_tail must return false for a different RowVar name"
+    );
+
+    // No cycle: a closed tail does not contain any RowVar.
+    assert!(
+        !super::rowvar_occurs_in_tail("rho", &closed),
+        "rowvar_occurs_in_tail must return false for a closed tail (RowTail.Closed contains no RowVars)"
+    );
+}
+
+/// RowVar occurs check detects a cycle through the RT_UNIFORM path — verifies that
+/// `rowvar_occurs_in_tail` returns `true` when a RowVar is nested inside a
+/// `RowTail.Uniform { value-type: Record { ..., tail: RowVar("rho") } }`.
+///
+/// This test covers the Uniform branch of `rowvar_occurs_in_tail`, which recurses into
+/// the value-type's row tail when the value-type is itself a Record. Without this branch,
+/// a Uniform tail could introduce an infinite row type that escapes the occurs check.
+#[test]
+fn test_rowvar_occurs_check_detects_uniform_cycle() {
+    use crate::type_infer::{make_rowtail_uniform, make_rowtail_var, make_typevalue_record};
+
+    // Create: RowTail.Uniform { value-type: Record { fields: {}, tail: RowVar("rho") } }
+    let inner_row_var = make_rowtail_var("rho");
+    let inner_record = make_typevalue_record(IndexMap::new(), Some(inner_row_var));
+    let uniform_tail = make_rowtail_uniform(inner_record);
+
+    // rowvar_occurs_in_tail("rho", Uniform{value-type: Record{tail: RowVar("rho")}}) must be true
+    assert!(
+        super::rowvar_occurs_in_tail("rho", &uniform_tail),
+        "rowvar_occurs_in_tail must detect RowVar 'rho' nested inside Uniform tail"
+    );
+
+    // rowvar_occurs_in_tail("sigma", Uniform{value-type: Record{tail: RowVar("rho")}}) must be false
+    assert!(
+        !super::rowvar_occurs_in_tail("sigma", &uniform_tail),
+        "rowvar_occurs_in_tail must not detect unrelated RowVar 'sigma'"
+    );
+}
+
+// ── C-UB lower bound verification ─────────────────────────────────────
+
+/// constrain(String, α) then constrain(α, Int) should reject — inconsistent bounds.
+#[tokio::test]
+async fn test_c_ub_rejects_inconsistent_bounds() {
+    let mut state = InferState::new();
+    let mut constraints = Vec::new();
+
+    let string = make_typevalue_repr(REPR_STRING);
+    let int = make_typevalue_repr(REPR_INT);
+    let alpha = make_typevar_value("alpha");
+
+    // First constraint: String <: α (lower bound).
+    let result1 = constrain(
+        &string,
+        &alpha,
+        &mut state.ctx,
+        &mut constraints,
+        rust_span!(),
+    )
+    .await;
+    assert!(
+        result1.is_ok(),
+        "constrain(String, α) should succeed: String is a lower bound for α"
+    );
+
+    // Verify that α has String as a lower bound.
+    assert!(
+        state
+            .ctx
+            .lower_bounds
+            .get("alpha")
+            .map_or(false, |lbs| lbs.len() == 1),
+        "α should have one lower bound (String)"
+    );
+
+    // Second constraint: α <: Int (upper bound).
+    // This should FAIL because String is not a subtype of Int.
+    let result2 = constrain(&alpha, &int, &mut state.ctx, &mut constraints, rust_span!()).await;
+    assert!(
+        result2.is_err(),
+        "constrain(α, Int) should reject: lower bound String is not a subtype of Int"
+    );
+}
+
+// ── apply_subst traverses RowTail::Uniform value/key-type fields ──────
+
+/// apply_subst must recursively apply substitution to RowTail.Uniform fields.
+///
+/// When a Record has a RowTail.Uniform tail containing a TypeVar in the value-type
+/// field, and that TypeVar is bound in the substitution, apply_subst must traverse
+/// into the Uniform tail and substitute the bound TypeVar with its binding.
+#[test]
+fn test_apply_subst_traverses_uniform_tail() {
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_record, make_typevar_value};
+    use crate::types::InferState;
+
+    let mut state = InferState::new();
+
+    // Create a Record with a Uniform tail: Record { ...α } where the value-type is TypeVar α.
+    let alpha = make_typevar_value("alpha");
+    let uniform_tail = make_rowtail_uniform(Arc::clone(&alpha));
+    let record = make_typevalue_record(IndexMap::new(), Some(uniform_tail));
+
+    // Bind α = Int in the substitution.
+    let int = make_typevalue_repr(REPR_INT);
+    state
+        .ctx
+        .bind("alpha".to_string(), Arc::clone(&int))
+        .unwrap();
+
+    // Apply substitution to the Record.
+    let result = state.ctx.apply_subst(&record);
+
+    // Extract the tail from the result Record.
+    let result_tail = state.ctx.extract_tail_for_subst(&result);
+    assert!(
+        result_tail.is_some(),
+        "Result Record should have a tail field"
+    );
+
+    // Extract the value-type from the Uniform tail.
+    let (value_type_opt, _) = state.ctx.extract_uniform_fields(&result_tail.unwrap());
+    assert!(
+        value_type_opt.is_some(),
+        "Result Uniform tail should have a value-type field"
+    );
+
+    // The value-type should now be Int, not TypeVar α.
+    let value_type = value_type_opt.unwrap();
+    let value_type_ctor = crate::type_infer::typevalue_ctor(&value_type);
+    assert_eq!(
+        value_type_ctor,
+        Some(TV_REPR),
+        "Uniform tail value-type should be Repr (Int), not TypeVar: got {:?}",
+        value_type_ctor
+    );
+
+    // Verify it's specifically REPR_INT.
+    // Use explicit .expect() calls instead of nested if-let so the REPR_INT assertion
+    // is guaranteed to execute — nested if-lets silently skip the assertion on mismatch.
+    let crate::value::Value::Variant {
+        payload: Some(thunk),
+        ..
+    } = value_type.as_ref()
+    else {
+        panic!("Uniform tail value-type should be a Variant (TypeValue.Repr), got non-Variant");
+    };
+    let Ok(crate::value::Value::Dict { entries, .. }) = thunk
+        .peek_result()
+        .expect("Repr TypeValue thunk should be settled")
+    else {
+        panic!("Repr TypeValue thunk should contain a Dict payload, not an error");
+    };
+    let repr_key = crate::value::HashableValue::Str(Arc::from("repr"));
+    let repr_thunk = entries
+        .get(&repr_key)
+        .expect("Repr payload dict should have a 'repr' field");
+    let Ok(crate::value::Value::String {
+        ref source,
+        start,
+        end,
+        ..
+    }) = repr_thunk
+        .peek_result()
+        .expect("repr field thunk should be settled")
+    else {
+        panic!("repr field should be a String value");
+    };
+    assert_eq!(
+        &source[*start..*end],
+        REPR_INT,
+        "Uniform tail value-type should be Repr(Int)"
+    );
 }

@@ -37,7 +37,7 @@ The type checker writes:
 
 The type checker writes resolved `Arc<Value>` TypeValues directly into `OnceLock<Option<Arc<Value>>>` fields on AST nodes:
 
-- `SurfaceExpression::TypeAssert.resolved_type` — the resolved TypeValue for `[@T expr]` annotations. The lowering pass reads this OnceLock and writes the TypeValue into `CoreExpr::TypeAssert.resolved_type: Arc<Value>`. When typecheck is skipped, the lowerer uses `TypeValue.Unknown` (accept-all) as the fallback.
+- `SurfaceExpression::TypeAssert.resolved_type` — the resolved TypeValue for `[@T expr]` annotations. The lowering pass reads this OnceLock and emits `CoreExpr::TypeAssert { check: TypeAssertCheck::Resolved(tv) }` when the OnceLock holds a non-Unknown TypeValue, or `TypeAssertCheck::Source { annotation }` when the OnceLock is unset. When typecheck is skipped, the lowerer falls through to the `Source` path and the evaluator falls back to `TypeValue.Unknown` (accept-all) at runtime.
 - `SurfaceParam.resolved_annotation_type` — the resolved TypeValue for annotated function parameters. The lowerer reads this and writes it into `CoreParam.resolved_type: Option<Arc<Value>>`.
 
 There is no `TypeAnnotationTable` side-table — it was deleted in T-1999. All type annotation results flow through inline OnceLocks on AST nodes.

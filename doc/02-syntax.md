@@ -562,7 +562,7 @@ timeout@[type: Number  default: 30]  # With properties
 On the `fn` keyword:
 
 ```tinct
-[fn@String [let x] x]                 # Function returning String
+[fn@String [let x] x]                        # Function returning String
 [fn@[return: String  doc: "..."] [let x] x]  # With properties
 ```
 
@@ -719,6 +719,8 @@ TreeNode: [type
 #   - Parsed into SurfaceNamedArg { name: "field", value: Type, annotation: Some(...) }
 #   - @Child marks the field as a child node for traversal protocol (T-1052)
 #   - Annotation is stored in FnAnnotation.extra under "field-annotations:" key (pending T-1124)
+#   - Role is declared explicitly via @Child@[role: "MapValues"] for Map-valued child fields.
+#     Bare @Child defaults to role "One" (single child). No role is inferred from the type name.
 ```
 
 The `@[...]` annotation on a constructor name follows the `ImmediateAt` lexer token (no whitespace between name and `@`). String, Int, Float, and Bool literal annotation fields are stored in `FnAnnotation.extra` and readable via `annotation-of`. Expression-valued fields (function refs, nested dicts) require T-1124 to be stored at function-definition time.

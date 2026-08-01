@@ -740,10 +740,10 @@ pub(crate) fn infer_class_decl_from_surface(
     // After S-1003: ClassDecl.params is Vec<(String, Arc<Value>)> where Arc<Value> is the kind TypeValue.
     let existing_param_kinds: std::collections::HashMap<String, Arc<Value>> = {
         let env_guard = state.env.read().unwrap();
-        env_guard
-            .get_class(name)
-            .map(|existing| existing.params.iter().cloned().collect())
-            .unwrap_or_default()
+        match env_guard.get_class(name) {
+            Some(existing) => existing.params.iter().cloned().collect(),
+            None => std::collections::HashMap::new(), // Class not yet registered, treat as zero params.
+        }
     };
 
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
@@ -804,6 +804,17 @@ pub(crate) fn infer_class_decl_from_surface(
     // After S-1003: Kind deleted, kind_env removed from InferState.
     // Operator-kinded params are now tracked as TypeValue kinds in ClassDecl.params.
     // No further action needed — the kind information is already in class_decl.params.
+
+    // Populate non_injective_resolvers in the InferenceContext so that unify() can look up
+    // injectivity for TV_APP~TV_APP without requiring access to the full Env.
+    if !class_decl.resolver_injective {
+        if let Some(ref resolver_name) = class_decl.resolver {
+            state
+                .ctx
+                .non_injective_resolvers
+                .insert(resolver_name.clone());
+        }
+    }
 
     Ok(make_typevalue_record(indexmap::IndexMap::new(), None))
 }
@@ -874,13 +885,15 @@ pub(crate) async fn infer_instance_decl_from_surface(
             )]);
         }
 
+        // Allow TV_VAR positions (declared TypeVars from bind: in [let ...]).
+        // Reject only Unknown (empty dict or TV_UNKNOWN): those indicate missing annotations.
         if pattern_types.iter().any(|tv| {
             matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNKNOWN)
                 || matches!(tv.as_ref(), Value::Dict { entries, .. } if entries.is_empty())
         }) {
             return Err(vec![TypeDiagnostic::error("type-error",
                 format!(
-                    "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
+                    "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax) or TypeVars declared via bind: in [let ...]",
                     class_name
                 ),
                 pattern_node.span.clone(),

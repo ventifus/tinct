@@ -272,24 +272,6 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
     }
 }
 
-/// Helper: require that a materialized value is a Document.
-pub(crate) fn require_document(
-    name: &str,
-    value: Value,
-    def_span: Span,
-) -> EvalResult<std::sync::Arc<crate::ast::SurfaceDocument>> {
-    match value {
-        Value::Document { doc: d, .. } => Ok(d),
-        other => Err(EvalError::type_mismatch_ctx(
-            name.to_string(),
-            "Document",
-            other.type_name(),
-            def_span,
-        )
-        .into()),
-    }
-}
-
 /// Helper: require that a materialized value is a TypeContext.
 pub(crate) fn require_type_context(
     name: &str,
@@ -546,7 +528,7 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
 /// pre-evaluation of loader.llt; the caller drives the full pipeline via
 /// `run_loader_pipeline`.
 pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
-    // T-1557: Env is type-metadata only. Runtime values are stored in FlatEnv/arena.
+    // Env is type-metadata only. Runtime values are stored in FlatEnv/arena.
     // Insert each builtin name into the slotted IndexMap so the resolver can assign
     // de Bruijn (level, slot) coordinates. The actual Value::Builtin thunks are placed
     // in the root scope (slot 0, 1, 2, …) by EvalContext::new_scope_arena, in the SAME

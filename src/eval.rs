@@ -1294,22 +1294,18 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
                                             // constructed via Thunk::value() and are settled at
                                             // construction time). Treat as a conservative type
                                             // mismatch: the runtime evaluation path must not abort.
-                                            debug_assert!(
-                                                false,
+                                            panic!(
                                                 "invariant violation: TypeValue.Union member thunk \
                                                  at index {i} is not settled"
                                             );
-                                            return false;
                                         }
                                         Some(Err(_e)) => {
                                             // Errored thunk in a TypeValue.Union — indicates a
                                             // type-checker bug. Conservative type mismatch.
-                                            debug_assert!(
-                                                false,
+                                            panic!(
                                                 "invariant violation: TypeValue.Union member thunk \
                                                  at index {i} contains an error: {_e:?}"
                                             );
-                                            return false;
                                         }
                                         Some(Ok(member_val)) => {
                                             let member_tv = Arc::new(member_val.clone());
@@ -1343,7 +1339,10 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     // When tycon_env is not yet wired (e.g., --no-typecheck or test contexts), use an
     // empty env. TyCon lookups on unknown names return None → conservative false, which
     // is correct: gradual types (Unknown, Top, Var) are handled before TyCon dispatch.
-    let tycon_env = ctx.tycon_env().cloned().unwrap_or_default();
+    let tycon_env = match ctx.tycon_env() {
+        Some(e) => e.clone(),
+        None => std::collections::HashMap::new(), // tycon_env not wired (e.g., --no-typecheck or test context).
+    };
     let inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
     let ground_tv = ground_typevalue_of(value);
     crate::bas::is_consistent_subtype(&ground_tv, expected, &inference_ctx)
@@ -1520,7 +1519,7 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                             Err(e) => format!("<error: {e}>"),
                         })
                         .unwrap_or_else(|| "?".to_string());
-                    let params_str = entries
+                    let params_str = match entries
                         .get(&HashableValue::Str(Arc::from(FIELD_PARAMS)))
                         .and_then(|t| t.peek_result())
                         .and_then(|r| match r {
@@ -1544,8 +1543,10 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                             }
                             Ok(_) => None,
                             Err(e) => Some(format!("<error: {e}>")),
-                        })
-                        .unwrap_or_default();
+                        }) {
+                        Some(v) => v,
+                        None => String::new(), // TypeValue.Fn has no members to display.
+                    };
                     return format!("Fn@{ret_str} [{params_str}]");
                 }
                 "<Fn: display failed>".to_string()
@@ -2216,19 +2217,27 @@ pub(crate) fn match_pattern<'a>(
                         // Materialize the pinned value and compare for equality.
                         let pinned_val = materialize(&pinned_thunk, Some(value_span), ctx).await?;
 
-                        // TypeNode type-pattern: if the pin resolves to a TypeNode unit variant
-                        // (e.g. Integer evaluates to Variant("TypeNode","Int",None)), treat it as
+                        // TypeNode type-pattern: if the pin resolves to a unit TypeNode variant
+                        // (e.g. Integer evaluates to Variant("TypeNode.Int", None)), treat it as
                         // a runtime type check rather than a value equality check.
-                        // This bridges the current TypeNode system to the future bind-primitive
-                        // protocol (see doc/whatif/matchable-patterns.md).
+                        //
+                        // Route through the authorized translator `typenode_ctor_to_typevalue`
+                        // (doc/16b-rust-tinct-protocol.md §3) rather than a local hardcoded table.
+                        // `value_matches_type` then checks the scrutinee against the TypeValue.
                         if let Value::Variant {
                             ctor,
                             payload: None,
                             ..
                         } = &pinned_val
                         {
-                            if crate::value::tycon_name_from_ctor(ctor.as_ref()) == TYCON_TYPENODE {
-                                return Ok(match_typenode_pattern(ctor.as_ref(), &value));
+                            if let Some((prefix, bare)) = ctor.as_ref().split_once('.') {
+                                if prefix == crate::type_tags::TYCON_TYPENODE {
+                                    if let Some(typevalue) =
+                                        crate::type_infer::typenode_ctor_to_typevalue(bare)
+                                    {
+                                        return Ok(value_matches_type(&value, &typevalue, ctx));
+                                    }
+                                }
                             }
                         }
 
@@ -2585,8 +2594,6 @@ pub(crate) fn match_pattern<'a>(
 /// - `Variant{payload:None}`: tag equality only (covers Bool and unit constructors).
 /// - All other combinations (including cross-type) return `false`.
 ///
-/// See also `match_typenode_pattern` for TypeNode-based type dispatch.
-///
 /// Annotated wrappers are stripped before comparison.
 ///
 /// Dict comparison is shallow: same keys and same thunk IDs (no value
@@ -2594,31 +2601,6 @@ pub(crate) fn match_pattern<'a>(
 /// for Dicts, without deep structural comparison.
 /// No payload-Variant or Seq deep comparison. No cross-type Int/Float
 /// comparison — use type-specific builtins instead.
-///
-/// Check if a runtime value matches the type named by a TypeNode constructor.
-///
-/// Called from `match_pattern` when a pin pattern evaluates to a TypeNode unit variant
-/// (e.g. `Integer` → `Variant("TypeNode","Int",None)`). Maps the TypeNode constructor
-/// name to a Rust value type check. This is a bridge to the future `bind-primitive`/
-/// `bind-opaque` protocol described in doc/whatif/matchable-patterns.md.
-fn match_typenode_pattern(typenode_ctor: &str, scrutinee: &Value) -> bool {
-    // The ctor is fully-qualified ("TypeNode.Int") — strip the tycon prefix.
-    let bare = typenode_ctor
-        .split_once('.')
-        .map(|(_, c)| c)
-        .unwrap_or(typenode_ctor);
-    match bare {
-        "Int" => matches!(scrutinee, Value::Int { .. }),
-        "Float" => matches!(scrutinee, Value::Float { .. }),
-        "String" => matches!(scrutinee, Value::String { .. }),
-        "Bytes" => matches!(scrutinee, Value::Bytes { .. }),
-        "Dict" => matches!(scrutinee, Value::Dict { .. }),
-        "Callable" => matches!(scrutinee, Value::Function { .. } | Value::Builtin { .. }),
-        "Proxy" => matches!(scrutinee, Value::Proxy { .. }),
-        // Unknown TypeNode constructor — does not match
-        _ => false,
-    }
-}
 
 /// This is the primitive equality kernel used by `builtin-eq-int/float/string`, pattern matching
 /// (Pin and case-arm exact-value checks), and bind-or-pin.
@@ -3183,7 +3165,7 @@ mod tests {
         }
     }
 
-    // T-1557: test_fn_captures_closure_env, test_call_simple, test_call_multiple_args,
+    // test_fn_captures_closure_env, test_call_simple, test_call_multiple_args,
     // test_call_on_non_function, test_call_too_few_args, test_call_too_many_args,
     // test_call_named_arg_with_default, test_call_named_arg_overridden,
     // test_call_unexpected_named_arg, test_call_duplicate_positional_and_named_error,
@@ -3246,9 +3228,9 @@ mod tests {
     }
 
     // surf_dict helper removed — it was only used by test_dot_access / test_dot_access_missing_key
-    // which were deleted (T-1557: insert_value removed; $d variable was never in scope).
+    // which were deleted (insert_value removed; $d variable was never in scope).
 
-    // T-1557: test_dot_access, test_dot_access_missing_key, test_dot_access_on_non_dict,
+    // test_dot_access, test_dot_access_missing_key, test_dot_access_on_non_dict,
     // test_chained_dot_access — all deleted. These tests evaluated a dict via eval_for_test
     // but then referenced it via $d/$x in a separate eval_str call without being able to
     // insert the dict value into scope (insert_value was removed in T-1557). The $d/$x
@@ -3494,7 +3476,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_assert_default_used_on_inner_expr_error() {
-        // B-433/B-429: [@[type: Int default: 0] <placeholder>] -> 0 (inner is dead-code Placeholder, use default)
+        // [@[type: Int default: 0] <placeholder>] -> 0 (inner is dead-code Placeholder, use default)
         // When the inner expression is a CoreExpr::Placeholder (lowered from an unresolvable VarRef
         // or parse error), the default should be used instead of propagating the error.
         // Source annotation: Placeholder always errors → Err branch → Source annotation checked for
@@ -3755,7 +3737,7 @@ mod tests {
 
     // ── Stack trace / call stack reconstruction tests ──────────────────
 
-    // T-1557: test_call_error_has_stack_frame_with_function_name,
+    // test_call_error_has_stack_frame_with_function_name,
     // test_nested_call_produces_multi_frame_stack, test_dot_access_error_has_access_frame,
     // test_chained_access_error_shows_chain — all deleted. These tests created Value::Function
     // or Value::Dict values but could not insert them into scope after T-1557 removed
@@ -3858,7 +3840,7 @@ mod tests {
         );
     }
 
-    // T-1557: test_call_arity_error_has_call_frame, test_builtin_error_has_stack_frame_with_builtin_name
+    // test_call_arity_error_has_call_frame, test_builtin_error_has_stack_frame_with_builtin_name
     // deleted. These tests created Value::Function or Value::Builtin values but could not
     // insert them into scope after T-1557 removed insert_value. The $f/$fail variables
     // referenced in eval_str were never in scope.
@@ -3882,7 +3864,7 @@ mod tests {
 
     // ── PendingCall thunk state tests ──────────────────────────────────
 
-    // T-1557: test_pending_call_llt_function deleted. The function body referenced $+ via
+    // test_pending_call_llt_function deleted. The function body referenced $+ via
     // (level: 1, slot: 0) from closure_env_id=0 (test_ctx root scope), but test_ctx() does
     // not install + at slot 0 in its root scope. The add_builtin was also defined but never
     // inserted (insert_value removed in T-1557). The test was a broken stub.
@@ -4097,11 +4079,11 @@ mod tests {
         );
     }
 
-    // T-1557: test_pending_call_with_named_args deleted. The function body called $+ via
+    // test_pending_call_with_named_args deleted. The function body called $+ via
     // (level: 1, slot: 0) from closure_env_id=0, but test_ctx() does not install + at that
     // slot. The add_builtin was defined but never inserted (insert_value removed in T-1557).
 
-    // T-1557: test_pending_call_with_default_named_args deleted. Same issue as
+    // test_pending_call_with_default_named_args deleted. Same issue as
     // test_pending_call_llt_function: body calls $+ at (level: 1, slot: 0) from
     // closure_env_id=0, but test_ctx() does not have + there. add_builtin was dead code.
 
@@ -4160,10 +4142,10 @@ mod tests {
         );
     }
 
-    // T-1557: test_failed_state_preserves_stack_frames deleted. Created _failing_fn but could
+    // test_failed_state_preserves_stack_frames deleted. Created _failing_fn but could
     // not insert it into scope (insert_value removed). $bad_fn in eval_str was never defined.
     //
-    // T-1557: test_pending_builtin_error_becomes_failed deleted. Created failing_builtin but
+    // test_pending_builtin_error_becomes_failed deleted. Created failing_builtin but
     // could not insert it into scope. $fail in eval_str was never defined.
 
     #[tokio::test]
@@ -4488,7 +4470,7 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("field") && err.to_string().contains("id"),
+            err.to_string().contains("record without field \"id\""),
             "got: {}",
             err
         );
@@ -5368,8 +5350,8 @@ mod tests {
 
         // Verify the error message describes the missing field
         assert!(
-            msg.contains("field") && msg.contains("y"),
-            "Expected field 'y' mentioned in error message, got: {}",
+            msg.contains("record without field \"y\""),
+            "Expected 'record without field \"y\"' in error message, got: {}",
             msg
         );
     }
@@ -5480,8 +5462,8 @@ mod tests {
 
         // Should contain the direct error message
         assert!(
-            msg.contains("field") && msg.contains("name"),
-            "Expected field 'name' mentioned in error message, got: {}",
+            msg.contains("record without field \"name\""),
+            "Expected 'record without field \"name\"' in error message, got: {}",
             msg
         );
     }
@@ -6162,7 +6144,7 @@ mod tests {
         );
     }
 
-    // B-597: Pin patterns in match — VarRef in pattern position looks up current scope and
+    // Pin patterns in match — VarRef in pattern position looks up current scope and
     // compares to scrutinee for equality. A resolved pin matches when values are equal.
     #[tokio::test]
     async fn test_b597_pin_pattern_match_succeeds() {
@@ -6231,7 +6213,7 @@ mod tests {
         );
     }
 
-    // B-596: eval_surface_file_with_input injects initial_input thunk as % pipeline variable.
+    // eval_surface_file_with_input injects initial_input thunk as % pipeline variable.
     // The formatter calls this with the AST dict as Some(ast_thunk); % must be accessible.
     #[tokio::test]
     async fn test_b596_initial_input_accessible_as_percent() {
@@ -6282,7 +6264,7 @@ mod tests {
         );
     }
 
-    // B-430: [type MyType Int] in standalone expression position returns {} (empty dict).
+    // [type MyType Int] in standalone expression position returns {} (empty dict).
     //
     // Type declarations have no runtime value when they appear as standalone expressions
     // (i.e. not as the value of a named dict entry like `Color: [type Red Green Blue]`).
@@ -6331,7 +6313,7 @@ mod tests {
         }
     }
 
-    // B-598: Case arm variable bindings must be injected into the arm EvalFrame.
+    // Case arm variable bindings must be injected into the arm EvalFrame.
     // `[case [let v] pattern body]` — `v` must be accessible in body.
     // Previously bind_or_pin_name created the thunk and immediately dropped it;
     // the arm body evaluated in the parent frame and `v` was undefined.
@@ -6459,7 +6441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_b637_dot_access_via_root_group() {
-        // B-637: builtin-dict-get must be available via root_group in builtin-resolve/builtin-eval.
+        // builtin-dict-get must be available via root_group in builtin-resolve/builtin-eval.
         // Test program uses dot-access: [build: [fn [let x] x.inner]] [result: [build [inner: 42]]]
         // - dot-access `x.inner` lowers to `[builtin-dict-get "inner" x]`
         // - builtin-dict-get must be in root_group (not just env-dict) for Field resolution
@@ -6545,7 +6527,7 @@ mod tests {
         );
     }
 
-    /// T-2057: independently-created root EvalContexts must share the same repr_registry
+    /// Independently-created root EvalContexts must share the same repr_registry
     /// and is_predicates Arcs so that repr: registrations from one context are visible
     /// in all others (including test contexts, bootstrap contexts, and re-entrant macro
     /// expansion contexts).
@@ -6566,7 +6548,7 @@ mod tests {
         );
     }
 
-    /// T-2057: new_with_options contexts must also share the same global registries,
+    /// new_with_options contexts must also share the same global registries,
     /// and must be pointer-equal to new_empty contexts (all root constructors use the same OnceLocks).
     #[test]
     fn test_global_registry_shared_across_constructor_variants() {
@@ -6585,7 +6567,7 @@ mod tests {
         );
     }
 
-    /// T-2057: functional registry sharing — a registration made through one context's
+    /// Functional registry sharing — a registration made through one context's
     /// repr_registry is immediately visible through a second independently-created context.
     /// This validates that pointer equality translates into actual cross-context visibility,
     /// not just that the Arcs are identical.

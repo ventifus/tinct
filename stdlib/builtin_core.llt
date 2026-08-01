@@ -224,6 +224,7 @@
   builtin-int-mul:      [fn@NativeInt [let a@NativeInt b@NativeInt] ...]
   builtin-float-mul:    [fn@Float64   [let a@Float64   b@Float64  ] ...]
   builtin-int-to-float: [fn@Float64   [let n@NativeInt] ...]
+  builtin-float-to-int: [fn@NativeInt [let n@Float64  ] ...]
 
   # ── Comparison — monomorphic typed variants ───────────────────────────────
   # Rust returns 1 (true) or 0 (false) as Integer — typed as [or 0 1] for precision.

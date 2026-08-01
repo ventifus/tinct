@@ -33,6 +33,7 @@
 //! structural narrowing to work. This is analogous to `tmpl`/`unindent` (D-3) and
 //! `as-typenode` (D-7). See `doc/feature/narrowing.md` §Structural Narrowing Protocol Entries.
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::typecheck_annot;
@@ -219,10 +220,6 @@ pub(crate) fn try_eq_literal(
                 var: name.clone(),
                 ty: make_typevalue_str_lit(s),
             }),
-            // true/false are plain identifiers in tinct — no native boolean type.
-            // No narrowing: x retains its original type. Emitting Unknown would
-            // degrade type checking (Axiom 4: no prelude-specific behavior in Rust).
-            SurfaceExpression::VarRef { name: ref n, .. } if n == "true" || n == "false" => None,
             _ => None,
         }
     } else {
@@ -335,6 +332,9 @@ pub(crate) fn apply_narrowings(
 /// - `SurfaceExpression::VarRef { annotation: Some(ann), .. }` — `a@Type` form; resolves via
 ///   `typecheck_annot::resolve_annotation`
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as a fresh TypeVar
+/// Map from declared TypeVar name to its TypeValue Arc — populated by `bind:` in instance patterns.
+pub(crate) type InstanceBindVars = HashMap<String, Arc<crate::value::Value>>;
+
 pub(crate) async fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
@@ -342,9 +342,49 @@ pub(crate) async fn extract_pattern_types(
 ) -> Result<Vec<Arc<crate::value::Value>>, Vec<TypeDiagnostic>> {
     match &pattern_node.expr {
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            // Pre-pass: find `bind: [a b c]` entries and register TypeVars.
+            // Inside [let ...], `bind: [a]` or `bind: [a b c]` declares TypeVars that can be
+            // referenced as type annotations on subsequent params (e.g. target@a source@a).
+            // The `:` in a LetDecl stores the value as a "default" annotation on a VarRef,
+            // so `bind: [a]` creates VarRef{name:"bind", annotation:PropertyDict{default:[a]}}.
+            let mut bind_vars: InstanceBindVars = HashMap::new();
+            let mut skip_indices: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+
+            for (i, binding) in bindings.iter().enumerate() {
+                if let SurfaceExpression::VarRef {
+                    name, annotation, ..
+                } = &binding.expr
+                {
+                    if name.as_str() == "bind" {
+                        if let Some(ann) = annotation {
+                            // Use PropertyDict match to detect bind: regardless of key format.
+                            // `bind: [a]` stores as PropertyDict regardless of whether the
+                            // "default" key is StringLiteral or VarRef.
+                            if let crate::ast::Annotation::PropertyDict(entries) = &ann.node {
+                                // Extract the value from the first entry (the [a b c] node)
+                                if let Some(default_node) = entries.first().map(|e| &e.node.value) {
+                                    process_instance_bind_list(
+                                        default_node,
+                                        state,
+                                        &mut bind_vars,
+                                        binding.span.clone(),
+                                    )
+                                    .map_err(|e| vec![e])?;
+                                    skip_indices.insert(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut types = Vec::new();
-            for binding in bindings {
-                extract_binding_types(binding, env, state, &mut types).await?;
+            for (i, binding) in bindings.iter().enumerate() {
+                if skip_indices.contains(&i) {
+                    continue;
+                }
+                extract_binding_types(binding, env, state, &mut types, &bind_vars).await?;
             }
             Ok(types)
         }
@@ -356,14 +396,97 @@ pub(crate) async fn extract_pattern_types(
     }
 }
 
+/// Process a `bind: [a b c]` value node from an instance [let ...] pattern.
+///
+/// Registers each TypeVar name in `bind_vars` with a fresh TypeValue Arc.
+/// Mirrors the `bind:` handling in `typecheck_annot.rs` for fn@ annotations.
+fn process_instance_bind_list(
+    node: &Arc<SurfaceNode>,
+    state: &mut InferState,
+    bind_vars: &mut InstanceBindVars,
+    span: Span,
+) -> Result<(), TypeDiagnostic> {
+    // Collect (name, span) pairs from the Call form [a b c] or bare VarRef [a]
+    let name_spans: Vec<(String, Span)> = match &node.expr {
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            if !named_args.is_empty() {
+                return Err(TypeDiagnostic::error(
+                    "type-error",
+                    "instance bind: list must contain only bare names",
+                    node.span.clone(),
+                ));
+            }
+            let mut v = Vec::new();
+            match &func.expr {
+                SurfaceExpression::VarRef { name, .. } => v.push((name.clone(), func.span.clone())),
+                _ => {
+                    return Err(TypeDiagnostic::error(
+                        "type-error",
+                        "instance bind: entries must be bare TypeVar names",
+                        func.span.clone(),
+                    ))
+                }
+            }
+            for arg in args {
+                match &arg.expr {
+                    SurfaceExpression::VarRef { name, .. } => {
+                        v.push((name.clone(), arg.span.clone()))
+                    }
+                    _ => {
+                        return Err(TypeDiagnostic::error(
+                            "type-error",
+                            "instance bind: entries must be bare TypeVar names",
+                            arg.span.clone(),
+                        ))
+                    }
+                }
+            }
+            v
+        }
+        SurfaceExpression::VarRef { name, .. } => vec![(name.clone(), node.span.clone())],
+        _ => {
+            return Err(TypeDiagnostic::error(
+                "type-error",
+                "instance bind: must be a list of bare TypeVar names like [a b c]",
+                span,
+            ))
+        }
+    };
+
+    for (name, name_span) in name_spans {
+        if !name.starts_with(|c: char| c.is_lowercase()) {
+            return Err(TypeDiagnostic::error(
+                "type-error",
+                format!(
+                    "instance bind: TypeVar name '{}' must start with lowercase",
+                    name
+                ),
+                name_span,
+            ));
+        }
+        let level = state.ctx.current_level;
+        let (fresh_id, fresh_tv) =
+            state.fresh_type_var_with(Some(name.as_str()), Some(level), "Type", &name_span);
+        // Mark as protected: instance bind: TypeVars are explicit polymorphic params.
+        state.ctx.protected_vars.insert(fresh_id.clone());
+        bind_vars.insert(name, fresh_tv);
+    }
+    Ok(())
+}
+
 /// Recursively extract type(s) from a single pattern binding expression.
 ///
 /// - `SurfaceExpression::Dict(entries)` — inner binding bracket `[a@Int b@Float]` (old syntax); expands entries
 /// - `SurfaceExpression::LetDecl { bindings }` — inner binding bracket `[let a@Int b@Float]` (new syntax); expands bindings
-/// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; treated as Unknown
+/// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; zero-arg attempts type resolution, multi-arg uses fresh TypeVar
 /// - `SurfaceExpression::VarRef { annotation: Some(ann), .. }` — `a@Type` form; resolved via `resolve_annotation`
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier → fresh TypeVar (not Unknown, to suppress T017)
-/// - `SurfaceExpression::Placeholder(..)` — wildcard `_` → `Type::Unknown`
+/// - `SurfaceExpression::Placeholder(..)` — wildcard `_` → Unknown (gradual escape hatch)
 ///
 /// Recursive async functions must return a `BoxFuture` to be object-safe.
 pub(crate) fn extract_binding_types<'a>(
@@ -371,6 +494,7 @@ pub(crate) fn extract_binding_types<'a>(
     env: &'a Arc<RwLock<Env>>,
     state: &'a mut InferState,
     types: &'a mut Vec<Arc<crate::value::Value>>,
+    bind_vars: &'a InstanceBindVars,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<TypeDiagnostic>>> + Send + 'a>>
 {
     Box::pin(async move {
@@ -382,7 +506,8 @@ pub(crate) fn extract_binding_types<'a>(
                 let all_keyless = entries.iter().all(|e| e.node.key.is_none());
                 if all_keyless {
                     for entry in entries {
-                        extract_binding_types(&entry.node.value, env, state, types).await?;
+                        extract_binding_types(&entry.node.value, env, state, types, bind_vars)
+                            .await?;
                     }
                 } else {
                     // Named-key dict: single compound type (structural/record type)
@@ -393,7 +518,7 @@ pub(crate) fn extract_binding_types<'a>(
             // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
             SurfaceExpression::LetDecl { bindings } => {
                 for sub_binding in bindings {
-                    extract_binding_types(sub_binding, env, state, types).await?;
+                    extract_binding_types(sub_binding, env, state, types, bind_vars).await?;
                 }
             }
             // Implied call form in pattern position.
@@ -406,8 +531,9 @@ pub(crate) fn extract_binding_types<'a>(
             // rather than a fresh TypeVar, making the instance pattern concrete.
             //
             // Multi-arg case `[Result String]`, `[Channel Int]` — parametric type application.
-            // Full resolution of these is future work; use a fresh TypeVar so that unification
-            // can still find the correct type and T017 ("contains Unknown") does not fire.
+            // Uses a fresh TypeVar so that unification can still find the correct type and
+            // T017 ("contains Unknown") does not fire. The type constructor is looked up at
+            // call sites during type class resolution.
             SurfaceExpression::Call {
                 func,
                 args,
@@ -440,31 +566,61 @@ pub(crate) fn extract_binding_types<'a>(
                 } else {
                     None
                 };
-                types.push(resolved.unwrap_or_else(|| state.fresh_type_var(&binding.span)));
+                types.push(match resolved {
+                    Some(tv) => tv,
+                    None => state.fresh_type_var(&binding.span),
+                });
             }
             SurfaceExpression::Call { .. } => {
                 // Multi-arg parametric call: use a fresh TypeVar.
                 types.push(state.fresh_type_var(&binding.span));
             }
             // a@Type form: VarRef with annotation — resolve via typecheck_annot::resolve_annotation.
+            // If the annotation is a Simple name that's in ann_mapping (declared via bind:),
+            // look up the TypeVar ID and resolve it from the type state rather than creating
+            // a new Unknown. This enables `target@a source@a` to share the same TypeVar.
             SurfaceExpression::VarRef {
                 annotation: Some(ann),
                 ..
             } => {
-                let mut constraints: Vec<Arc<crate::value::Value>> = Vec::new();
-                let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
-                let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
-                let tv = typecheck_annot::resolve_annotation(
-                    &ann.node,
-                    ann.span.clone(),
-                    &mut *state,
-                    &mut constraints,
-                    &mut ann_m,
-                    &mut row_m,
-                    None,
-                )
-                .await
-                .map_err(|e| vec![e])?;
+                // Simple annotation whose name is in bind_vars (declared via bind:).
+                // Return the same TypeVar Arc so that `target@a source@a` share one TypeVar,
+                // enforcing that both positions must have equal types.
+                let tv = if let crate::ast::Annotation::Simple(ann_name) = &ann.node {
+                    if let Some(bound_tv) = bind_vars.get(ann_name) {
+                        Arc::clone(bound_tv)
+                    } else {
+                        let mut constraints: Vec<Arc<crate::value::Value>> = Vec::new();
+                        let mut ann_m: Option<&mut HashMap<String, String>> = None;
+                        let mut row_m: Option<&mut HashMap<String, String>> = None;
+                        typecheck_annot::resolve_annotation(
+                            &ann.node,
+                            ann.span.clone(),
+                            &mut *state,
+                            &mut constraints,
+                            &mut ann_m,
+                            &mut row_m,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| vec![e])?
+                    }
+                } else {
+                    let mut constraints: Vec<Arc<crate::value::Value>> = Vec::new();
+                    let mut ann_m: Option<&mut HashMap<String, String>> = None;
+                    let mut row_m: Option<&mut HashMap<String, String>> = None;
+                    typecheck_annot::resolve_annotation(
+                        &ann.node,
+                        ann.span.clone(),
+                        &mut *state,
+                        &mut constraints,
+                        &mut ann_m,
+                        &mut row_m,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| vec![e])?
+                };
                 types.push(tv);
             }
             // Bare identifier in pattern position: represents a type variable (any type).

@@ -1,0 +1,10 @@
+# Tests Castable Float->NativeInt via cast with TypeAssert annotation.
+# builtin-float-to-int truncates toward zero (3.7 -> 3, -2.9 -> -2).
+# Fix 4 changed target@Integer to target@NativeInt in the Castable instance.
+[
+  r1: [@NativeInt [cast 3.7]]
+  r2: [@NativeInt [cast -2.9]]
+  r3: [@NativeInt [cast 0.99]]
+]
+=== out
+["r1": 3  "r2": -2  "r3": 0]

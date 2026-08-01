@@ -1,0 +1,13 @@
+# Test all five documented string escape sequences: \n \t \r \" \\
+# doc/02-syntax.md:176 documents these escapes for single-quoted strings.
+# Triple-quoted strings do NOT process escapes (they're literal).
+[
+  newline:   "line1\nline2"
+  tab:       "col1\tcol2"
+  cr:        "before\rafter"
+  quote:     "say \"hello\""
+  backslash: "path\\to\\file"
+  combined:  "tab:\there\nnewline"
+]
+=== out
+Dict({"newline": String("line1\nline2"), "tab": String("col1\tcol2"), "cr": String("before\rafter"), "quote": String("say \"hello\""), "backslash": String("path\\to\\file"), "combined": String("tab:\there\nnewline")})

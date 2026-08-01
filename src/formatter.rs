@@ -65,12 +65,13 @@ pub async fn format_source_tinct(
     let root_frame = ctx.root_group_resolver_map();
     let mut resolve_diags: Vec<crate::error::TypeDiagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
-        let (_table, diags, _unresolved, _resolver_frames) = resolve::resolve_surface_document_with_seed_frames(
-            &doc_spanned.node,
-            &[root_frame.clone()],
-            &[FORMATTER_INPUT_VAR.to_string()],
-            root_group_len,
-        );
+        let (_table, diags, _unresolved, _block_body_frames) =
+            resolve::resolve_surface_document_with_seed_frames(
+                &doc_spanned.node,
+                &[root_frame.clone()],
+                &[FORMATTER_INPUT_VAR.to_string()],
+                root_group_len,
+            );
         resolve_diags.extend(diags);
     }
     let resolve_errors: Vec<_> = resolve_diags

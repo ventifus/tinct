@@ -55,7 +55,7 @@
 **Cross-module coupling:**
 
 - Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `builtin_module()` (builtins.rs). Safe because dependency is at function-call level, not module init.
-- Elaboration write-once: type annotations are resolved by the type checker and stored inline as `OnceLock<Option<Arc<Value>>>` (TypeValue) on `SurfaceExpression::TypeAssert` nodes. The lowering pass reads these OnceLocks and transfers the resolved TypeValue into `CoreExpr::TypeAssert.resolved_type: Arc<Value>` — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run.
+- Elaboration write-once: type annotations are resolved by the type checker and stored inline as `OnceLock<Option<Arc<Value>>>` (TypeValue) on `SurfaceExpression::TypeAssert` nodes. The lowering pass reads these OnceLocks and transfers the resolved TypeValue into `CoreExpr::TypeAssert { check: TypeAssertCheck::Resolved(tv) }` when the type checker produced a non-Unknown type, or `TypeAssertCheck::Source { annotation }` when the type checker skipped or produced `TypeValue.Unknown` — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run.
 - Include cache: `EvalContext.state.string_include_cache` (`HashMap<String, IncludeCacheEntry>`, content-addressed, keyed by `blake3(cap-identity + "|" + source_text)`) memoizes `$include` results — the old inode-keyed `include_guard` and `include_cache` fields are deleted.
 
 ### Rust-Tinct Protocol Names

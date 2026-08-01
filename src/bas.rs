@@ -441,7 +441,12 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         // Union/Inter: fingerprint all members in order
         TV_UNION | TV_INTER => {
             let tag = if ctor == TV_UNION { "U" } else { "I" };
-            let members = payload.map(|p| payload_members(p)).unwrap_or_default();
+            let members = match payload {
+                Some(p) => payload_members(p),
+                None => {
+                    panic!("invariant violation: TypeValue.Union/Inter must have a payload dict")
+                }
+            };
             let member_fps: Vec<String> = members
                 .iter()
                 .map(|m| typevalue_structural_fingerprint(m, depth + 1))
@@ -952,7 +957,7 @@ fn is_fn_subtype(
             let sub_list = collect_indexed_typevalues(&sub_ps);
             let sup_list = collect_indexed_typevalues(&sup_ps);
 
-            // B-672: Arity subtyping via derived required_count.
+            // Arity subtyping via derived required_count.
             //
             // The correct rule is: sub <: sup iff sub.required_count <= sup.required_count,
             // where required_count = params.len() (positional params declared in the payload).
@@ -1326,13 +1331,14 @@ fn is_app_subtype(
             // the depth is always 0 (same as the old `.first()` call). For multi-
             // parameter TyCons like Map[K,V], the outer App for V has depth=1 and
             // correctly selects variance[1] rather than variance[0] (K's variance).
-            let variance = app_spine_root_and_depth(&so)
-                .and_then(|(name, spine_depth)| {
-                    ctx.tycon_env
-                        .get(&name)
-                        .and_then(|def| def.variance.get(spine_depth).copied())
-                })
-                .unwrap_or(Variance::Invariant);
+            let variance = match app_spine_root_and_depth(&so).and_then(|(name, spine_depth)| {
+                ctx.tycon_env
+                    .get(&name)
+                    .and_then(|def| def.variance.get(spine_depth).copied())
+            }) {
+                Some(v) => v,
+                None => Variance::Invariant, // Conservative: unknown tycon variance is treated as Invariant.
+            };
 
             match variance {
                 Variance::Covariant => is_subtype_bas_with_sigma(&sa, &pa, ctx, sigma, depth + 1),
@@ -1461,7 +1467,8 @@ pub(crate) fn substitute_recursive_ref(
                 if !changed {
                     return Arc::clone(tv);
                 }
-                let ctor = typevalue_ctor(tv).unwrap_or(TV_UNION);
+                let ctor = typevalue_ctor(tv)
+                    .expect("invariant: tv ctor matched TV_UNION | TV_INTER above");
                 return build_members_typevalue(ctor, new_members);
             }
             Arc::clone(tv)
@@ -2040,7 +2047,7 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
 /// BAS subtyping: `A <: B` iff `A & ~B` is uninhabited.
 ///
 /// This is the core BAS algorithm operating on TypeValues (Arc<Value>).
-/// Short-circuits before RDNF for common cases (Error, Top, Never, Unknown, TypeVar).
+/// Applies type-lattice axioms directly for common cases (Error, Top, Never, Unknown, TypeVar) before RDNF decomposition.
 pub fn is_subtype_bas(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &InferenceContext) -> bool {
     let mut sigma = HashSet::new();
     is_subtype_bas_with_sigma(sub, sup, ctx, &mut sigma, 0)
@@ -2129,6 +2136,43 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
     // Unresolved TypeVar on sup side: treat as Unknown (gradual)
     if matches!(sup_ctor, Some(TV_VAR)) {
         return true;
+    }
+
+    // TV_OP sub vs TV_APP sup: Op("Seq") is the erased form of App(Op("Seq"), ?).
+    // Consistent if the App's op is consistent with the Op (same type constructor).
+    // Sub has no arg information → gradual with respect to any App arg.
+    //
+    // Example: Seq.Cons has ground type Op("Seq"); annotation [Seq a] is App(Op("Seq"), Var(a)).
+    // Op("Seq") ~<: App(Op("Seq"), Var(a)): op matches, arg is gradual → true.
+    if matches!(sub_ctor, Some(TV_OP)) && matches!(sup_ctor, Some(TV_APP)) {
+        if let Some(sup_payload) = typevalue_payload(sup) {
+            if let Some(sup_op_tv) = payload_typevalue_field(sup_payload, FIELD_OP) {
+                // Check op consistency: Op("Seq") ~<: Op("Seq") → true; Op("Seq") ~<: Op("List") → false
+                return is_consistent_subtype(sub, &sup_op_tv, ctx);
+            }
+        }
+        return true; // Missing op in App payload → gradual
+    }
+
+    // TV_APP sub vs TV_APP sup: covariant type application — recurse on op and arg.
+    //
+    // Example: App(Op("Seq"), String) ~<: App(Op("Seq"), Var(a)):
+    //   op:  Op("Seq") ~<: Op("Seq") → true (same constructor)
+    //   arg: String ~<: Var(a) → true (TypeVar on sup → gradual)
+    // Example: App(Op("Seq"), String) ~<: App(Op("Seq"), Integer):
+    //   op:  true; arg: String ~<: Integer → false (correctly caught)
+    if matches!(sub_ctor, Some(TV_APP)) && matches!(sup_ctor, Some(TV_APP)) {
+        if let (Some(sub_p), Some(sup_p)) = (typevalue_payload(sub), typevalue_payload(sup)) {
+            let sub_op = payload_typevalue_field(sub_p, FIELD_OP).unwrap_or_else(unknown_type_val);
+            let sup_op = payload_typevalue_field(sup_p, FIELD_OP).unwrap_or_else(unknown_type_val);
+            let sub_arg =
+                payload_typevalue_field(sub_p, FIELD_ARG).unwrap_or_else(unknown_type_val);
+            let sup_arg =
+                payload_typevalue_field(sup_p, FIELD_ARG).unwrap_or_else(unknown_type_val);
+            return is_consistent_subtype(&sub_op, &sup_op, ctx)
+                && is_consistent_subtype(&sub_arg, &sup_arg, ctx);
+        }
+        return true; // Missing App payload → gradual
     }
 
     // Error: never a consistent subtype
@@ -2651,7 +2695,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // B-465: sigma isolation per conjunction
+    // sigma isolation per conjunction
     // -------------------------------------------------------------------------
 
     /// B-465 regression: sigma is isolated per conjunction — a hypothesis added when
@@ -2677,7 +2721,7 @@ mod tests {
     /// cancel each other due to sigma leakage).
     #[test]
     fn test_b465_sigma_isolation_per_conjunction() {
-        // B-465: sigma sets must be isolated between conjunctions in RDNF.
+        // sigma sets must be isolated between conjunctions in RDNF.
         // If the sigma from checking one conjunction leaked into the next, a
         // spurious coinductive hypothesis from C1 could make C2 vacuously true.
         let ctx = empty_ctx();
@@ -2764,7 +2808,7 @@ mod tests {
         );
     }
 
-    /// B-666/B-668: structural fingerprints are stable across re-extraction.
+    /// Structural fingerprints are stable across re-extraction.
     ///
     /// Two separately-allocated TypeValues with identical structure must produce
     /// identical fingerprints. This is the key invariant that makes coinductive
@@ -2808,7 +2852,7 @@ mod tests {
         );
     }
 
-    /// B-668: coinductive subtyping works for recursive types nested inside records.
+    /// Coinductive subtyping works for recursive types nested inside records.
     ///
     /// When a recursive type appears as a field in a record, `is_record_subtype` calls
     /// `payload_typevalue_field` to extract the field's TypeValue. This creates a fresh
@@ -2836,7 +2880,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // B-467: distribute limit
+    // distribute limit
     // -------------------------------------------------------------------------
 
     /// B-467 regression: distribute() returns Top (vec![vec![]]) when product exceeds limit.
@@ -2945,9 +2989,15 @@ mod tests {
         ];
         let big_union = make_union(reprs);
         let ctx = empty_ctx();
-        // Just verify no panic — the result can be true or false (depends on BAS semantics).
-        let _ = is_subtype_bas(&big_union, &make_top(), &ctx);
-        let _ = is_subtype_bas(&make_repr(REPR_INT), &big_union, &ctx);
+        // Both hold regardless of RDNF approximation: Top is the supertype of all, Int is in the union.
+        assert!(
+            is_subtype_bas(&big_union, &make_top(), &ctx),
+            "any type must be subtype of Top"
+        );
+        assert!(
+            is_subtype_bas(&make_repr(REPR_INT), &big_union, &ctx),
+            "Int must be subtype of union containing Int"
+        );
     }
 
     // -------------------------------------------------------------------------

@@ -594,6 +594,8 @@ pub(crate) async fn try_fd_improvement(
     state_env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
     fd_depth: &mut u32,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
+    type_stage_fns: &std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
 ) -> Vec<(Arc<Value>, Arc<Value>)> {
     if *fd_depth >= 32 {
         return vec![];
@@ -645,23 +647,29 @@ pub(crate) async fn try_fd_improvement(
             // returns the determined TypeValue directly. Instance-based classes (e.g.
             // Addable, Multipliable) scan registered instances for a structural match.
             if let Some(ref resolver_name) = class_decl.resolver {
-                // T-2095: Resolver-based FD improvement requires:
-                // 1. Converting source_types (TypeValue) to TypeNode arguments via typevalue_to_typenode()
-                // 2. Looking up the resolver function from the type-stage environment (class_decl.resolver_env or state_env)
-                // 3. Calling the resolver as an async function with TypeNode positional args
-                // 4. Converting the returned TypeNode back to TypeValue via typenode_value_to_type()
+                // Resolver-based FD improvement: the caller (run_fd_improvement_fixpoint) passes
+                // state.eval_ctx so that the resolver function can be invoked when an EvalContext
+                // is available (e.g., during builtin-typecheck in an active eval pipeline).
                 //
-                // The async call mechanism requires an EvalContext with type-stage scope. The caller
-                // (run_fd_improvement_fixpoint in typecheck_cek.rs) runs during inference, which operates
-                // on InferState (no EvalContext). Wiring an EvalContext through the inference pipeline
-                // would require propagating it from typecheck_document → run_typecheck → infer_* → here.
-                //
-                // eval_ctx parameter added in T-2095 but currently always None — no caller provides it yet.
-                if eval_ctx.is_none() {
-                    continue;
-                }
+                // When eval_ctx is None (unit tests, bootstrap, or plain typecheck_file paths),
+                // we skip the resolver call — instance-based FD improvement still fires for
+                // classes that have both a resolver and instances registered.
+                let eval_ctx = match eval_ctx.as_ref() {
+                    Some(ec) => ec,
+                    None => continue,
+                };
+
+                // Look up the resolver thunk from the type-stage function registry.
+                // Resolver functions (e.g., FieldType, ElementType) are parameterized type
+                // constructors stored as Arc<Thunk> in type_stage_fns, registered when
+                // their [class ... resolver: FnName] declaration is processed.
+                let resolver_thunk = match type_stage_fns.get(resolver_name.as_str()) {
+                    Some(t) => Arc::clone(t),
+                    None => continue, // Resolver not registered in type-stage — skip this FD.
+                };
 
                 // Convert source types to TypeNode arguments.
+                // TypeValues ARE TypeNodes after the S-1003 migration — pass them directly.
                 let tn_args: Vec<_> = source_types
                     .iter()
                     .filter_map(|tv| typevalue_to_typenode(tv))
@@ -672,31 +680,51 @@ pub(crate) async fn try_fd_improvement(
                     continue;
                 }
 
-                // Look up the resolver function from the type-stage environment.
-                // The resolver is a named value in state_env (stored during [class] declaration processing).
-                // Its return type is TypeNode (user-facing AST type), not TypeValue (internal inference type).
-                let resolver_fn = {
-                    let env_guard = state_env.read().unwrap();
-                    env_guard.extras.get(resolver_name).and_then(|slot| slot.scheme.clone())
+                // Call the resolver function. The result is already a TypeValue (evaluate_resolver_with_thunk
+                // runs typenode_value_to_type internally and returns Arc<Value> TypeValue).
+                let computed_ty = match crate::type_normalize::evaluate_resolver_with_thunk(
+                    resolver_thunk,
+                    &tn_args,
+                    eval_ctx,
+                )
+                .await
+                {
+                    Ok(Some(tv)) => tv,
+                    Ok(None) => continue, // Resolver not applicable — skip.
+                    Err(eval_err) => {
+                        diagnostics.push(crate::error::TypeDiagnostic::error(
+                            "type-error",
+                            format!(
+                                "resolver `{}` failed during FD improvement: {}",
+                                resolver_name, eval_err
+                            ),
+                            boot_span(),
+                        ));
+                        continue;
+                    }
                 };
 
-                let _resolver_fn = match resolver_fn {
-                    Some(f) => f,
-                    None => continue, // Resolver not found — skip this FD.
-                };
+                // Skip if the computed type is uninformative (Unknown or free TypeVar).
+                match computed_ty.as_ref() {
+                    Value::Variant { ctor, .. }
+                        if ctor.as_ref() == TV_UNKNOWN || ctor.as_ref() == TV_VAR =>
+                    {
+                        continue;
+                    }
+                    _ => {}
+                }
 
-                // TODO: Call the resolver function with tn_args as positional arguments, using eval_ctx.
-                // The call is async (requires eval_call machinery). The result is a TypeNode that must
-                // be converted back to TypeValue via typenode_value_to_type() (inverse of typevalue_to_typenode).
-                //
-                // Calling pattern (pseudo-code):
-                //   let result_thunk = eval_call(resolver_fn, tn_args, eval_ctx).await?;
-                //   let result_value = result_thunk.require_value()?;
-                //   let result_typevalue = typenode_value_to_type(&result_value)?;
-                //   // Use result_typevalue for target position improvement.
-                //
-                // This machinery is not implemented — async evaluation within the inference loop requires
-                // significant refactoring to avoid borrow-checker conflicts and async recursion limits.
+                // For each target position with a free TypeVar arg, emit an improvement pair.
+                for &target_pos in target_positions {
+                    let target_arg = match args.get(target_pos) {
+                        Some(a) => ctx.apply_subst(a),
+                        None => continue,
+                    };
+                    if !has_free_type_vars(&target_arg, &ctx.subst) {
+                        continue; // Already ground — nothing to improve.
+                    }
+                    pairs.push((target_arg, Arc::clone(&computed_ty)));
+                }
 
                 continue;
             }
@@ -746,7 +774,7 @@ pub(crate) async fn try_fd_improvement(
     pairs
 }
 
-/// T-2090: Convert a TypeValue (Arc<Value>) to a TypeNode (Arc<Value>).
+/// Convert a TypeValue (Arc<Value>) to a TypeNode (Arc<Value>).
 ///
 /// TypeValues are the internal inference representation; TypeNodes are the user-facing
 /// AST-level type representation declared in `stdlib/builtin_core.llt`. Resolver-based

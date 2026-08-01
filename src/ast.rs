@@ -65,6 +65,11 @@ pub fn class_decl_name(node: &Arc<SurfaceNode>) -> String {
 pub const ANNOTATION_KEY_DEFAULT: &str = "default";
 pub const ANNOTATION_KEY_TYPE: &str = "type";
 pub const ANNOTATION_KEY_CONSTRUCTOR: &str = "_constructor";
+/// Key for the explicit child role in a `@Child@[role: "..."]` annotation.
+/// Used by the TypeNode traversal protocol to declare whether a field holds a single child
+/// ("One") or map-shaped children ("MapValues"). Declared by the type author; never inferred
+/// from the type expression's head name.
+pub const ANNOTATION_KEY_CHILD_ROLE: &str = "role";
 
 /// Source span (start..end). Carries file path and line/column positions.
 /// Every span must carry its source file — a line/column number without a filename is meaningless.
