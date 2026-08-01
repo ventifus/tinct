@@ -12,7 +12,9 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::error::TypeDiagnostic;
-use crate::type_infer::{typevalue_ctor, typevalue_var_name, InferenceContext, TypeValue};
+use crate::type_infer::{
+    extract_rowtail_var_name, typevalue_ctor, typevalue_var_name, InferenceContext, TypeValue,
+};
 use crate::type_tags::*;
 
 /// Maximum recursion depth for unification.
@@ -738,11 +740,16 @@ pub async fn unify(
             Box::pin(unify_rowtails(&a_tail, &b_tail, ctx, constraints, span)).await
         }
 
-        // Union types: order-insensitive bipartite matching (T-2073).
+        // Union types: order-insensitive bipartite matching with backtracking (B-690).
         // Union([A, B]) ~ Union([B, A]) should succeed (order-insensitive).
-        // For each member of the left union, find a matching member in the right union
-        // via non-destructive unification probes. If all left members match distinct
-        // right members and vice versa, unification succeeds.
+        //
+        // BACKTRACKING: Greedy first-match can reject valid unifications. Example:
+        // Union([α, Int]) ~ Union([Int, Str]) where α is free. Greedy matches α~Int first
+        // (binding α=Int), then Int~Str fails. But α=Str, Int~Int is valid.
+        //
+        // Fix: recursive backtracking search. For each unmatched member of members_a, try
+        // all unmatched members_b. If a probe succeeds, recurse on remaining members. If
+        // recursion fails, restore state and try the next b candidate.
         (Some(TV_UNION), Some(TV_UNION)) => {
             let members_a = extract_union_members(&a)
                 .expect("invariant: TypeValue.Union payload must be settled with members field");
@@ -761,67 +768,106 @@ pub async fn unify(
                 ));
             }
 
-            // Bipartite matching: for each member in members_a, find a unique match in members_b.
-            // Track which members_b indices have been matched to ensure 1:1 correspondence.
-            let mut matched_b_indices = vec![false; members_b.len()];
-
-            // Save outer state before the entire matching loop. If any member of members_a
-            // fails to find a match (after committing bindings for earlier successful probes),
-            // restoring here ensures unify() leaves ctx unchanged on failure — callers expect
-            // a failed unify() call to be a no-op with respect to ctx and constraints.
-            let saved_ctx_outer = ctx.clone();
-            // Constraints are append-only (never mutated in-place), so Vec-level clone is
-            // a correct snapshot: restoring replaces the Vec, discarding appended entries.
-            let saved_constraints_outer = constraints.clone();
-
-            for ma in &members_a {
-                // Try to find an unmatched member in members_b that unifies with ma.
-                let mut found_match = false;
-                for (b_idx, mb) in members_b.iter().enumerate() {
-                    if matched_b_indices[b_idx] {
-                        continue; // Already matched
+            // Recursive backtracking helper: try to match members_a[a_start..] to unmatched members_b.
+            // Returns Ok(()) if a valid assignment exists, Err otherwise.
+            // On success, ctx and constraints are updated with the bindings.
+            // On failure, ctx and constraints are restored to their state at entry.
+            // Uses Box::pin for async recursion (codebase does not depend on async_recursion crate).
+            fn try_match_from<'a>(
+                a_start: usize,
+                members_a: &'a [TypeValue],
+                members_b: &'a [TypeValue],
+                matched_b: &'a mut Vec<bool>,
+                ctx: &'a mut InferenceContext,
+                constraints: &'a mut Vec<Arc<crate::value::Value>>,
+                span: Span,
+                depth: usize,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), TypeDiagnostic>> + Send + 'a>,
+            > {
+                Box::pin(async move {
+                    // Base case: all members_a have been matched.
+                    if a_start >= members_a.len() {
+                        return Ok(());
                     }
 
-                    // Non-destructive probe: save ctx and constraints state before attempting.
-                    let saved_ctx = ctx.clone();
-                    let saved_constraints = constraints.clone();
+                    let ma = &members_a[a_start];
+                    // Try each unmatched member of members_b.
+                    for b_idx in 0..members_b.len() {
+                        if matched_b[b_idx] {
+                            continue; // Already matched to a previous member_a
+                        }
 
-                    let probe_result =
-                        Box::pin(unify(ma, mb, ctx, constraints, span.clone(), depth + 1)).await;
+                        // Save state before probe.
+                        let saved_ctx = ctx.clone();
+                        let saved_constraints = constraints.clone();
 
-                    if probe_result.is_ok() {
-                        // Match found: mark this b_idx as matched and keep the ctx/constraints.
-                        matched_b_indices[b_idx] = true;
-                        found_match = true;
-                        break;
-                    } else {
-                        // Probe failed: restore ctx and constraints for next attempt.
-                        *ctx = saved_ctx;
-                        *constraints = saved_constraints;
+                        // Probe: try to unify ma ~ members_b[b_idx].
+                        let probe_result = Box::pin(unify(
+                            ma,
+                            &members_b[b_idx],
+                            ctx,
+                            constraints,
+                            span.clone(),
+                            depth + 1,
+                        ))
+                        .await;
+
+                        if probe_result.is_ok() {
+                            // Probe succeeded: mark b_idx as matched and recurse on remaining members_a.
+                            matched_b[b_idx] = true;
+                            let recurse_result = try_match_from(
+                                a_start + 1,
+                                members_a,
+                                members_b,
+                                matched_b,
+                                ctx,
+                                constraints,
+                                span.clone(),
+                                depth,
+                            )
+                            .await;
+
+                            if recurse_result.is_ok() {
+                                // Recursion succeeded: valid assignment found. Keep bindings and return.
+                                return Ok(());
+                            }
+
+                            // Recursion failed: backtrack. Restore state and unmark b_idx.
+                            *ctx = saved_ctx;
+                            *constraints = saved_constraints;
+                            matched_b[b_idx] = false;
+                        } else {
+                            // Probe failed: restore state and try next b_idx.
+                            *ctx = saved_ctx;
+                            *constraints = saved_constraints;
+                        }
                     }
-                }
 
-                if !found_match {
-                    // No matching member in members_b for this ma — unification fails.
-                    // Restore to the pre-loop state: earlier successful probes in this outer
-                    // loop committed bindings to ctx (e.g. α=Float), and the caller must not
-                    // see those partial bindings when we return Err.
-                    *ctx = saved_ctx_outer;
-                    *constraints = saved_constraints_outer;
-                    return Err(TypeDiagnostic::error(
+                    // No valid b_idx for members_a[a_start] — backtrack to caller.
+                    Err(TypeDiagnostic::error(
                         "type-error",
                         format!(
                             "cannot unify union types: no matching member found for type {}",
                             crate::eval::format_type_for_assert(ma)
                         ),
                         span,
-                    ));
-                }
+                    ))
+                })
             }
 
-            // All members_a matched distinct members_b. Since |members_a| == |members_b|,
-            // this guarantees a bijection (all members_b are also matched).
-            Ok(())
+            let mut matched_b_indices = vec![false; members_b.len()];
+            try_match_from(
+                0,
+                &members_a,
+                &members_b,
+                &mut matched_b_indices,
+                ctx,
+                constraints,
+                span,
+                depth,
+            )
+            .await
         }
 
         // App types: structural unification on the op and arg.
@@ -1219,14 +1265,60 @@ async fn unify_rowtails(
             .await
         }
 
-        // RowVar ~ concrete tail: conservative accept without binding.
-        // RowTail.Var is represented as a RowVar name (TypeValue.Var inside the tail position).
-        // Correct RowVar binding requires RowVar level tracking and occurs checking on row
-        // variables (distinct from TypeVar infrastructure). Unsound bindings are deferred
-        // until that infrastructure exists (T-2088). Conservative accept (Ok(())) is sound —
-        // it may admit programs that would be rejected by full row polymorphism, never the
-        // reverse.
-        (Some(RT_VAR), _) | (_, Some(RT_VAR)) => Ok(()),
+        // T-2088: RowVar ~ RowVar: bind the higher-level RowVar to the lower-level one.
+        // Analogous to U-VAR-VAR for TypeVars (level comparison, keep the lower-level one).
+        (Some(RT_VAR), Some(RT_VAR)) => {
+            let name_a = extract_rowtail_var_name(&a);
+            let name_b = extract_rowtail_var_name(&b);
+            match (name_a, name_b) {
+                (Some(na), Some(nb)) => {
+                    if na == nb {
+                        return Ok(()); // Same RowVar — nothing to do.
+                    }
+                    let level_a = ctx.get_level(&na);
+                    let level_b = ctx.get_level(&nb);
+                    // Bind the higher-level RowVar to the lower-level one.
+                    // When levels are equal, bind a → b (arbitrary but consistent).
+                    if level_a >= level_b {
+                        ctx.lower_var_level(&nb, level_a);
+                        ctx.bind(na, b.clone())?;
+                    } else {
+                        ctx.lower_var_level(&na, level_b);
+                        ctx.bind(nb, a.clone())?;
+                    }
+                    Ok(())
+                }
+                // Malformed RowTail.Var — conservative accept.
+                _ => Ok(()),
+            }
+        }
+
+        // T-2088: RowVar ~ concrete tail: bind the RowVar to the concrete tail.
+        // Analogous to U-VAR-LEVEL for TypeVars (bind variable to concrete type).
+        // TODO: occurs checking on RowVars (row variables rarely self-reference, but
+        // a fully correct implementation should check). Skipped for now per T-2088 scope.
+        (Some(RT_VAR), _) => {
+            match extract_rowtail_var_name(&a) {
+                Some(name) => {
+                    // No occurs check (see TODO above).
+                    ctx.bind(name, b.clone())?;
+                    Ok(())
+                }
+                // Malformed RowTail.Var — conservative accept.
+                None => Ok(()),
+            }
+        }
+        (_, Some(RT_VAR)) => {
+            match extract_rowtail_var_name(&b) {
+                Some(name) => {
+                    // No occurs check (see TODO above).
+                    ctx.bind(name, a.clone())?;
+                    Ok(())
+                }
+                // Malformed RowTail.Var — conservative accept.
+                None => Ok(()),
+            }
+        }
 
         // Closed ~ Uniform: fail (incompatible tails).
         (Some(RT_CLOSED), Some(RT_UNIFORM)) | (Some(RT_UNIFORM), Some(RT_CLOSED)) => {
@@ -1343,6 +1435,64 @@ pub async fn constrain(
         return Ok(());
     }
 
+    // C-LB-Union (B-686): constrain(sub, Union([..., TypeVar(α), ...])) accumulates lower
+    // bounds instead of equality binding.
+    //
+    // When sup is a Union containing TypeVars, the constraint "sub <: Union([..., α, ...])"
+    // is satisfied if sub matches ANY member. Correct semantics:
+    // 1. Try constrain(sub, each non-TypeVar member) — if any succeeds, constraint satisfied
+    // 2. If all fail, accumulate sub as a lower bound for the first TypeVar member
+    //
+    // This prevents falling through to unify(), which would bind α=sub via U-VAR-LEVEL
+    // (equality), violating directionality. The Union is satisfied if sub matches any member;
+    // TypeVars in the union are flexible — they accumulate bounds, not equality bindings.
+    if matches!(tv_ctor(&sup), Some(TV_UNION)) {
+        let members = extract_union_members(&sup).ok_or_else(|| {
+            TypeDiagnostic::error(
+                "type-error",
+                "TypeValue.Union payload is unsettled or malformed",
+                span.clone(),
+            )
+        })?;
+
+        // Partition members: non-TypeVars first, TypeVars last.
+        let (concrete_members, typevar_members): (Vec<_>, Vec<_>) = members
+            .iter()
+            .partition(|m| typevalue_var_name(m).is_none());
+
+        // Try concrete members first via constrain (non-destructive probes).
+        for member in &concrete_members {
+            let mut probe_ctx = ctx.clone();
+            let mut probe_constraints = constraints.clone();
+            let result = Box::pin(constrain(
+                &sub,
+                member,
+                &mut probe_ctx,
+                &mut probe_constraints,
+                span.clone(),
+            ))
+            .await;
+            if result.is_ok() {
+                // Constraint satisfied by this concrete member — no TypeVar binding needed.
+                *ctx = probe_ctx;
+                *constraints = probe_constraints;
+                return Ok(());
+            }
+        }
+
+        // All concrete members failed. If there are TypeVars in the union, accumulate
+        // sub as a lower bound for the first TypeVar member.
+        if let Some(first_typevar) = typevar_members.first() {
+            if let Some(alpha_name) = typevalue_var_name(first_typevar) {
+                ctx.add_lower_bound(&alpha_name, sub.clone());
+                return Ok(());
+            }
+        }
+
+        // No concrete member matched and no TypeVars available — constraint fails.
+        // Fall through to unify for the error message.
+    }
+
     // C-UB (upper bound / narrowing): constrain(α, sup) where α is a free TypeVar and
     // sup is a concrete type.
     //
@@ -1353,6 +1503,24 @@ pub async fn constrain(
     // Invariant: `sub` has already been fully resolved through apply_subst at the top of
     // this function. If sub is a TypeVar here, it is guaranteed to be free (not in subst).
     if let Some(alpha_name) = typevalue_var_name(&sub) {
+        // B-687 pragmatic fix: if α is already bound (from an earlier constraint in the same
+        // inference step), use the existing binding for this constraint check rather than
+        // attempting to bind again. This handles the case where α appears in multiple positions
+        // (e.g., Fn(α→α)) and gets bound by the first constraint.
+        //
+        // The proper fix (accumulating directional upper bounds and resolving at generalization
+        // boundaries) is future work. For now, check if α has been bound since the top-level
+        // apply_subst call by re-applying substitution.
+        {
+            // Check if α was bound since the top-level apply_subst by re-resolving it.
+            let alpha_tv = crate::type_infer::make_typevar_value(&alpha_name);
+            let resolved = ctx.apply_subst(&alpha_tv);
+            if !typevalue_shallow_eq(&alpha_tv, &resolved) {
+                // α is already bound — re-check the constraint with the bound value.
+                return Box::pin(constrain(&resolved, &sup, ctx, constraints, span)).await;
+            }
+        }
+
         // C-UB: bind α = sup. Lower bounds on α are accumulated from previous constrain(lb, α)
         // calls (via add_lower_bound). Rather than eagerly checking lower bounds against sup
         // here (which causes false errors when lower bounds include gradual/unannotated types
@@ -1519,13 +1687,19 @@ async fn constrain_record(
             Ok(())
         }
         Some(RT_VAR) => {
-            // sup tail is a RowVar: this is an open record with a polymorphic tail.
-            // Conservative accept. Correct RowVar binding requires RowVar level tracking
-            // and occurs checking on row variables (distinct from TypeVar infrastructure).
-            // The full RowVar binding implementation is tracked as T-2088.
-            // Conservative accept (Ok(())) is sound — it may admit programs that would be
-            // rejected by full row polymorphism, never the reverse.
-            Ok(())
+            // T-2088: sup tail is a RowVar. Bind it to the sub tail (subtype constraint
+            // accumulates as a lower bound). For now, use direct binding (same as unify)
+            // since RowVar lower bounds are not yet accumulated separately.
+            // TODO: accumulate lower bounds for RowVars analogous to TypeVar lower bounds
+            // (ctx.add_lower_bound). Direct binding is conservative-correct for width subtyping.
+            match extract_rowtail_var_name(&sup_tail) {
+                Some(name) => {
+                    ctx.bind(name, sub_tail.clone())?;
+                    Ok(())
+                }
+                // Malformed RowTail.Var — conservative accept.
+                None => Ok(()),
+            }
         }
         _ => {
             // sup tail is closed (empty dict [] or RT_CLOSED or unknown variant).
@@ -1872,15 +2046,11 @@ fn expand_tycon_app(
     }
     let param_name = &tycon_def.params[0];
     let body: TypeValue = Arc::new(tycon_def.body.as_ref().clone());
-    // Build a temporary substitution: param_name → arg.
-    // Apply it to the body by creating a minimal InferenceContext with just this binding.
-    let mut temp_ctx = InferenceContext::new();
-    // Bind the parameter name to the argument (monomorphic substitution).
-    // This is safe to unwrap: temp_ctx is fresh, so there are no existing bindings.
-    temp_ctx
-        .bind(param_name.clone(), Arc::clone(arg))
-        .expect("invariant: fresh InferenceContext must accept first binding");
-    Some(temp_ctx.apply_subst(&body))
+    // Build a renaming map: param_name → arg.
+    // Apply it to the body via apply_typevalue_renaming, which walks compound structures.
+    let mut renaming = std::collections::HashMap::new();
+    renaming.insert(param_name.clone(), Arc::clone(arg));
+    Some(crate::types::type_env::apply_typevalue_renaming(&body, &renaming))
 }
 
 // ── Recursive type substitution ───────────────────────────────────────────────

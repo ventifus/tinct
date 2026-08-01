@@ -995,11 +995,14 @@
 
 [
   # Prelude loading pipeline. Each stage short-circuits via if-ok when diagnostics has errors.
-  # %prelude threading removed (B-688): [%prelude: prelude-env] in the eval-program seed
+  # B-688: TypeAssert weakened to [diagnostics: Dict  stderr: Any] — the fields that are
+  # always present regardless of which if-ok stage short-circuits. full-env and tc-ready are
+  # only added by export/set-tc-ready (late stages); on early failure they don't exist.
+  # %prelude threading also removed: [%prelude: prelude-env] in the eval-program seed
   # created a circular dependency — prelude runtime docs access %prelude which forces
   # prelude-env which reads prel.full-env which isn't built yet. Without %prelude in scope,
   # [include] won't work inside prelude during its own loading, but corpus tests don't need it.
-  prel: [@[diagnostics: Dict  full-env: Dict  tc-ready: Any  stderr: Any] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
+  prel: [@[diagnostics: Dict  stderr: Any] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
     | [if-ok log-step "prelude: loading"]
     | [if-ok load-bytes %libdir]
     | [if-ok log-step "prelude: parsing"]

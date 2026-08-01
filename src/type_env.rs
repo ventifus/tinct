@@ -121,11 +121,62 @@ pub fn instantiate_scheme_tv(
 /// NOTE: This does a shallow walk — it does NOT recursively descend into unsettled thunks.
 /// Complex TypeValues with unsettled payloads are treated as opaque (returned as-is).
 /// In practice, TypeValues constructed by the type checker are always settled synchronously.
+/// Helper to recursively apply renaming to a Value that may be a Variant, Dict, or other.
+/// Returns (new_value, changed_flag).
+fn apply_renaming_to_value(
+    v: &crate::value::Value,
+    renaming: &HashMap<String, crate::type_class::TypeValue>,
+) -> (crate::value::Value, bool) {
+    use crate::value::Value;
+    use std::sync::Arc;
+
+    match v {
+        Value::Variant { .. } => {
+            // This is a TypeValue — apply renaming recursively.
+            let tv: crate::type_class::TypeValue = Arc::new(v.clone());
+            let renamed = apply_typevalue_renaming(&tv, renaming);
+            let changed = !Arc::ptr_eq(&renamed, &tv);
+            (renamed.as_ref().clone(), changed)
+        }
+        Value::Dict { entries, type_val } => {
+            // Dict may contain TypeValues or nested Dicts — recurse into all entries.
+            let mut new_entries = indexmap::IndexMap::new();
+            let mut changed = false;
+            for (key, thunk) in entries.iter() {
+                match thunk.peek_result() {
+                    Some(Ok(inner_val)) => {
+                        let (new_val, val_changed) = apply_renaming_to_value(inner_val, renaming);
+                        if val_changed {
+                            changed = true;
+                        }
+                        new_entries.insert(
+                            key.clone(),
+                            Arc::new(crate::value::Thunk::value(new_val, crate::rust_span!())),
+                        );
+                    }
+                    _ => {
+                        // Unsettled or error — copy as-is.
+                        new_entries.insert(key.clone(), Arc::clone(thunk));
+                    }
+                }
+            }
+            let new_dict = Value::Dict {
+                entries: new_entries,
+                type_val: Arc::clone(type_val),
+            };
+            (new_dict, changed)
+        }
+        _ => {
+            // Other values (Int, String, Bool, etc.) — no TypeVars to rename.
+            (v.clone(), false)
+        }
+    }
+}
+
 pub fn apply_typevalue_renaming(
     ty: &crate::type_class::TypeValue,
     renaming: &HashMap<String, crate::type_class::TypeValue>,
 ) -> crate::type_class::TypeValue {
-    // typevalue_var_name is in scope via `use super::*`
     use crate::value::Value;
     use std::sync::Arc;
 
@@ -155,106 +206,23 @@ pub fn apply_typevalue_renaming(
                     let Some(payload_thunk) = payload else {
                         return Arc::clone(ty);
                     };
-                    // If payload is settled, apply renaming to each TypeValue-shaped field.
-                    // TypeValue payloads are Dicts whose values may be:
-                    //   - Variant: a direct TypeValue field (e.g., Fn.return, Neg.inner)
-                    //   - Dict: a nested Dict of TypeValues (e.g., Record.fields, Union.members,
-                    //           Fn.params, Fn.param-names)
-                    // We recurse into both layers so TypeVars inside Record.fields etc. are found.
                     match payload_thunk.peek_result() {
                         Some(Ok(Value::Dict { entries, .. })) => {
-                            // Rebuild the payload dict with renamed fields.
+                            // Recursively process the payload dict.
                             let mut new_entries = indexmap::IndexMap::new();
                             let mut changed = false;
                             for (key, val_thunk) in entries.iter() {
                                 match val_thunk.peek_result() {
-                                    Some(Ok(v)) if matches!(v, Value::Variant { .. }) => {
-                                        // Direct TypeValue field.
-                                        let field_tv: crate::type_class::TypeValue =
-                                            Arc::new(v.clone());
-                                        let renamed = apply_typevalue_renaming(&field_tv, renaming);
-                                        if !Arc::ptr_eq(&renamed, &field_tv) {
+                                    Some(Ok(v)) => {
+                                        let (new_val, val_changed) =
+                                            apply_renaming_to_value(v, renaming);
+                                        if val_changed {
                                             changed = true;
                                         }
                                         new_entries.insert(
                                             key.clone(),
                                             Arc::new(crate::value::Thunk::value(
-                                                renamed.as_ref().clone(),
-                                                crate::rust_span!(),
-                                            )),
-                                        );
-                                    }
-                                    Some(Ok(Value::Dict {
-                                        entries: inner_entries,
-                                        ..
-                                    })) => {
-                                        // Nested Dict of TypeValues (Record.fields, Union.members, etc.).
-                                        // Rebuild the inner dict with renamed TypeValue entries.
-                                        let mut new_inner = indexmap::IndexMap::new();
-                                        let mut inner_changed = false;
-                                        for (ikey, ithunk) in inner_entries.iter() {
-                                            match ithunk.peek_result() {
-                                                Some(Ok(iv))
-                                                    if matches!(iv, Value::Variant { .. }) =>
-                                                {
-                                                    let inner_tv: crate::type_class::TypeValue =
-                                                        Arc::new(iv.clone());
-                                                    let renamed = apply_typevalue_renaming(
-                                                        &inner_tv, renaming,
-                                                    );
-                                                    if !Arc::ptr_eq(&renamed, &inner_tv) {
-                                                        inner_changed = true;
-                                                        changed = true;
-                                                    }
-                                                    new_inner.insert(
-                                                        ikey.clone(),
-                                                        Arc::new(crate::value::Thunk::value(
-                                                            renamed.as_ref().clone(),
-                                                            crate::rust_span!(),
-                                                        )),
-                                                    );
-                                                }
-                                                Some(Ok(iv)) => {
-                                                    new_inner.insert(
-                                                        ikey.clone(),
-                                                        Arc::new(crate::value::Thunk::value(
-                                                            iv.clone(),
-                                                            crate::rust_span!(),
-                                                        )),
-                                                    );
-                                                }
-                                                _ => {
-                                                    new_inner
-                                                        .insert(ikey.clone(), Arc::clone(ithunk));
-                                                }
-                                            }
-                                        }
-                                        let new_inner_dict = if inner_changed {
-                                            Value::Dict {
-                                                entries: new_inner,
-                                                type_val: crate::value::unknown_type_val(),
-                                            }
-                                        } else {
-                                            // Inner dict unchanged — reconstruct from original.
-                                            match val_thunk.peek_result() {
-                                                Some(Ok(v)) => v.clone(),
-                                                _ => unreachable!(),
-                                            }
-                                        };
-                                        new_entries.insert(
-                                            key.clone(),
-                                            Arc::new(crate::value::Thunk::value(
-                                                new_inner_dict,
-                                                crate::rust_span!(),
-                                            )),
-                                        );
-                                    }
-                                    Some(Ok(v)) => {
-                                        // Non-Variant, non-Dict field (String, Int, etc.) — copy as-is.
-                                        new_entries.insert(
-                                            key.clone(),
-                                            Arc::new(crate::value::Thunk::value(
-                                                v.clone(),
+                                                new_val,
                                                 crate::rust_span!(),
                                             )),
                                         );
@@ -275,7 +243,6 @@ pub fn apply_typevalue_renaming(
                                 type_val: crate::value::unknown_type_val(),
                             };
                             Arc::new(Value::Variant {
-                                // type_val is always unknown_type_val() for TypeValues — not semantic.
                                 type_val: Arc::clone(type_val),
                                 ctor: Arc::clone(ctor),
                                 payload: Some(Arc::new(crate::value::Thunk::value(

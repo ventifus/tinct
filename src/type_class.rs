@@ -644,11 +644,18 @@ pub(crate) async fn try_fd_improvement(
             // returns the determined TypeValue directly. Instance-based classes (e.g.
             // Addable, Multipliable) scan registered instances for a structural match.
             if let Some(ref _resolver_name) = class_decl.resolver {
-                // Resolver-based FD: type-stage resolver functions (e.g. FieldType, ElementType)
-                // expect TypeNode arguments, but source_types here are TypeValues from the
-                // TypeValue-based type checker. TypeValue→TypeNode conversion is required to
-                // call the resolver correctly. Without it, resolver-based FD improvement
-                // is skipped entirely. Tracked in T-2090.
+                // T-2090: TypeValue→TypeNode conversion is implemented (typevalue_to_typenode),
+                // but invoking the resolver function requires an EvalContext and type-stage scope
+                // which are not available in try_fd_improvement's current signature. The function
+                // would need to be extended to accept an EvalContext parameter and call the resolver
+                // function with the converted TypeNode arguments. Until then, resolver-based FD
+                // improvement is skipped.
+                //
+                // The conversion step: convert source_types to TypeNode arguments:
+                //   let tn_args: Vec<_> = source_types.iter()
+                //       .filter_map(|tv| typevalue_to_typenode(tv))
+                //       .collect();
+                // Then call the resolver function with tn_args as positional arguments.
                 continue;
             }
 
@@ -695,6 +702,99 @@ pub(crate) async fn try_fd_improvement(
 
     *fd_depth -= 1;
     pairs
+}
+
+/// T-2090: Convert a TypeValue (Arc<Value>) to a TypeNode (Arc<Value>).
+///
+/// TypeValues are the internal inference representation; TypeNodes are the user-facing
+/// AST-level type representation declared in `stdlib/builtin_core.llt`. Resolver-based
+/// FD improvement functions (e.g. FieldType, ElementType) expect TypeNode arguments.
+///
+/// Conversions:
+/// - TypeValue.Repr { repr: "Value::Int" }    → Variant("TypeNode.Int", None)
+/// - TypeValue.Repr { repr: "Value::Float" }  → Variant("TypeNode.Float", None)
+/// - TypeValue.Repr { repr: "Value::String" } → Variant("TypeNode.String", None)
+/// - TypeValue.Repr { repr: "Value::Bytes" }  → Variant("TypeNode.Bytes", None)
+/// - TypeValue.Var { name }                   → Variant("TypeNode.TypeVar", { name })
+/// - TypeValue.Unknown                        → Variant("TypeNode.Unknown", None)
+/// - TypeValue.Top                            → Variant("TypeNode.Top", None)
+/// - TypeValue.Never                          → Variant("TypeNode.Never", None)
+///
+/// Returns `None` for TypeValues that have no direct TypeNode equivalent (compound types
+/// like Fn, Record, Union, etc. are not yet converted — extend as needed).
+#[cfg(test)]
+pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
+    use crate::type_infer::typevalue_ctor;
+
+    match typevalue_ctor(tv) {
+        Some(TV_REPR) => {
+            let repr_field = crate::type_infer::typevalue_payload_field(tv, FIELD_REPR)?;
+            let repr_str = match repr_field.as_ref() {
+                Value::String {
+                    source, start, end, ..
+                } => source[*start..*end].to_string(),
+                _ => return None,
+            };
+            let tn_ctor = match repr_str.as_str() {
+                REPR_INT => TN_INT,
+                REPR_FLOAT => TN_FLOAT,
+                REPR_STRING => TN_STRING,
+                REPR_BYTES => TN_BYTES,
+                // REPR_DICT not mapped: TypeNode.Dict requires structural payload (fields, open)
+                // that TypeValue.Repr lacks. Use TypeNode.Dict construction explicitly.
+                REPR_DECIMAL => TN_DECIMAL,
+                REPR_BIGINT => TN_BIG_INT,
+                REPR_DIR_CAP => TN_DIR_CAP,
+                REPR_NET_CAP => TN_NET_CAP,
+                REPR_FILE => TN_FILE,
+                REPR_TASK => TN_TASK,
+                REPR_CHANNEL => TN_CHANNEL,
+                REPR_CONTEXT => TN_CONTEXT,
+                REPR_REACTIVE_CELL => TN_REACTIVE_CELL,
+                REPR_CLOCK_CAP => TN_CLOCK_CAP,
+                REPR_TIMEZONE => TN_TIMEZONE,
+                REPR_TIMESTAMP => TN_TIMESTAMP,
+                REPR_DURATION => TN_DURATION,
+                REPR_PROXY => TN_PROXY,
+                REPR_QUIC_SESSION => TN_QUIC_SESSION,
+                REPR_QUIC_DATAGRAM_HANDLE => TN_QUIC_DATAGRAM_HANDLE,
+                REPR_HTTP2_SESSION => TN_HTTP2_SESSION,
+                REPR_HTTP3_SESSION => TN_HTTP3_SESSION,
+                REPR_URI => TN_URI,
+                REPR_PROGRAM => TN_PROGRAM,
+                REPR_DOCUMENT => TN_DOCUMENT,
+                REPR_CORE_DOCUMENT => TN_CORE_DOCUMENT,
+                REPR_TYPE_CONTEXT => TN_TYPE_CONTEXT,
+                _ => return None,
+            };
+            Some(Arc::new(Value::Variant {
+                ctor: Arc::from(tn_ctor),
+                payload: None,
+                type_val: unknown_type_val(),
+            }))
+        }
+        Some(TV_VAR) => {
+            let name = crate::type_infer::typevalue_var_name(tv)?;
+            let payload = single_field_dict(TN_FIELD_NAME, string_value(&name));
+            Some(Arc::new(make_variant(TN_TYPE_VAR, Some(payload))))
+        }
+        Some(TV_UNKNOWN) => Some(Arc::new(Value::Variant {
+            ctor: Arc::from(TN_UNKNOWN),
+            payload: None,
+            type_val: unknown_type_val(),
+        })),
+        Some(TV_TOP) => Some(Arc::new(Value::Variant {
+            ctor: Arc::from(TN_TOP),
+            payload: None,
+            type_val: unknown_type_val(),
+        })),
+        Some(TV_NEVER) => Some(Arc::new(Value::Variant {
+            ctor: Arc::from(TN_NEVER),
+            payload: None,
+            type_val: unknown_type_val(),
+        })),
+        _ => None, // Compound types not yet converted — extend as needed.
+    }
 }
 
 #[cfg(test)]

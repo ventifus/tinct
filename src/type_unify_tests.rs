@@ -18,6 +18,18 @@ use crate::types::InferState;
 // Constraint deleted in S-1003 — constraints are Vec<Arc<Value>> ConstraintDecls.
 // Kind deleted in S-1003 — kind is now Arc<Value> (TypeValue.Op{name}).
 use crate::value::{unknown_type_val, Value};
+
+/// Check if a TypeVar is bound in the InferenceContext. Returns Some(bound_value) if bound,
+/// None if the TypeVar is still free (unbound).
+fn lookup_binding(ctx: &crate::type_infer::InferenceContext, name: &str) -> Option<crate::type_class::TypeValue> {
+    let tv = make_typevar_value(name);
+    let resolved = ctx.apply_subst(&tv);
+    if crate::type_infer::typevalue_var_name(&resolved) == Some(name.to_string()) {
+        None // Still the same TypeVar — unbound
+    } else {
+        Some(resolved) // Resolved to something different — bound
+    }
+}
 use indexmap::IndexMap;
 
 /// Async wrapper for `unify` — for use in tests only.
@@ -327,8 +339,8 @@ async fn test_union_vs_union_with_typevars_defers() {
         result.unwrap_err()
     );
     // Verify bindings: a should be bound to String, b to Int
-    assert!(state.ctx.lookup("a").is_some(), "TypeVar a must be bound");
-    assert!(state.ctx.lookup("b").is_some(), "TypeVar b must be bound");
+    assert!(lookup_binding(&state.ctx, "a").is_some(), "TypeVar a must be bound");
+    assert!(lookup_binding(&state.ctx, "b").is_some(), "TypeVar b must be bound");
 }
 
 /// Union-vs-Union without inference vars: should not defer, should attempt element unification.
@@ -828,7 +840,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
     // The named TypeVar "a" must NOT be bound — Recursive unification uses de Bruijn
     // opening, not named-variable lookup.
     assert!(
-        state.ctx.lookup("a").is_none(),
+        lookup_binding(&state.ctx, "a").is_none(),
         "Named TypeVar 'a' must not be bound by Recursive unification (de Bruijn, not name-bound)"
     );
 }
@@ -918,7 +930,7 @@ async fn test_type_var_entry_stores_level_binding_kind() {
     assert_eq!(state.get_level("a"), Some(3));
 
     // Initially unbound in ctx.subst
-    assert!(state.ctx.lookup("a").is_none());
+    assert!(lookup_binding(&state.ctx, "a").is_none());
 
     // Bind it via InferenceContext.bind
     let int_tv = make_typevalue_repr(REPR_INT);
@@ -926,7 +938,7 @@ async fn test_type_var_entry_stores_level_binding_kind() {
         .ctx
         .bind("a".to_string(), Arc::clone(&int_tv))
         .unwrap();
-    let bound = state.ctx.lookup("a");
+    let bound = lookup_binding(&state.ctx, "a");
     assert!(
         bound.is_some(),
         "TypeVar 'a' should be bound after ctx.bind"
@@ -1260,8 +1272,8 @@ async fn test_unify_empty_uniform_typevar_join() {
     );
 
     // One of the TypeVars should be bound to the other.
-    let a_bound = state.ctx.lookup("a");
-    let b_bound = state.ctx.lookup("b");
+    let a_bound = lookup_binding(&state.ctx, "a");
+    let b_bound = lookup_binding(&state.ctx, "b");
     assert!(
         a_bound.is_some() || b_bound.is_some(),
         "One of the TypeVars should be bound after unification"
@@ -1601,7 +1613,9 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let beta = make_typevar_value("β");
     let int_tv = make_typevalue_repr(REPR_INT);
     let str_tv = make_typevalue_repr(REPR_STRING);
-    // Two TypeVars in the union: falls through to unify(), which tries concrete first then TypeVars.
+    // B-686 FIXED: constrain(Int, Union([Str, α, β])) now uses C-LB-Union arm.
+    // Int does not match Str (concrete member), so Int is accumulated as a lower bound for α
+    // (first TypeVar member). No equality binding.
     let sup = make_union_tv(vec![
         Arc::clone(&str_tv),
         Arc::clone(&alpha),
@@ -1612,25 +1626,42 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
 
     assert!(
         result.is_ok(),
-        "constrain(Int, Union([Str, α, β])) should succeed (binds first TypeVar α): {:?}",
+        "constrain(Int, Union([Str, α, β])) should succeed (accumulates lower bound for α): {:?}",
         result.unwrap_err()
     );
 
-    // α is bound to Int via U-VAR-LEVEL-SYM (first TypeVar tried in the union).
-    // β is never tried (α succeeded first). state.bounds is not written.
-    // Regression guard: B-686 tracks the correct directional-bounds fix for this case.
+    // B-686 FIXED: α must NOT be bound — Int is a lower bound, not an equality.
     assert!(
-        state.ctx.lookup("α").is_some(),
-        "α must be bound in ctx.subst after constrain(Int, Union([Str, α, β]))"
+        state.ctx.lookup("α").is_none(),
+        "α must NOT be bound in ctx.subst — Int is a lower bound for α, not equality"
     );
     assert!(
         state.ctx.lookup("β").is_none(),
-        "β must NOT be bound (α was tried first and succeeded)"
+        "β must NOT be bound (only α receives the lower bound)"
+    );
+
+    // The lower bound must be recorded in ctx.lower_bounds["α"].
+    let lbs = state.ctx.lower_bounds.get("α").cloned().unwrap_or_default();
+    assert_eq!(
+        lbs.len(),
+        1,
+        "constrain(Int, Union([Str, α, β])) must add exactly one lower bound for α, got: {:?}",
+        lbs.len()
+    );
+
+    // The recorded lower bound must be Int (Repr(Int)).
+    let lb_ctor = crate::type_infer::typevalue_ctor(&lbs[0]);
+    assert_eq!(
+        lb_ctor,
+        Some(crate::type_tags::TV_REPR),
+        "lower bound must be TypeValue.Repr, got: {:?}",
+        lb_ctor
     );
 }
 
-/// C-Var1 single TypeVar: constrain(Int, Union([Str, TypeVar(α)])) binds α directly via subst.
-/// Int is not a subtype of Str, so the residual `Int & ~Str = Int` is bound to α.
+/// B-686 FIXED: constrain(Int, Union([Str, TypeVar(α)])) accumulates lower bound for α.
+/// Int does not match Str (concrete member), so Int is accumulated as a lower bound for α.
+/// No equality binding — this preserves directionality.
 #[tokio::test]
 async fn test_constrain_cvar1_single_typevar_binds_subst() {
     let mut state = InferState::new();
@@ -1649,16 +1680,70 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
 
     assert!(
         result.is_ok(),
-        "C-Var1 single-TypeVar rewrite should succeed, got: {:?}",
+        "C-LB-Union should succeed by accumulating lower bound for α, got: {:?}",
         result.unwrap_err()
     );
 
-    // After migration: state.apply takes &Arc<Value>.
-    // The binding should be resolved via state.ctx.subst.
+    // B-686 FIXED: α must NOT be bound — Int is a lower bound, not an equality.
     let alpha_bound = state.ctx.lookup("α");
     assert!(
-        alpha_bound.is_some(),
-        "C-Var1 single-TypeVar must bind α in ctx.subst"
+        alpha_bound.is_none(),
+        "C-LB-Union must NOT bind α in ctx.subst — Int is a lower bound for α"
+    );
+
+    // The lower bound must be recorded in ctx.lower_bounds["α"].
+    let lbs = state.ctx.lower_bounds.get("α").cloned().unwrap_or_default();
+    assert_eq!(
+        lbs.len(),
+        1,
+        "constrain(Int, Union([Str, α])) must add exactly one lower bound for α, got: {:?}",
+        lbs.len()
+    );
+}
+
+/// B-686: constrain(Int, Union([Int, α])) matches concrete member — no TypeVar binding.
+/// When a concrete member in the Union matches sub, the constraint is satisfied without
+/// accumulating lower bounds for TypeVars. This tests the early-exit path in C-LB-Union.
+#[tokio::test]
+async fn test_constrain_union_concrete_member_matches_no_typevar_binding() {
+    let mut state = InferState::new();
+
+    let span = rust_span!();
+
+    // Register α at level 0.
+    state.set_level("α".to_string(), 0);
+
+    let alpha = make_typevar_value("α");
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    // Union has both a matching concrete member (Int) and a TypeVar (α).
+    let sup = make_union_tv(vec![
+        Arc::clone(&int_tv),
+        Arc::clone(&str_tv),
+        Arc::clone(&alpha),
+    ]);
+
+    let result = constrain(&int_tv, &sup, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "constrain(Int, Union([Int, Str, α])) should succeed (concrete member matches), got: {:?}",
+        result.unwrap_err()
+    );
+
+    // α must NOT be bound — constraint was satisfied by the concrete Int member.
+    assert!(
+        state.ctx.lookup("α").is_none(),
+        "α must NOT be bound when concrete member matches"
+    );
+
+    // No lower bounds should be accumulated for α.
+    let lbs = state.ctx.lower_bounds.get("α").cloned().unwrap_or_default();
+    assert_eq!(
+        lbs.len(),
+        0,
+        "No lower bounds should be added when concrete member matches, got: {:?}",
+        lbs.len()
     );
 }
 
@@ -1723,9 +1808,10 @@ async fn test_constrain_typevar_lower_bound_added() {
 ///   - Contravariant param: constrain(α, Int) → sub=α is TypeVar → C-UB arm → binds α=Int
 ///   - Covariant return:    constrain(Int, α) → apply_subst(α)=Int → constrain(Int,Int) → Ok
 ///
-/// Current behavior: α IS bound in ctx.subst via C-UB (equality bind on upper bound).
-/// The C-UB arm (added in B-667) binds α=Int rather than accumulating a directional upper
-/// bound. Correct directional accumulation for TypeVar in sub position is tracked as B-687.
+/// B-687 PRAGMATIC FIX: C-UB now checks if α is already bound before attempting to bind.
+/// When α appears in multiple positions (as in Fn(α→α)), the first constraint binds α via C-UB,
+/// and subsequent constraints re-check using the bound value. This prevents double-binding errors.
+/// Full directional upper-bound accumulation is future work (tracked separately).
 #[tokio::test]
 async fn test_constrain_cfn_typevar_accumulates_bounds() {
     let mut state = InferState::new();
@@ -1755,11 +1841,12 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
         result.unwrap_err()
     );
 
-    // α IS bound in ctx.subst via C-UB arm (binding on upper bound).
-    // Regression guard: B-687 tracks correct directional accumulation for TypeVar in sub position.
+    // B-687 PRAGMATIC FIX: α IS bound in ctx.subst via C-UB arm (equality binding).
+    // The pragmatic fix handles multiple occurrences of α (contravariant param + covariant return)
+    // by checking if α is already bound before attempting to bind again.
     assert!(
         state.ctx.lookup("α").is_some(),
-        "C-FN: α is bound in ctx.subst via C-UB arm (regression guard for B-687)"
+        "C-FN: α is bound in ctx.subst via C-UB arm (B-687 pragmatic fix handles re-binding)"
     );
 }
 
@@ -1769,8 +1856,9 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
 ///   - Param 2 (contravariant): constrain(Int, Int) → Ok (trivial)
 ///   - Return (covariant):      constrain(Int, α) → apply_subst(α)=Int → constrain(Int,Int) → Ok
 ///
-/// Current behavior: α IS bound to Int in ctx.subst via C-UB arm after the first contravariant
-/// param constraint. Correct directional accumulation for this case is tracked as B-687.
+/// B-687 PRAGMATIC FIX: C-UB checks if α is already bound before attempting to bind.
+/// The first contravariant param constraint binds α=Int via C-UB, and the covariant return
+/// constraint re-checks using the bound value (apply_subst resolves α to Int).
 #[tokio::test]
 async fn test_constrain_cfn_init_reducer_pattern() {
     let mut state = InferState::new();
@@ -1994,7 +2082,7 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
     // constrain(a, Int) binds a=Int via equality). Regression guard: B-687 tracks the fix
     // to accumulate directional bounds instead of equality-binding in ctx.subst.
     assert!(
-        state.ctx.lookup("a").is_some(),
+        lookup_binding(&state.ctx, "a").is_some(),
         "unify(Fn, Fn): 'a' is bound in ctx.subst via C-UB arm (regression guard for B-687)"
     );
 }
@@ -2078,6 +2166,7 @@ async fn test_constrain_cfn_variadic_callable_accepts_any_arity() {
     let callable_tv = crate::type_infer::make_typevalue_fn_with_flags(
         vec![],
         make_typevalue_unknown(),
+        None, // required_count — no fixed params
         true, // variadic — accepts any number of arguments
         Vec::new(),
     );
@@ -2089,6 +2178,7 @@ async fn test_constrain_cfn_variadic_callable_accepts_any_arity() {
             (None, make_typevalue_repr(REPR_INT)),
         ],
         make_typevalue_repr(REPR_INT),
+        None, // required_count — all params required
         false,
         Vec::new(),
     );
@@ -2127,6 +2217,7 @@ async fn test_constrain_cfn_callable_as_sup_accepts_any_arity() {
             (None, make_typevalue_repr(REPR_INT)),
         ],
         make_typevalue_repr(REPR_INT),
+        None, // required_count — all params required
         false,
         Vec::new(),
     );
@@ -2135,6 +2226,7 @@ async fn test_constrain_cfn_callable_as_sup_accepts_any_arity() {
     let callable_tv = crate::type_infer::make_typevalue_fn_with_flags(
         vec![],
         make_typevalue_unknown(),
+        None, // required_count — no fixed params
         true,
         Vec::new(),
     );
@@ -2325,7 +2417,7 @@ async fn test_unify_typevar_binds_to_recursive_type() {
     );
 
     // TypeVar a must be bound in the substitution.
-    let bound = state.ctx.lookup("a");
+    let bound = lookup_binding(&state.ctx, "a");
     assert!(
         bound.is_some(),
         "TypeVar 'a' must be bound to the Recursive type after unification"
@@ -2369,7 +2461,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
         result.as_ref().err()
     );
 
-    let bound = state.ctx.lookup("a");
+    let bound = lookup_binding(&state.ctx, "a");
     assert!(
         bound.is_some(),
         "TypeVar 'a' must be bound to the Recursive type after unification"
@@ -2819,4 +2911,47 @@ async fn test_unify_tycon_expand_one_op_not_registered_fails() {
         result.is_err(),
         "App(KnownAlias, Int) ~ App(UnknownOp, Int): UnknownOp not in tycon_env -> must fail"
     );
+}
+
+/// T-2089: App(Handle, a) ~ App(Handle, a) must unify successfully.
+///
+/// Handle PartialEq uses Arc::ptr_eq which can return false for identical TypeVar names
+/// if they were created at different times. Unification must rely on structural equality.
+#[tokio::test]
+async fn test_unify_app_handle_same_typevar() {
+    let mut state = InferState::new();
+    state.set_level("a".to_string(), 1);
+    let span = rust_span!();
+
+    let handle_op = make_typevalue_op("Handle");
+    let var_a = make_typevar_value("a");
+    let app1 = crate::type_infer::make_typevalue_app(handle_op.clone(), var_a.clone());
+    let app2 = crate::type_infer::make_typevalue_app(handle_op, var_a);
+
+    let result = unify_sync(&app1, &app2, &mut state.ctx, &mut Vec::new(), span).await;
+    assert!(
+        result.is_ok(),
+        "Identical App(Handle, a) should unify: {:?}",
+        result.unwrap_err()
+    );
+    assert!(
+        lookup_binding(&state.ctx, "a").is_none(),
+        "TypeVar a should remain free"
+    );
+}
+
+/// T-2088: make_rowtail_var roundtrip — construct and extract RowVar name.
+#[test]
+fn test_make_rowtail_var_roundtrip() {
+    let rv = crate::type_infer::make_rowtail_var("r");
+    let name = crate::type_infer::extract_rowtail_var_name(&rv);
+    assert_eq!(name, Some("r".to_string()));
+}
+
+/// T-2090: typevalue_to_typenode converts Repr(Int) to a TypeNode variant.
+#[test]
+fn test_typevalue_to_typenode_repr_int() {
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let result = crate::type_class::typevalue_to_typenode(&int_tv);
+    assert!(result.is_some(), "Repr(Int) should convert to TypeNode.Int");
 }

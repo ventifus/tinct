@@ -13,9 +13,10 @@ use crate::rust_span;
 use crate::type_class::TypeValue;
 use crate::type_def::TyConDef;
 use crate::type_infer::{
-    make_rowtail_uniform, make_typevalue_app, make_typevalue_float_lit, make_typevalue_fn,
-    make_typevalue_fn_with_flags, make_typevalue_int_lit, make_typevalue_negation,
-    make_typevalue_never, make_typevalue_nominal_variant, make_typevalue_op, make_typevalue_record,
+    make_rowtail_uniform, make_rowtail_uniform_with_key_type, make_typevalue_app,
+    make_typevalue_float_lit, make_typevalue_fn, make_typevalue_fn_with_flags,
+    make_typevalue_int_lit, make_typevalue_negation, make_typevalue_never,
+    make_typevalue_nominal_variant, make_typevalue_op, make_typevalue_record,
     make_typevalue_recursive, make_typevalue_repr, make_typevalue_str_lit, make_typevalue_top,
     make_typevalue_unknown, make_typevalue_var, typevalue_normalize_intersection,
     typevalue_normalize_union,
@@ -2976,10 +2977,10 @@ pub(crate) async fn resolve_type_dict(
     // BAS width subtyping handles structural subtyping without splitting.
 
     // Build the record TypeValue. uniform_tail encodes the row tail.
-    // When a uniform tail is present, wrap it as RowTail.Uniform with the value type.
-    // The key type is validated above but not yet part of the RowTail.Uniform spec.
+    // T-2091: When a uniform tail is present, wrap it as RowTail.Uniform with the value type
+    // and optional key type.
     let tail = match uniform_tail {
-        Some((_key_ty, val_ty)) => Some(make_rowtail_uniform(val_ty)),
+        Some((key_ty, val_ty)) => Some(make_rowtail_uniform_with_key_type(val_ty, key_ty)),
         None => None,
     };
     Ok(make_typevalue_record(fields, tail))
@@ -3178,7 +3179,8 @@ pub(crate) async fn typenode_value_to_type(
                     TN_BARE_CALLABLE => Ok(Some(make_typevalue_fn_with_flags(
                         vec![],
                         make_typevalue_unknown(),
-                        true, // variadic — accepts any number of arguments
+                        Some(0), // required_count — no fixed params
+                        true,    // variadic — accepts any number of arguments
                         Vec::new(),
                     ))),
 
@@ -3301,12 +3303,17 @@ pub(crate) async fn typenode_value_to_type(
 
                         // Optional key-type: and value-type: fields enable typed-key map encoding.
                         // These are the protocol-defined field names per builtin_core.llt:33.
-                        // If key-type: is present, use value-type (defaulting to Top) as the
-                        // RowTail.Uniform value type. key-type is not yet part of the
-                        // RowTail.Uniform spec — it is accepted syntactically but not propagated
-                        // into the type system until typed-key map support is implemented (T-2091).
-                        let tail = if payload_fields.contains_key(TN_FIELD_KEY_TYPE) {
-                            // key-type: present — use value-type (defaulting to Top) for the tail.
+                        // T-2091: key-type is resolved and stored in the RowTail.Uniform payload.
+                        let tail = if let Some(kt_val) =
+                            payload_fields.get(TN_FIELD_KEY_TYPE).cloned()
+                        {
+                            // key-type: present — resolve it to a TypeValue.
+                            let key_ty =
+                                match typenode_value_to_type(&kt_val, ctx, type_stage_scope).await?
+                                {
+                                    Some(t) => t,
+                                    None => return Ok(None),
+                                };
                             // value-type: defaults to Top when absent.
                             let value_ty = if let Some(vt_val) =
                                 payload_fields.get(TN_FIELD_VALUE_TYPE).cloned()
@@ -3319,7 +3326,7 @@ pub(crate) async fn typenode_value_to_type(
                             } else {
                                 make_typevalue_top()
                             };
-                            Some(make_rowtail_uniform(value_ty))
+                            Some(make_rowtail_uniform_with_key_type(value_ty, Some(key_ty)))
                         } else if matches!(&open_val, Value::Int { n, .. } if *n != 0) {
                             // Open record: any field value is allowed — RowTail.Uniform with Top.
                             Some(make_rowtail_uniform(make_typevalue_top()))

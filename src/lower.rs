@@ -971,7 +971,9 @@ fn lower_expr(
                     .iter()
                     .filter(|p| !p.node.variadic)
                     .map(|p| {
-                        let tv = p.node.resolved_annotation_type
+                        let tv = p
+                            .node
+                            .resolved_annotation_type
                             .get()
                             .map(Arc::clone)
                             .unwrap_or_else(make_typevalue_unknown);
@@ -979,7 +981,43 @@ fn lower_expr(
                     })
                     .collect();
                 let is_variadic = params.iter().any(|p| p.node.variadic);
-                Some(make_typevalue_fn_with_flags(fn_params, ret_tv, is_variadic, Vec::new()))
+                // Count required params (those without default: annotation). None = all required.
+                let required_count = {
+                    let mut non_variadic = params.iter().filter(|p| !p.node.variadic);
+                    let count = params.iter().filter(|p| !p.node.variadic).count();
+                    let has_defaults = non_variadic.any(|p| {
+                        p.node.annotation.as_ref().is_some_and(|ann| {
+                            ann.node
+                                .get_property(crate::ast::ANNOTATION_KEY_DEFAULT)
+                                .is_some()
+                        })
+                    });
+                    if has_defaults {
+                        let req = params
+                            .iter()
+                            .filter(|p| {
+                                !p.node.variadic
+                                    && p.node.annotation.as_ref().is_none_or(|ann| {
+                                        ann.node
+                                            .get_property(crate::ast::ANNOTATION_KEY_DEFAULT)
+                                            .is_none()
+                                    })
+                            })
+                            .count();
+                        Some(req)
+                    } else if count > 0 {
+                        None // All params required
+                    } else {
+                        Some(0) // No fixed params
+                    }
+                };
+                Some(make_typevalue_fn_with_flags(
+                    fn_params,
+                    ret_tv,
+                    required_count,
+                    is_variadic,
+                    Vec::new(),
+                ))
             };
 
             CoreExpr::Fn {

@@ -4925,6 +4925,18 @@ pub(crate) fn builtin_cap_env_has(
 /// This replaces the lazy `UnevaluatedState::Surface` path: previously, lowering happened
 /// on-demand when a Surface thunk was first forced. With `builtin-lower`, lowering is a
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
+///
+/// **B-689 design limitation**: `scope_frames` comes from `ctx.scope_frames` which is set
+/// from the *loader program's* resolver run, not from the document being lowered. This means
+/// `make_method_dispatcher_fn` (called during lowering for InstanceDecl entries) cannot see
+/// intermediate-dict BlockBody frames from the document's own resolver run. Consequence:
+/// in a multi-dict user document where dict 2 declares `[instance Eq ...]` and dict 3 also
+/// declares instances, dict 3's MethodDispatcher cannot find dict 2's `=` in scope_frames
+/// for parent delegation. Dict 3's plain `=` references resolve correctly (the resolver
+/// handles cross-dict scope), but MethodDispatcher chaining across dicts within the same
+/// document requires threading the document's resolver frames into `builtin-lower`.
+/// Fix: `builtin-lower` should accept an optional second arg with the document's resolver
+/// frames, or `builtin-resolve` should store the BlockBody frames on the Document value.
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {

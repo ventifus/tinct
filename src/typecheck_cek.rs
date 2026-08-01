@@ -196,6 +196,8 @@ pub(crate) enum TypeCheckCont {
         typed_variadics: Vec<(String, TypeValue)>,
         /// Untyped variadic fallback: (name, TypeVar_whole_dict).
         rest: Option<Box<(String, TypeValue)>>,
+        /// Number of required (non-default) fixed params. None = all params required.
+        required_count: Option<usize>,
         node_span: Span,
     },
 
@@ -1003,6 +1005,7 @@ async fn apply_cont(
             params,
             typed_variadics,
             rest,
+            required_count,
             node_span,
         } => {
             state.ctx.current_level = saved_level;
@@ -1157,6 +1160,7 @@ async fn apply_cont(
             let fn_type = crate::type_infer::make_typevalue_fn_with_flags(
                 params,
                 fn_ret_ty,
+                required_count,
                 is_variadic_fn,
                 typed_variadics_for_fn,
             );
@@ -1999,7 +2003,10 @@ async fn apply_cont_call_func(
                 } else {
                     None
                 };
-            let inst_required = inst_params.len();
+            // Extract required param count from TypeValue.Fn (B-685).
+            // If absent, all params are required (defaults to inst_params.len()).
+            let inst_required = crate::type_infer::typevalue_fn_required_count(&func_ty)
+                .unwrap_or(inst_params.len());
 
             // Derive inst_variadic for arity checks.
             let inst_variadic = !inst_typed_variadics.is_empty() || inst_rest.is_some();
@@ -3200,6 +3207,38 @@ async fn infer_fn_push_cont(
     let saved_level = state.ctx.current_level;
     let saved_expected_return = state.expected_return.clone();
 
+    // Count required params (those without default: annotation). None = all params required.
+    let required_count = {
+        let non_variadic_params = params.iter().filter(|p| !p.node.variadic);
+        let total_fixed = non_variadic_params.clone().count();
+        let has_any_defaults = non_variadic_params.clone().any(|p| {
+            p.node.annotation.as_ref().is_some_and(|ann| {
+                ann.node
+                    .get_property(crate::ast::ANNOTATION_KEY_DEFAULT)
+                    .is_some()
+            })
+        });
+        if has_any_defaults {
+            // At least one param has default: — count those WITHOUT default:.
+            let required = params
+                .iter()
+                .filter(|p| {
+                    !p.node.variadic
+                        && p.node.annotation.as_ref().is_none_or(|ann| {
+                            ann.node
+                                .get_property(crate::ast::ANNOTATION_KEY_DEFAULT)
+                                .is_none()
+                        })
+                })
+                .count();
+            Some(required)
+        } else if total_fixed > 0 {
+            None // All fixed params required
+        } else {
+            Some(0) // No fixed params
+        }
+    };
+
     // Push FnBody first (fires last: handles return type checking and fn type construction),
     // then push AfterBlock (fires first: handles parameter liveness via SLOTS-only BFS).
     stack.push(TypeCheckCont::FnBody {
@@ -3209,6 +3248,7 @@ async fn infer_fn_push_cont(
         params: param_types,
         typed_variadics,
         rest,
+        required_count,
         node_span: node.span.clone(),
     });
     // Set current_parameter_frame to this fn's param env before evaluating the body.
@@ -4274,6 +4314,7 @@ pub(crate) async fn run_typecheck_dict(
                     let fn_type = crate::type_infer::make_typevalue_fn_with_flags(
                         fn_params,
                         ret_var,
+                        None, // required_count: unknown at pre-binding (Pass 0) — conservative
                         pre_is_variadic,
                         Vec::new(), // no typed variadics at pre-binding time (Pass 0)
                     );

@@ -162,6 +162,11 @@ pub const FIELD_VARIADIC: &str = "variadic";
 pub const FIELD_TYPED_VARIADICS: &str = "typed-variadics";
 /// Field key for TypeValue.Fn: { param-names: Dict }
 pub const FIELD_PARAM_NAMES: &str = "param-names";
+/// Field key for TypeValue.Fn: { required: Integer }
+///
+/// The number of required (non-default) fixed parameters. Used for arity checking
+/// to distinguish functions with optional trailing params from those with all required params.
+pub const FIELD_REQUIRED: &str = "required";
 /// Field key for TypeValue.RecursiveRef: { depth: Integer }
 pub const FIELD_DEPTH: &str = "depth";
 /// Field key for TypeValue.Scheme: { vars: Dict }

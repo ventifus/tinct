@@ -158,14 +158,15 @@ pub fn make_typevalue_var(name: &str) -> TypeValue {
 /// `params`: list of `(param_name_opt, TypeValue)` pairs for fixed parameters.
 /// `ret`: the return TypeValue.
 pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue)>, ret: TypeValue) -> TypeValue {
-    make_typevalue_fn_with_flags(params, ret, false, Vec::new())
+    make_typevalue_fn_with_flags(params, ret, None, false, Vec::new())
 }
 
-/// Create a TypeValue.Fn with variadic flag, typed variadic buckets, and param names stored in the payload.
+/// Create a TypeValue.Fn with variadic flag, typed variadic buckets, required count, and param names stored in the payload.
 ///
 /// This is the full-fidelity version of `make_typevalue_fn` that stores:
 /// - `params`: integer-keyed dict of param types
 /// - `param-names`: integer-keyed dict of param names (when names are available)
+/// - `required`: integer count of required (non-default) params; absent if all params are required (= params.len())
 /// - `variadic`: "true" Variant if variadic, absent if not
 /// - `typed-variadics`: integer-keyed dict of `{ name: String, ty: TypeValue }` entries
 ///   for typed variadic buckets (e.g. `...xs@Seq[Integer]`); absent if empty
@@ -173,6 +174,7 @@ pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue)>, ret: TypeValu
 pub fn make_typevalue_fn_with_flags(
     params: Vec<(Option<String>, TypeValue)>,
     ret: TypeValue,
+    required_count: Option<usize>,
     variadic: bool,
     typed_variadics: Vec<(Option<String>, TypeValue)>,
 ) -> TypeValue {
@@ -231,6 +233,22 @@ pub fn make_typevalue_fn_with_flags(
             crate::rust_span!(),
         )),
     );
+    // Store required count if different from params.len() (i.e., function has optional params).
+    // Only stored when needed to keep payload minimal for all-required functions.
+    if let Some(req_count) = required_count {
+        if req_count != params.len() {
+            payload_entries.insert(
+                HashableValue::Str(Arc::from(FIELD_REQUIRED)),
+                Arc::new(crate::value::Thunk::value(
+                    crate::value::Value::Int {
+                        n: req_count as i64,
+                        type_val: crate::value::unknown_type_val(),
+                    },
+                    crate::rust_span!(),
+                )),
+            );
+        }
+    }
     if variadic {
         // Store "variadic: true" as a unit Variant with ctor BOOL_TRUE ("true").
         let true_variant = crate::value::Value::Variant {
@@ -299,11 +317,76 @@ pub fn make_rowtail_closed() -> TypeValue {
     })
 }
 
+/// Create a RowTail.Var Arc<Value> — the tail for an open record with a polymorphic row variable.
+///
+/// The payload is a Dict with a single "name" field containing the RowVar name string,
+/// mirroring TypeValue.Var { name: String } structure for consistency with `typevalue_var_name`.
+///
+/// T-2088: RowVar names participate in the same level-tracking and substitution infrastructure
+/// as TypeVar names. Register the name in `ctx.levels` before calling `make_rowtail_var`.
+#[cfg(test)]
+pub fn make_rowtail_var(name: &str) -> TypeValue {
+    let payload = make_dict_typevalue_from_value(&[(FIELD_NAME, make_string_typevalue(name))]);
+    Arc::new(crate::value::Value::Variant {
+        type_val: crate::value::unknown_type_val(),
+        ctor: Arc::from(RT_VAR),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+    })
+}
+
+/// Extract the RowVar name from a RowTail.Var TypeValue.
+///
+/// RowTail.Var payload is a Dict with { name: String }. Returns `None` if the TypeValue
+/// is not a RowTail.Var or if the payload is unsettled/malformed.
+pub fn extract_rowtail_var_name(tv: &TypeValue) -> Option<String> {
+    match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == RT_VAR => match thunk.peek_result() {
+            Some(Ok(crate::value::Value::Dict { entries, .. })) => {
+                let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
+                let name_thunk = entries.get(&key)?;
+                match name_thunk.peek_result()? {
+                    Ok(crate::value::Value::String {
+                        source, start, end, ..
+                    }) => Some(source[*start..*end].to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Create a RowTail.Uniform Arc<Value> — the tail for an open record where all additional
 /// fields share the given `value_type`. Pass `make_typevalue_top()` for "any field value".
 pub fn make_rowtail_uniform(value_type: TypeValue) -> TypeValue {
-    let payload =
-        make_dict_typevalue_from_value(&[(RT_FIELD_VALUE_TYPE, value_type.as_ref().clone())]);
+    make_rowtail_uniform_with_key_type(value_type, None)
+}
+
+/// T-2091: Create a RowTail.Uniform with an optional key-type constraint.
+///
+/// When `key_type` is `Some(ty)`, the RowTail.Uniform payload includes a `key-type` field
+/// that constrains the key type of additional map entries. This enables typed-key maps
+/// (e.g., `[key-type: String  value-type: Int]` → a map from String keys to Int values).
+///
+/// The key-type field uses the `RT_FIELD_KEY_TYPE` constant ("key-type") from type_tags.
+pub fn make_rowtail_uniform_with_key_type(
+    value_type: TypeValue,
+    key_type: Option<TypeValue>,
+) -> TypeValue {
+    let mut fields: Vec<(&str, crate::value::Value)> =
+        vec![(RT_FIELD_VALUE_TYPE, value_type.as_ref().clone())];
+    if let Some(kt) = key_type {
+        fields.push((RT_FIELD_KEY_TYPE, kt.as_ref().clone()));
+    }
+    let payload = make_dict_typevalue_from_value(&fields);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
         ctor: Arc::from(RT_UNIFORM),
@@ -852,6 +935,54 @@ pub fn typevalue_fn_typed_variadics(tv: &TypeValue) -> Vec<(String, TypeValue)> 
     }
     indexed.sort_by_key(|(idx, _)| *idx);
     indexed.into_iter().map(|(_, bucket)| bucket).collect()
+}
+
+/// Extract the required parameter count from a TypeValue.Fn payload.
+///
+/// Returns the number of required (non-default) fixed parameters. If the "required" key
+/// is absent, all params are required (returns params.len()).
+///
+/// Returns `None` if the TypeValue is not a settled TypeValue.Fn.
+pub fn typevalue_fn_required_count(tv: &TypeValue) -> Option<usize> {
+    use crate::value::HashableValue;
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_FN => thunk,
+        _ => return None,
+    };
+    let payload_val = match payload_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        _ => return None,
+    };
+    let entries = match payload_val {
+        crate::value::Value::Dict { entries, .. } => entries,
+        _ => return None,
+    };
+
+    // Check if "required" field is present.
+    let req_key = HashableValue::Str(Arc::from(FIELD_REQUIRED));
+    if let Some(req_thunk) = entries.get(&req_key) {
+        if let Some(Ok(crate::value::Value::Int { n, .. })) = req_thunk.peek_result() {
+            return Some(*n as usize);
+        }
+    }
+
+    // "required" field absent: all params are required. Count params.
+    let params_key = HashableValue::Str(Arc::from(FIELD_PARAMS));
+    if let Some(params_thunk) = entries.get(&params_key) {
+        if let Some(Ok(crate::value::Value::Dict {
+            entries: params_entries,
+            ..
+        })) = params_thunk.peek_result()
+        {
+            return Some(params_entries.len());
+        }
+    }
+
+    None
 }
 
 /// Extract list members from a TypeValue.Union or TypeValue.Inter payload.
@@ -1455,6 +1586,33 @@ impl InferenceContext {
         result
     }
 
+    /// Helper to collect free vars from a Value (which may be a Variant, Dict, or other).
+    fn collect_free_vars_from_value(
+        &self,
+        v: &crate::value::Value,
+        result: &mut Vec<String>,
+        visited: &mut HashSet<String>,
+    ) {
+        match v {
+            crate::value::Value::Variant { .. } => {
+                // This is a TypeValue — recurse via collect_free_vars_inner.
+                let tv: TypeValue = Arc::new(v.clone());
+                self.collect_free_vars_inner(&tv, result, visited);
+            }
+            crate::value::Value::Dict { entries, .. } => {
+                // Dict may contain TypeValues or nested Dicts — recurse into all entries.
+                for (_key, thunk) in entries.iter() {
+                    if let Some(Ok(inner_val)) = thunk.peek_result() {
+                        self.collect_free_vars_from_value(inner_val, result, visited);
+                    }
+                }
+            }
+            _ => {
+                // Other values (Int, String, Bool, etc.) — no TypeVars inside.
+            }
+        }
+    }
+
     fn collect_free_vars_inner(
         &self,
         ty: &TypeValue,
@@ -1484,51 +1642,14 @@ impl InferenceContext {
                     | TV_STR_LIT | TV_OP | TV_PHANTOM | TV_RECURSIVE_REF | TV_ERROR
                     | TV_STAGE_APP => {}
                     _ => {
-                        // Structural variants: inspect settled payload dicts.
-                        // TypeValue payloads are Dicts whose values are either TypeValues
-                        // (Variant) or nested Dicts of TypeValues (e.g., Record.fields,
-                        // Union.members, Fn.params). We recurse into both layers.
+                        // Structural variants: inspect settled payload dicts recursively.
                         if let Some(thunk) = payload {
                             if let Some(Ok(crate::value::Value::Dict { entries, .. })) =
                                 thunk.peek_result()
                             {
                                 for (_key, val_thunk) in entries.iter() {
                                     if let Some(Ok(val)) = val_thunk.peek_result() {
-                                        match val {
-                                            crate::value::Value::Variant { .. } => {
-                                                // Direct TypeValue field (e.g., Fn.return).
-                                                let val_arc: TypeValue = Arc::new(val.clone());
-                                                self.collect_free_vars_inner(
-                                                    &val_arc, result, visited,
-                                                );
-                                            }
-                                            crate::value::Value::Dict {
-                                                entries: inner_entries,
-                                                ..
-                                            } => {
-                                                // Nested Dict of TypeValues (e.g., Record.fields,
-                                                // Union.members, Fn.params). Recurse into its values.
-                                                for (_inner_key, inner_thunk) in
-                                                    inner_entries.iter()
-                                                {
-                                                    if let Some(Ok(inner_val)) =
-                                                        inner_thunk.peek_result()
-                                                    {
-                                                        if matches!(
-                                                            inner_val,
-                                                            crate::value::Value::Variant { .. }
-                                                        ) {
-                                                            let inner_arc: TypeValue =
-                                                                Arc::new(inner_val.clone());
-                                                            self.collect_free_vars_inner(
-                                                                &inner_arc, result, visited,
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            _ => {}
-                                        }
+                                        self.collect_free_vars_from_value(val, result, visited);
                                     }
                                 }
                             }
