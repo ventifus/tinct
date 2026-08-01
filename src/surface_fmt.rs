@@ -455,6 +455,12 @@ fn collect_free_vars(
                 collect_free_vars(&pred.node, param_scope, stdlib_env, out);
             }
         }
+
+        // TypeDecl: type-identity wrapper — recurse into inner (Dict or ReprDecl).
+        // The type_name is a literal string; no variable references.
+        CoreExpr::TypeDecl { inner, .. } => {
+            collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+        }
     }
 }
 
@@ -552,6 +558,10 @@ fn collect_free_vars_in_quote(
             if let Some(pred) = is_pred {
                 collect_free_vars_in_quote(&pred.node, depth, param_scope, stdlib_env, out);
             }
+        }
+        // TypeDecl: recurse into inner (Dict or ReprDecl) inside quotes.
+        CoreExpr::TypeDecl { inner, .. } => {
+            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
         }
         // Leaves — nothing to do even inside quotes
         CoreExpr::Int(_)
@@ -911,6 +921,12 @@ fn core_expr_to_tinct(
         CoreExpr::ReprDecl { inner, .. } => {
             core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)
         }
+
+        // TypeDecl: transparent for serialization — emit the inner constructor dict.
+        // The type identity mechanism is evaluator-only (stored in ctx.type_identity_registry).
+        CoreExpr::TypeDecl { inner, .. } => {
+            core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)
+        }
     }
 }
 
@@ -1220,6 +1236,16 @@ fn core_expr_to_tinct_raw(
 
         // ReprDecl: transparent in quote context — emit the inner constructor dict.
         CoreExpr::ReprDecl { inner, .. } => core_expr_to_tinct_in_quote(
+            &inner.node,
+            depth,
+            param_scope,
+            substitutions,
+            rename_map,
+            ctx,
+        ),
+
+        // TypeDecl: transparent in quote context — emit the inner constructor dict.
+        CoreExpr::TypeDecl { inner, .. } => core_expr_to_tinct_in_quote(
             &inner.node,
             depth,
             param_scope,

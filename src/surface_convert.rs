@@ -637,6 +637,11 @@ pub fn core_expr_to_expr_value(
         // Transparent in AST representation — the quoted form is the inner dict.
         // The repr: metadata is evaluator-only and has no surface AST node type.
         CoreExpr::ReprDecl { inner, .. } => core_expr_to_expr_value(inner.as_ref(), ctx),
+
+        // ── TypeDecl ─────────────────────────────────────────────────────────────
+        // Transparent in AST representation — emit the inner constructor dict.
+        // The type identity mechanism is evaluator-only (ctx.type_identity_registry).
+        CoreExpr::TypeDecl { inner, .. } => core_expr_to_expr_value(inner.as_ref(), ctx),
     };
 
     // Inject the span into the payload (like surface_node_to_expr_variant does)

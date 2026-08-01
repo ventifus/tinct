@@ -45,29 +45,6 @@ pub const TV_PHANTOM: &str = "TypeValue.Phantom";
 pub const TV_STAGE_APP: &str = "TypeValue.StageApp";
 pub const TV_ERROR: &str = "TypeValue.Error";
 
-// ── Runtime dict sentinel key ────────────────────────────────────────────────
-//
-// Embedded in every type-constructor dict produced by `[type ...]` declarations
-// (lower.rs `lower_type_alias_to_constructor_dict`). Allows the match evaluator
-// and any other runtime introspection to distinguish type-constructor dicts from
-// plain user-data dicts without inspecting the shape of the values.
-//
-// The key uses U+FFFE (non-character) bookends so it:
-//   1. Cannot appear in user-written tinct source (the lexer rejects U+FFFE in identifiers).
-//   2. Sorts outside the Unicode letter/digit range, making accidental collision impossible.
-//   3. Is visually distinctive in debug output.
-//
-// The value stored under this key is the unqualified type name as a tinct String.
-// For `Color: [type Red Green Blue]` the sentinel entry is:
-//   "\u{FFFE}tycon\u{FFFE}" → "Color"
-//
-// NOTE: Dict introspection builtins (`keys`, `length`, `nth`-family, `merge`, etc.)
-// currently expose this sentinel key to user code. That is a known limitation tracked
-// in B-712-sentinel-filter. Until that ticket is resolved, users calling `[keys SomeType]`
-// will see the sentinel. In practice, type-constructor dicts are seldom passed to
-// introspection functions, so the impact is low.
-pub const TYCON_DICT_SENTINEL: &str = "\u{FFFE}tycon\u{FFFE}";
-
 // ── RowTail constructors ─────────────────────────────────────────────────────
 
 pub const RT_CLOSED: &str = "RowTail.Closed";
