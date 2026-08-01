@@ -964,6 +964,16 @@ pub enum Value {
     /// A single document within a program — accessible via `program.documents`.
     Document {
         doc: Arc<SurfaceDocument>,
+        /// Resolver scope frames produced by `builtin-resolve`.
+        ///
+        /// B-695: builtin-lower needs the document's own resolver frames (which include
+        /// instance method names from earlier dicts) to correctly resolve MethodDispatcher
+        /// calls during lowering. Without these frames, cross-dict instance method calls
+        /// fail to resolve because builtin-lower only sees the loader's root_group frames.
+        ///
+        /// Set by builtin-resolve when it calls resolve_surface_document_with_seed_frames.
+        /// Empty if the document was not resolved (e.g., constructed programmatically).
+        resolver_frames: Arc<Vec<indexmap::IndexMap<String, u32>>>,
         type_val: Arc<Value>,
     },
 
@@ -1229,8 +1239,13 @@ impl Clone for Value {
                 resolutions: Arc::clone(resolutions),
                 type_val: Arc::clone(type_val),
             },
-            Value::Document { doc, type_val } => Value::Document {
+            Value::Document {
+                doc,
+                resolver_frames,
+                type_val,
+            } => Value::Document {
                 doc: Arc::clone(doc),
+                resolver_frames: Arc::clone(resolver_frames),
                 type_val: Arc::clone(type_val),
             },
             Value::Expression { node, type_val } => Value::Expression {

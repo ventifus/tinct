@@ -104,6 +104,7 @@ pub(crate) async fn run_fd_improvement_fixpoint(
             &state.ctx,
             &state.env,
             &mut state.fd_depth,
+            None, // T-2095: EvalContext not available during inference — resolver-based FD skipped.
         )
         .await;
         if pairs.is_empty() {

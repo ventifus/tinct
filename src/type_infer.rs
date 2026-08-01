@@ -1402,6 +1402,29 @@ pub struct InferenceContext {
     /// When `constrain(α, sup)` fires (α is the sub), α is bound to `sup` as an upper
     /// bound. Any existing lower bounds for α are checked: each `lb <: sup` must hold.
     pub lower_bounds: HashMap<String, Vec<TypeValue>>,
+    /// Directional upper bounds accumulated by `constrain(α, sup)`.
+    ///
+    /// When `constrain(α, sup)` is called and α is a free TypeVar, `sup` is pushed here
+    /// rather than binding α = sup via equality. This preserves directionality:
+    /// "α <: sup" means α must be AT MOST as general as sup. Multiple upper bounds from
+    /// different call sites narrow α rather than conflict.
+    ///
+    /// At bound resolution time (generalization or explicit solve), α is bound to the
+    /// MEET of all its upper bounds. For now, the implementation eagerly binds when there
+    /// is exactly one upper bound (same as current behavior). Full deferred resolution
+    /// across multiple upper bounds is future work.
+    pub upper_bounds: HashMap<String, Vec<TypeValue>>,
+    /// Directional lower bounds accumulated for RowVars by `constrain_record()`.
+    ///
+    /// When a RowVar ρ appears as the sup tail in `constrain_record(sub_row, sup_row)`,
+    /// the sub tail is pushed here as a lower bound for ρ. This preserves directionality:
+    /// "sub_row <: {... ρ}" means ρ must accommodate at least the sub tail. Multiple lower
+    /// bounds from different call sites widen ρ rather than conflict.
+    ///
+    /// For THIS sprint, we eagerly resolve when there's exactly one lower bound (same
+    /// behavior as the current direct binding). Full deferred resolution across multiple
+    /// bounds (computing JOIN) is future work.
+    pub row_lower_bounds: HashMap<String, Vec<TypeValue>>,
     /// TypeVars declared via `bind:` annotations (explicit polymorphic type parameters).
     /// These are protected from `lower_var_level` calls triggered by `constrain(Unknown, α)`.
     /// Without protection, Unknown flowing into a `bind:` TypeVar lowers its level to 0,
@@ -1421,6 +1444,8 @@ impl InferenceContext {
             tycon_env: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
+            upper_bounds: HashMap::new(),
+            row_lower_bounds: HashMap::new(),
             protected_vars: std::collections::HashSet::new(),
         }
     }
@@ -1438,6 +1463,8 @@ impl InferenceContext {
             tycon_env,
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
+            upper_bounds: HashMap::new(),
+            row_lower_bounds: HashMap::new(),
             protected_vars: std::collections::HashSet::new(),
         }
     }
@@ -1462,6 +1489,8 @@ impl InferenceContext {
             tycon_env,
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
+            upper_bounds: HashMap::new(),
+            row_lower_bounds: HashMap::new(),
             protected_vars: std::collections::HashSet::new(),
         }
     }
@@ -1546,6 +1575,46 @@ impl InferenceContext {
     /// `resolve_lower_bounds()` to compute the JOIN.
     pub fn take_lower_bounds(&mut self, name: &str) -> Vec<TypeValue> {
         self.lower_bounds.remove(name).unwrap_or_default()
+    }
+
+    /// Record an upper bound for a free TypeVar.
+    ///
+    /// Called by `constrain(α, sup)` when α is free. Instead of binding α = sup via
+    /// equality (which would prevent accumulating multiple upper bounds), the upper
+    /// bound is accumulated here. For THIS sprint, we eagerly resolve when there's
+    /// exactly one upper bound. Full deferred resolution across multiple bounds is
+    /// future work.
+    pub fn add_upper_bound(&mut self, name: &str, ty: TypeValue) {
+        self.upper_bounds
+            .entry(name.to_string())
+            .or_default()
+            .push(ty);
+    }
+
+    /// Drain and return all accumulated upper bounds for a TypeVar.
+    ///
+    /// Used when binding α from a lower-bound constraint (`constrain(sub, α)`): the
+    /// caller verifies each upper bound satisfies `sub <: ub`.
+    pub fn take_upper_bounds(&mut self, name: &str) -> Vec<TypeValue> {
+        self.upper_bounds.remove(name).unwrap_or_default()
+    }
+
+    /// Record a lower bound for a free RowVar.
+    ///
+    /// Called by `constrain_record()` when a RowVar ρ appears as the sup tail. Instead
+    /// of binding ρ = sub_tail via equality, the sub tail is accumulated here. For THIS
+    /// sprint, we eagerly resolve when there's exactly one lower bound. Full deferred
+    /// resolution across multiple bounds is future work.
+    pub fn add_row_lower_bound(&mut self, name: &str, tail: TypeValue) {
+        self.row_lower_bounds
+            .entry(name.to_string())
+            .or_default()
+            .push(tail);
+    }
+
+    /// Drain and return all accumulated lower bounds for a RowVar.
+    pub fn take_row_lower_bounds(&mut self, name: &str) -> Vec<TypeValue> {
+        self.row_lower_bounds.remove(name).unwrap_or_default()
     }
 
     /// Walk a TypeValue and apply the current substitution, resolving bound TypeVars.

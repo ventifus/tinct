@@ -1435,7 +1435,12 @@ pub fn resolve_surface_document_with_seed_frames(
     seed_frames: &[indexmap::IndexMap<String, u32>],
     env_names: &[String],
     root_group_len: u32,
-) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>) {
+) -> (
+    ResolutionTable,
+    Vec<TypeDiagnostic>,
+    Vec<String>,
+    Vec<indexmap::IndexMap<String, u32>>,
+) {
     let mut resolver = SurfaceResolver::new();
 
     for frame in seed_frames {
@@ -1459,8 +1464,13 @@ pub fn resolve_surface_document_with_seed_frames(
     }
     resolver.exit_scope();
 
+    // B-695: Collect the resolver frames (block_body_frames) created during the walk.
+    // These include instance method names from class instance decls, which builtin-lower
+    // needs to resolve MethodDispatcher calls across dicts.
+    let block_body_frames = std::mem::take(&mut resolver.block_body_frames);
+
     let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced)
+    (table, diagnostics, unreferenced, block_body_frames)
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.

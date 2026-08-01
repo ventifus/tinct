@@ -1496,47 +1496,42 @@ pub async fn constrain(
     // C-UB (upper bound / narrowing): constrain(α, sup) where α is a free TypeVar and
     // sup is a concrete type.
     //
-    // "α <: sup" means α is bounded above by sup. We bind α = sup (the most precise upper
-    // bound available) and verify that all existing lower bounds for α satisfy lb <: sup.
-    // This keeps the equality invariant: once α is bound, all constraints are consistent.
+    // T-2096: Instead of eagerly binding α = sup, accumulate sup as an upper bound. This
+    // allows multiple upper bounds to be recorded before resolution. For THIS sprint, we
+    // eagerly resolve when there's exactly one upper bound (same behavior as before). Full
+    // deferred resolution across multiple upper bounds is future work.
     //
     // Invariant: `sub` has already been fully resolved through apply_subst at the top of
     // this function. If sub is a TypeVar here, it is guaranteed to be free (not in subst).
     if let Some(alpha_name) = typevalue_var_name(&sub) {
-        // B-687 pragmatic fix: if α is already bound (from an earlier constraint in the same
-        // inference step), use the existing binding for this constraint check rather than
-        // attempting to bind again. This handles the case where α appears in multiple positions
-        // (e.g., Fn(α→α)) and gets bound by the first constraint.
-        //
-        // The proper fix (accumulating directional upper bounds and resolving at generalization
-        // boundaries) is future work. For now, check if α has been bound since the top-level
-        // apply_subst call by re-applying substitution.
-        {
-            // Check if α was bound since the top-level apply_subst by re-resolving it.
-            let alpha_tv = crate::type_infer::make_typevar_value(&alpha_name);
-            let resolved = ctx.apply_subst(&alpha_tv);
-            if !typevalue_shallow_eq(&alpha_tv, &resolved) {
-                // α is already bound — re-check the constraint with the bound value.
-                return Box::pin(constrain(&resolved, &sup, ctx, constraints, span)).await;
-            }
+        // Check if α was bound since the top-level apply_subst by re-resolving it.
+        let alpha_tv = crate::type_infer::make_typevar_value(&alpha_name);
+        let resolved = ctx.apply_subst(&alpha_tv);
+        if !typevalue_shallow_eq(&alpha_tv, &resolved) {
+            // α is already bound — re-check the constraint with the bound value.
+            return Box::pin(constrain(&resolved, &sup, ctx, constraints, span)).await;
         }
 
-        // C-UB: bind α = sup. Lower bounds on α are accumulated from previous constrain(lb, α)
-        // calls (via add_lower_bound). Rather than eagerly checking lower bounds against sup
-        // here (which causes false errors when lower bounds include gradual/unannotated types
-        // that the BAS conservatively rejects), we simply bind and allow constraint propagation
-        // to surface real violations via unify() on concrete types.
-        //
-        // Note: eager lower-bound checking via is_subtype_bas was added in S-1003 but causes
-        // false positives when gradual types (Unknown, complex unions from type-level functions
-        // like `merge`'s return type) appear as lower bounds. The old pre-S-1003 system
-        // accumulated bounds lazily and did not perform this eager check.
-        //
-        // Once α is bound, any future constrain(lb, α) resolves α via apply_subst → sup, so
-        // accumulated lower bounds become dead. Remove them to prevent stale data accumulation.
-        drop(ctx.take_lower_bounds(&alpha_name));
-        // Bind α = sup (upper bound narrows the TypeVar).
-        ctx.bind(alpha_name, sup.clone())?;
+        // Add sup as an upper bound. For now (T-2096 simple version), if this is the first
+        // and only upper bound, bind eagerly. Full deferred resolution (computing MEET of
+        // multiple upper bounds at generalization boundaries) is future work.
+        ctx.add_upper_bound(&alpha_name, sup.clone());
+        let all_upper_bounds = ctx
+            .upper_bounds
+            .get(&alpha_name)
+            .map(|v| v.len())
+            .unwrap_or(0);
+
+        if all_upper_bounds == 1 {
+            // Single upper bound — bind eagerly (same as old behavior). Discard lower bounds
+            // to prevent stale data accumulation (they become dead once α is bound).
+            drop(ctx.take_lower_bounds(&alpha_name));
+            drop(ctx.take_upper_bounds(&alpha_name));
+            ctx.bind(alpha_name, sup.clone())?;
+        }
+        // Multiple upper bounds: accumulated but not yet resolved. Resolution at generalization
+        // boundaries (computing MEET) is future work.
+
         return Ok(());
     }
 
@@ -1687,14 +1682,28 @@ async fn constrain_record(
             Ok(())
         }
         Some(RT_VAR) => {
-            // T-2088: sup tail is a RowVar. Bind it to the sub tail (subtype constraint
-            // accumulates as a lower bound). For now, use direct binding (same as unify)
-            // since RowVar lower bounds are not yet accumulated separately.
-            // TODO: accumulate lower bounds for RowVars analogous to TypeVar lower bounds
-            // (ctx.add_lower_bound). Direct binding is conservative-correct for width subtyping.
+            // T-2097: sup tail is a RowVar ρ. Accumulate sub_tail as a lower bound for ρ.
+            // This preserves directionality: "sub_row <: {... ρ}" means ρ must accommodate
+            // at least the sub tail. For THIS sprint, eagerly resolve when there's exactly
+            // one lower bound (same behavior as the old direct binding). Full deferred
+            // resolution across multiple bounds is future work.
             match extract_rowtail_var_name(&sup_tail) {
                 Some(name) => {
-                    ctx.bind(name, sub_tail.clone())?;
+                    ctx.add_row_lower_bound(&name, sub_tail.clone());
+                    let all_row_bounds = ctx
+                        .row_lower_bounds
+                        .get(&name)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+
+                    if all_row_bounds == 1 {
+                        // Single lower bound — bind eagerly (same as old behavior).
+                        drop(ctx.take_row_lower_bounds(&name));
+                        ctx.bind(name, sub_tail.clone())?;
+                    }
+                    // Multiple lower bounds: accumulated but not yet resolved. Resolution
+                    // at generalization boundaries (computing JOIN) is future work.
+
                     Ok(())
                 }
                 // Malformed RowTail.Var — conservative accept.
@@ -2050,7 +2059,9 @@ fn expand_tycon_app(
     // Apply it to the body via apply_typevalue_renaming, which walks compound structures.
     let mut renaming = std::collections::HashMap::new();
     renaming.insert(param_name.clone(), Arc::clone(arg));
-    Some(crate::types::type_env::apply_typevalue_renaming(&body, &renaming))
+    Some(crate::types::type_env::apply_typevalue_renaming(
+        &body, &renaming,
+    ))
 }
 
 // ── Recursive type substitution ───────────────────────────────────────────────

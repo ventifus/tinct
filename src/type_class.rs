@@ -593,6 +593,7 @@ pub(crate) async fn try_fd_improvement(
     ctx: &crate::type_infer::InferenceContext,
     state_env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
     fd_depth: &mut u32,
+    eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
 ) -> Vec<(Arc<Value>, Arc<Value>)> {
     if *fd_depth >= 32 {
         return vec![];
@@ -643,19 +644,60 @@ pub(crate) async fn try_fd_improvement(
             // function that takes the ground source types as positional arguments and
             // returns the determined TypeValue directly. Instance-based classes (e.g.
             // Addable, Multipliable) scan registered instances for a structural match.
-            if let Some(ref _resolver_name) = class_decl.resolver {
-                // T-2090: TypeValue→TypeNode conversion is implemented (typevalue_to_typenode),
-                // but invoking the resolver function requires an EvalContext and type-stage scope
-                // which are not available in try_fd_improvement's current signature. The function
-                // would need to be extended to accept an EvalContext parameter and call the resolver
-                // function with the converted TypeNode arguments. Until then, resolver-based FD
-                // improvement is skipped.
+            if let Some(ref resolver_name) = class_decl.resolver {
+                // T-2095: Resolver-based FD improvement requires:
+                // 1. Converting source_types (TypeValue) to TypeNode arguments via typevalue_to_typenode()
+                // 2. Looking up the resolver function from the type-stage environment (class_decl.resolver_env or state_env)
+                // 3. Calling the resolver as an async function with TypeNode positional args
+                // 4. Converting the returned TypeNode back to TypeValue via typenode_value_to_type()
                 //
-                // The conversion step: convert source_types to TypeNode arguments:
-                //   let tn_args: Vec<_> = source_types.iter()
-                //       .filter_map(|tv| typevalue_to_typenode(tv))
-                //       .collect();
-                // Then call the resolver function with tn_args as positional arguments.
+                // The async call mechanism requires an EvalContext with type-stage scope. The caller
+                // (run_fd_improvement_fixpoint in typecheck_cek.rs) runs during inference, which operates
+                // on InferState (no EvalContext). Wiring an EvalContext through the inference pipeline
+                // would require propagating it from typecheck_document → run_typecheck → infer_* → here.
+                //
+                // eval_ctx parameter added in T-2095 but currently always None — no caller provides it yet.
+                if eval_ctx.is_none() {
+                    continue;
+                }
+
+                // Convert source types to TypeNode arguments.
+                let tn_args: Vec<_> = source_types
+                    .iter()
+                    .filter_map(|tv| typevalue_to_typenode(tv))
+                    .collect();
+
+                // If any source type failed to convert, skip (resolver cannot be called with incomplete args).
+                if tn_args.len() != source_types.len() {
+                    continue;
+                }
+
+                // Look up the resolver function from the type-stage environment.
+                // The resolver is a named value in state_env (stored during [class] declaration processing).
+                // Its return type is TypeNode (user-facing AST type), not TypeValue (internal inference type).
+                let resolver_fn = {
+                    let env_guard = state_env.read().unwrap();
+                    env_guard.extras.get(resolver_name).and_then(|slot| slot.scheme.clone())
+                };
+
+                let _resolver_fn = match resolver_fn {
+                    Some(f) => f,
+                    None => continue, // Resolver not found — skip this FD.
+                };
+
+                // TODO: Call the resolver function with tn_args as positional arguments, using eval_ctx.
+                // The call is async (requires eval_call machinery). The result is a TypeNode that must
+                // be converted back to TypeValue via typenode_value_to_type() (inverse of typevalue_to_typenode).
+                //
+                // Calling pattern (pseudo-code):
+                //   let result_thunk = eval_call(resolver_fn, tn_args, eval_ctx).await?;
+                //   let result_value = result_thunk.require_value()?;
+                //   let result_typevalue = typenode_value_to_type(&result_value)?;
+                //   // Use result_typevalue for target position improvement.
+                //
+                // This machinery is not implemented — async evaluation within the inference loop requires
+                // significant refactoring to avoid borrow-checker conflicts and async recursion limits.
+
                 continue;
             }
 
@@ -722,7 +764,6 @@ pub(crate) async fn try_fd_improvement(
 ///
 /// Returns `None` for TypeValues that have no direct TypeNode equivalent (compound types
 /// like Fn, Record, Union, etc. are not yet converted — extend as needed).
-#[cfg(test)]
 pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
     use crate::type_infer::typevalue_ctor;
 

@@ -21,7 +21,10 @@ use crate::value::{unknown_type_val, Value};
 
 /// Check if a TypeVar is bound in the InferenceContext. Returns Some(bound_value) if bound,
 /// None if the TypeVar is still free (unbound).
-fn lookup_binding(ctx: &crate::type_infer::InferenceContext, name: &str) -> Option<crate::type_class::TypeValue> {
+fn lookup_binding(
+    ctx: &crate::type_infer::InferenceContext,
+    name: &str,
+) -> Option<crate::type_class::TypeValue> {
     let tv = make_typevar_value(name);
     let resolved = ctx.apply_subst(&tv);
     if crate::type_infer::typevalue_var_name(&resolved) == Some(name.to_string()) {
@@ -339,8 +342,14 @@ async fn test_union_vs_union_with_typevars_defers() {
         result.unwrap_err()
     );
     // Verify bindings: a should be bound to String, b to Int
-    assert!(lookup_binding(&state.ctx, "a").is_some(), "TypeVar a must be bound");
-    assert!(lookup_binding(&state.ctx, "b").is_some(), "TypeVar b must be bound");
+    assert!(
+        lookup_binding(&state.ctx, "a").is_some(),
+        "TypeVar a must be bound"
+    );
+    assert!(
+        lookup_binding(&state.ctx, "b").is_some(),
+        "TypeVar b must be bound"
+    );
 }
 
 /// Union-vs-Union without inference vars: should not defer, should attempt element unification.

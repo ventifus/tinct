@@ -2306,7 +2306,7 @@ pub(crate) fn builtin_resolve(
         let root_map = ctx.root_group_resolver_map();
         let root_group_len = ctx.root_group.len() as u32;
 
-        let (_resolve_table, resolve_diagnostics, unreferenced_names) =
+        let (_resolve_table, resolve_diagnostics, unreferenced_names, resolver_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames(
                 &doc_arc,
                 &[root_map],
@@ -2410,6 +2410,7 @@ pub(crate) fn builtin_resolve(
             HashableValue::Str("doc".into()),
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
+                resolver_frames: Arc::new(resolver_frames),
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -2899,6 +2900,7 @@ pub(crate) fn builtin_typecheck_doc(
             HashableValue::Str("doc".into()),
             mk(Value::Document {
                 doc: doc_arc,
+                resolver_frames: Arc::new(Vec::new()),
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -3426,6 +3428,7 @@ pub(crate) fn builtin_program_docs(
             let doc_thunk = Arc::new(Thunk::value(
                 Value::Document {
                     doc: doc_arc,
+                    resolver_frames: Arc::new(Vec::new()),
                     type_val: crate::value::unknown_type_val(),
                 },
                 call_span.clone(),
@@ -4955,8 +4958,12 @@ pub(crate) fn builtin_lower(
 
         // arg0: Value::Document
         let doc_val = args[0].require_value()?.clone();
-        let doc_arc = match doc_val {
-            Value::Document { doc: d, .. } => d,
+        let (doc_arc, doc_resolver_frames) = match doc_val {
+            Value::Document {
+                doc: d,
+                resolver_frames: f,
+                ..
+            } => (d, f),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
@@ -4968,10 +4975,16 @@ pub(crate) fn builtin_lower(
             }
         };
 
-        // Lower each expression item in the document to CoreExpr.
-        // expr_idx counts only Expr items so that Decl items do not create
-        // gaps in the key sequence.
-        let scope_frames = ctx.scope_frames.as_ref().map(|v| v.as_slice());
+        // B-695: Use the document's own resolver frames (from builtin-resolve) if available.
+        // These frames include instance method names from class instance decls in earlier dicts,
+        // which are needed to resolve MethodDispatcher calls during lowering. If the document
+        // has no frames (wasn't resolved, or was constructed programmatically), fall back to
+        // the loader's ctx.scope_frames (which only contain root_group builtins).
+        let scope_frames = if !doc_resolver_frames.is_empty() {
+            Some(doc_resolver_frames.as_slice())
+        } else {
+            ctx.scope_frames.as_ref().map(|v| v.as_slice())
+        };
         let mut entries: Vec<(
             String,
             std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
