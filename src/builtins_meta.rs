@@ -2548,10 +2548,17 @@ pub(crate) fn builtin_lint_pipeline_docs(
         let mut doc_entries: Vec<(i64, Arc<Thunk>)> = docs_dict
             .iter()
             .map(|(k, v)| match k {
-                HashableValue::Int(i) => (*i, Arc::clone(v)),
-                other => panic!("docs outer key is not Int: {:?}", other),
+                HashableValue::Int(i) => Ok((*i, Arc::clone(v))),
+                other => Err(EvalError::user_error(
+                    format!(
+                        "builtin-lint-pipeline-docs: document dict key must be Int, got: {:?}",
+                        other
+                    ),
+                    call_span.clone(),
+                )
+                .into()),
             })
-            .collect();
+            .collect::<crate::error::EvalResult<Vec<_>>>()?;
         doc_entries.sort_by_key(|(i, _)| *i);
 
         // Collect SurfaceDocument arcs from the thunks.

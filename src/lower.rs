@@ -1814,18 +1814,34 @@ fn make_method_dispatcher_fn(
             // a self-referential capture and infinite recursion.
             //
             // Fix: trim scope_frames to exclude all frames more-inner than the current dict.
-            // The current dict is identified as the innermost frame containing any of its
+            // The current dict is identified as the innermost frame containing ALL of its
             // mangled instance binding names (unique to this dict's instance declarations).
             let mangled_for_trim: Vec<&str> = outer_names
                 .iter()
-                .filter(|n| n.as_str() != "builtin-raise" && n.contains('\u{026A}'))
+                .filter(|n| {
+                    n.as_str() != "builtin-raise"
+                        && n.starts_with(crate::type_tags::INTERNAL_PREFIX_INSTANCE)
+                })
                 .map(|s| s.as_str())
                 .collect();
             let trimmed_scope_frames: Option<&[indexmap::IndexMap<String, u32>]> =
                 if let (Some(frames), false) = (scope_frames, mangled_for_trim.is_empty()) {
-                    let current_offset = frames.iter().rev().position(|frame| {
-                        mangled_for_trim.iter().any(|n| frame.contains_key(*n))
-                    });
+                    // Identify the current dict's frame by finding the innermost frame that
+                    // contains ALL of the current dict's mangled instance names. Using .all()
+                    // (not .any()) is correct when a dict has N>1 distinct instances: inner
+                    // dict frames contain only their own mangled names, not the outer's full set.
+                    //
+                    // Known limitation: when N=1 and two nested dicts declare the exact same
+                    // instance (identical class+method+type_args, producing the same single
+                    // mangled name), .all() and .any() are equivalent — both find the innermost
+                    // frame, which may be the inner dict's rather than the outer's. This is a
+                    // degenerate case (semantically redundant identical instances at nested scopes).
+                    // The fallback to untrimmed scope_frames applies, matching pre-fix behavior.
+                    // Tracked as B-717 (structural fix) and B-719 (diagnostic emission).
+                    let current_offset = frames
+                        .iter()
+                        .rev()
+                        .position(|frame| mangled_for_trim.iter().all(|n| frame.contains_key(*n)));
                     if let Some(inner_offset) = current_offset {
                         let actual_idx = frames.len().saturating_sub(1 + inner_offset);
                         Some(&frames[..=actual_idx])
@@ -1835,8 +1851,8 @@ fn make_method_dispatcher_fn(
                 } else {
                     scope_frames
                 };
-            let parent_dispatcher =
-                trimmed_scope_frames.and_then(|frames| resolve_name_in_parent_frames(frames, method_name));
+            let parent_dispatcher = trimmed_scope_frames
+                .and_then(|frames| resolve_name_in_parent_frames(frames, method_name));
             match parent_dispatcher {
                 Some((_level, slot)) => {
                     // Parent dispatcher exists — capture it and forward the call.
@@ -3403,6 +3419,22 @@ mod tests {
         current_dict.insert("x".to_string(), 100);
         let frames = vec![env_names, ancestor, current_dict];
         assert_eq!(resolve_name_in_parent_frames(&frames, "x"), None);
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_skips_empty_intermediate_ancestors() {
+        // Three frames: [env_names (outermost, has x=99), ancestor (has only "other"=5), current_dict (innermost, has x=100)].
+        // "second occurrence": current_dict(0) has "x" → found_first; ancestor(1) has no "x" → skip;
+        // env_names(2) has "x"=99 → return Some((2, 99)).
+        // This tests that the loop correctly passes through an intermediate ancestor that lacks the name.
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("x".to_string(), 99);
+        let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        ancestor.insert("other".to_string(), 5);
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("x".to_string(), 100);
+        let frames = vec![env_names, ancestor, current_dict];
+        assert_eq!(resolve_name_in_parent_frames(&frames, "x"), Some((2, 99)));
     }
 
     #[test]

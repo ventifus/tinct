@@ -1,0 +1,14 @@
+# Same type (TypeA) registered at two nesting levels: inner wins for inner dict, outer wins for outer dict.
+# Exercises trimmed_scope_frames: inner dict's frame trimming must correctly identify inner as current.
+[
+  TypeA: [type TypeA]
+  [instance Addable [let a@TypeA b@TypeA c]: [+: [fn [let x y] 10]]]
+  r-outer: [+ TypeA.TypeA TypeA.TypeA]
+  inner: [
+    [instance Addable [let a@TypeA b@TypeA c]: [+: [fn [let x y] 20]]]
+    r-inner: [+ TypeA.TypeA TypeA.TypeA]
+    r-int: [+ 1 2]
+  ]
+]
+=== out
+Dict({"TypeA": Dict({"TypeA": Variant(TypeA.TypeA, Null)}), "r-outer": Int(10), "inner": Dict({"r-inner": Int(20), "r-int": Int(3)})})
