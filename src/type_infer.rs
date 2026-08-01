@@ -2170,8 +2170,9 @@ pub struct InferState {
     /// construct InferState directly get an empty table (no VarRef resolution → all lookups
     /// fall through to extras).
     pub resolution_table: std::sync::Arc<crate::ast::ResolutionTable>,
-    /// Scope frames from the resolver pass: one frame per document-level intermediate dict.
-    /// Each frame maps binding names to their absolute resolver-assigned slot numbers.
+    /// Unified scope frames from the resolver pass: both Dict letrec frames and
+    /// BlockBody sequential injection frames, in injection order. Each frame maps
+    /// binding names to their absolute resolver-assigned slot numbers.
     /// Populated from `resolve_surface_program`; retained for future use or introspection.
     /// Dict bindings now go to extras via `insert_scheme_named_only` (not slot-indexed).
     pub resolver_frames: Vec<indexmap::IndexMap<String, u32>>,

@@ -14,8 +14,8 @@ The resolver lives entirely in `src/resolve.rs`. It has no knowledge of the runt
 Parse → Surface AST
 Desugar → Surface AST (mutates: $_ → Fn, Pipe → Call, etc.)
 Resolve → Resolution OnceLocks populated + ResolutionTable produced   ← this pass
-Typecheck → reads ResolutionTable, writes CallDispatch OnceLocks
-Lower → reads Resolution OnceLocks + CallDispatch OnceLocks + scope_frames → CoreExpr
+Typecheck → reads ResolutionTable, emits TypeAssert annotations
+Lower → reads Resolution OnceLocks + TypeAssert annotations + scope_frames → CoreExpr
 Eval → reads de Bruijn coords from CoreExpr::Var
 ```
 
@@ -213,7 +213,7 @@ Escaped dict keys (`$x:`) and annotation PropertyDict values (in constructor bod
 
 When `resolve_name` fails for a name that looks like a class method (e.g., `+`, `=`), the resolver falls back to scanning all scopes for an instance binding whose method component matches. Instance binding names have the format `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽` or `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽`. The resolver resolves to the first match.
 
-The type checker overrides this with the specific instance via `CallDispatch` (a separate `OnceLock` on the same `VarRef` node) when it can determine the correct instance. The resolver's best-effort fallback ensures the OnceLock is set and the lowerer doesn't emit "undefined variable" for method names.
+The resolver's best-effort fallback ensures the OnceLock is set and the lowerer doesn't emit "undefined variable" for method names. At lowering time, `make_method_dispatcher_fn` uses `scope_frames` to synthesize a MethodDispatcher `CoreExpr::Fn` that routes calls by argument type across the scope chain.
 
 ### Leading-dot Field (`.name`)
 
@@ -257,15 +257,18 @@ Resolves all documents in a `SurfaceProgram`. `initial_frames` are scope frames 
 The resolver processes documents sequentially: each document's new_frames accumulate in order. Frames from document N are visible to document N+1 and beyond.
 
 ```rust
-pub fn resolve_surface_document_inplace(
+pub fn resolve_surface_document_with_seed_frames(
     doc: &SurfaceDocument,
-    initial_frames: &[IndexMap<String, u32>],
-) -> (ResolutionTable, Vec<(String, Span)>, Vec<(String, Span)>, Vec<IndexMap<String, u32>>)
+    seed_frames: &[IndexMap<String, u32>],
+    env_names: &[String],
+    root_group_len: u32,
+) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>, Vec<IndexMap<String, u32>>)
 ```
 
-Resolves a single document. Also returns:
-- `errors` — `(name, span)` pairs for genuinely unresolved expression-position VarRefs.
-- `warnings` — `(message, span)` pairs for lost intermediate bindings and unused function parameters.
+Resolves a single document given pre-seeded outer scope frames and an env-name list. Also returns:
+- `diagnostics` — `Vec<TypeDiagnostic>` covering all resolution errors and warnings (errors for unresolved VarRefs, warnings for unused parameters and lost bindings).
+- `unreferenced` — names from `env_names` that were never referenced in the document.
+- `unified_frames` — all Dict letrec and BlockBody sequential injection frames collected during the walk, in injection order.
 
 Used internally. The public `builtin-resolve` API uses `resolve_surface_document_with_env_dict` (not this function) and returns `{doc, diagnostics, unreferenced, doc-span}`.
 
@@ -286,7 +289,7 @@ all_frames = [root_frame] + new_frames
 eval_ctx_with_frames = eval_ctx.with_scope_frames(Arc::new(all_frames))
 ```
 
-The combined `all_frames` is attached to the `EvalContext` via `with_scope_frames()`. This makes the frames available to `lower()` at thunk-forcing time (via `thunk_ctx.scope_frames` / `ctx.scope_frames`), which uses them to resolve `CallDispatch` mangled instance binding names to de Bruijn coordinates (B-513).
+The combined `all_frames` is attached to the `EvalContext` via `with_scope_frames()`. This makes the frames available to `lower()` at thunk-forcing time (via `thunk_ctx.scope_frames` / `ctx.scope_frames`), which uses them to synthesize MethodDispatcher `CoreExpr::Fn` nodes that resolve mangled instance binding names to de Bruijn coordinates.
 
 The root frame is the **one legitimate exception** to purely AST-based scope construction: capabilities injected by `main.rs` (`%cwd`, `%libdir`, `%programs`, etc.) have no AST source, so their names must be read from `ScopeArena.scopes[0]`. After this single read, the resolver operates purely from AST structure.
 
@@ -298,7 +301,7 @@ pub scope_frames: Option<Arc<Vec<IndexMap<String, u32>>>>,
 
 Set by `with_scope_frames()` after resolving the init program. `None` in bootstrap contexts and unit tests. Propagated unchanged to all child contexts (`with_base_dir`, `with_cancel_token`, timeout contexts, etc.).
 
-`scope_frames` is read by `lower()` in `eval_materialize.rs` when forcing an unevaluated thunk that holds a `SurfaceNode`. The frames are passed to `lower()` so it can resolve `call_dispatch`-annotated VarRefs by name lookup when forcing thunks at eval time.
+`scope_frames` is read by `lower()` in `eval_materialize.rs` when forcing an unevaluated thunk that holds a `SurfaceNode`. The frames are passed to `lower()` so it can synthesize MethodDispatcher `CoreExpr::Fn` nodes that resolve mangled instance binding names and chain parent dispatchers.
 
 ### Lowering (`src/lower.rs`)
 
@@ -308,7 +311,7 @@ Set by `with_scope_frames()` after resolving the init program. `None` in bootstr
 
 The lowerer reads `VarRef.resolution` (set by the resolver) to emit `CoreExpr::Var { level, slot }`. If the OnceLock is unset (`None`), it emits `LowerDiagnostic::Error` — "resolver did not run".
 
-For `CallDispatch`-annotated VarRefs (typeclass method calls resolved by the type checker), the lowerer uses `scope_frames` to look up the mangled instance binding name by calling `resolve_name_in_frames`. If `scope_frames` is `None`, or the name is not found, it falls back to the `Resolution` OnceLock (the resolver's best-effort `method_to_instance` result). If neither is set, it emits `LowerDiagnostic::Error`.
+For typeclass method calls, the lowerer uses `scope_frames` to synthesize a MethodDispatcher: `make_method_dispatcher_fn` looks up mangled instance binding names via `resolve_name_in_frames` and builds a `CoreExpr::Fn` that dispatches by argument type across the scope chain. Parent dispatchers are found via `resolve_name_in_parent_frames` (second-occurrence algorithm). If `scope_frames` is `None`, the dispatcher is synthesized without parent chaining.
 
 ### Interaction with Typechecking (`src/typecheck.rs`)
 
@@ -317,7 +320,7 @@ The type checker calls `resolve_surface_program` internally to build its own `Re
 - **With `eval_ctx`** (`typecheck_surface_program_annotation_table_with_env`): seeds the resolver from `ScopeArena.scopes[0]` to match the production loader path, so instance binding names resolve correctly.
 - **Bootstrap** (`typecheck_surface_program_annotation_table` called from `typecheck_source`): passes empty `initial_frames` (`&[]`).
 
-The type checker also writes `CallDispatch` OnceLocks on call-site VarRef nodes when it can determine the concrete instance for a typeclass method call. This rewrite happens during type-checking, after the resolver has already run; the lowerer reads `CallDispatch` at a later point.
+The type checker emits `TypeAssert` annotations on function boundaries to enforce type constraints at runtime. Typeclass method dispatch is handled entirely by MethodDispatcher `CoreExpr::Fn` nodes synthesized by the lowerer from instance declarations — no per-call-site dispatch resolution is written by the type checker.
 
 ### The `builtin-resolve` meta API (`src/builtins_meta.rs`)
 

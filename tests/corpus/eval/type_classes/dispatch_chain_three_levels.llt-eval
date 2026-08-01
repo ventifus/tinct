@@ -1,0 +1,19 @@
+# Three-level MethodDispatcher chain.
+[
+  TypeA: [type TypeA]
+  [instance Addable [let a@TypeA b@TypeA c]: [+: [fn [let x y] 1]]]
+  level2: [
+    TypeB: [type TypeB]
+    [instance Addable [let a@TypeB b@TypeB c]: [+: [fn [let x y] 2]]]
+    level3: [
+      TypeC: [type TypeC]
+      [instance Addable [let a@TypeC b@TypeC c]: [+: [fn [let x y] 3]]]
+      ra: [+ TypeA.TypeA TypeA.TypeA]
+      rb: [+ TypeB.TypeB TypeB.TypeB]
+      rc: [+ TypeC.TypeC TypeC.TypeC]
+      ri: [+ 4 5]
+    ]
+  ]
+]
+=== out
+Dict({"TypeA": Dict({"TypeA": Variant(TypeA.TypeA, Null)}), "level2": Dict({"TypeB": Dict({"TypeB": Variant(TypeB.TypeB, Null)}), "level3": Dict({"TypeC": Dict({"TypeC": Variant(TypeC.TypeC, Null)}), "ra": Int(1), "rb": Int(2), "rc": Int(3), "ri": Int(9)})})})

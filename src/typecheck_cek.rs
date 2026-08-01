@@ -663,8 +663,9 @@ async fn infer_step(
                     let static_keys = crate::resolve::surface_dict_static_keys(entries);
 
                     // Determine the starting LGM slot for this dict body.
-                    // resolver_frames has BlockBody frames from all sequential contexts (both
-                    // document-level and function-body). Multiple functions may have identically-
+                    // resolver_frames contains unified scope frames from resolve_surface_program —
+                    // both Dict letrec frames and BlockBody sequential injection frames, in
+                    // injection order. Multiple functions may have identically-
                     // named intermediate bodies at different slot positions (e.g. join has
                     // "loop" at slot 1, env-to-name-set has "loop" at slot 2). Disambiguation:
                     //

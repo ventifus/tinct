@@ -1,0 +1,12 @@
+# Plain fn in parent scope acts as universal wildcard terminator for the chain.
+[
+  +: [fn [let x y] 999]
+  TypeA: [type TypeA]
+  inner: [
+    [instance Addable [let a@TypeA b@TypeA c]: [+: [fn [let x y] 42]]]
+    ra: [+ TypeA.TypeA TypeA.TypeA]
+    rd: [+ 1 2]
+  ]
+]
+=== out
+Dict({"+": Function(x, y), "TypeA": Dict({"TypeA": Variant(TypeA.TypeA, Null)}), "inner": Dict({"ra": Int(42), "rd": Int(999)})})

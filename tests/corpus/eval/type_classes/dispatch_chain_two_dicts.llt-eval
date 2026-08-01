@@ -1,0 +1,14 @@
+# Cross-dict MethodDispatcher chain: inner dict's wildcard chains to outer dict's dispatcher.
+[
+  TypeA: [type TypeA]
+  [instance Addable [let a@TypeA b@TypeA c]: [+: [fn [let x y] 10]]]
+  inner: [
+    TypeB: [type TypeB]
+    [instance Addable [let a@TypeB b@TypeB c]: [+: [fn [let x y] 20]]]
+    ra: [+ TypeA.TypeA TypeA.TypeA]
+    rb: [+ TypeB.TypeB TypeB.TypeB]
+    ri: [+ 1 2]
+  ]
+]
+=== out
+Dict({"TypeA": Dict({"TypeA": Variant(TypeA.TypeA, Null)}), "inner": Dict({"TypeB": Dict({"TypeB": Variant(TypeB.TypeB, Null)}), "ra": Int(10), "rb": Int(20), "ri": Int(3)})})

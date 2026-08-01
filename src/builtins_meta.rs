@@ -2333,37 +2333,19 @@ pub(crate) fn builtin_resolve(
         let root_map = ctx.root_group_resolver_map();
         let root_group_len = ctx.root_group.len() as u32;
 
-        let (
-            _resolve_table,
-            resolve_diagnostics,
-            unreferenced_names,
-            resolver_frames,
-            dict_frames_raw,
-        ) = crate::resolve::resolve_surface_document_with_seed_frames(
-            &doc_arc,
-            &[root_map],
-            &env_names,
-            root_group_len,
-        );
+        let (_resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
+            crate::resolve::resolve_surface_document_with_seed_frames(
+                &doc_arc,
+                &[root_map],
+                &env_names,
+                root_group_len,
+            );
 
-        // Build the dispatcher_frames list for make_method_dispatcher_fn.
-        //
-        // Frame ordering is critical: resolve_name_in_frames searches INNERMOST (last) first.
-        //   1. Dict letrec frames from resolver (outermost): mangled instance binding names
-        //      at their absolute LGM slots. These are only in dict_frames (not in env_names).
-        //   2. env-names frame (innermost/last): maps every env_name to slot root_group_len + j.
-        //      Must be innermost so TypeNode values (Integer→TypeNode.Int, String→TypeNode.String)
-        //      are found BEFORE ClassDecl entries in the public dict. The public dict has
-        //      `Integer: [class ...]` which evaluates to {} — useless for type dispatch. The
-        //      env_names frame gives TypeNode values from the type-stage scope.
-        let mut dispatcher_frames: Vec<indexmap::IndexMap<String, u32>> = Vec::new();
-        dispatcher_frames.extend(dict_frames_raw);
-        // env_frame is appended LAST (innermost) so it is searched first by resolve_name_in_frames.
-        let mut env_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        for (j, name) in env_names.iter().enumerate() {
-            env_frame.insert(name.clone(), root_group_len + j as u32);
-        }
-        dispatcher_frames.push(env_frame);
+        // unified_frames already contains all scope frames from the resolver in natural
+        // order: env_names frame first (outermost), then Dict letrec and BlockBody frames
+        // in nesting order. resolve_name_in_frames searches from last (innermost) to first,
+        // so dict frames are searched before the env_names frame.
+        let dispatcher_frames = unified_frames;
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2468,8 +2450,7 @@ pub(crate) fn builtin_resolve(
             HashableValue::Str("doc".into()),
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
-                resolver_frames: Arc::new(resolver_frames),
-                dict_frames: Arc::new(dispatcher_frames),
+                resolver_frames: Arc::new(dispatcher_frames),
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -2728,13 +2709,12 @@ pub(crate) fn builtin_typecheck_doc(
 
         // arg0: Value::Document — extract doc_arc and resolver_frames.
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, resolver_frames, dict_frames) = match doc_val {
+        let (doc_arc, resolver_frames) = match doc_val {
             Value::Document {
                 doc: d,
                 resolver_frames: rf,
-                dict_frames: df,
                 ..
-            } => (d, rf, df),
+            } => (d, rf),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-typecheck-doc".to_string(),
@@ -2983,7 +2963,6 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Document {
                 doc: doc_arc,
                 resolver_frames,
-                dict_frames,
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -3512,7 +3491,6 @@ pub(crate) fn builtin_program_docs(
                 Value::Document {
                     doc: doc_arc,
                     resolver_frames: Arc::new(Vec::new()),
-                    dict_frames: Arc::new(Vec::new()),
                     type_val: crate::value::unknown_type_val(),
                 },
                 call_span.clone(),
@@ -5004,17 +4982,15 @@ pub(crate) fn builtin_cap_env_has(
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
 ///
 /// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve`)
-/// are merged with `dict_frames` (Dict letrec frames + env_names frame) into `combined_frames`
-/// and passed as `scope_frames` to `make_method_dispatcher_fn`. This enables:
+/// contain all scope frames (env_frame first, then Dict letrec and BlockBody frames in
+/// natural nesting order) and are passed as `scope_frames` to `make_method_dispatcher_fn`.
+/// This enables:
 ///
 /// 1. `resolve_name_in_frames` (for builtin-raise and mangled instance names): searches all
 ///    frames innermost-first to find each name's absolute LGM slot.
 ///
-/// 2. `resolve_name_in_parent_frames` (for cross-dict method chaining): unconditionally
-///    skips the two innermost frames (offset 0 = env_names, offset 1 = current dict)
-///    via `.skip(2)` and searches ancestor frames (offset 2+) for the method name.
-///    When dict N's `=` dispatcher has no matching instance, it chains to dict N-1's
-///    `=` dispatcher (the ancestor), not to itself.
+/// 2. `resolve_name_in_parent_frames` (for cross-dict method chaining): searches ancestor
+///    frames for the method name, skipping the current dict's own frame.
 ///    `slot` is the absolute LGM slot — the only value used at runtime (depth is ignored
 ///    by the evaluator and type checker resolves ClosureCapture by name).
 pub(crate) fn builtin_lower(
@@ -5035,13 +5011,12 @@ pub(crate) fn builtin_lower(
 
         // arg0: Value::Document
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, doc_resolver_frames, doc_dict_frames) = match doc_val {
+        let (doc_arc, doc_resolver_frames) = match doc_val {
             Value::Document {
                 doc: d,
                 resolver_frames: f,
-                dict_frames: df,
                 ..
-            } => (d, f, df),
+            } => (d, f),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
@@ -5053,31 +5028,11 @@ pub(crate) fn builtin_lower(
             }
         };
 
-        // Combine resolver_frames (block_body frames) and dict_frames (Dict letrec frames +
-        // env_names frame) for use as scope_frames in make_method_dispatcher_fn.
-        //
-        // Layout of combined_frames (outermost first):
-        //   [block_body_frames..., dict_1_frame, dict_2_frame, ..., dict_N_frame, env_names_frame]
-        //
-        // After iter().rev() in resolve_name_in_*:
-        //   offset 0 = env_names_frame (innermost, searched first by resolve_name_in_frames)
-        //   offset 1 = dict_N_frame (current dict being lowered)
-        //   offset 2 = dict_{N-1}_frame (first ancestor; found by resolve_name_in_parent_frames)
-        //   ...
-        //
-        // dict_frames are appended after resolver_frames so they are more-inner (offset 0+).
-        let combined_frames: Vec<indexmap::IndexMap<String, u32>> =
-            if !doc_resolver_frames.is_empty() || !doc_dict_frames.is_empty() {
-                let mut v = Vec::with_capacity(doc_resolver_frames.len() + doc_dict_frames.len());
-                v.extend_from_slice(&doc_resolver_frames);
-                v.extend_from_slice(&doc_dict_frames);
-                v
-            } else {
-                Vec::new()
-            };
+        // resolver_frames already contains all scope frames (env_frame first, then Dict
+        // letrec and BlockBody frames in natural nesting order). Pass directly as scope_frames.
         let scope_frames: Option<&[indexmap::IndexMap<String, u32>]> =
-            if !combined_frames.is_empty() {
-                Some(combined_frames.as_slice())
+            if !doc_resolver_frames.is_empty() {
+                Some(doc_resolver_frames.as_slice())
             } else {
                 None
             };

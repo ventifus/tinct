@@ -276,7 +276,6 @@ state:
 | `type_guard` | `TypeAnnotation` | `SurfaceNode` | Type checker | Lowerer |
 | `provenance` | `Provenance` | `SurfaceNode` | Macro expander | Debugger/formatter |
 | `resolution` | `Resolution` | `VarRef`, leading-dot `Field` | Resolver | Lowerer |
-| `call_dispatch` | `CallDispatch` | `VarRef` (typeclass method calls) | Type checker | Lowerer |
 | `field_slot` | `SlotAnnotation` | `Field` | Type checker | Lowerer |
 | `resolved_annotation_type` | `TypeAnnotation` | `SurfaceParam` | Type checker | Lowerer |
 | `resolved_type` | `TypeAnnotation` | `TypeAssert` | Type checker | Lowerer |
@@ -473,7 +472,7 @@ The parser produces a `SurfaceProgram`. Downstream passes consume it in order:
 
 1. **`desugar`** (`src/desugar.rs`) — `$_` shorthand rewriting and other surface-level desugaring. Mutates the `SurfaceProgram` in place.
 2. **`resolve`** (`src/resolve.rs`) — assigns de Bruijn coordinates to `VarRef` and leading-dot `Field` nodes by writing into their inline `Resolution` OnceLock fields.
-3. **Type checker** (`src/typecheck.rs`) — infers and checks types; writes `TypeAnnotation`, `CallDispatch`, and `SlotAnnotation` OnceLock fields on nodes.
+3. **Type checker** (`src/typecheck.rs`) — infers and checks types; writes `TypeAnnotation` and `SlotAnnotation` OnceLock fields on nodes.
 4. **Lowerer** (`src/lower.rs`) — converts `SurfaceExpression` to `CoreExpr` using the resolver and type checker annotations. Reads all inline OnceLock fields.
 5. **Evaluator** (`src/eval.rs` etc.) — evaluates `CoreExpr` in the scope arena.
 6. **Formatter** (`src/formatter.rs`) — uses `ParseOutput.leading_comments`, `trailing_comments`, and `blank_before` to reconstruct canonical source layout.
@@ -501,5 +500,5 @@ into any of those subsystems. It calls only `lexer::tokenize`.
    integer, float, or unsigned-integer keys are checked for duplicates at parse time using
    `seen_keys`. Computed keys (`Field`, `Call`, `VarRef`) are checked at evaluation time.
 7. **OnceLock fields are empty at parse time.** All inline `Resolution`, `TypeAnnotation`,
-   `CallDispatch`, `SlotAnnotation`, `Provenance`, and `MatchableBinding` fields are initialized
+   `SlotAnnotation`, `Provenance`, and `MatchableBinding` fields are initialized
    to their empty defaults by the parser. No pass other than the designated writer sets them.

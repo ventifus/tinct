@@ -1,0 +1,9 @@
+# Single dict with one typed instance. Wildcard must chain to ambient scope for Int.
+[
+  TypeA: [type TypeA]
+  [instance Addable [let a@TypeA b@TypeA c]: [+: [fn [let x y] 42]]]
+  ra: [+ TypeA.TypeA TypeA.TypeA]
+  ri: [+ 1 2]
+]
+=== out
+Dict({"TypeA": Dict({"TypeA": Variant(TypeA.TypeA, Null)}), "ra": Int(42), "ri": Int(3)})

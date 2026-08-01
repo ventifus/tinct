@@ -6805,7 +6805,7 @@ mod tests {
         let root_group_len = ctx.root_group.len() as u32;
 
         let doc = &program.documents[0].node;
-        let (_resolve_table, resolve_diagnostics, _unreferenced, _resolver_frames, _dict_frames) =
+        let (_resolve_table, resolve_diagnostics, _unreferenced, _unified_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames(
                 doc,
                 &[root_map.clone()],

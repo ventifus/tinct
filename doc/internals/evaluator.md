@@ -530,7 +530,7 @@ The tinct-side `builtin-eval` (inside `loader.llt`) returns the exports Dict dir
 5. **Typecheck** the full program via `builtin-typecheck-doc` side effects.
 6. **Evaluate** via `eval_surface_file`.
 
-The scope frames from step 3 are essential for production path typeclass method dispatch (B-513). Without them, `lower()` at eval time cannot resolve `call_dispatch`-mangled instance binding names to correct de Bruijn coordinates.
+The scope frames from step 3 are essential for production path typeclass method dispatch (B-513). Without them, `lower()` at eval time cannot synthesize MethodDispatcher `CoreExpr::Fn` nodes — it cannot find mangled instance binding names or chain parent dispatchers.
 
 ---
 
