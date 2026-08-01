@@ -2164,9 +2164,7 @@ pub(crate) fn match_pattern<'a>(
             // materialize it, and compare to the scrutinee for equality.
             // A resolved address (Some(Some(addr))) is a pin pattern: `$val` in pattern position.
             // Some(None) means the resolver could not find the name — arm does not match.
-            SurfaceExpression::VarRef {
-                resolution, name, ..
-            } => {
+            SurfaceExpression::VarRef { resolution, .. } => {
                 match resolution.get() {
                     Some(Some(addr)) => {
                         // Look up the pinned thunk using the resolver-assigned VarAddr.
@@ -2245,29 +2243,39 @@ pub(crate) fn match_pattern<'a>(
                         }
 
                         // User-defined nominal type matching for MethodDispatcher arms.
-                        // When the pinned value is a type-constructor Dict (from a `[type Point ...]`
-                        // declaration) and the scrutinee is a Variant whose tycon matches the pattern
-                        // name, the arm matches. This enables user-defined type dispatch alongside
-                        // builtin types (handled by the TypeNode path above).
                         //
-                        // CORRECTNESS GUARD: only fire for type-constructor dicts, not plain data dicts.
-                        // A type-constructor dict carries the TYCON_DICT_SENTINEL key (injected by
-                        // lower.rs lower_type_alias_to_constructor_dict). A plain data dict never has
-                        // this key because the sentinel uses a U+FFFE bookend that the lexer rejects in
-                        // user source. Without this check, any dict pinned in a match arm (e.g. a
-                        // `coords: [x: 1 y: 2]` binding) would falsely match a Variant whose tycon
-                        // coincidentally matched the binding's name (B-712).
+                        // When the pinned value is a type-constructor Dict (produced by a
+                        // `[type Point ...]` declaration), the dict carries a hidden
+                        // TYCON_DICT_SENTINEL entry whose value is the type name string
+                        // (e.g. "Color"). The match check reads THAT stored name and
+                        // compares it against the scrutinee Variant's tycon.
+                        //
+                        // Comparing against the STORED name (not the VarRef binding name)
+                        // correctly handles:
+                        //
+                        //   - Shadowing: `[Color: [r:255 g:0 b:0]  [match v  Color: "wrong"]]`
+                        //     The plain dict has no sentinel → falls through to primitive_eq.
+                        //
+                        //   - Aliases: `mycolor = Color` — the dict has sentinel "Color" so
+                        //     matching against `mycolor` still finds tycon "Color" correctly.
+                        //
+                        // Only dicts with the sentinel are considered type-constructor dicts.
+                        // All other dicts fall through to the primitive_eq check below.
                         if let Value::Dict { entries, .. } = &pinned_val {
                             let sentinel_key = crate::value::HashableValue::Str(Arc::from(
                                 crate::type_tags::TYCON_DICT_SENTINEL,
                             ));
-                            if entries.contains_key(&sentinel_key) {
-                                if let Value::Variant { ctor, .. } = &value {
-                                    // Extract the tycon from the fully-qualified ctor via the
-                                    // authorized protocol function (value.rs:tycon_name_from_ctor).
-                                    let tycon = crate::value::tycon_name_from_ctor(ctor.as_ref());
-                                    if tycon == name.as_str() {
-                                        return Ok(true);
+                            if let Some(sentinel_thunk) = entries.get(&sentinel_key) {
+                                if let Some(Ok(Value::String { ref source, start, end, .. })) =
+                                    sentinel_thunk.peek_result()
+                                {
+                                    let stored_type_name = &source[*start..*end];
+                                    if let Value::Variant { ctor, .. } = &value {
+                                        let tycon =
+                                            crate::value::tycon_name_from_ctor(ctor.as_ref());
+                                        if tycon == stored_type_name {
+                                            return Ok(true);
+                                        }
                                     }
                                 }
                             }
@@ -6242,6 +6250,243 @@ mod tests {
                 type_val: crate::value::unknown_type_val(),
             },
             "pin pattern $x=42 should NOT match scrutinee 99; got: {r_val:?}"
+        );
+    }
+
+    // B-712: a plain data dict in a match arm must NOT trigger the tycon-dispatch branch.
+    //
+    // The tycon-dispatch check fires when pinned_val is a Dict containing the
+    // TYCON_DICT_SENTINEL entry (injected by lower_type_alias_to_constructor_dict).
+    // The sentinel stores the type name "Color"; the evaluator reads THAT value
+    // and compares it against the scrutinee Variant's tycon.
+    //
+    // A plain data dict (`shape: [r: 255 g: 0 b: 0]`) has no sentinel → falls through
+    // to primitive_eq (no match). A type-constructor dict (`Color: [type ...]`) has
+    // sentinel "Color" → tycon "Color" matches → arm fires.
+    //
+    // Two invariants verified:
+    //   1. A plain dict arm does NOT match a Variant (no sentinel).
+    //   2. A type-constructor-dict arm (from `[type ...]`) DOES match (sentinel present).
+    #[tokio::test]
+    async fn test_b712_plain_dict_arm_does_not_match_variant() {
+        // `shape` is a plain data dict (no sentinel) — does not match Color.Red.
+        // `Color` is a type-constructor dict (sentinel "Color") — matches Color.Red.
+        // Scrutinee is `Color.Red` (a Variant with tycon "Color").
+        // The `shape` arm must NOT match.  The `Color` arm MUST match.
+        let thunk = eval_str(
+            r#"[
+              Color: [type Red Green Blue]
+              shape: [r: 255  g: 0  b: 0]
+              r1: [match Color.Red  shape: "false-positive"  Color: "is-color"  ...: "other"]
+            ]"#,
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict { entries: ref d, .. } = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r1 = d
+            .get(&HashableValue::Str(Arc::from("r1")))
+            .expect("key 'r1' must exist");
+        let r1_val = super::materialize(r1, None, &test_ctx())
+            .await
+            .expect("r1 must materialize");
+        assert_eq!(
+            r1_val,
+            Value::String {
+                source: Arc::from("is-color"),
+                start: 0,
+                end: 8,
+                type_val: crate::value::unknown_type_val(),
+            },
+            "Color arm (type-ctor dict) must match Color.Red; plain-dict arm must not fire; got: {r1_val:?}"
+        );
+    }
+
+    // B-712 companion: a plain data dict does NOT false-match — the sentinel is absent,
+    // so the dispatch block is skipped entirely regardless of any name coincidence.
+    #[tokio::test]
+    async fn test_b712_plain_dict_does_not_false_match_tycon() {
+        // `coords` is a plain dict (no sentinel) → no tycon dispatch → wildcard fires.
+        // `Color` is a type-constructor dict (sentinel "Color") → tycon dispatch fires.
+        let thunk = eval_str(
+            r#"[
+              coords: [x: 1  y: 2]
+              Color: [type Red Green Blue]
+              r1: [match Color.Red  coords: "plain-matched"  ...: "wildcard"]
+              r2: [match Color.Red  Color: "type-matched"   ...: "wildcard"]
+            ]"#,
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict { entries: ref d, .. } = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        // r1: plain dict arm must NOT match; wildcard fires.
+        let r1 = d
+            .get(&HashableValue::Str(Arc::from("r1")))
+            .expect("key 'r1' must exist");
+        let r1_val = super::materialize(r1, None, &test_ctx())
+            .await
+            .expect("r1 must materialize");
+        assert_eq!(
+            r1_val,
+            Value::String {
+                source: Arc::from("wildcard"),
+                start: 0,
+                end: 8,
+                type_val: crate::value::unknown_type_val(),
+            },
+            "plain dict 'coords' must NOT match Variant Color.Red; got: {r1_val:?}"
+        );
+        // r2: type-constructor-dict arm MUST match.
+        let r2 = d
+            .get(&HashableValue::Str(Arc::from("r2")))
+            .expect("key 'r2' must exist");
+        let r2_val = super::materialize(r2, None, &test_ctx())
+            .await
+            .expect("r2 must materialize");
+        assert_eq!(
+            r2_val,
+            Value::String {
+                source: Arc::from("type-matched"),
+                start: 0,
+                end: 12,
+                type_val: crate::value::unknown_type_val(),
+            },
+            "type-ctor-dict 'Color' must match Variant Color.Red; got: {r2_val:?}"
+        );
+    }
+
+    // B-712 sentinel: canonical case — type-ctor dict has TYCON_DICT_SENTINEL "Color",
+    // scrutinee is Color.Red, match fires.
+    #[tokio::test]
+    async fn test_b712_sentinel_canonical_tycon_match() {
+        // Verify: lower_type_alias_to_constructor_dict injects sentinel "Color" into the
+        // type-constructor dict; eval.rs VarRef arm reads it and matches Color.Red.
+        let thunk = eval_str(
+            r#"[
+              Color: [type Red Green Blue]
+              r: [match Color.Red  Color: "matched"  ...: "other"]
+            ]"#,
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict { entries: ref d, .. } = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &test_ctx())
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::String {
+                source: Arc::from("matched"),
+                start: 0,
+                end: 7,
+                type_val: crate::value::unknown_type_val(),
+            },
+            "Color arm must match Color.Red via sentinel; got: {r_val:?}"
+        );
+    }
+
+    // B-712 sentinel: shadowing case — type name `Color` shadowed by a plain dict in inner
+    // scope. The plain dict has no sentinel so it must NOT match Color.Red.
+    #[tokio::test]
+    async fn test_b712_sentinel_shadowed_tycon_no_false_match() {
+        // Outer `Color: [type Red Green Blue]` defines the type-constructor dict.
+        // Inner `Color: [r: 255 g: 0 b: 0]` shadows `Color` with a plain dict (no sentinel).
+        // Matching `v` (= Color.Red) against the inner `Color` arm must NOT fire — the plain
+        // dict carries no TYCON_DICT_SENTINEL so the tycon-dispatch block is skipped.
+        let thunk = eval_str(
+            r#"[
+              Color: [type Red Green Blue]
+              v: Color.Red
+              Color: [r: 255  g: 0  b: 0]
+              r: [match v  Color: "wrong"  ...: "correct"]
+            ]"#,
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict { entries: ref d, .. } = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &test_ctx())
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::String {
+                source: Arc::from("correct"),
+                start: 0,
+                end: 7,
+                type_val: crate::value::unknown_type_val(),
+            },
+            "shadowed plain dict must NOT match Color.Red; got: {r_val:?}"
+        );
+    }
+
+    // B-712 sentinel: alias case — `mycolor = Color` binds the same type-constructor dict
+    // (with sentinel "Color") to a different name. Matching against `mycolor` must still
+    // fire because the STORED sentinel value "Color" matches the Variant's tycon, not the
+    // VarRef binding name "mycolor".
+    #[tokio::test]
+    async fn test_b712_sentinel_alias_tycon_match() {
+        // `mycolor` is an alias for `Color` (same type-ctor dict, sentinel "Color").
+        // Matching Color.Red against `mycolor` reads the sentinel "Color" and matches.
+        let thunk = eval_str(
+            r#"[
+              Color: [type Red Green Blue]
+              mycolor: Color
+              r: [match Color.Red  mycolor: "alias-matched"  ...: "other"]
+            ]"#,
+            &test_ctx(),
+        )
+        .await
+        .expect("eval_str must succeed");
+        let val = materialize(&thunk, None, &test_ctx())
+            .await
+            .expect("materialize must succeed");
+        let Value::Dict { entries: ref d, .. } = val else {
+            panic!("expected Dict, got {val:?}");
+        };
+        let r = d
+            .get(&HashableValue::Str(Arc::from("r")))
+            .expect("key 'r' must exist");
+        let r_val = super::materialize(r, None, &test_ctx())
+            .await
+            .expect("r must materialize");
+        assert_eq!(
+            r_val,
+            Value::String {
+                source: Arc::from("alias-matched"),
+                start: 0,
+                end: 13,
+                type_val: crate::value::unknown_type_val(),
+            },
+            "alias dict (sentinel 'Color') must match Color.Red; got: {r_val:?}"
         );
     }
 

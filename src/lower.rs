@@ -82,26 +82,28 @@ pub(crate) fn resolve_name_in_frames(
     None
 }
 
-/// T-2109: Resolve a name in parent scopes only, skipping both the env_names frame and the
-/// current dict's own letrec frame.
+/// Resolve `name` using leading-dot semantics on a pre-computed frame list.
 ///
-/// Used for MethodDispatcher parent chaining: find the next-outer dispatcher for this method.
+/// Implements the same "second occurrence" rule as `resolve_name_parent` in the resolver:
+/// find the innermost binding of `name`, skip it, then return the next binding outward.
+/// Returns `None` — caller emits "undefined variable" — if there is only one binding.
 ///
-/// Frame ordering (frames[0] = outermost, frames[n-1] = innermost after `iter().rev()`):
-///   level 0 (offset 0): env_names_frame — innermost, skipped (type names, not method dispatchers)
-///   level 1 (offset 1): current dict's letrec frame — skipped to avoid self-referential capture
-///   level 2+ (offset 2+): ancestor dict frames — searched for the parent dispatcher
-///
-/// Returns `None` if the name is not found in any ancestor scope (offset >= 2), which is the
-/// correct result when the document has only one dict (no parent dispatcher exists).
+/// Used for MethodDispatcher parent chaining (B-682 / T-2109): finds the next-outer
+/// dispatcher for `method_name` so the wildcard fallback can forward to it.
 fn resolve_name_in_parent_frames(
     frames: &[indexmap::IndexMap<String, u32>],
     name: &str,
 ) -> Option<(u32, u32)> {
-    // frames[0] = outermost, frames[n-1] = innermost
-    // Skip offset 0 (env_names_frame) and offset 1 (current dict's own letrec frame).
-    // Searching from offset 2 finds the first ancestor dict that defines `name`.
-    for (offset, frame) in frames.iter().rev().enumerate().skip(2) {
+    // frames[0] = outermost, frames[n-1] = innermost (iter().rev() searches innermost-first).
+    // Skip the first occurrence of `name` (wherever it lives), then return the next.
+    let mut found_first = false;
+    for (offset, frame) in frames.iter().rev().enumerate() {
+        if !found_first {
+            if frame.contains_key(name) {
+                found_first = true;
+            }
+            continue; // skip the first (innermost) binding
+        }
         if let Some(&slot) = frame.get(name) {
             return Some((offset as u32, slot));
         }
@@ -2397,26 +2399,21 @@ fn lower_type_alias_to_constructor_dict(
         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
     }
 
-    // Inject the type-constructor-dict sentinel entry (type_tags::TYCON_DICT_SENTINEL).
+    // Inject the TYCON_DICT_SENTINEL entry when a type name is available.
     //
-    // This allows the match evaluator (eval.rs match_pattern VarRef arm) to reliably
-    // distinguish a type-constructor dict produced by a `[type ...]` declaration from a
-    // plain user data dict. Without this sentinel, any dict pinned in a match arm would
-    // incorrectly match a Variant whose tycon coincidentally matches the dict's binding name.
-    //
-    // The sentinel key is "\u{FFFE}tycon\u{FFFE}" — a non-character Unicode sequence that
-    // cannot appear in user-written source. The value is the type name (or empty string for
-    // unnamed types). The entry is always added last so it does not disturb the slot indices
-    // of constructor entries (which were already resolved by the surface-AST resolver before
-    // lowering runs).
-    {
+    // This sentinel distinguishes type-constructor dicts from plain data dicts at
+    // match time (eval.rs VarRef arm). The value is the type name string (e.g.
+    // "Color"), allowing the match evaluator to compare STORED name vs scrutinee
+    // tycon rather than comparing the VarRef binding name. This correctly handles
+    // both shadowing (plain dict has no sentinel → no match) and aliases
+    // (`mycolor = Color` resolves to a dict with sentinel "Color" → match fires).
+    if let Some(ref type_name) = type_name_opt {
         let sentinel_key = Some(Arc::new(Spanned::new(
             CoreExpr::Str(crate::type_tags::TYCON_DICT_SENTINEL.to_string()),
             syn_span.clone(),
         )));
-        let type_name_str = type_name_opt.as_deref().unwrap_or("").to_string();
         let sentinel_value = Arc::new(Spanned::new(
-            CoreExpr::Str(type_name_str),
+            CoreExpr::Str(type_name.clone()),
             syn_span.clone(),
         ));
         core_entries.push(Spanned::new(

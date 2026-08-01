@@ -62,11 +62,7 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
 
 /// Whether a scope frame is a letrec dict scope or not.
 ///
-/// Used by `resolve_name_parent` to implement leading-dot (`.name`) parent-scope lookup:
-/// the nearest `Dict` scope and all non-`Dict` scopes above it are skipped, and the search
-/// starts from the scope immediately outside the skipped `Dict` scope.
-///
-/// Also used to determine whether a scope corresponds to a real eval_dict_core frame boundary
+/// Used to determine whether a scope corresponds to a real eval_dict_core frame boundary
 /// at runtime. Only `Dict` scopes correspond to real runtime frames. `BlockBody` injection
 /// scopes (both document-level and function-body sequential bodies) do not create separate frames.
 #[derive(Clone, Copy, PartialEq)]
@@ -440,34 +436,39 @@ impl SurfaceResolver {
         Some(addr)
     }
 
-    /// Resolve `name` starting from the parent scope — skipping the nearest Dict scope
-    /// and all non-Dict scopes above it (between the current position and the Dict scope).
+    /// Resolve `name` using leading-dot semantics: find the **second** occurrence of `name`
+    /// in the scope chain, skipping the innermost (first) binding.
     ///
-    /// This implements leading-dot `.name` semantics: the current letrec dict's own scope
-    /// is bypassed so that `.name` refers to the binding in the enclosing scope, not the
-    /// dict entry being defined.
+    /// `.name` means "the next `name` beyond the nearest one." This is relative to where
+    /// `name` is actually bound, not to the structure of Dict scope boundaries:
     ///
-    /// Examples (scopes listed innermost-first):
-    /// - `[dict_scope, fn_params]`: skip dict_scope → search fn_params ✓
-    /// - `[fn_scope, dict_scope, outer]`: skip fn_scope (Other), skip dict_scope (Dict) → search outer ✓
-    /// - `[inner_dict, outer_dict, fn_params]`: skip inner_dict (Dict) → search outer_dict ✓
+    /// - Find the first binding of `name` anywhere in the scope chain (innermost wins).
+    /// - Skip it and search outward for the next binding of `name`.
+    /// - Return `None` if there is no second binding — caller emits "undefined variable".
+    ///
+    /// This is strictly more correct than the old "skip nearest Dict scope" heuristic:
+    ///   - Works even when `name` is not in the nearest Dict (no over-skipping).
+    ///   - No special cases: if there is only one binding, `.name` is an error.
+    ///   - Composable: a dispatcher that chains via `.method` naturally reaches the
+    ///     prelude's copy regardless of how many scope levels separate them.
     ///
     /// Capture detection is performed the same way as `resolve_name`: if the found scope
     /// frame is outside the current function boundary, the name becomes a ClosureCapture.
     fn resolve_name_parent(&mut self, name: &str) -> Option<VarAddr> {
-        let mut passed_dict = false;
         let scopes_len = self.scopes.len();
+        let mut found_first = false;
         let found = self
             .scopes
             .iter()
             .rev()
             .enumerate()
-            .find_map(|(offset, (scope, kind))| {
-                if !passed_dict {
-                    if *kind == ScopeKind::Dict {
-                        passed_dict = true;
+            .find_map(|(offset, (scope, _kind))| {
+                if !found_first {
+                    // Skip the first (innermost) occurrence of `name`, whatever scope it's in.
+                    if scope.contains_key(name) {
+                        found_first = true;
                     }
-                    return None; // skip everything up to and including the nearest Dict scope
+                    return None;
                 }
                 scope.get(name).map(|addr| {
                     let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
