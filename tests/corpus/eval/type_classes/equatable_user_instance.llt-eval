@@ -1,15 +1,14 @@
 # User-declared Equatable instance for Point type — cross-dict dispatch.
 #
-# T-2109 added parent dispatch chaining: dict 3's = MethodDispatcher (no Point arm) now
-# forwards to dict 2's = MethodDispatcher via a captured parent-scope reference. This
-# fixes the cross-dict chaining gap (B-682).
+# Parent dispatch chaining: dict 3's = MethodDispatcher (no Point arm) now forwards to
+# dict 2's = MethodDispatcher via a captured parent-scope reference. This fixes the
+# cross-dict chaining gap.
 #
-# However, B-712 remains: the Point dispatch arm in dict 2's MethodDispatcher captures the
-# Point binding (a type-constructor dict), not a TypeNode variant. The match evaluator's
-# TypeNode path only handles builtin types; user-defined types fall through to
-# primitive_eq(scrutinee, type_dict) which always returns false. The Point arm is dead code
-# — the wildcard fallback fires instead. Both = calls still return Boolean.False.
-# Tracked as B-712 (MethodDispatcher cannot match user-defined nominal types).
+# User-defined nominal type dispatch: when a VarRef pin pattern resolves to a
+# type-constructor Dict and the scrutinee is a Variant, match_pattern compares the
+# Variant's tycon field against the pattern name. The Point arm now matches correctly, and
+# the custom Equatable instance fires. p1 = p2 → Boolean.True (same x, y), p1 = p3 →
+# Boolean.False (different y).
 [Point: [type Point: [x: Int y: Int]]]
 [instance Equatable
   [let a@Point]: [=: [fn [let p q]
@@ -18,9 +17,9 @@
   p1: [Point.Point x: 1 y: 2]
   p2: [Point.Point x: 1 y: 2]
   p3: [Point.Point x: 1 y: 3]
-  # Both return Boolean.False — B-712: user-defined type dispatch arms are dead code.
+  # Point arm matches via user-type dispatch — custom equality fires.
   same: [= p1 p2]
   diff: [= p1 p3]
 ]
 === out
-Dict({"p1": Variant(Point.Point, Dict({"x": Int(1), "y": Int(2)})), "p2": Variant(Point.Point, Dict({"x": Int(1), "y": Int(2)})), "p3": Variant(Point.Point, Dict({"x": Int(1), "y": Int(3)})), "same": Variant(Boolean.False, Null), "diff": Variant(Boolean.False, Null)})
+Dict({"p1": Variant(Point.Point, Dict({"x": Int(1), "y": Int(2)})), "p2": Variant(Point.Point, Dict({"x": Int(1), "y": Int(2)})), "p3": Variant(Point.Point, Dict({"x": Int(1), "y": Int(3)})), "same": Variant(Boolean.True, Null), "diff": Variant(Boolean.False, Null)})

@@ -1,0 +1,34 @@
+# B-712: a plain data dict must NOT trigger the tycon-dispatch branch in match_pattern.
+#
+# When a VarRef pin pattern resolves to a plain data dict (not produced by a
+# [type ...] declaration), it must NOT match a Variant whose tycon coincidentally
+# shares the binding name.  Only type-constructor dicts (carrying TYCON_DICT_SENTINEL)
+# may trigger the tycon-dispatch branch.
+#
+# Test structure: type declarations and the plain dict are in doc 1 (not visible in output).
+# Doc 2 uses match dispatch and returns only the scalar results.
+[
+  # A plain data dict — NOT a type constructor dict (no TYCON_DICT_SENTINEL).
+  plain-shape: [r: 255  g: 0  b: 0]
+
+  # A real type declaration (has TYCON_DICT_SENTINEL).
+  Color: [type Red Green Blue]
+]
+[
+  dispatch: [fn [let v]
+    [match v
+      plain-shape:  "false-positive"   # must NOT match — plain-shape is a data dict
+      Color:        "is-color"
+      ...:          "other"]]
+
+  # Color.Red's tycon is "Color" — matches the Color arm (type-constructor dict).
+  r1: [dispatch %.Color.Red]
+
+  # A plain Int has no tycon — must fall through to wildcard.
+  r2: [dispatch 42]
+
+  # A string — must also fall through.
+  r3: [dispatch "hello"]
+]
+=== out
+["dispatch": [fn [let v] ...]  "r1": "is-color"  "r2": "other"  "r3": "other"]

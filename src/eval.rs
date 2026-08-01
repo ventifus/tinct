@@ -1349,45 +1349,6 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     crate::bas::is_consistent_subtype(&ground_tv, expected, &inference_ctx)
 }
 
-/// Map a MethodDispatcher dispatch tag name to its expected TypeValue.
-///
-/// This handles the B-689 case where TypeNode values (Integer: TypeNode.Int) are NOT
-/// available as top-level named entries in the runtime scope — they're in the type-stage
-/// exports stored under "%" in ts.env. When the dispatcher captures ClassDecl {} instead
-/// of TypeNode.Int for the "Integer" dispatch tag, this function provides the correct
-/// TypeValue based on the dispatch tag name alone.
-///
-/// The mapping covers the primitive types that `typenode_ctor_to_typevalue` handles.
-/// User-defined types (not in this map) return None — they must use tag comparison.
-fn dispatch_tag_name_to_typevalue(name: &str) -> Option<crate::type_infer::TypeValue> {
-    use crate::type_infer::{
-        make_typevalue_fn_with_flags, make_typevalue_repr, make_typevalue_top,
-    };
-    use crate::type_tags::{REPR_BYTES, REPR_FLOAT, REPR_INT, REPR_PROXY, REPR_STRING};
-    match name {
-        // Integer types all map to Repr("Value::Int")
-        "Integer" | "NativeInt" | "NativeUInt" | "BigInt" => Some(make_typevalue_repr(REPR_INT)),
-        // Float types all map to Repr("Value::Float")
-        "Float" | "Float64" => Some(make_typevalue_repr(REPR_FLOAT)),
-        // String maps to Repr("Value::String")
-        "String" => Some(make_typevalue_repr(REPR_STRING)),
-        // Bytes maps to Repr("Value::Bytes")
-        "Bytes" => Some(make_typevalue_repr(REPR_BYTES)),
-        // Proxy maps to Repr("Value::Proxy")
-        "Proxy" => Some(make_typevalue_repr(REPR_PROXY)),
-        // Callable: any function
-        "Callable" => Some(make_typevalue_fn_with_flags(
-            vec![],
-            make_typevalue_top(),
-            Some(0),
-            true,
-            Vec::new(),
-        )),
-        // Unknown or user-defined type tag — cannot determine TypeValue from name alone
-        _ => None,
-    }
-}
-
 /// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.
 ///
 /// Produces a human-readable string from a TypeValue for type assertion error messages.
@@ -2203,7 +2164,9 @@ pub(crate) fn match_pattern<'a>(
             // materialize it, and compare to the scrutinee for equality.
             // A resolved address (Some(Some(addr))) is a pin pattern: `$val` in pattern position.
             // Some(None) means the resolver could not find the name — arm does not match.
-            SurfaceExpression::VarRef { resolution, .. } => {
+            SurfaceExpression::VarRef {
+                resolution, name, ..
+            } => {
                 match resolution.get() {
                     Some(Some(addr)) => {
                         // Look up the pinned thunk using the resolver-assigned VarAddr.
@@ -2281,20 +2244,30 @@ pub(crate) fn match_pattern<'a>(
                             }
                         }
 
-                        // B-689 fallback for MethodDispatcher arms: when the dispatch tag name
-                        // (e.g., "Integer", "Float", "String") was captured as ClassDecl {} because
-                        // TypeNode values weren't in the runtime scope at dispatcher creation time.
-                        // The prelude's type-stage exports ("Integer: TypeNode.Int") are stored
-                        // under the "%" key in ts.env, not as top-level runtime env entries.
-                        // When pinned_val is {} (empty dict = class decl with no methods), use
-                        // the VarRef's name to look up the TypeValue directly.
+                        // User-defined nominal type matching for MethodDispatcher arms.
+                        // When the pinned value is a type-constructor Dict (from a `[type Point ...]`
+                        // declaration) and the scrutinee is a Variant whose tycon matches the pattern
+                        // name, the arm matches. This enables user-defined type dispatch alongside
+                        // builtin types (handled by the TypeNode path above).
+                        //
+                        // CORRECTNESS GUARD: only fire for type-constructor dicts, not plain data dicts.
+                        // A type-constructor dict carries the TYCON_DICT_SENTINEL key (injected by
+                        // lower.rs lower_type_alias_to_constructor_dict). A plain data dict never has
+                        // this key because the sentinel uses a U+FFFE bookend that the lexer rejects in
+                        // user source. Without this check, any dict pinned in a match arm (e.g. a
+                        // `coords: [x: 1 y: 2]` binding) would falsely match a Variant whose tycon
+                        // coincidentally matched the binding's name (B-712).
                         if let Value::Dict { entries, .. } = &pinned_val {
-                            if entries.is_empty() {
-                                if let SurfaceExpression::VarRef { name, .. } = &pattern.expr {
-                                    if let Some(typevalue) =
-                                        dispatch_tag_name_to_typevalue(name.as_str())
-                                    {
-                                        return Ok(value_matches_type(&value, &typevalue, ctx));
+                            let sentinel_key = crate::value::HashableValue::Str(Arc::from(
+                                crate::type_tags::TYCON_DICT_SENTINEL,
+                            ));
+                            if entries.contains_key(&sentinel_key) {
+                                if let Value::Variant { ctor, .. } = &value {
+                                    // Extract the tycon from the fully-qualified ctor via the
+                                    // authorized protocol function (value.rs:tycon_name_from_ctor).
+                                    let tycon = crate::value::tycon_name_from_ctor(ctor.as_ref());
+                                    if tycon == name.as_str() {
+                                        return Ok(true);
                                     }
                                 }
                             }

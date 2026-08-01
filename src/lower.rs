@@ -2397,6 +2397,37 @@ fn lower_type_alias_to_constructor_dict(
         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
     }
 
+    // Inject the type-constructor-dict sentinel entry (type_tags::TYCON_DICT_SENTINEL).
+    //
+    // This allows the match evaluator (eval.rs match_pattern VarRef arm) to reliably
+    // distinguish a type-constructor dict produced by a `[type ...]` declaration from a
+    // plain user data dict. Without this sentinel, any dict pinned in a match arm would
+    // incorrectly match a Variant whose tycon coincidentally matches the dict's binding name.
+    //
+    // The sentinel key is "\u{FFFE}tycon\u{FFFE}" — a non-character Unicode sequence that
+    // cannot appear in user-written source. The value is the type name (or empty string for
+    // unnamed types). The entry is always added last so it does not disturb the slot indices
+    // of constructor entries (which were already resolved by the surface-AST resolver before
+    // lowering runs).
+    {
+        let sentinel_key = Some(Arc::new(Spanned::new(
+            CoreExpr::Str(crate::type_tags::TYCON_DICT_SENTINEL.to_string()),
+            syn_span.clone(),
+        )));
+        let type_name_str = type_name_opt.as_deref().unwrap_or("").to_string();
+        let sentinel_value = Arc::new(Spanned::new(
+            CoreExpr::Str(type_name_str),
+            syn_span.clone(),
+        ));
+        core_entries.push(Spanned::new(
+            CoreEntry {
+                key: sentinel_key,
+                value: sentinel_value,
+            },
+            syn_span.clone(),
+        ));
+    }
+
     let inner_dict = CoreExpr::Dict(core_entries);
 
     // If the body had `repr:` metadata, wrap the constructor dict in ReprDecl so the
