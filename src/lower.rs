@@ -21,6 +21,7 @@ use crate::ast::{
 };
 use crate::eval_call::is_typevalue_unknown;
 use crate::rust_span;
+use crate::type_infer::{make_typevalue_fn_with_flags, make_typevalue_unknown};
 
 /// The tinct name of the dict-field accessor builtin.
 ///
@@ -76,6 +77,34 @@ pub(crate) fn resolve_name_in_frames(
     for (offset, frame) in frames.iter().rev().enumerate() {
         if let Some(&slot) = frame.get(name) {
             return Some((offset as u32, slot));
+        }
+    }
+    None
+}
+
+/// Resolve a name in parent scope only — skipping the innermost frame (level 0).
+///
+/// This is the leading-dot semantic: `.name` searches from level 1 outward, bypassing
+/// the current letrec group. Used by `make_method_dispatcher_fn` to find an outer-scope
+/// copy of the same method name for delegation.
+///
+/// Returns `None` if the name is not found in any frame at level >= 1, or if there are
+/// fewer than two frames (no parent scope exists).
+fn resolve_name_in_frames_parent(
+    frames: &[indexmap::IndexMap<String, u32>],
+    name: &str,
+) -> Option<(u32, u32)> {
+    // Skip frames[n-1] (the innermost, level 0) and search from frames[n-2] outward.
+    // Returned level starts at 1 so it is compatible with the same de Bruijn conventions as
+    // resolve_name_in_frames.
+    if frames.len() < 2 {
+        return None;
+    }
+    let parent_frames = &frames[..frames.len() - 1];
+    for (offset, frame) in parent_frames.iter().rev().enumerate() {
+        if let Some(&slot) = frame.get(name) {
+            // Offset is relative to parent_frames: offset 0 = frames[n-2] = level 1 overall.
+            return Some((offset as u32 + 1, slot));
         }
     }
     None
@@ -929,6 +958,30 @@ fn lower_expr(
                 body_with_param_checks
             };
 
+            // Build the resolved TypeValue.Fn so the runtime can store it on the function
+            // value and `ground_typevalue_of` can use it for full structural type checking.
+            // Use Unknown for unannotated params/return (gradual: accepts anything).
+            let resolved_fn_type: Option<std::sync::Arc<crate::value::Value>> = {
+                let ret_tv = resolved_return_annotation
+                    .get()
+                    .map(Arc::clone)
+                    .filter(|tv| !is_typevalue_unknown(tv))
+                    .unwrap_or_else(make_typevalue_unknown);
+                let fn_params: Vec<(Option<String>, std::sync::Arc<crate::value::Value>)> = params
+                    .iter()
+                    .filter(|p| !p.node.variadic)
+                    .map(|p| {
+                        let tv = p.node.resolved_annotation_type
+                            .get()
+                            .map(Arc::clone)
+                            .unwrap_or_else(make_typevalue_unknown);
+                        (Some(p.node.name.clone()), tv)
+                    })
+                    .collect();
+                let is_variadic = params.iter().any(|p| p.node.variadic);
+                Some(make_typevalue_fn_with_flags(fn_params, ret_tv, is_variadic, Vec::new()))
+            };
+
             CoreExpr::Fn {
                 return_ann: return_ann.clone(),
                 params: params_built,
@@ -938,6 +991,7 @@ fn lower_expr(
                     .get()
                     .expect("resolved_captures not set")
                     .clone(),
+                resolved_fn_type,
             }
         }
 
@@ -1433,6 +1487,35 @@ fn make_method_dispatcher_fn(
         }
     }
 
+    // Leading-dot delegation: resolve the method name itself in the PARENT scope (level >= 1),
+    // skipping the current letrec group (level 0) where this dispatcher lives.
+    //
+    // If a parent scope has the same method name (e.g. the prelude's MethodDispatcher for `+`),
+    // the fallback arm will delegate there instead of immediately raising. This enables user files
+    // to declare `[instance Addable [let a@MyType b@MyType c]: ...]` in their own dict and have
+    // that dict's MethodDispatcher extend the prelude's, rather than replace it.
+    //
+    // The sentinel key "__parent_dispatch__" is used in resolved_addrs to avoid colliding with
+    // a same-scope binding of method_name at level 0.
+    const PARENT_DISPATCH_KEY: &str = "__parent_dispatch__";
+    if let Some(frames) = scope_frames {
+        match resolve_name_in_frames_parent(frames, method_name) {
+            Some((level, slot)) => {
+                // Found the method name in a parent scope — add it as a capture.
+                let cap_idx = capture_list.len() as u32;
+                let original_addr = debruijn_to_var_addr(level - 1, slot);
+                capture_list.push((method_name.to_string(), original_addr));
+                resolved_addrs.insert(
+                    PARENT_DISPATCH_KEY.to_string(),
+                    VarAddr::ClosureCapture(cap_idx),
+                );
+            }
+            None => {
+                // No parent scope copy of this method — final fallback will use builtin-raise.
+            }
+        }
+    }
+
     // Build param list: __d0, __d1, ... __d_{n-1}
     let param_count = param_count.max(1);
     let param_names: Vec<String> = (0..param_count).map(|i| format!("__d{i}")).collect();
@@ -1548,45 +1631,73 @@ fn make_method_dispatcher_fn(
         });
     }
 
-    // Wildcard fallback arm: `...: [builtin-raise "no instance..."]` or catch-all mangled.
+    // Wildcard fallback arm: delegate to parent scope, or raise if no parent copy exists.
+    //
+    // Priority order:
+    //   1. catch_all_mangled — a same-dict instance with a TypeVar (catch-all) dispatch tag.
+    //   2. Parent-scope delegation (leading-dot semantic) — the outer scope may have another
+    //      MethodDispatcher for this method that handles additional types. This enables user files
+    //      to extend prelude methods with new instances without breaking existing ones.
+    //   3. builtin-raise — no instance found anywhere in the scope chain.
     let fallback_body = match catch_all_mangled {
         Some(ref mangled) => make_mangled_call(mangled),
-        None => {
-            // Use builtin-raise for the error case.
-            match resolved_addrs.get("builtin-raise") {
-                Some(addr) => CoreExpr::Call {
+        None => match resolved_addrs.get(PARENT_DISPATCH_KEY).cloned() {
+            Some(parent_addr) => {
+                // Delegate to the outer scope's copy of this method (leading-dot semantic).
+                // Passing all params forwards the full argument list — the parent dispatcher
+                // will attempt its own type-based dispatch and eventually raise if it also
+                // has no matching instance.
+                CoreExpr::Call {
                     func: Arc::new(Spanned::new(
                         CoreExpr::Var {
-                            name: "builtin-raise".to_string(),
-                            addr: addr.clone(),
+                            name: method_name.to_string(),
+                            addr: parent_addr,
                             annotation: None,
                         },
                         span.clone(),
                     )),
-                    args: vec![Arc::new(Spanned::new(
-                        CoreExpr::Str(format!(
-                            "no instance of method '{}' for the given argument types",
-                            method_name
-                        )),
-                        span.clone(),
-                    ))],
+                    args: make_call_args(),
                     named_args: vec![],
                     implied: false,
-                },
-                None => {
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message: format!(
-                            "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
-                             for method '{}' — scope_frames must be seeded with builtin_core",
-                            method_name
-                        ),
-                        span: span.clone(),
-                    });
-                    CoreExpr::Placeholder
                 }
             }
-        }
+            None => {
+                // No parent-scope copy of this method — raise immediately.
+                match resolved_addrs.get("builtin-raise").cloned() {
+                    Some(raise_addr) => CoreExpr::Call {
+                        func: Arc::new(Spanned::new(
+                            CoreExpr::Var {
+                                name: "builtin-raise".to_string(),
+                                addr: raise_addr,
+                                annotation: None,
+                            },
+                            span.clone(),
+                        )),
+                        args: vec![Arc::new(Spanned::new(
+                            CoreExpr::Str(format!(
+                                "no instance of method '{}' for the given argument types",
+                                method_name
+                            )),
+                            span.clone(),
+                        ))],
+                        named_args: vec![],
+                        implied: false,
+                    },
+                    None => {
+                        diagnostics.push(LowerDiagnostic {
+                            kind: LowerDiagnosticKind::Error,
+                            message: format!(
+                                "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
+                                 for method '{}' — scope_frames must be seeded with builtin_core",
+                                method_name
+                            ),
+                            span: span.clone(),
+                        });
+                        CoreExpr::Placeholder
+                    }
+                }
+            }
+        },
     };
     let wildcard_pattern = Arc::new(SurfaceNode::new(
         SurfaceExpression::Placeholder(None, None),
@@ -1620,6 +1731,7 @@ fn make_method_dispatcher_fn(
         body: Arc::new(Spanned::new(dispatcher_body, span.clone())),
         desugared: true,
         captures: Arc::new(capture_list),
+        resolved_fn_type: None,
     }
 }
 
@@ -2070,6 +2182,7 @@ fn lower_type_alias_to_constructor_dict(
                     body: variant_body,
                     desugared: false,
                     captures: Arc::new(vec![]),
+                    resolved_fn_type: None,
                 },
                 syn_span.clone(),
             ));

@@ -1175,7 +1175,16 @@ pub(crate) fn ground_typevalue_of(v: &Value) -> Arc<Value> {
             // The full field set is not inspected (would require forcing thunks).
             make_typevalue_repr(REPR_DICT)
         }
-        Value::Function { .. } | Value::Builtin { .. } => make_typevalue_repr(REPR_FUNCTION),
+        Value::Function { type_val, .. } => {
+            // Use the function's resolved TypeValue.Fn if available (set by the lowerer
+            // from the type-checker's resolved annotations). Falls back to Repr("Function")
+            // when the function was created without type information (gradual).
+            match crate::type_infer::typevalue_ctor(type_val) {
+                Some(crate::type_tags::TV_FN) => Arc::clone(type_val),
+                _ => make_typevalue_repr(REPR_FUNCTION),
+            }
+        }
+        Value::Builtin { .. } => make_typevalue_repr(REPR_FUNCTION),
         Value::Variant { ctor, .. } => {
             // Produce a TypeValue.Op with the tycon name for nominal dispatch.
             let tycon = crate::value::tycon_name_from_ctor(ctor.as_ref());
@@ -1721,16 +1730,45 @@ pub(crate) fn validate_and_wrap_record(
                 format!("field {}: ", format_field_path(field_path))
             };
 
+            // Build the list of actual fields in the record for the note.
+            let mut actual_keys: Vec<String> = entries
+                .keys()
+                .filter_map(|k| match k {
+                    HashableValue::Str(s) => Some(format!("\"{}\"", s)),
+                    HashableValue::Int(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect();
+            actual_keys.sort();
+            let actual_fields = if actual_keys.is_empty() {
+                "none (empty record)".to_string()
+            } else {
+                actual_keys.join(", ")
+            };
+            let required_fields: Vec<String> = fields
+                .keys()
+                .map(|k| format!("\"{}\"", k))
+                .collect();
+            let expected_note = format!(
+                "expected: {}record with fields [{}]",
+                field_path_prefix,
+                required_fields.join(", ")
+            );
+            let actual_note = format!(
+                "actual:   {}record with fields [{}]",
+                field_path_prefix, actual_fields
+            );
+
             return Err(EvalError::type_assert_failed(
                 &format!("{}record with field \"{}\"", field_path_prefix, field_name),
-                &format!(
-                    "{}record missing field \"{}\"",
-                    field_path_prefix, field_name
-                ),
+                // "got" now shows what's actually present, not just repeating the missing field.
+                &format!("{}record without field \"{}\"", field_path_prefix, field_name),
                 // Use data_span (the data definition site) so the error points to WHERE
                 // the invalid dict was constructed, not the annotation.
                 data_span,
             )
+            .with_note(expected_note)
+            .with_note(actual_note)
             .into());
         }
     }

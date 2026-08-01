@@ -819,6 +819,7 @@ pub(crate) fn eval_core_expr<'a>(
                 params,
                 body,
                 captures,
+                resolved_fn_type,
                 ..
             } => {
                 let fn_params: Vec<Param> = params
@@ -907,7 +908,10 @@ pub(crate) fn eval_core_expr<'a>(
                         body: Arc::clone(body),
                         closure_env: Arc::new(closure_env_vec),
                         annotation,
-                        type_val: crate::value::unknown_type_val(),
+                        type_val: resolved_fn_type
+                            .as_ref()
+                            .map(Arc::clone)
+                            .unwrap_or_else(crate::value::unknown_type_val),
                     },
                     span.clone(),
                 )))

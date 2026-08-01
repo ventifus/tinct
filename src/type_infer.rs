@@ -158,20 +158,23 @@ pub fn make_typevalue_var(name: &str) -> TypeValue {
 /// `params`: list of `(param_name_opt, TypeValue)` pairs for fixed parameters.
 /// `ret`: the return TypeValue.
 pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue)>, ret: TypeValue) -> TypeValue {
-    make_typevalue_fn_with_flags(params, ret, false)
+    make_typevalue_fn_with_flags(params, ret, false, Vec::new())
 }
 
-/// Create a TypeValue.Fn with variadic flag and param names stored in the payload.
+/// Create a TypeValue.Fn with variadic flag, typed variadic buckets, and param names stored in the payload.
 ///
 /// This is the full-fidelity version of `make_typevalue_fn` that stores:
 /// - `params`: integer-keyed dict of param types
 /// - `param-names`: integer-keyed dict of param names (when names are available)
 /// - `variadic`: "true" Variant if variadic, absent if not
+/// - `typed-variadics`: integer-keyed dict of `{ name: String, ty: TypeValue }` entries
+///   for typed variadic buckets (e.g. `...xs@Seq[Integer]`); absent if empty
 /// - `return`: the return type
 pub fn make_typevalue_fn_with_flags(
     params: Vec<(Option<String>, TypeValue)>,
     ret: TypeValue,
     variadic: bool,
+    typed_variadics: Vec<(Option<String>, TypeValue)>,
 ) -> TypeValue {
     use crate::value::HashableValue;
     // Build params dict: { 0: TypeValue, 1: TypeValue, ... }
@@ -241,6 +244,36 @@ pub fn make_typevalue_fn_with_flags(
                 true_variant,
                 crate::rust_span!(),
             )),
+        );
+    }
+    // Store typed variadic buckets: integer-keyed dict of { name: String, ty: TypeValue }.
+    // Each entry is one typed variadic param (e.g. `...xs@Seq[Integer]`).
+    // Only stored when non-empty to keep the payload minimal for non-variadic functions.
+    if !typed_variadics.is_empty() {
+        let mut tv_entries = indexmap::IndexMap::new();
+        for (i, (name, ty)) in typed_variadics.iter().enumerate() {
+            // Each bucket is a dict { name: String, ty: TypeValue }.
+            // name may be None for anonymous typed variadics (stored as empty string).
+            let bucket_name_str = name.as_deref().unwrap_or("");
+            let bucket_dict_val = make_dict_typevalue(&[
+                (FIELD_NAME, make_string_typevalue(bucket_name_str)),
+                (FIELD_OF, ty.as_ref().clone()),
+            ]);
+            tv_entries.insert(
+                HashableValue::Int(i as i64),
+                Arc::new(crate::value::Thunk::value(
+                    bucket_dict_val,
+                    crate::rust_span!(),
+                )),
+            );
+        }
+        let tv_dict = crate::value::Value::Dict {
+            entries: tv_entries,
+            type_val: crate::value::unknown_type_val(),
+        };
+        payload_entries.insert(
+            HashableValue::Str(Arc::from(FIELD_TYPED_VARIADICS)),
+            Arc::new(crate::value::Thunk::value(tv_dict, crate::rust_span!())),
         );
     }
     let payload_dict = crate::value::Value::Dict {
@@ -754,6 +787,73 @@ pub fn typevalue_fn_is_variadic(tv: &TypeValue) -> bool {
     }
 }
 
+/// Extract typed variadic buckets from a TypeValue.Fn payload.
+///
+/// Returns the typed variadic buckets stored under the `FIELD_TYPED_VARIADICS` key,
+/// in declaration order. Each bucket is `(name, ty)` where `name` is the param name
+/// (empty string if anonymous) and `ty` is the Seq[T] element type.
+///
+/// Returns an empty Vec if the TypeValue is not a TypeValue.Fn, the payload is
+/// malformed, or no typed-variadics key is present (non-variadic function or a
+/// variadic function declared without typed buckets).
+pub fn typevalue_fn_typed_variadics(tv: &TypeValue) -> Vec<(String, TypeValue)> {
+    use crate::value::HashableValue;
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == TV_FN => thunk,
+        _ => return Vec::new(),
+    };
+    let payload_val = match payload_thunk.peek_result() {
+        Some(Ok(v)) => v,
+        _ => return Vec::new(),
+    };
+    let outer_entries = match payload_val {
+        crate::value::Value::Dict { entries, .. } => entries,
+        _ => return Vec::new(),
+    };
+    let tv_key = HashableValue::Str(Arc::from(FIELD_TYPED_VARIADICS));
+    let tv_thunk = match outer_entries.get(&tv_key) {
+        Some(t) => t,
+        None => return Vec::new(), // absent = no typed variadics
+    };
+    let tv_entries = match tv_thunk.peek_result() {
+        Some(Ok(crate::value::Value::Dict { entries, .. })) => entries,
+        _ => return Vec::new(),
+    };
+    // Collect by integer index in ascending order.
+    let mut indexed: Vec<(i64, (String, TypeValue))> = Vec::new();
+    for (k, bucket_thunk) in tv_entries.iter() {
+        if let HashableValue::Int(idx) = k {
+            if let Some(Ok(crate::value::Value::Dict {
+                entries: bucket_entries,
+                ..
+            })) = bucket_thunk.peek_result()
+            {
+                // Extract name: String
+                let name_key = HashableValue::Str(Arc::from(FIELD_NAME));
+                let name = match bucket_entries.get(&name_key).and_then(|t| t.peek_result()) {
+                    Some(Ok(crate::value::Value::String {
+                        source, start, end, ..
+                    })) => source[*start..*end].to_string(),
+                    _ => String::new(),
+                };
+                // Extract ty: TypeValue (stored under FIELD_OF)
+                let of_key = HashableValue::Str(Arc::from(FIELD_OF));
+                if let Some(ty_thunk) = bucket_entries.get(&of_key) {
+                    if let Some(Ok(ty_val)) = ty_thunk.peek_result() {
+                        indexed.push((*idx, (name, Arc::new(ty_val.clone()))));
+                    }
+                }
+            }
+        }
+    }
+    indexed.sort_by_key(|(idx, _)| *idx);
+    indexed.into_iter().map(|(_, bucket)| bucket).collect()
+}
+
 /// Extract list members from a TypeValue.Union or TypeValue.Inter payload.
 /// Returns None if the payload is not a settled dict with integer-keyed entries.
 fn typevalue_extract_list_members(tv: &TypeValue) -> Option<Vec<TypeValue>> {
@@ -1171,6 +1271,12 @@ pub struct InferenceContext {
     /// When `constrain(α, sup)` fires (α is the sub), α is bound to `sup` as an upper
     /// bound. Any existing lower bounds for α are checked: each `lb <: sup` must hold.
     pub lower_bounds: HashMap<String, Vec<TypeValue>>,
+    /// TypeVars declared via `bind:` annotations (explicit polymorphic type parameters).
+    /// These are protected from `lower_var_level` calls triggered by `constrain(Unknown, α)`.
+    /// Without protection, Unknown flowing into a `bind:` TypeVar lowers its level to 0,
+    /// preventing generalization even though the TypeVar is explicitly declared as a
+    /// polymorphic type parameter (B-681 root cause).
+    pub protected_vars: std::collections::HashSet<String>,
 }
 
 impl InferenceContext {
@@ -1184,6 +1290,7 @@ impl InferenceContext {
             tycon_env: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
+            protected_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -1200,6 +1307,7 @@ impl InferenceContext {
             tycon_env,
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
+            protected_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -1223,6 +1331,7 @@ impl InferenceContext {
             tycon_env,
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
+            protected_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -1268,6 +1377,9 @@ impl InferenceContext {
     /// is unified with TypeVar β at level ℓβ where ℓβ < ℓα, α must be lowered to ℓβ to
     /// prevent unsound generalization. This mutates `self.levels` — TypeValue.Var is stable.
     pub fn lower_var_level(&mut self, name: &str, max_level: u32) {
+        if self.protected_vars.contains(name) {
+            return;
+        }
         if let Some(level) = self.levels.get_mut(name) {
             if *level > max_level {
                 *level = max_level;

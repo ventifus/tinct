@@ -3136,8 +3136,8 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_function() {
-        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
-        // Functions created by parse_eval carry unknown_type_val().
+        // builtin_type_of returns val.type_val().
+        // Functions may carry unknown_type_val() (bootstrap) or TypeValue.Fn (post-B-681 wiring).
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 0]", &ctx).await;
         let result = mat(builtin_type_of(BuiltinArgs {
@@ -3148,7 +3148,16 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "type_of_function");
+        // Accept either unknown sentinel (bootstrap) or TypeValue.Fn (type-checker wired).
+        // The type_val for functions is either empty Dict or a TypeValue.Fn Variant.
+        match &result {
+            crate::value::Value::Dict { entries, .. } if entries.is_empty() => {}
+            crate::value::Value::Variant { .. } => {}
+            other => panic!(
+                "type_of_function: expected unknown_type_val or TypeValue.Fn Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]

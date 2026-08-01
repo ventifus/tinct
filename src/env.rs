@@ -338,8 +338,19 @@ impl Env {
     /// - Narrowing overrides
     /// - Builtin bindings
     ///
-    /// These entries are visible via `get_scheme` but never reached via `get_scheme_at`.
+    /// Also updates the slot (if one exists for this name) so that `get_scheme`'s slot-first
+    /// lookup sees the updated scheme. Pass 1 pre-inserts a placeholder into both slot and
+    /// extras; Pass 4 (generalization) calls this to overwrite with the generalized scheme.
+    /// Without slot update, `get_scheme` returns the stale slot placeholder instead of the
+    /// generalized scheme, causing TypeVar sharing across call sites (B-681 root cause).
     pub fn insert_scheme_named_only(&mut self, name: String, scheme: TypeValue) {
+        // Update slot entry if one exists for this name.
+        if let Some(&pos) = self.slot_index.get(&name) {
+            if let Some(Some((_, ref mut slot))) = self.slots.get_mut(pos) {
+                slot.scheme = Some(scheme.clone());
+            }
+        }
+        // Update or insert extras entry.
         if let Some(slot) = self.extras.get_mut(&name) {
             slot.scheme = Some(scheme);
         } else {

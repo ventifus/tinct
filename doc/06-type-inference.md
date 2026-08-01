@@ -22,7 +22,7 @@ S-1003 completed the migration to `Arc<Value>` TypeValues as the primary type re
 | `TV_UNION` | union A \| B (payload: `members` indexed dict) |
 | `TV_INTER` | intersection A & B (payload: `members` indexed dict) |
 | `TV_NEG` | complement ~A (payload: `of` TypeValue) |
-| `TV_FN` | function type (payload: `params` indexed dict, `return` TypeValue, `param-names` indexed dict (optional — param name strings by index), `variadic` `"true"` Variant or absent) |
+| `TV_FN` | function type (payload: `params` indexed dict, `return` TypeValue, `param-names` indexed dict (optional — param name strings by index), `variadic` `"true"` Variant or absent, `typed-variadics` integer-keyed dict of `{ name: String, ty: TypeValue }` entries for typed variadic buckets (`...xs@Seq[Integer]`); absent when empty (B-671)) |
 | `TV_OP` | type constructor name (payload: `name` string) |
 | `TV_APP` | type constructor application (payload: `op` TypeValue, `arg` TypeValue) |
 | `TV_RECURSIVE` | equirecursive type μvar.τ (payload: `body` TypeValue) |
@@ -596,9 +596,9 @@ In unify(), all arg positions are treated symmetrically (bidirectional constrain
 Variance is only meaningful inside constrain().
 
 unify(Record(r₁), Record(r₂), S) =
-    constrain_rows(r₁, r₂) ∧ constrain_rows(r₂, r₁)    (field subtyping, bidirectional)
-    then UNIFY-UNIFORM tail binding                       (TypeVar join for tail equality)
-                                                         [U-REC]
+    constrain(r₁, r₂)                (unidirectional: all of r₂'s named fields must be in r₁)
+    then unify_rowtails(r₁.tail, r₂.tail)                (tail equality, symmetric)
+                                                         [U-DICT]
 
 unify(¬T₁, ¬T₂, S) =
     constrain(T₂, T₁) ∧ constrain(T₁, T₂)   (bidirectional on inner types)
@@ -608,7 +608,11 @@ Negation is contravariant in constrain() — C-Negation swaps directions. For un
 ¬T₁≤¬T₂, and constrain(T₁,T₂) from [C-Negation] applied to ¬T₂≤¬T₁.
 ```
 
-Record unification performs bidirectional `constrain_rows` for field subtyping, then applies UNIFY-UNIFORM tail binding for any uniform tail TypeVar positions. The `constrain_rows` pairs handle field variance; the UNIFY-UNIFORM pass binds tail TypeVars via `unify()` (equality, not subsumption) because tail equality requires direct substitution, not bounds. See [Type System Extensions](07-type-extensions.md) §Column Constraints for the full rules including the substitution-first branching for the TypeVar vs concrete split.
+**[U-DICT] is unidirectional by design (B-680).** Record unification calls `constrain(r₁, r₂)` only — not `constrain(r₁, r₂) ∧ constrain(r₂, r₁)`. The constraint direction means all of r₂'s named fields must be present in r₁ with unifiable types; extra fields in r₁ are allowed by width subtyping. The reverse direction `constrain(r₂, r₁)` is NOT called. Row tails are then unified symmetrically via `unify_rowtails(r₁.tail, r₂.tail)`.
+
+**Rationale:** Record unification finds the common supertype (join/LUB), not structural equality. `unify({ts: Dict, rt: Dict}, {})` should succeed (the richer record is compatible with the empty record constraint) while `unify({}, {ts: Dict, rt: Dict})` should fail (empty record cannot satisfy the named-field requirement). Bidirectional `constrain` would incorrectly reject the first case with "missing field 'ts'" because `constrain({}, {ts: Dict, rt: Dict})` fails when the empty record cannot cover `ts`. This asymmetry is intentional: U-DICT is a supertype-finding rule, not an equality check.
+
+**Consequence:** `unify(r₁, r₂)` is NOT symmetric for records. `unify(r₁, r₂)` succeeds when r₁ covers all of r₂'s fields; `unify(r₂, r₁)` succeeds when r₂ covers all of r₁'s fields. Call sites must supply arguments in the correct direction. The tail is unified symmetrically (`unify_rowtails`) regardless of direction. See `src/type_unify.rs` TV_RECORD arm and `constrain_rows` for the implementation. See [Type System Extensions](07-type-extensions.md) §Column Constraints for the full tail rules.
 
 Row tail unification:
 

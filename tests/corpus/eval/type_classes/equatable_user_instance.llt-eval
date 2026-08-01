@@ -1,9 +1,6 @@
-# User-defined Equatable instance for a custom type.
-# NOTE: User instances defined outside the prelude may not dispatch to the correct
-# instance because the type checker's InstanceEnv only contains prelude-declared instances.
-# The runtime falls back to the generic = wrapper (Boolean.False fallback / primitive_eq),
-# which returns Boolean.False for payload Variants. Pattern matching should be used
-# instead for comparing user-defined variant types.
+# User-declared Equatable instance for Point type — cross-dict dispatch not yet wired.
+# B-689: MethodDispatcher does not chain across dict boundaries, so the user instance is
+# unreachable from dict 3's call site. Both = calls return Boolean.False.
 [Point: [type Point: [x: Int y: Int]]]
 [instance Equatable
   [let a@Point]: [=: [fn [let p q]
@@ -12,7 +9,7 @@
   p1: [Point.Point x: 1 y: 2]
   p2: [Point.Point x: 1 y: 2]
   p3: [Point.Point x: 1 y: 3]
-  # Both return Boolean.False -- user instance not dispatched (see NOTE above).
+  # Both return Boolean.False -- cross-dict dispatch not yet implemented (B-689).
   same: [= p1 p2]
   diff: [= p1 p3]
 ]

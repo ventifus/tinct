@@ -104,6 +104,11 @@ pub(crate) async fn resolve_fn_metadata(
                                                 &bind_entry.node.value.span,
                                             )
                                             .0;
+                                        // Mark as protected: bind: TypeVars are explicitly
+                                        // declared polymorphic type parameters. They must not
+                                        // be level-lowered by constrain(Unknown, α) — that
+                                        // would prevent generalization (B-681).
+                                        state.ctx.protected_vars.insert(fresh.clone());
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -198,6 +203,9 @@ pub(crate) async fn resolve_fn_metadata(
                                         &name_span,
                                     )
                                     .0;
+                                // Mark as protected: bind: TypeVars are explicitly
+                                // declared polymorphic type parameters (B-681).
+                                state.ctx.protected_vars.insert(fresh.clone());
                                 // Register source name for better T013 diagnostics
                                 state
                                     .type_var_source_names
@@ -3171,6 +3179,7 @@ pub(crate) async fn typenode_value_to_type(
                         vec![],
                         make_typevalue_unknown(),
                         true, // variadic — accepts any number of arguments
+                        Vec::new(),
                     ))),
 
                     // ── Union ─────────────────────────────────────────────────────────────
@@ -3293,20 +3302,11 @@ pub(crate) async fn typenode_value_to_type(
                         // Optional key-type: and value-type: fields enable typed-key map encoding.
                         // These are the protocol-defined field names per builtin_core.llt:33.
                         // If key-type: is present, use value-type (defaulting to Top) as the
-                        // RowTail.Uniform value type. key-type is noted for future typed-key map
-                        // support (not yet part of the RowTail.Uniform spec).
-                        let tail = if let Some(key_type_val) =
-                            payload_fields.get(TN_FIELD_KEY_TYPE).cloned()
-                        {
-                            // key-type: present — resolve it (validates it is a well-formed type),
-                            // then build a RowTail.Uniform with the value type.
-                            let _key_ty =
-                                match typenode_value_to_type(&key_type_val, ctx, type_stage_scope)
-                                    .await?
-                                {
-                                    Some(t) => t,
-                                    None => return Ok(None),
-                                };
+                        // RowTail.Uniform value type. key-type is not yet part of the
+                        // RowTail.Uniform spec — it is accepted syntactically but not propagated
+                        // into the type system until typed-key map support is implemented (T-2091).
+                        let tail = if payload_fields.contains_key(TN_FIELD_KEY_TYPE) {
+                            // key-type: present — use value-type (defaulting to Top) for the tail.
                             // value-type: defaults to Top when absent.
                             let value_ty = if let Some(vt_val) =
                                 payload_fields.get(TN_FIELD_VALUE_TYPE).cloned()

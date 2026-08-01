@@ -1738,15 +1738,14 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("field {}: ", format_field_path(&field_path))
                             };
+                            let expected_str = format_type_for_assert(&expected);
                             let mut err = EvalError::type_assert_failed(
-                                &format!(
-                                    "{}{}",
-                                    field_path_prefix,
-                                    format_type_for_assert(&expected)
-                                ),
+                                &format!("{}{}", field_path_prefix, expected_str),
                                 value.type_name(),
                                 inner_span.clone(),
                             )
+                            .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
+                            .with_note(format!("actual:   {}{}", field_path_prefix, value.type_name()))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -1793,15 +1792,14 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("field {}: ", format_field_path(&field_path))
                             };
+                            let expected_str = format_type_for_assert(&expected);
                             let mut err = EvalError::type_assert_failed(
-                                &format!(
-                                    "{}{}",
-                                    field_path_prefix,
-                                    format_type_for_assert(&expected)
-                                ),
+                                &format!("{}{}", field_path_prefix, expected_str),
                                 value.type_name(),
                                 inner_span.clone(),
                             )
+                            .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
+                            .with_note(format!("actual:   {}{}", field_path_prefix, value.type_name()))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -2188,6 +2186,8 @@ pub(crate) async fn apply_cont(
                                 &fail_reason,
                                 thunk_span.clone(),
                             )
+                            .with_note(format!("expected: {}", expected_str))
+                            .with_note(format!("actual:   {}", fail_reason))
                             .with_materialization_span(expr_span.clone());
                             if thunk_span != expr_span {
                                 err = err

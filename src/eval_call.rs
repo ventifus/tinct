@@ -551,6 +551,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Int(42))),
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
+            resolved_fn_type: None,
         };
         let label = func_label_core(&expr);
         assert!(label
@@ -568,6 +569,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Int(42))),
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
+            resolved_fn_type: None,
         };
         let label = func_label_core(&expr);
         assert_eq!(label, None);

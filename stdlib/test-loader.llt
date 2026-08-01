@@ -319,7 +319,7 @@
                    0: [merge acc.impls [builtin-module name]]
                    1: [merge acc.impls [builtin-module name]]]
          stderr: acc.stderr]]
-      [impls: []  stderr: err]
+      [@[impls: Dict  stderr: Any] [impls: []  stderr: err]]
       module-names]]
 
   # core-tc: TypeContext pre-initialized by lib.rs with the builtin_core type-stage scope
@@ -470,7 +470,7 @@
       [@[ts: Dict  rt: Dict] [ts: []  rt: []]]
       state.parsed.documents]]
     # Pass 1: evaluate type-stage documents. Accumulator threads env dict.
-    [ts: [reduce step [env: .env  tc: .tc  last-result: []  stderr: state.stderr  diagnostics: []] docs.ts]]
+    [ts: [reduce step [@[env: Dict  tc: Any  last-result: Any  stderr: Any  diagnostics: Dict] [env: .env  tc: .tc  last-result: []  stderr: state.stderr  diagnostics: []]] docs.ts]]
     # Force ts once via ts-tc before rt's initial acc accesses ts multiple times.
     # Without this, rt's initial acc forces ts.env/ts.tc/ts.stderr/ts.diagnostics
     # concurrently — a diamond-DAG that triggers false InProgress cycle detection (T-1646).
@@ -995,8 +995,10 @@
 
 [
   # Prelude loading pipeline. Each stage short-circuits via if-ok when diagnostics has errors.
-  # %prelude is a lazy forward reference to prelude-env — safe because prelude captures it in
-  # closures but never forces it during its own loading (only at user call-time).
+  # %prelude threading removed (B-688): [%prelude: prelude-env] in the eval-program seed
+  # created a circular dependency — prelude runtime docs access %prelude which forces
+  # prelude-env which reads prel.full-env which isn't built yet. Without %prelude in scope,
+  # [include] won't work inside prelude during its own loading, but corpus tests don't need it.
   prel: [@[diagnostics: Dict  full-env: Dict  tc-ready: Any  stderr: Any] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
     | [if-ok log-step "prelude: loading"]
     | [if-ok load-bytes %libdir]
@@ -1004,7 +1006,7 @@
     | [if-ok parse-source]
     | [if-ok log-step "prelude: evaluating"]
     | [if-ok eval-program
-        [%prelude: prelude-env]
+        []
         core-tc]
     | [if-ok export]
     | [if-ok set-tc-ready core-tc]

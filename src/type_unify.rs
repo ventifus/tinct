@@ -706,12 +706,29 @@ pub async fn unify(
             Box::pin(constrain(&bc, &ac, ctx, constraints, span)).await
         }
 
-        // Record types: bidirectional constrain + tail unification.
+        // Record types: unidirectional constrain (a <: b) + tail unification.
+        //
+        // Structural record subtyping is NOT symmetric: a record with extra fields is a
+        // subtype of one without them (width subtyping), but not vice versa. Calling
+        // constrain(b, a) after constrain(a, b) produces false "missing field" errors
+        // when a has more named fields than b — b cannot satisfy a's named-field
+        // requirement even though b is structurally compatible as a supertype.
+        //
+        // B-680: the original bidirectional call
+        //   constrain(a, b) + constrain(b, a)
+        // fired "missing field 'ts'" for reduce calls in test-loader.llt where one union
+        // branch returns an empty record and another returns {ts: Dict, rt: Dict}.
+        // The reverse call constrain(empty, {ts, rt}) correctly rejects {} as a subtype
+        // of {ts, rt}, but that check is wrong in unification — we are looking for a
+        // common supertype (join/LUB), not enforcing equality.
+        //
+        // One direction (a <: b) is sufficient: all of b's named fields must appear in a
+        // with unifiable types, and extra fields in a are allowed by width subtyping.
+        // The tail is then unified symmetrically (unify_rowtails).
         (Some(TV_RECORD), Some(TV_RECORD)) => {
             let (ac, bc) = (a.clone(), b.clone());
-            // Step 1: bidirectional field constraints (named fields must unify).
+            // Step 1: unidirectional field constraint — require all of b's named fields in a.
             Box::pin(constrain(&ac, &bc, ctx, constraints, span.clone())).await?;
-            Box::pin(constrain(&bc, &ac, ctx, constraints, span.clone())).await?;
 
             // Step 2: unify the row tails (RowTail.Uniform, RowTail.Var, RowTail.Closed).
             let a_tail = extract_record_tail(&ac)
@@ -748,6 +765,15 @@ pub async fn unify(
             // Track which members_b indices have been matched to ensure 1:1 correspondence.
             let mut matched_b_indices = vec![false; members_b.len()];
 
+            // Save outer state before the entire matching loop. If any member of members_a
+            // fails to find a match (after committing bindings for earlier successful probes),
+            // restoring here ensures unify() leaves ctx unchanged on failure — callers expect
+            // a failed unify() call to be a no-op with respect to ctx and constraints.
+            let saved_ctx_outer = ctx.clone();
+            // Constraints are append-only (never mutated in-place), so Vec-level clone is
+            // a correct snapshot: restoring replaces the Vec, discarding appended entries.
+            let saved_constraints_outer = constraints.clone();
+
             for ma in &members_a {
                 // Try to find an unmatched member in members_b that unifies with ma.
                 let mut found_match = false;
@@ -777,6 +803,11 @@ pub async fn unify(
 
                 if !found_match {
                     // No matching member in members_b for this ma — unification fails.
+                    // Restore to the pre-loop state: earlier successful probes in this outer
+                    // loop committed bindings to ctx (e.g. α=Float), and the caller must not
+                    // see those partial bindings when we return Err.
+                    *ctx = saved_ctx_outer;
+                    *constraints = saved_constraints_outer;
                     return Err(TypeDiagnostic::error(
                         "type-error",
                         format!(
@@ -795,20 +826,10 @@ pub async fn unify(
 
         // App types: structural unification on the op and arg.
         //
-        // Injectivity guard (T-2077): when both ops are the same TypeValue.Op name, the op
-        // may be a class resolver function. If the resolver is non-injective, pairwise
-        // unification of args is unsound (equal outputs don't imply equal inputs), so the
-        // pair must be deferred until both sides are ground.
-        //
-        // Pragmatic: type_unify.rs has no access to the class env (ClassDecl.resolver_injective).
-        // We inspect the constraints list for a ConstraintDecl whose class name equals the op
-        // name — a heuristic that the op is a resolver type application. When no such constraint
-        // is found (or the constraints don't carry injectivity information), we default to
-        // injective (pairwise unification), which is the safe behaviour for standard type
-        // constructors (Seq, Result, etc.) where injectivity holds by construction.
-        //
-        // Future work: pass the class env into InferenceContext so that unify() can look up
-        // ClassDecl.resolver_injective directly and activate the deferred path correctly.
+        // TypeValue.App ~ TypeValue.App: pairwise structural unification (injective case).
+        // Standard type constructors (Seq, Result, etc.) are injective by construction.
+        // Non-injective resolver support (T-2077) requires threading ClassDecl.resolver_injective
+        // through InferenceContext; that infrastructure is tracked separately.
         (Some(TV_APP), Some(TV_APP)) => {
             let (op_a, arg_a) = extract_app_parts(&a).ok_or_else(|| {
                 TypeDiagnostic::error("type-error", "malformed TypeValue.App", span.clone())
@@ -823,36 +844,13 @@ pub async fn unify(
             let op_name_b = extract_op_name(&op_b);
             let same_op_name = op_name_a.is_some() && op_name_a == op_name_b;
 
-            // Determine injectivity. Without class-env access we can only consult constraints.
-            // A ConstraintDecl whose class name matches the op name is evidence that the op
-            // is a resolver application. However, constraints do not carry resolver_injective
-            // directly — ClassDecl.resolver_injective lives in the env, which is not available
-            // here. Pragmatic result: we never have positive evidence of non-injectivity, so
-            // we always fall through to the injective path below.
-            //
-            // This preserves the existing semantics while providing the deferral infrastructure
-            // (resolver_deferred field on InferenceContext) for future activation once the class
-            // env is threaded through to unify().
-            let is_non_injective = if same_op_name {
-                // Search constraints for a ConstraintDecl whose class name equals the op name.
-                // Even when found, we lack resolver_injective — conservatively treat as injective.
-                let _op_name = op_name_a.as_deref().unwrap_or("");
-                let _found_in_constraints = constraints
-                    .iter()
-                    .any(|c| extract_constraint_class_name(c).as_deref() == Some(_op_name));
-                // Without ClassDecl access: default to injective regardless of _found_in_constraints.
-                false
-            } else {
-                false
-            };
-
-            if is_non_injective {
-                // Non-injective resolver: defer the equality pair until both sides are ground.
-                // run_fd_improvement_fixpoint drains ctx.resolver_deferred after each constraint push.
-                ctx.resolver_deferred.push((Arc::clone(&a), Arc::clone(&b)));
-                Ok(())
-            } else {
-                // Injective (or unknown — defaulting to injective): pairwise unify op and arg.
+            // Injectivity guard (T-2077): non-injective resolver support requires threading
+            // ClassDecl.resolver_injective through InferenceContext so unify() can look up
+            // injectivity at unification time. Until that infrastructure exists (tracked as
+            // a prerequisite for activating ctx.resolver_deferred), all TypeValue.App
+            // unifications use the injective structural path.
+            if same_op_name {
+                // Same op name: injective structural unification — unify op and arg pairwise.
                 Box::pin(unify(
                     &op_a,
                     &op_b,
@@ -863,6 +861,34 @@ pub async fn unify(
                 ))
                 .await?;
                 Box::pin(unify(&arg_a, &arg_b, ctx, constraints, span, depth + 1)).await
+            } else {
+                // UNIFY-TYCON-EXPAND (T-1112): different op names — try expanding both via tycon_env.
+                // When both ops are registered type constructors with a single-parameter body,
+                // substitute the argument into the body and unify the expanded types.
+                // This allows structural aliases to unify: if Alias[T] = Seq[T], then
+                // App(Alias, Int) ~ App(Seq, Int) succeeds by expanding both to their bodies.
+                let expanded_a = expand_tycon_app(&op_name_a, &arg_a, ctx);
+                let expanded_b = expand_tycon_app(&op_name_b, &arg_b, ctx);
+                match (expanded_a, expanded_b) {
+                    (Some(exp_a), Some(exp_b)) => {
+                        // Both expanded: unify the expanded bodies.
+                        Box::pin(unify(&exp_a, &exp_b, ctx, constraints, span, depth + 1)).await
+                    }
+                    _ => {
+                        // Cannot expand one or both: fall through to structural unification,
+                        // which will fail at the op level (different names).
+                        Box::pin(unify(
+                            &op_a,
+                            &op_b,
+                            ctx,
+                            constraints,
+                            span.clone(),
+                            depth + 1,
+                        ))
+                        .await?;
+                        Box::pin(unify(&arg_a, &arg_b, ctx, constraints, span, depth + 1)).await
+                    }
+                }
             }
         }
 
@@ -935,7 +961,13 @@ pub async fn unify(
         // that unifies (binding TypeVar ↦ concrete) is accepted.
         // Rule: τ ≤ τ₁ ∨ ... ∨ τₙ  iff  ∃i. τ ≤ τᵢ  (existential Union membership).
         (_, Some(TV_UNION)) => {
-            let members = extract_union_members(&b).unwrap_or_default();
+            let members = extract_union_members(&b).ok_or_else(|| {
+                TypeDiagnostic::error(
+                    "type-error",
+                    "TypeValue.Union payload is unsettled or malformed",
+                    span.clone(),
+                )
+            })?;
             if members.is_empty() {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -991,7 +1023,13 @@ pub async fn unify(
 
         // C-Var1 symmetric: Union vs concrete — symmetric version of the above.
         (Some(TV_UNION), _) => {
-            let members = extract_union_members(&a).unwrap_or_default();
+            let members = extract_union_members(&a).ok_or_else(|| {
+                TypeDiagnostic::error(
+                    "type-error",
+                    "TypeValue.Union payload is unsettled or malformed",
+                    span.clone(),
+                )
+            })?;
             if members.is_empty() {
                 return Err(TypeDiagnostic::error(
                     "type-error",
@@ -1050,7 +1088,13 @@ pub async fn unify(
         // concrete type. TypeVar members are tried first (C-Var2 priority: binding TypeVar).
         // Rule: α ∧ τ₁ ≤ τ₂  →  α ≤ ~τ₁ ∨ τ₂  (conservative: try TypeVar binding).
         (Some(TV_INTER), _) => {
-            let members = extract_intersection_members(&a).unwrap_or_default();
+            let members = extract_intersection_members(&a).ok_or_else(|| {
+                TypeDiagnostic::error(
+                    "type-error",
+                    "TypeValue.Intersect payload is unsettled or malformed",
+                    span.clone(),
+                )
+            })?;
             if members.is_empty() {
                 // Empty intersection = Top: Top <: T for all T — accept.
                 return Ok(());
@@ -1175,16 +1219,14 @@ async fn unify_rowtails(
             .await
         }
 
-        // RowVar ~ concrete tail: bind the RowVar.
+        // RowVar ~ concrete tail: conservative accept without binding.
         // RowTail.Var is represented as a RowVar name (TypeValue.Var inside the tail position).
-        // For now, we defer this — RowVar binding requires infrastructure to track RowVar levels
-        // and occurs checks on row variables (not TypeVars).
-        // Accept conservatively (no binding performed).
-        (Some(RT_VAR), _) | (_, Some(RT_VAR)) => {
-            // Future work: extract RowVar name from the RowTail.Var payload and bind it.
-            // For now, succeed without binding (conservative accept).
-            Ok(())
-        }
+        // Correct RowVar binding requires RowVar level tracking and occurs checking on row
+        // variables (distinct from TypeVar infrastructure). Unsound bindings are deferred
+        // until that infrastructure exists (T-2088). Conservative accept (Ok(())) is sound —
+        // it may admit programs that would be rejected by full row polymorphism, never the
+        // reverse.
+        (Some(RT_VAR), _) | (_, Some(RT_VAR)) => Ok(()),
 
         // Closed ~ Uniform: fail (incompatible tails).
         (Some(RT_CLOSED), Some(RT_UNIFORM)) | (Some(RT_UNIFORM), Some(RT_CLOSED)) => {
@@ -1321,7 +1363,10 @@ pub async fn constrain(
         // false positives when gradual types (Unknown, complex unions from type-level functions
         // like `merge`'s return type) appear as lower bounds. The old pre-S-1003 system
         // accumulated bounds lazily and did not perform this eager check.
-        let _lbs = ctx.take_lower_bounds(&alpha_name);
+        //
+        // Once α is bound, any future constrain(lb, α) resolves α via apply_subst → sup, so
+        // accumulated lower bounds become dead. Remove them to prevent stale data accumulation.
+        drop(ctx.take_lower_bounds(&alpha_name));
         // Bind α = sup (upper bound narrows the TypeVar).
         ctx.bind(alpha_name, sup.clone())?;
         return Ok(());
@@ -1389,16 +1434,6 @@ async fn constrain_record(
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
 ) -> Result<(), TypeDiagnostic> {
-    // TRACE B-681
-    {
-        let sup_str = crate::eval::format_type_for_assert(sup);
-        let sub_str = crate::eval::format_type_for_assert(sub);
-        if (sup_str.contains("ts: [") || sup_str.contains("impls: ["))
-            && (sub_str.contains("ts: [") || sub_str.contains("impls: ["))
-        {
-            eprintln!("[B-681 constrain_record] sub={} sup={}", sub_str, sup_str);
-        }
-    }
     let sup_fields = extract_record_fields(sup)
         .expect("invariant: TypeValue.Record payload must be settled with fields dict");
     let sub_fields = extract_record_fields(sub)
@@ -1485,9 +1520,11 @@ async fn constrain_record(
         }
         Some(RT_VAR) => {
             // sup tail is a RowVar: this is an open record with a polymorphic tail.
-            // For now, accept (no constraint needed — the RowVar can be instantiated
-            // to accommodate any extra fields from sub).
-            // Future work: bind the RowVar to the extra fields from sub.
+            // Conservative accept. Correct RowVar binding requires RowVar level tracking
+            // and occurs checking on row variables (distinct from TypeVar infrastructure).
+            // The full RowVar binding implementation is tracked as T-2088.
+            // Conservative accept (Ok(())) is sound — it may admit programs that would be
+            // rejected by full row polymorphism, never the reverse.
             Ok(())
         }
         _ => {
@@ -1804,6 +1841,46 @@ fn extract_str_lit(tv: &TypeValue) -> Option<String> {
         },
         _ => None,
     }
+}
+
+// ── UNIFY-TYCON-EXPAND: type constructor body expansion ───────────────────────
+
+/// UNIFY-TYCON-EXPAND (T-1112): attempt to expand a type constructor application.
+///
+/// Given `App(Op(name), arg)`, look up `name` in `ctx.tycon_env`. If found and the
+/// TyConDef has exactly one parameter, create a temporary substitution of the parameter
+/// TypeVar → arg and apply it to the TyConDef body. Returns the expanded body TypeValue,
+/// or None if expansion is not possible (op not in tycon_env, wrong arity, malformed body).
+///
+/// This enables structural alias unification: if `Alias[T] = Seq[T]` is in tycon_env,
+/// then `App(Alias, Int) ~ App(Seq, Int)` can succeed by expanding both to their bodies
+/// and unifying `Int` (the Seq body parametrically) with the alias expansion.
+///
+/// Limitation: only single-parameter type constructors are expanded. Multi-parameter
+/// constructors require multi-argument App chains (App(App(F, a), b)) — those are
+/// handled by the outer structural arms after partial expansion.
+fn expand_tycon_app(
+    op_name: &Option<String>,
+    arg: &TypeValue,
+    ctx: &InferenceContext,
+) -> Option<TypeValue> {
+    let name = op_name.as_deref()?;
+    let tycon_def = ctx.tycon_env.get(name)?;
+    // Only expand single-parameter type constructors.
+    if tycon_def.params.len() != 1 {
+        return None;
+    }
+    let param_name = &tycon_def.params[0];
+    let body: TypeValue = Arc::new(tycon_def.body.as_ref().clone());
+    // Build a temporary substitution: param_name → arg.
+    // Apply it to the body by creating a minimal InferenceContext with just this binding.
+    let mut temp_ctx = InferenceContext::new();
+    // Bind the parameter name to the argument (monomorphic substitution).
+    // This is safe to unwrap: temp_ctx is fresh, so there are no existing bindings.
+    temp_ctx
+        .bind(param_name.clone(), Arc::clone(arg))
+        .expect("invariant: fresh InferenceContext must accept first binding");
+    Some(temp_ctx.apply_subst(&body))
 }
 
 // ── Recursive type substitution ───────────────────────────────────────────────

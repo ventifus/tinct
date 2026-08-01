@@ -562,8 +562,12 @@ fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
             };
             repr_str(pa) == repr_str(pb)
         }
-        // Same ctor with payload — conservative: treat as a match for now
-        // (handles Int, Float, Str, etc. where the ctor tag alone determines the type).
+        // Same ctor with payload: match by ctor tag only. This is correct for all
+        // builtin TypeValue constructors (Int, Float, Str, Bool, etc.) where the
+        // ctor tag alone determines the type. Structural payload comparison is not
+        // performed — parametric types whose ctor tags match but payloads differ
+        // (e.g. Seq[Int] vs Seq[Str]) are treated as matching here. Callers that
+        // need structural comparison must use full TypeValue unification.
         (Value::Variant { ctor: ca, .. }, Value::Variant { ctor: cb, .. }) => {
             ca.as_ref() == cb.as_ref()
         }
@@ -640,10 +644,11 @@ pub(crate) async fn try_fd_improvement(
             // returns the determined TypeValue directly. Instance-based classes (e.g.
             // Addable, Multipliable) scan registered instances for a structural match.
             if let Some(ref _resolver_name) = class_decl.resolver {
-                // Resolver-based FD: type-stage functions (FieldType, ElementType) expect
-                // TypeNode args, but source_types are TypeValues. Direct call returns Unknown
-                // (via catch-all) which is filtered and produces a no-op. Until TypeValue→TypeNode
-                // conversion is implemented (T-2078), skip resolver-based FD entirely.
+                // Resolver-based FD: type-stage resolver functions (e.g. FieldType, ElementType)
+                // expect TypeNode arguments, but source_types here are TypeValues from the
+                // TypeValue-based type checker. TypeValue→TypeNode conversion is required to
+                // call the resolver correctly. Without it, resolver-based FD improvement
+                // is skipped entirely. Tracked in T-2090.
                 continue;
             }
 

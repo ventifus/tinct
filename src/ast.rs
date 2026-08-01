@@ -1310,6 +1310,13 @@ pub enum CoreExpr {
         /// low slot indices and document dict entries at cumulative slot offsets above them.
         /// Written by the lowerer from `SurfaceExpression::Fn::resolved_captures`.
         captures: std::sync::Arc<Vec<(String, VarAddr)>>,
+        /// Resolved TypeValue.Fn for this function — set by the lowerer from the type checker's
+        /// `resolved_return_annotation` and per-param `resolved_annotation_type` fields.
+        /// Stored in `Value::Function.type_val` at runtime so `ground_typevalue_of` can use it
+        /// for full structural TypeAssert checking (return type, arity, param types) instead of
+        /// falling back to the opaque `Repr("Value::Function")` sentinel.
+        /// `None` when the function was not type-checked (gradual: accepts all at runtime).
+        resolved_fn_type: Option<std::sync::Arc<crate::value::Value>>,
     },
     // Statically type-checked TypeAssert — check carries either the source annotation (for
     // user-written `[@T x]` forms) or a pre-resolved TypeValue (for lowerer-emitted nodes).

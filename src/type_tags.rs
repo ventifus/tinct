@@ -154,6 +154,12 @@ pub const FIELD_CLASS: &str = "class";
 pub const FIELD_ARGS: &str = "args";
 /// Field key for TypeValue.Fn: { variadic: Bool }
 pub const FIELD_VARIADIC: &str = "variadic";
+/// Field key for TypeValue.Fn: { typed-variadics: Dict }
+///
+/// Stores the typed variadic buckets for functions declared with `...xs@Seq[T]` params.
+/// The payload is an integer-keyed dict where each entry is a two-element dict:
+/// `{ name: String, ty: TypeValue }` (the bucket name and its Seq[T] element type).
+pub const FIELD_TYPED_VARIADICS: &str = "typed-variadics";
 /// Field key for TypeValue.Fn: { param-names: Dict }
 pub const FIELD_PARAM_NAMES: &str = "param-names";
 /// Field key for TypeValue.RecursiveRef: { depth: Integer }

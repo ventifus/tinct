@@ -137,9 +137,10 @@ pub(crate) async fn run_fd_improvement_fixpoint(
     // queue shrinks monotonically because each FD improvement step grounds at least one
     // TypeVar, ensuring termination.
     //
-    // Note: as of T-2077, resolver_deferred is always empty — the push site in type_unify.rs
-    // is guarded by `is_non_injective` which is always false until T-2078 threads the class
-    // env. This drain is inert infrastructure until T-2078 activates non-injective deferral.
+    // Drain resolver_deferred: pairs pushed by type_unify.rs when a non-injective
+    // TypeValue.App unification is encountered. Non-injective resolver support requires
+    // threading ClassDecl.resolver_injective through InferenceContext (T-2077/T-2078).
+    // Until that infrastructure is active, this queue is always empty at this point.
     let deferred = std::mem::take(&mut state.ctx.resolver_deferred);
     for (lhs, rhs) in deferred {
         let lhs_applied = state.ctx.apply_subst(&lhs);
@@ -1144,11 +1145,21 @@ async fn apply_cont(
                 None => child_ty,
             };
 
-            // Build the function TypeValue — include variadic flag so call sites can
-            // perform correct arity checking.
+            // Build the function TypeValue — include variadic flag and typed variadic buckets
+            // so call sites can perform correct arity checking and bucket-type dispatch.
             let is_variadic_fn = rest.is_some() || !typed_variadics.is_empty();
-            let fn_type =
-                crate::type_infer::make_typevalue_fn_with_flags(params, fn_ret_ty, is_variadic_fn);
+            // Convert typed_variadics from Vec<(String, TypeValue)> to Vec<(Option<String>, TypeValue)>
+            // for make_typevalue_fn_with_flags (which uses Option<String> to match the param pattern).
+            let typed_variadics_for_fn: Vec<(Option<String>, TypeValue)> = typed_variadics
+                .iter()
+                .map(|(name, ty)| (Some(name.clone()), Arc::clone(ty)))
+                .collect();
+            let fn_type = crate::type_infer::make_typevalue_fn_with_flags(
+                params,
+                fn_ret_ty,
+                is_variadic_fn,
+                typed_variadics_for_fn,
+            );
 
             // Exhaustiveness check for typed variadic params.
             // If typed_variadics is non-empty and rest is None, emit a warning.
@@ -1972,11 +1983,15 @@ async fn apply_cont_call_func(
                 })
                 .collect();
             let inst_ret = ctx.state.apply(&fn_ret_tv);
-            // B-671: typed variadic bucket types are not yet stored in TypeValue.Fn.
-            // Once TypeValue.Fn gains a typed-variadics payload field, extract it here
-            // instead of defaulting to Vec::new(). Until then, variadic dispatch degrades
-            // to make_typevalue_unknown() for functions stored in dict schemes.
-            let inst_typed_variadics: Vec<(String, TypeValue)> = Vec::new();
+            // Extract typed variadic bucket types from the TypeValue.Fn payload.
+            // These were stored by make_typevalue_fn_with_flags when the function was defined.
+            // apply() each bucket's type through the current substitution so that any
+            // type variables bound since the function was defined are resolved.
+            let inst_typed_variadics: Vec<(String, TypeValue)> =
+                crate::type_infer::typevalue_fn_typed_variadics(&func_ty)
+                    .into_iter()
+                    .map(|(name, ty)| (name, ctx.state.apply(&ty)))
+                    .collect();
             // Check variadic flag from TypeValue.Fn payload.
             let inst_rest: Option<Box<(String, TypeValue)>> =
                 if crate::type_infer::typevalue_fn_is_variadic(&func_ty) {
@@ -1984,10 +1999,6 @@ async fn apply_cont_call_func(
                 } else {
                     None
                 };
-            // B-672: required_count is not yet stored in TypeValue.Fn. Once TypeValue.Fn
-            // gains a required: Integer payload field, read it here instead of using
-            // inst_params.len(), which treats all params as required and causes spurious
-            // arity errors for callers that omit optional (default:) trailing arguments.
             let inst_required = inst_params.len();
 
             // Derive inst_variadic for arity checks.
@@ -4264,6 +4275,7 @@ pub(crate) async fn run_typecheck_dict(
                         fn_params,
                         ret_var,
                         pre_is_variadic,
+                        Vec::new(), // no typed variadics at pre-binding time (Pass 0)
                     );
                     if !is_alias {
                         fresh_vars_by_name.insert(name.clone(), Arc::clone(&fn_type));
@@ -5241,15 +5253,6 @@ pub(crate) async fn run_typecheck_dict(
         for (key_name, _is_alias, _) in &key_entries {
             if let Some(name) = key_name {
                 if let Some(scheme) = dict_env_guard.get_scheme(name) {
-                    // TRACE B-681
-                    if name == "reduce" {
-                        let is_scheme = typevalue_ctor(&scheme) == Some(TV_SCHEME);
-                        eprintln!(
-                            "[B-681 run_typecheck_dict schemes] reduce is_scheme={} type={}",
-                            is_scheme,
-                            crate::eval::format_type_for_assert(&scheme)
-                        );
-                    }
                     schemes.insert(name.clone(), scheme);
                 }
             }

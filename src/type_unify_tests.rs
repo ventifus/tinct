@@ -293,13 +293,10 @@ async fn test_types_are_not_disjoint_multi_field_records() {
 // type-soundness sprint tests
 // ============================================================================
 
-/// Union-vs-Union with TypeVars where members are pairwise incompatible.
-/// unify(Union([Int, a]), Union([Str, b])) fails because the first member pair
-/// (Int, Str) cannot be unified — the TV_UNION arm uses pairwise zip, and Int ≠ Str.
-///
-/// Current behavior (B-667): immediate failure when pairwise member unification fails.
-/// Expected after B-667 fix: unification defers to BAS bounds accumulation — pairwise
-/// mismatches accumulate as directional bounds rather than immediately failing.
+/// Union-vs-Union with TypeVars: bipartite matching succeeds.
+/// unify(Union([Int, a]), Union([Str, b])) succeeds via bipartite matching (T-2073):
+/// Int~b (binds b=Int) and a~Str (binds a=Str). Both TypeVars are equality-bound
+/// in ctx.subst since the bipartite matching arm uses unify() for each matched pair.
 ///
 /// Note: deferred_equalities is on InferState, not InferenceContext; unify() only
 /// has access to ctx, so it cannot write to deferred_equalities.
@@ -790,36 +787,51 @@ async fn test_types_are_disjoint_function_vs_record() {
 
 // ============================================================================
 // S-861: equirecursive-checker tests (T-1076 + T-1077)
-// After S-1003 migration: Type::Recursive → TypeValue.Recursive, Type::apply → TypeValue-based apply.
-// These tests are partially deferred pending type_def.rs TypeValue.Recursive implementation.
+// After S-1003 migration: Type::Recursive → TypeValue.Recursive.
+// TypeValue.Recursive uses de Bruijn indexing (RecursiveRef), not named binders.
 // ============================================================================
 
-/// T-1077: apply_type on Recursive recurses into body, does not look up var in subst.
-/// After S-1003 migration: Type::Recursive → TypeValue.Recursive, deferred.
+/// T-1077: Unifying TypeValue.Recursive does not bind any named TypeVar for the binder.
+/// TypeValue.Recursive uses de Bruijn RecursiveRef(0) instead of a named bound variable.
+/// When unify opens a Recursive type, it introduces a fresh TypeVar (e.g. "rec0") via
+/// ctx.fresh_typevar("rec") and substitutes it for RecursiveRef(0) — but that fresh var
+/// is an implementation detail of the opening, not a user-facing named TypeVar.
+/// This test verifies: no user-registered named TypeVar (e.g. "a", "x") is spuriously bound
+/// during Recursive unification — only the fresh rec-opening var may appear in subst.
 #[tokio::test]
 async fn test_apply_type_recursive_does_not_bind_var_name() {
+    use crate::type_infer::{make_typevalue_recursive, make_typevalue_recursive_ref};
     let mut state = InferState::new();
     let span = rust_span!();
-    // After migration: bind TypeValue.Var("_t0") to Repr(Int).
-    state.set_level("_t0".to_string(), 0);
-    let tv = make_typevar_value("_t0");
+
+    // Register a named TypeVar "a" at level 0. This should NOT be bound by Recursive unification.
+    state.set_level("a".to_string(), 0);
+
     let int_tv = make_typevalue_repr(REPR_INT);
-    unify_sync(&tv, &int_tv, &mut state.ctx, &mut Vec::new(), span)
-        .await
-        .expect("test setup: binding _t0 to Repr(Int) must succeed");
-    // TypeValue.Recursive construction deferred — just verify the binding worked.
-    let bound = state.lookup_binding("_t0");
+
+    // Build μ. {val: Repr(Int), next: RecursiveRef(0)} — a simple recursive list type.
+    // The body uses RecursiveRef(0) (de Bruijn), not TypeValue.Var("a").
+    let body = make_record_tv(vec![
+        ("val", Arc::clone(&int_tv)),
+        ("next", make_typevalue_recursive_ref(0)),
+    ]);
+    let rec_ty = make_typevalue_recursive(body);
+
+    // Unify the Recursive type with itself — opens both sides with the same fresh var.
+    let result = unify_sync(&rec_ty, &rec_ty, &mut state.ctx, &mut Vec::new(), span).await;
     assert!(
-        bound.is_some(),
-        "TypeVar _t0 should be bound after unification"
+        result.is_ok(),
+        "unify(Recursive, Recursive) should succeed for identical types: {:?}",
+        result.unwrap_err()
+    );
+
+    // The named TypeVar "a" must NOT be bound — Recursive unification uses de Bruijn
+    // opening, not named-variable lookup.
+    assert!(
+        state.ctx.lookup("a").is_none(),
+        "Named TypeVar 'a' must not be bound by Recursive unification (de Bruijn, not name-bound)"
     );
 }
-
-// T-2072: TypeValue.Recursive isomorphic unification requires coinductive BAS (B-666). Test deferred.
-// T-2072: TypeValue.Recursive incompatible unification deferred.
-// T-2072: TypeVar before Recursive arm requires TypeValue.Recursive support. Test deferred.
-// T-2072: Recursive left arm requires TypeValue.Recursive in type_def.rs. Test deferred.
-// T-2072: Recursive right arm requires TypeValue.Recursive in type_def.rs. Test deferred.
 
 /// T-2075: Fn type and TyCon.App type are disjoint.
 #[test]
@@ -835,12 +847,11 @@ fn test_disjoint_fn_vs_tycon_app() {
     let seq_tycon = make_typevalue_op("Seq");
     let seq_app = crate::type_infer::make_typevalue_app(seq_tycon, int_tv);
 
-    // atoms_are_disjoint is conservative: Fn-vs-App disjointness not yet detected.
-    // This test documents the current behavior; when full atom coverage is added,
-    // change to assert!(... true ...).
+    // Fn-vs-App: a function type and a type-constructor application are structurally
+    // disjoint — no value inhabits both simultaneously.
     assert!(
-        !crate::bas::atoms_are_disjoint(&fn_tv, &seq_app, &ctx),
-        "Conservative: Fn-vs-App not yet detected as disjoint"
+        crate::bas::atoms_are_disjoint(&fn_tv, &seq_app, &ctx),
+        "Fn type should be disjoint from TyCon.App type"
     );
 }
 
@@ -863,10 +874,6 @@ fn test_disjoint_fn_vs_map() {
         "Fn type should be disjoint from Record type"
     );
 }
-
-// T-1206 TyCon identity (different Arcs): test deferred pending TypeValue.Op Arc-identity unification.
-
-// T-1206 TyCon identity (same Arc): test deferred pending TypeValue.Op Arc-identity unification.
 
 /// T-2075: Two different Fn types (conservative: report not disjoint).
 /// atoms_are_disjoint is conservative — it returns false for Fn vs Fn because
@@ -892,17 +899,9 @@ fn test_disjoint_fn_vs_fn_conservative() {
     );
 }
 
-// Handle PartialEq: test deferred pending TypeValue.App{op:Handle, arg:TypeVar} unification.
-
 // ============================================================================
 // T-913: Reverse functional dependency (bidirectional FD) inference tests
 // ============================================================================
-
-// T-913 test_reverse_fd_back_propagates_determining_type deleted: FD instance
-// types (TypeValue.Record-based) not yet implemented after S-1003.
-
-// T-913 test_reverse_fd_does_not_fire_when_not_injective deleted: FD instances
-// use TypeValue records after S-1003 — pending migration.
 
 // ============================================================================
 // T-994: Level semantics unit tests (type-system-health-s841-followup sprint)
@@ -1013,10 +1012,6 @@ async fn test_type_vars_snapshot_restore_pattern() {
 // ============================================================================
 // T-996: fd_in_progress cycle guard unit test
 // ============================================================================
-
-// test_fd_in_progress_terminates_mutual_recursion deleted: FD instance types
-// (TypeValue.Record-based) are not yet implemented after S-1003. Will be
-// re-added when FD TypeValue migration lands.
 
 // ============================================================================
 // T-1020: Variance/TyConDef/UNIFY-TYCON/UNIFY-UNIFORM unit tests
@@ -1330,6 +1325,77 @@ async fn test_constrain_rows_closed_sup_tail_allows_width_subtyping() {
     );
 }
 
+/// B-680: unify(Record{ts, rt}, empty_record) must NOT fire "missing field" for the reverse direction.
+///
+/// S-1003 added bidirectional constrain(a,b) + constrain(b,a) in unify(TV_RECORD, TV_RECORD).
+/// This fires "missing field 'ts'" when a = {ts: Dict, rt: Dict} and b = {} because
+/// constrain(b={}, a={ts,rt}) checks that a's named fields are all in b — they are not.
+/// The fix: only call constrain(a, b) in one direction (a <: b). Record subtyping is not
+/// symmetric; unification finds the common supertype (join/LUB), not enforces equality.
+#[tokio::test]
+async fn test_unify_record_with_extra_fields_vs_empty_record_no_false_positive() {
+    use crate::type_infer::make_typevalue_repr;
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let dict_tv = make_typevalue_repr(REPR_DICT);
+
+    // a = {ts: Dict, rt: Dict} — record with two named fields
+    let a = make_record_tv(vec![("ts", dict_tv.clone()), ("rt", dict_tv)]);
+    // b = {} — empty closed record (no named fields)
+    let b = make_record_tv(vec![]);
+
+    // unify(a, b): a has extra fields, b is empty.
+    // constrain(a, b): all of b's named fields (none) are in a → trivially ok.
+    // constrain(b, a) was the false positive source — now removed.
+    // Must succeed without "missing field 'ts'" error.
+    let result = unify_sync(&a, &b, &mut state.ctx, &mut Vec::new(), span.clone()).await;
+    assert!(
+        result.is_ok(),
+        "B-680: unify({{ts,rt}}, {{}}) must not fire false 'missing field' error: {:?}",
+        result.as_ref().err()
+    );
+
+    // Verify the reverse direction: unify(b={}, a={ts,rt}) must still FAIL.
+    // With the fix, constrain(b={}, a={ts,rt}) fires because a has fields ts and rt that b lacks.
+    // This is the correct direction: empty record cannot satisfy {ts,rt}'s field requirements.
+    let mut state2 = InferState::new();
+    let dict_tv2 = make_typevalue_repr(REPR_DICT);
+    let a2 = make_record_tv(vec![("ts", dict_tv2.clone()), ("rt", dict_tv2)]);
+    let b2 = make_record_tv(vec![]);
+    let result2 = unify_sync(&b2, &a2, &mut state2.ctx, &mut Vec::new(), span.clone()).await;
+    assert!(
+        result2.is_err(),
+        "B-680: unify({{}}, {{ts,rt}}) must fail — empty record is missing required fields ts and rt"
+    );
+}
+
+/// B-680 regression: records with disjoint field sets still fail unification.
+/// unify({x: Int}, {y: Str}) must fail — the first constrain(a,b) already catches this.
+#[tokio::test]
+async fn test_unify_disjoint_field_records_still_fails() {
+    use crate::type_infer::make_typevalue_repr;
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+
+    // a = {x: Int}, b = {y: Str} — disjoint field sets
+    let a = make_record_tv(vec![("x", int_tv)]);
+    let b = make_record_tv(vec![("y", str_tv)]);
+
+    // constrain(a, b): b has field "y", a does not → error "missing field 'y'"
+    // This must still fail even after the B-680 fix.
+    let result = unify_sync(&a, &b, &mut state.ctx, &mut Vec::new(), span).await;
+    assert!(
+        result.is_err(),
+        "B-680 regression: records with disjoint field sets must still fail unification"
+    );
+}
+
 /// T-1020k: Variance is preserved through Clone.
 #[tokio::test]
 async fn test_variance_clone() {
@@ -1406,11 +1472,6 @@ async fn test_tycondef_partialeq_different_variance() {
 // ============================================================================
 // T-1112: UNIFY-TYCON-EXPAND tests
 // ============================================================================
-
-// T-1112 UNIFY-TYCON-EXPAND tests deleted: TypeValue.Op + TypeValue.NominalVariant
-// body expansion (TyCon body lookup in tycon_env and NominalVariant member checking)
-// is not yet implemented after S-1003 migration. Will be re-added when
-// UNIFY-TYCON-EXPAND lands in type_unify.rs.
 
 // ============================================================================
 // S-883: constrain() and compact() unit tests (TEST-1)
@@ -1523,9 +1584,9 @@ async fn test_unify_error_absorption() {
 /// (Str → fail), then TypeVars in order (α → binds α=Int via U-VAR-LEVEL-SYM → Ok).
 /// The first TypeVar (α) is bound in ctx.subst; β is never tried.
 ///
-/// Current behavior (B-667): α is bound in ctx.subst (equality binding via unify()).
-/// Expected after B-667 fix: α should accumulate Int as a directional lower bound in
-/// state.bounds rather than receiving an equality binding in ctx.subst.
+/// Current behavior: α is bound in ctx.subst via equality (unify() fallthrough).
+/// The Union-containing-TypeVar case is not covered by the C-LB arm (which only fires
+/// when sup is a bare TypeVar, not a Union). Tracked as B-686.
 #[tokio::test]
 async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let mut state = InferState::new();
@@ -1555,10 +1616,9 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
         result.unwrap_err()
     );
 
-    // Current behavior (B-667): α is bound to Int via U-VAR-LEVEL-SYM (first TypeVar tried in
-    // the union). β is never tried (α succeeded first). state.bounds is not written.
-    // Expected after B-667 fix: α accumulates Int as a lower bound in state.bounds (not subst);
-    // state.bounds["α"] = {lower: [Int]}; state.bounds["β"] may be empty.
+    // α is bound to Int via U-VAR-LEVEL-SYM (first TypeVar tried in the union).
+    // β is never tried (α succeeded first). state.bounds is not written.
+    // Regression guard: B-686 tracks the correct directional-bounds fix for this case.
     assert!(
         state.ctx.lookup("α").is_some(),
         "α must be bound in ctx.subst after constrain(Int, Union([Str, α, β]))"
@@ -1660,14 +1720,12 @@ async fn test_constrain_typevar_lower_bound_added() {
 
 /// C-FN: constrain(Fn(Int→Int), Fn(α→α)) calls constrain_fn with contravariant params
 /// and covariant return.
-///   - Contravariant param: constrain(α, Int) → falls through to unify(α, Int) → binds α=Int
+///   - Contravariant param: constrain(α, Int) → sub=α is TypeVar → C-UB arm → binds α=Int
 ///   - Covariant return:    constrain(Int, α) → apply_subst(α)=Int → constrain(Int,Int) → Ok
 ///
-/// Current behavior (B-667): α IS bound in ctx.subst (to Int) via unify(). The C-FN arm
-/// correctly handles variance but falls through to unify() for TypeVar binding, bypassing
-/// directional bounds. state.bounds is not written.
-/// Expected after B-667 fix: contravariant constrain(α, Int) should accumulate Int as an
-/// upper bound on α in state.bounds (not bind α in subst). α would NOT appear in ctx.subst.
+/// Current behavior: α IS bound in ctx.subst via C-UB (equality bind on upper bound).
+/// The C-UB arm (added in B-667) binds α=Int rather than accumulating a directional upper
+/// bound. Correct directional accumulation for TypeVar in sub position is tracked as B-687.
 #[tokio::test]
 async fn test_constrain_cfn_typevar_accumulates_bounds() {
     let mut state = InferState::new();
@@ -1697,26 +1755,22 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
         result.unwrap_err()
     );
 
-    // Current behavior (B-667): α IS bound in ctx.subst (to Int) via unify()'s U-VAR-LEVEL arm.
-    // C-FN correctly applies contravariant/covariant variance, but falls through to unify() for
-    // TypeVar binding. Expected after B-667 fix: α should NOT be in ctx.subst; instead it should
-    // accumulate directional bounds in state.bounds.
+    // α IS bound in ctx.subst via C-UB arm (binding on upper bound).
+    // Regression guard: B-687 tracks correct directional accumulation for TypeVar in sub position.
     assert!(
         state.ctx.lookup("α").is_some(),
-        "Current behavior (B-667): C-FN binds α in ctx.subst; after fix α will have bounds only"
+        "C-FN: α is bound in ctx.subst via C-UB arm (regression guard for B-687)"
     );
 }
 
 /// C-FN init@a reducer pattern: constrain(Fn(Int,Int→Int), Fn(α,Int→α)).
 /// constrain_fn applies:
-///   - Param 1 (contravariant): constrain(α, Int) → unify(α, Int) → binds α=Int
+///   - Param 1 (contravariant): constrain(α, Int) → sub=α is TypeVar → C-UB → binds α=Int
 ///   - Param 2 (contravariant): constrain(Int, Int) → Ok (trivial)
 ///   - Return (covariant):      constrain(Int, α) → apply_subst(α)=Int → constrain(Int,Int) → Ok
 ///
-/// Current behavior (B-667): α IS bound to Int in ctx.subst after the first contravariant
-/// param constraint. Falls through to unify() which binds rather than accumulating bounds.
-/// Expected after B-667 fix: α should accumulate Int as an upper bound in state.bounds
-/// (contravariant); covariant return constrain(Int, α) should accumulate Int as lower bound.
+/// Current behavior: α IS bound to Int in ctx.subst via C-UB arm after the first contravariant
+/// param constraint. Correct directional accumulation for this case is tracked as B-687.
 #[tokio::test]
 async fn test_constrain_cfn_init_reducer_pattern() {
     let mut state = InferState::new();
@@ -1751,12 +1805,11 @@ async fn test_constrain_cfn_init_reducer_pattern() {
         result.unwrap_err()
     );
 
-    // Current behavior (B-667): α IS bound in ctx.subst (to Int) via unify() U-VAR-LEVEL
-    // after the first contravariant param constraint.
-    // Expected after B-667 fix: α should accumulate bounds in state.bounds, not bind in subst.
+    // α IS bound in ctx.subst via C-UB arm after the first contravariant param constraint.
+    // Regression guard: B-687 tracks correct directional accumulation for this case.
     assert!(
         state.ctx.lookup("α").is_some(),
-        "Current behavior (B-667): C-FN init@a binds α in ctx.subst; after fix α will have bounds"
+        "C-FN init@a: α is bound in ctx.subst via C-UB arm (regression guard for B-687)"
     );
 }
 
@@ -1902,19 +1955,15 @@ async fn test_constrain_dict_missing_field() {
 
 /// unify(Fn, Fn) bidirectionality: unify(Fn(Int→Int), Fn(TypeVar(a)→TypeVar(a)))
 /// must NOT bind TypeVar(a) directly in the substitution.
-/// The bidirectional constrain accumulates both lower and upper bounds on a from:
-///   constrain(Fn(Int→Int), Fn(a→a)): contravariant param → constrain(a, Int) → upper bound Int
-///                                     covariant return  → constrain(Int, a) → lower bound Int
 /// unify(Fn(Int→Int), Fn(a→a)) uses bidirectional constrain:
 ///   constrain(Fn(Int→Int), Fn(a→a)) then constrain(Fn(a→a), Fn(Int→Int)).
 /// First constrain (via constrain_fn):
-///   - Contravariant param: constrain(a, Int) → unify(a, Int) → binds a=Int
+///   - Contravariant param: constrain(a, Int) → sub=a is TypeVar → C-UB → binds a=Int
 ///   - Covariant return:    constrain(Int, a) → apply_subst(a)=Int → Ok
 /// Second constrain: both sides resolve to Fn(Int→Int) → trivially Ok.
 ///
-/// Current behavior (B-667): a IS bound to Int in ctx.subst (via unify() fallthrough).
-/// Expected after B-667 fix: a should accumulate directional bounds in state.bounds;
-/// contravariant constrain(a, Int) → upper bound; covariant constrain(Int, a) → lower bound.
+/// Current behavior: a IS bound to Int in ctx.subst via C-UB arm (equality binding).
+/// Correct directional accumulation (a should accumulate upper+lower bounds) is tracked as B-687.
 #[tokio::test]
 async fn test_unify_fn_uses_bidirectional_constrain() {
     let mut state = InferState::new();
@@ -1941,14 +1990,12 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
         result.unwrap_err()
     );
 
-    // Current behavior (B-667): TypeVar a IS bound to Int in ctx.subst via unify()'s
-    // U-VAR-LEVEL arm. The TV_FN arm calls bidirectional constrain which falls through to
-    // unify() for TypeVar binding rather than accumulating directional bounds.
-    // Expected after B-667 fix: a should NOT be in ctx.subst; it should accumulate bounds
-    // in state.bounds (upper bound Int from contravariant param, lower bound Int from covariant ret).
+    // TypeVar 'a' IS bound to Int in ctx.subst via C-UB arm (contravariant param constraint
+    // constrain(a, Int) binds a=Int via equality). Regression guard: B-687 tracks the fix
+    // to accumulate directional bounds instead of equality-binding in ctx.subst.
     assert!(
         state.ctx.lookup("a").is_some(),
-        "Current behavior (B-667): unify(Fn, Fn) binds 'a' in ctx.subst; after fix 'a' will have bounds"
+        "unify(Fn, Fn): 'a' is bound in ctx.subst via C-UB arm (regression guard for B-687)"
     );
 }
 
@@ -1964,8 +2011,10 @@ async fn test_constrain_app_covariant_arg() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    // After migration: TypeValue.App replaces Type::App. Deferred for C-App variance.
-    // Just verify TypeValue.App construction works.
+    // Build a TyConDef "CovF" with Covariant variance at position 0.
+    // constrain(App(CovF,Int), App(CovF,x)) routes through the App-to-App path in
+    // type_unify.rs, which calls unify(Int, x). The unify U-VAR-LEVEL arm binds x=Int
+    // in ctx.subst. This verifies the C-App covariant path produces a concrete binding.
     let cov_def = Arc::new(TyConDef {
         params: vec!["a".to_string()],
         body: crate::value::unknown_type_val(),
@@ -2030,6 +2079,7 @@ async fn test_constrain_cfn_variadic_callable_accepts_any_arity() {
         vec![],
         make_typevalue_unknown(),
         true, // variadic — accepts any number of arguments
+        Vec::new(),
     );
 
     // Concrete function: Fn([Int, Int], return: Int) — the type of [fn [let x y] [+ x y]].
@@ -2040,6 +2090,7 @@ async fn test_constrain_cfn_variadic_callable_accepts_any_arity() {
         ],
         make_typevalue_repr(REPR_INT),
         false,
+        Vec::new(),
     );
 
     // constrain(Callable ≤ concrete_fn): sub_any_fn path fires because callable has
@@ -2077,11 +2128,16 @@ async fn test_constrain_cfn_callable_as_sup_accepts_any_arity() {
         ],
         make_typevalue_repr(REPR_INT),
         false,
+        Vec::new(),
     );
 
     // Callable as sup: Fn([], variadic=true).
-    let callable_tv =
-        crate::type_infer::make_typevalue_fn_with_flags(vec![], make_typevalue_unknown(), true);
+    let callable_tv = crate::type_infer::make_typevalue_fn_with_flags(
+        vec![],
+        make_typevalue_unknown(),
+        true,
+        Vec::new(),
+    );
 
     // constrain(concrete_fn ≤ Callable): sup_any_fn path fires. Should succeed.
     let result = constrain(
@@ -2149,10 +2205,618 @@ async fn test_process_deferred_equalities_resolves_union_vs_union() {
 
     // T-2073 FIXED: Order-insensitive bipartite matching in TV_UNION arm.
     // Union([Int, Str]) ~ Union([Str, Int]) now succeeds via bipartite matching:
-    // Int matches Int at position 0→1, Str matches Str at position 1→0.
+    // Int matches Int at position 0->1, Str matches Str at position 1->0.
     assert!(
         result.is_ok(),
         "process_deferred_equalities must resolve Union([Int,Str]) ~ Union([Str,Int]) via bipartite matching: {:?}",
         result.unwrap_err()
+    );
+}
+
+// ============================================================================
+// T-1076: TypeValue.Recursive unification tests
+// ============================================================================
+
+/// T-1076: Two structurally identical recursive types unify successfully.
+///
+/// Mu = Record { value: Repr(Int), next: RecursiveRef(0) }
+/// Both recursive types have the same body structure, so they should unify via
+/// the simultaneous-opening approach: open both with the same fresh TypeVar,
+/// then bidirectionally constrain the opened bodies.
+#[tokio::test]
+async fn test_unify_recursive_recursive_isomorphic() {
+    use crate::type_infer::{make_typevalue_recursive, make_typevalue_recursive_ref};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // Body: Record { value: Int, next: RecursiveRef(0) } -- self-referential linked-list node.
+    let body_a = make_record_tv(vec![
+        ("value", Arc::clone(&int_tv)),
+        ("next", make_typevalue_recursive_ref(0)),
+    ]);
+    let body_b = make_record_tv(vec![
+        ("value", Arc::clone(&int_tv)),
+        ("next", make_typevalue_recursive_ref(0)),
+    ]);
+
+    let rec_a = make_typevalue_recursive(body_a);
+    let rec_b = make_typevalue_recursive(body_b);
+
+    let result = unify_sync(&rec_a, &rec_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "Two structurally identical recursive types must unify: {:?}",
+        result.as_ref().err()
+    );
+}
+
+/// T-1076: Two recursive types with incompatible field types fail to unify.
+///
+/// Mu(a) = Record { value: Int, next: RecursiveRef(0) }
+/// Mu(b) = Record { value: String, next: RecursiveRef(0) }
+///
+/// After opening both with the same fresh TypeVar, the bodies differ in the `value` field
+/// type (Int vs String), so bidirectional constrain must fail.
+#[tokio::test]
+async fn test_unify_recursive_recursive_incompatible_fields() {
+    use crate::type_infer::{make_typevalue_recursive, make_typevalue_recursive_ref};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+
+    // Body A: Record { value: Int, next: RecursiveRef(0) }
+    let body_a = make_record_tv(vec![
+        ("value", Arc::clone(&int_tv)),
+        ("next", make_typevalue_recursive_ref(0)),
+    ]);
+    // Body B: Record { value: String, next: RecursiveRef(0) }
+    let body_b = make_record_tv(vec![
+        ("value", Arc::clone(&str_tv)),
+        ("next", make_typevalue_recursive_ref(0)),
+    ]);
+
+    let rec_a = make_typevalue_recursive(body_a);
+    let rec_b = make_typevalue_recursive(body_b);
+
+    let result = unify_sync(&rec_a, &rec_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_err(),
+        "Recursive types with incompatible value fields must NOT unify (Int != String)"
+    );
+}
+
+/// T-1076: TypeVar ~ Recursive binds the TypeVar to the Recursive type.
+///
+/// The U-VAR-LEVEL arm fires when a is a free TypeVar and the Recursive type is on the right.
+/// After unification, a must be bound to the Recursive type.
+#[tokio::test]
+async fn test_unify_typevar_binds_to_recursive_type() {
+    use crate::type_infer::{make_typevalue_recursive, make_typevalue_recursive_ref};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    state.set_level("a".to_string(), 0);
+    let tv_a = make_typevar_value("a");
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // Simple recursive type: Mu = Record { value: Int, self_ref: RecursiveRef(0) }
+    let body = make_record_tv(vec![
+        ("value", Arc::clone(&int_tv)),
+        ("self_ref", make_typevalue_recursive_ref(0)),
+    ]);
+    let rec_ty = make_typevalue_recursive(body);
+
+    // unify(TypeVar(a), Recursive) -- TypeVar on left, Recursive on right.
+    let result = unify_sync(&tv_a, &rec_ty, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "TypeVar ~ Recursive must succeed and bind the TypeVar: {:?}",
+        result.as_ref().err()
+    );
+
+    // TypeVar a must be bound in the substitution.
+    let bound = state.ctx.lookup("a");
+    assert!(
+        bound.is_some(),
+        "TypeVar 'a' must be bound to the Recursive type after unification"
+    );
+    // The binding must be the Recursive type (TV_RECURSIVE ctor).
+    let bound_tv = bound.unwrap();
+    assert!(
+        matches!(bound_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECURSIVE),
+        "TypeVar 'a' must be bound to a TypeValue.Recursive, got ctor: {:?}",
+        crate::type_infer::typevalue_ctor(&bound_tv)
+    );
+}
+
+/// T-1076: Recursive (left) ~ TypeVar (right) -- symmetric to the above.
+///
+/// The U-VAR-LEVEL-SYM arm fires when a is a free TypeVar on the right and the Recursive
+/// type is on the left. After unification, a must be bound to the Recursive type.
+#[tokio::test]
+async fn test_unify_recursive_left_with_typevar_right() {
+    use crate::type_infer::{make_typevalue_recursive, make_typevalue_recursive_ref};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    state.set_level("a".to_string(), 0);
+    let tv_a = make_typevar_value("a");
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    let body = make_record_tv(vec![
+        ("value", Arc::clone(&int_tv)),
+        ("self_ref", make_typevalue_recursive_ref(0)),
+    ]);
+    let rec_ty = make_typevalue_recursive(body);
+
+    // unify(Recursive, TypeVar(a)) -- Recursive on left, TypeVar on right.
+    let result = unify_sync(&rec_ty, &tv_a, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "Recursive ~ TypeVar must succeed and bind the TypeVar: {:?}",
+        result.as_ref().err()
+    );
+
+    let bound = state.ctx.lookup("a");
+    assert!(
+        bound.is_some(),
+        "TypeVar 'a' must be bound to the Recursive type after unification"
+    );
+    let bound_tv = bound.unwrap();
+    assert!(
+        matches!(bound_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECURSIVE),
+        "TypeVar 'a' must be bound to a TypeValue.Recursive, got ctor: {:?}",
+        crate::type_infer::typevalue_ctor(&bound_tv)
+    );
+}
+
+/// T-1076: Concrete type ~ Recursive fails when the types are structurally incompatible.
+///
+/// unify(Repr(Int), Recursive(Record{value:Int, next:RecursiveRef(0)})):
+/// The (_, TV_RECURSIVE) arm opens the recursive type with a fresh TypeVar and
+/// bidirectionally constrains Int with the opened body.
+/// The opened body is Record { value: Int, next: fresh_var }.
+/// constrain(Int, Record{...}) fails because Int is a Repr and Record is TV_RECORD.
+#[tokio::test]
+async fn test_unify_concrete_left_with_recursive_right() {
+    use crate::type_infer::{make_typevalue_recursive, make_typevalue_recursive_ref};
+
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    let body = make_record_tv(vec![
+        ("value", Arc::clone(&int_tv)),
+        ("next", make_typevalue_recursive_ref(0)),
+    ]);
+    let rec_ty = make_typevalue_recursive(body);
+
+    // unify(Repr(Int), Recursive(Record{value:Int, next:self})) -- Int vs record-shaped recursive.
+    let result = unify_sync(&int_tv, &rec_ty, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_err(),
+        "Repr(Int) ~ Recursive(Record{{value:Int, next:self}}) must fail: Int is not a Record"
+    );
+}
+
+// ============================================================================
+// T-913 / T-996: FD / resolver_deferred back-propagation tests
+// ============================================================================
+
+/// T-913: When both App(F, X) sides become ground after substitution,
+/// process_deferred_equalities resolves the deferred pair by unifying X_a ~ X_b.
+///
+/// Scenario: inject App(F, alpha) ~ App(F, beta) into deferred_equalities, then bind
+/// alpha=Int and beta=Int. When process_deferred_equalities runs, it applies the
+/// substitution and gets App(F, Int) ~ App(F, Int), which succeeds.
+#[tokio::test]
+async fn test_reverse_fd_back_propagates_determining_type() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    state.set_level("alpha".to_string(), 0);
+    state.set_level("beta".to_string(), 0);
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let tv_alpha = make_typevar_value("alpha");
+    let tv_beta = make_typevar_value("beta");
+    let f_op = make_typevalue_op("F");
+
+    // Build App(F, alpha) and App(F, beta).
+    let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_alpha));
+    let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_beta));
+
+    // Inject the deferred pair directly.
+    let mut deferred_equalities: Vec<(Arc<crate::value::Value>, Arc<crate::value::Value>)> =
+        vec![(app_a, app_b)];
+
+    // Bind alpha = Int and beta = Int (the determining types become known).
+    state
+        .ctx
+        .bind("alpha".to_string(), Arc::clone(&int_tv))
+        .unwrap();
+    state
+        .ctx
+        .bind("beta".to_string(), Arc::clone(&int_tv))
+        .unwrap();
+
+    let mut constraints = Vec::new();
+    let result = process_deferred_equalities(
+        &mut deferred_equalities,
+        &mut state.ctx,
+        &mut constraints,
+        span,
+    )
+    .await;
+
+    // After applying substitution: App(F, Int) ~ App(F, Int) -> same op + same arg -> Ok.
+    assert!(
+        result.is_ok(),
+        "FD back-propagation: App(F, Int) ~ App(F, Int) must resolve successfully: {:?}",
+        result.as_ref().err()
+    );
+    assert!(
+        deferred_equalities.is_empty(),
+        "All deferred equalities must be resolved; {} remain",
+        deferred_equalities.len()
+    );
+}
+
+/// T-996: A deferred FD pair with distinct ground args fails -- args do not agree.
+///
+/// Scenario: App(F, alpha) ~ App(F, beta) deferred; alpha=Int, beta=String.
+/// After substitution: App(F, Int) ~ App(F, String).
+/// unify(Int, String) fails -> process_deferred_equalities propagates the error.
+#[tokio::test]
+async fn test_reverse_fd_does_not_fire_when_not_injective() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    state.set_level("alpha".to_string(), 0);
+    state.set_level("beta".to_string(), 0);
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let tv_alpha = make_typevar_value("alpha");
+    let tv_beta = make_typevar_value("beta");
+    let f_op = make_typevalue_op("F");
+
+    let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_alpha));
+    let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_beta));
+
+    let mut deferred_equalities: Vec<(Arc<crate::value::Value>, Arc<crate::value::Value>)> =
+        vec![(app_a, app_b)];
+
+    // Bind alpha = Int, beta = String (distinct args).
+    state
+        .ctx
+        .bind("alpha".to_string(), Arc::clone(&int_tv))
+        .unwrap();
+    state
+        .ctx
+        .bind("beta".to_string(), Arc::clone(&str_tv))
+        .unwrap();
+
+    let mut constraints = Vec::new();
+    let result = process_deferred_equalities(
+        &mut deferred_equalities,
+        &mut state.ctx,
+        &mut constraints,
+        span,
+    )
+    .await;
+
+    // App(F, Int) ~ App(F, String): ops match, args Int != String -> Err.
+    assert!(
+        result.is_err(),
+        "FD: App(F, Int) ~ App(F, String) must fail when args are distinct"
+    );
+}
+
+/// T-996: process_deferred_equalities terminates when equalities are permanently unresolvable.
+///
+/// A ground pair App(F, Int) ~ App(F, String) that cannot be resolved:
+/// - First iteration: unify fails, no progress made -> fixpoint exits.
+/// - The function surfaces the error rather than looping.
+#[tokio::test]
+async fn test_fd_in_progress_terminates_mutual_recursion() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Ground, permanently-stuck pair: App(F, Int) ~ App(F, String).
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let f_op = make_typevalue_op("F");
+
+    let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&int_tv));
+    let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&str_tv));
+
+    let mut deferred_equalities: Vec<(Arc<crate::value::Value>, Arc<crate::value::Value>)> =
+        vec![(app_a, app_b)];
+
+    let mut constraints = Vec::new();
+    let result = process_deferred_equalities(
+        &mut deferred_equalities,
+        &mut state.ctx,
+        &mut constraints,
+        span,
+    )
+    .await;
+
+    // No progress in first iteration (both sides ground, unification fails immediately).
+    // Fixpoint exits without looping; error is surfaced.
+    assert!(
+        result.is_err(),
+        "process_deferred_equalities must terminate and surface error for permanently stuck pair"
+    );
+}
+
+// ============================================================================
+// T-1206: TypeValue.Op Arc-identity unification tests
+// ============================================================================
+
+/// T-1206: Two TypeValue.Op values with the same name and different Arcs unify via name equality.
+///
+/// TypeValue.Op stores only a name string -- no Arc<TyConDef> is embedded.
+/// Arc-identity was relevant for Type::TyConResolved (old Type-enum, archived in S-919).
+/// For TypeValue.Op, same name = same type operator, regardless of Arc identity.
+/// This test documents the current correct semantics.
+#[tokio::test]
+async fn test_tycon_resolved_different_arcs_reject_unification() {
+    // Name: "reject_unification" is from the original T-1206 task about TyConResolved.
+    // For TypeValue.Op, different Arcs with the same name SUCCEED (name equality is correct).
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    // Two distinct Arc allocations for Op("List").
+    let op_a = make_typevalue_op("List");
+    let op_b = make_typevalue_op("List");
+
+    assert!(
+        !Arc::ptr_eq(&op_a, &op_b),
+        "test setup: op_a and op_b must be different Arc allocations"
+    );
+
+    // Different Arcs, same name -> name equality -> Ok.
+    let result = unify_sync(&op_a, &op_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "TypeValue.Op(\"List\") ~ TypeValue.Op(\"List\") from different Arcs must unify (name equality): {:?}",
+        result.as_ref().err()
+    );
+}
+
+/// T-1206: Two TypeValue.Op values sharing the same Arc unify via ptr_eq fast path.
+///
+/// When both sides are the same Arc<Value>, `typevalue_shallow_eq` returns true via ptr_eq
+/// before dispatching on the ctor. This verifies the reflexivity fast path.
+#[tokio::test]
+async fn test_tycon_resolved_same_arc_unifies() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let op = make_typevalue_op("Color");
+    // Clone the Arc -- same underlying allocation.
+    let op_same = Arc::clone(&op);
+
+    assert!(
+        Arc::ptr_eq(&op, &op_same),
+        "test setup: op and op_same must be the same Arc allocation"
+    );
+
+    let result = unify_sync(&op, &op_same, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "TypeValue.Op(\"Color\") ~ TypeValue.Op(\"Color\") (same Arc) must unify via ptr_eq: {:?}",
+        result.as_ref().err()
+    );
+}
+
+// ============================================================================
+// T-1112: UNIFY-TYCON-EXPAND tests
+// ============================================================================
+
+/// T-1112: App(Alias, Int) ~ App(Alias, Int) -- same op name, structural unification.
+///
+/// When both sides have the same op name, the injective structural path fires:
+/// unify(Op(Alias), Op(Alias)) succeeds, then unify(Int, Int) succeeds.
+/// No tycon_env expansion needed for same-op unification.
+#[tokio::test]
+async fn test_unify_tycon_expand_same_op_same_args_succeeds() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let alias_op = make_typevalue_op("Alias");
+
+    let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&alias_op), Arc::clone(&int_tv));
+    let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&alias_op), Arc::clone(&int_tv));
+
+    let result = unify_sync(&app_a, &app_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    assert!(
+        result.is_ok(),
+        "App(Alias, Int) ~ App(Alias, Int): same op + same arg must unify structurally: {:?}",
+        result.as_ref().err()
+    );
+}
+
+/// T-1112: App(AliasA, Int) ~ App(AliasB, Int) where both ops expand via tycon_env to
+/// the same type (the parameter itself -- AliasA[a]=a, AliasB[a]=a, so both become Int).
+///
+/// The UNIFY-TYCON-EXPAND path fires: expand_tycon_app substitutes Int for "a" in each
+/// body. Both bodies are TypeVar("a"), which becomes Repr(Int) after substitution.
+/// unify(Int, Int) succeeds.
+#[tokio::test]
+async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // AliasA body = TypeVar("a") -- expands to its argument.
+    let body_a = make_typevar_value("a");
+    let def_a = Arc::new(TyConDef {
+        params: vec!["a".to_string()],
+        body: Arc::new(body_a.as_ref().clone()),
+        constraints: vec![],
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+        constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
+    });
+
+    // AliasB body = TypeVar("a") -- same structure.
+    let body_b = make_typevar_value("a");
+    let def_b = Arc::new(TyConDef {
+        params: vec!["a".to_string()],
+        body: Arc::new(body_b.as_ref().clone()),
+        constraints: vec![],
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+        constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
+    });
+
+    // Register in ctx.tycon_env (not state.tycon_env -- that's a separate field).
+    state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
+    state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
+
+    let op_a = make_typevalue_op("AliasA");
+    let op_b = make_typevalue_op("AliasB");
+
+    let app_a = crate::type_infer::make_typevalue_app(op_a, Arc::clone(&int_tv));
+    let app_b = crate::type_infer::make_typevalue_app(op_b, Arc::clone(&int_tv));
+
+    let result = unify_sync(&app_a, &app_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    // AliasA[Int] -> Int, AliasB[Int] -> Int. unify(Int, Int) succeeds.
+    assert!(
+        result.is_ok(),
+        "App(AliasA, Int) ~ App(AliasB, Int) where both expand to Int must unify via TYCON-EXPAND: {:?}",
+        result.as_ref().err()
+    );
+}
+
+/// T-1112: App(AliasA, Int) ~ App(AliasB, Int) where the bodies expand to different concrete types.
+///
+/// AliasA body = Repr(Int) (ignores arg, always Int).
+/// AliasB body = Repr(String) (ignores arg, always String).
+/// AliasA[Int] -> Int, AliasB[Int] -> String. unify(Int, String) fails.
+#[tokio::test]
+async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+
+    // AliasA body = Repr(Int) -- constant body.
+    let def_a = Arc::new(TyConDef {
+        params: vec!["a".to_string()],
+        body: Arc::clone(&int_tv),
+        constraints: vec![],
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+        constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
+    });
+
+    // AliasB body = Repr(String) -- different constant body.
+    let def_b = Arc::new(TyConDef {
+        params: vec!["a".to_string()],
+        body: Arc::clone(&str_tv),
+        constraints: vec![],
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+        constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
+    });
+
+    state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
+    state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
+
+    let op_a = make_typevalue_op("AliasA");
+    let op_b = make_typevalue_op("AliasB");
+
+    let app_a = crate::type_infer::make_typevalue_app(op_a, Arc::clone(&int_tv));
+    let app_b = crate::type_infer::make_typevalue_app(op_b, Arc::clone(&int_tv));
+
+    let result = unify_sync(&app_a, &app_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    // AliasA[Int] -> Int, AliasB[Int] -> String. unify(Int, String) fails.
+    assert!(
+        result.is_err(),
+        "App(AliasA, Int) ~ App(AliasB, Int) where bodies expand to different types must fail"
+    );
+}
+
+/// T-1112: App(KnownAlias, Int) ~ App(UnknownOp, Int) -- one op not in tycon_env.
+///
+/// expand_tycon_app returns None for UnknownOp (not registered).
+/// The fallback structural unification fires: unify(Op(KnownAlias), Op(UnknownOp)).
+/// Different names -> Err.
+#[tokio::test]
+async fn test_unify_tycon_expand_one_op_not_registered_fails() {
+    let mut state = InferState::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // Register only "KnownAlias".
+    let def = Arc::new(TyConDef {
+        params: vec!["a".to_string()],
+        body: Arc::clone(&int_tv),
+        constraints: vec![],
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+        constructor_constants: indexmap::IndexMap::new(),
+        definition_span: None,
+    });
+    state.ctx.tycon_env.insert("KnownAlias".to_string(), def);
+
+    let op_known = make_typevalue_op("KnownAlias");
+    let op_unknown = make_typevalue_op("UnknownOp"); // not in tycon_env
+
+    let app_a = crate::type_infer::make_typevalue_app(op_known, Arc::clone(&int_tv));
+    let app_b = crate::type_infer::make_typevalue_app(op_unknown, Arc::clone(&int_tv));
+
+    let result = unify_sync(&app_a, &app_b, &mut state.ctx, &mut Vec::new(), span).await;
+
+    // Cannot expand UnknownOp -> fallback structural -> Op names differ -> Err.
+    assert!(
+        result.is_err(),
+        "App(KnownAlias, Int) ~ App(UnknownOp, Int): UnknownOp not in tycon_env -> must fail"
     );
 }

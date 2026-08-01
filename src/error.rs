@@ -869,6 +869,10 @@ pub struct EvalError {
     /// Optional pipeline blame provenance for contract violation enrichment.
     /// When present, identifies the producing/consuming stage at a `---` boundary.
     pub pipeline_stage: Option<PipelineBlame>,
+    /// Text-only notes rendered as `  = note: {text}` after span notes.
+    /// Matches the `= note:` style of TypeDiagnostic for uniform error presentation.
+    /// Use for actual/expected type context and other human-readable annotations.
+    pub notes: Vec<String>,
 }
 
 impl EvalError {
@@ -882,6 +886,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -895,6 +900,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -968,6 +974,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -983,6 +990,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -999,6 +1007,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1015,6 +1024,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1066,6 +1076,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1079,6 +1090,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1092,6 +1104,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1103,6 +1116,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1114,6 +1128,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1125,6 +1140,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1136,6 +1152,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1150,6 +1167,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1161,6 +1179,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1172,6 +1191,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1187,6 +1207,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1198,6 +1219,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1209,6 +1231,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1220,6 +1243,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1231,6 +1255,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1242,6 +1267,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1253,6 +1279,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1267,7 +1294,15 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
+    }
+
+    /// Append a text-only note rendered as `  = note: {text}`.
+    /// Matches the `= note:` format of TypeDiagnostic for uniform presentation.
+    pub fn with_note(mut self, note: String) -> Self {
+        self.notes.push(note);
+        self
     }
 
     pub fn no_instance(class_name: &str, type_tags: Vec<String>, span: Span) -> Self {
@@ -1281,6 +1316,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1295,6 +1331,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1310,6 +1347,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1323,6 +1361,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1336,6 +1375,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1347,6 +1387,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1358,6 +1399,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1369,6 +1411,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1389,6 +1432,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1400,6 +1444,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1415,6 +1460,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1426,6 +1472,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1440,6 +1487,7 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+            notes: Vec::new(),
         }
     }
 }
@@ -1474,6 +1522,11 @@ impl fmt::Display for EvalError {
         // Covers both materialization spans ("evaluated here") and secondary spans.
         for (ref span, ref label) in self.spans.iter().skip(1) {
             write!(f, "\n  note: {label} at {}", span)?;
+        }
+
+        // Text-only notes — rendered as "  = note: {text}" matching TypeDiagnostic format.
+        for note in &self.notes {
+            write!(f, "\n  = note: {note}")?;
         }
 
         // Display all stack frames (all frames are always shown — no filtering)

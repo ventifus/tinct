@@ -999,6 +999,7 @@ fn is_fn_subtype(
     }
 }
 
+
 /// Check whether a tail value represents a closed row (no additional fields allowed).
 ///
 /// Closed = empty dict `[]` OR `RowTail.Closed` variant. Open rows carry `RowTail.Var`
@@ -2024,6 +2025,10 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
         // Fn vs Op: disjoint
         (Some(TV_FN), Some(TV_OP)) | (Some(TV_OP), Some(TV_FN)) => true,
 
+        // Fn vs App: disjoint. A function type (TV_FN) and a type-constructor application
+        // (TV_APP) are distinct structural forms — no value can inhabit both simultaneously.
+        (Some(TV_FN), Some(TV_APP)) | (Some(TV_APP), Some(TV_FN)) => true,
+
         // Different kinds of things: conservative
         _ => false,
     }
@@ -2166,6 +2171,58 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         if let Some(payload) = typevalue_payload(sup) {
             let members = payload_members(payload);
             return members.iter().all(|m| is_consistent_subtype(sub, m, ctx));
+        }
+    }
+
+    // TV_FN on both sides: consistent function subtyping with recursive is_consistent_subtype
+    // for element checks. is_subtype_bas (the fallthrough) uses is_fn_subtype which calls
+    // is_subtype_bas_with_sigma — that rejects Unknown <: TypeVar because Unknown is not in
+    // the strict subtype lattice. Consistent subtyping requires handling gradual positions
+    // (Unknown, TypeVar) in params/return by calling is_consistent_subtype recursively.
+    if matches!(sub_ctor, Some(TV_FN)) && matches!(sup_ctor, Some(TV_FN)) {
+        let sub_p = typevalue_payload(sub);
+        let sup_p = typevalue_payload(sup);
+        let (sub_payload, sup_payload) = match (sub_p, sup_p) {
+            (Some(s), Some(p)) => (s, p),
+            _ => return true, // Any-function payload missing → accept
+        };
+        let sup_variadic = payload_bool_field(sup_payload, FIELD_VARIADIC).unwrap_or(false);
+        let sup_params_val = payload_typevalue_field(sup_payload, FIELD_PARAMS);
+        // Callable (variadic with 0 required params) means "any function" → accept always.
+        let sup_list = sup_params_val.as_ref().map(|ps| collect_indexed_typevalues(ps));
+        let sup_required = sup_list.as_ref().map_or(0, |l| l.len());
+        if sup_variadic && sup_required == 0 {
+            return true;
+        }
+        // Covariant return.
+        let sub_ret = payload_typevalue_field(sub_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
+        let sup_ret = payload_typevalue_field(sup_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
+        if !is_consistent_subtype(&sub_ret, &sup_ret, ctx) {
+            return false;
+        }
+        // Contravariant params.
+        let sub_params_val = payload_typevalue_field(sub_payload, FIELD_PARAMS);
+        match (sub_params_val, sup_list) {
+            (None, None) => return true,
+            (_, None) => return true, // sup any-function
+            (None, Some(_)) => return sup_variadic,
+            (Some(sub_ps), Some(sup_list)) => {
+                let sub_list = collect_indexed_typevalues(&sub_ps);
+                let sub_variadic = payload_bool_field(sub_payload, FIELD_VARIADIC).unwrap_or(false);
+                let sub_required = sub_list.len();
+                if sub_required > sup_required {
+                    return false;
+                }
+                if !sub_variadic && sub_required < sup_required {
+                    return false;
+                }
+                for i in 0..sub_required {
+                    if !is_consistent_subtype(&sup_list[i], &sub_list[i], ctx) {
+                        return false;
+                    }
+                }
+                return true;
+            }
         }
     }
 
