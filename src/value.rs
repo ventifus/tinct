@@ -964,16 +964,26 @@ pub enum Value {
     /// A single document within a program — accessible via `program.documents`.
     Document {
         doc: Arc<SurfaceDocument>,
-        /// Resolver scope frames produced by `builtin-resolve`.
+        /// BlockBody scope frames from `resolve_surface_document_with_seed_frames`.
         ///
-        /// B-695: builtin-lower needs the document's own resolver frames (which include
-        /// instance method names from earlier dicts) to correctly resolve MethodDispatcher
-        /// calls during lowering. Without these frames, cross-dict instance method calls
-        /// fail to resolve because builtin-lower only sees the loader's root_group frames.
+        /// Used by the type checker (typecheck_cek.rs) to find slot bases for sequential
+        /// intermediate dict bodies. Only BlockBody (sequential injection) frames are here;
+        /// Dict letrec frames are in `dict_frames`.
         ///
-        /// Set by builtin-resolve when it calls resolve_surface_document_with_seed_frames.
-        /// Empty if the document was not resolved (e.g., constructed programmatically).
+        /// Set by builtin-resolve. Empty if the document was not resolved.
         resolver_frames: Arc<Vec<indexmap::IndexMap<String, u32>>>,
+        /// Dict letrec scope frames and env-names frame from `resolve_surface_document_with_seed_frames`.
+        ///
+        /// Used exclusively by `builtin-lower` (make_method_dispatcher_fn) to find:
+        /// - mangled instance binding names (e.g., ɪɴꜱᴛᴀɴᴄᴇ⧼Castable∷cast⟨a⟩⧽)
+        /// - type names for dispatch pattern matching (Integer, String, user types)
+        /// - "builtin-raise" for the fallback arm
+        ///
+        /// Kept separate from resolver_frames so the type checker's BlockBody slot
+        /// disambiguation logic is not confused by unrelated Dict frame entries.
+        ///
+        /// Set by builtin-resolve. Empty if the document was not resolved.
+        dict_frames: Arc<Vec<indexmap::IndexMap<String, u32>>>,
         type_val: Arc<Value>,
     },
 
@@ -1242,10 +1252,12 @@ impl Clone for Value {
             Value::Document {
                 doc,
                 resolver_frames,
+                dict_frames,
                 type_val,
             } => Value::Document {
                 doc: Arc::clone(doc),
                 resolver_frames: Arc::clone(resolver_frames),
+                dict_frames: Arc::clone(dict_frames),
                 type_val: Arc::clone(type_val),
             },
             Value::Expression { node, type_val } => Value::Expression {

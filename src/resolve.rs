@@ -149,6 +149,13 @@ struct SurfaceResolver {
     /// Returned by `resolve_surface_program` as `resolver_frames` so the type checker can
     /// find the slot base for any sequential intermediate body without context-specific logic.
     block_body_frames: Vec<indexmap::IndexMap<String, u32>>,
+    /// All `Dict` letrec scope frames collected during the walk.
+    ///
+    /// Each Dict frame maps name → absolute LGM slot for every static key in that dict
+    /// (including injected plain method names and mangled instance binding names). Returned
+    /// separately from block_body_frames so that `make_method_dispatcher_fn` can resolve
+    /// mangled instance binding names without polluting the type-checker's slot lookup.
+    dict_frames: Vec<indexmap::IndexMap<String, u32>>,
 }
 
 impl SurfaceResolver {
@@ -165,6 +172,7 @@ impl SurfaceResolver {
             accumulated_dict_offset: 0,
             field_getter_name: Arc::from("builtin-dict-get"),
             block_body_frames: Vec::new(),
+            dict_frames: Vec::new(),
         }
     }
 
@@ -201,6 +209,11 @@ impl SurfaceResolver {
             // Collect BlockBody sequential injection frames so resolve_surface_program can
             // return them.
             self.block_body_frames.push(frame.clone());
+        }
+        if kind == ScopeKind::Dict {
+            // Collect Dict letrec frames so builtin-lower can pass them to
+            // make_method_dispatcher_fn for mangled instance binding name resolution.
+            self.dict_frames.push(frame.clone());
         }
         self.scopes.push((scope, kind));
     }
@@ -1429,8 +1442,9 @@ pub fn resolve_surface_document_with_env_dict(
 /// Used by `builtin-resolve` to include root_group entries in the resolver's scope at
 /// their correct runtime slots, while keeping env-dict names at their own offset
 /// starting at `root_group_len`.
-/// Returns `(table, diagnostics, unreferenced, block_body_frames)`.
-/// `block_body_frames` — BlockBody sequential injection frames for the type checker and builtin-lower.
+/// Returns `(table, diagnostics, unreferenced, block_body_frames, dict_frames)`.
+/// `block_body_frames` — BlockBody sequential injection frames for the type checker.
+/// `dict_frames` — Dict letrec frames for builtin-lower's make_method_dispatcher_fn.
 pub fn resolve_surface_document_with_seed_frames(
     doc: &crate::ast::SurfaceDocument,
     seed_frames: &[indexmap::IndexMap<String, u32>],
@@ -1440,6 +1454,7 @@ pub fn resolve_surface_document_with_seed_frames(
     ResolutionTable,
     Vec<TypeDiagnostic>,
     Vec<String>,
+    Vec<indexmap::IndexMap<String, u32>>,
     Vec<indexmap::IndexMap<String, u32>>,
 ) {
     let mut resolver = SurfaceResolver::new();
@@ -1466,9 +1481,16 @@ pub fn resolve_surface_document_with_seed_frames(
     resolver.exit_scope();
 
     let block_body_frames = std::mem::take(&mut resolver.block_body_frames);
+    let dict_frames = std::mem::take(&mut resolver.dict_frames);
 
     let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced, block_body_frames)
+    (
+        table,
+        diagnostics,
+        unreferenced,
+        block_body_frames,
+        dict_frames,
+    )
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.

@@ -82,35 +82,6 @@ pub(crate) fn resolve_name_in_frames(
     None
 }
 
-/// Resolve a name in parent scope only — skipping the innermost frame (level 0).
-///
-/// This is the leading-dot semantic: `.name` searches from level 1 outward, bypassing
-/// the current letrec group. Used by `make_method_dispatcher_fn` to find an outer-scope
-/// copy of the same method name for delegation.
-///
-/// Returns `None` if the name is not found in any frame at level >= 1, or if there are
-/// fewer than two frames (no parent scope exists).
-#[allow(dead_code)]
-fn resolve_name_in_frames_parent(
-    frames: &[indexmap::IndexMap<String, u32>],
-    name: &str,
-) -> Option<(u32, u32)> {
-    // Skip frames[n-1] (the innermost, level 0) and search from frames[n-2] outward.
-    // Returned level starts at 1 so it is compatible with the same de Bruijn conventions as
-    // resolve_name_in_frames.
-    if frames.len() < 2 {
-        return None;
-    }
-    let parent_frames = &frames[..frames.len() - 1];
-    for (offset, frame) in parent_frames.iter().rev().enumerate() {
-        if let Some(&slot) = frame.get(name) {
-            // Offset is relative to parent_frames: offset 0 = frames[n-2] = level 1 overall.
-            return Some((offset as u32 + 1, slot));
-        }
-    }
-    None
-}
-
 /// Process escape sequences in a single-quoted string literal.
 ///
 /// Recognized escapes:
@@ -1464,7 +1435,12 @@ fn make_method_dispatcher_fn(
     // no capture entry needed (resolved directly from `frame.group`).
 
     // Classify instances by their primary type_arg (dispatch tag).
-    // type_name_to_mangled: type_arg → mangled_binding_name
+    // type_name_to_all_instances: primary_tag → Vec<(type_args, mangled_binding_name)>
+    // Multiple instances can share the same primary tag (e.g., Integer+Integer and Integer+Float).
+    // type_name_to_mangled: primary_tag → single mangled (for single-instance primaries only,
+    // kept for the outer_names collection; multi-instance primaries use per-instance mangled names).
+    let mut type_name_to_all_instances: indexmap::IndexMap<String, Vec<(Vec<String>, String)>> =
+        indexmap::IndexMap::new();
     let mut type_name_to_mangled: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
     let mut catch_all_mangled: Option<String> = None;
 
@@ -1480,30 +1456,63 @@ fn make_method_dispatcher_fn(
             // No dispatch tag or lowercase (TypeVar) — treat as catch-all
             catch_all_mangled = Some(mangled.clone());
         } else {
-            // Uppercase type name — insert into dispatch map (last wins for duplicates)
+            // Collect all instances for this primary tag (multi-parameter dispatch support).
+            type_name_to_all_instances
+                .entry(primary_tag.to_string())
+                .or_default()
+                .push((type_args.clone(), mangled.clone()));
+            // Also update the single-mangled map (last wins) for outer_names collection.
             type_name_to_mangled.insert(primary_tag.to_string(), mangled.clone());
         }
     }
 
-    // Collect only "builtin-raise" for the fallback arm.
-    // Type names (dispatch tags like "Integer", "File", "Stdout") are NOT included because
-    // they are resolved via ctx.scope_frames (the init program's block_body_frames), which
-    // contain test-loader intermediate dict entries at slots that are INVALID in the prelude's
-    // accumulated_group. Using those slots → panic "capture miss" at fn creation time.
-    // Type pattern arms will have resolution=None → silently skip → correct.
+    // Collect ALL names the dispatcher body needs as outer-scope captures.
+    //   1. Type names (dispatch tags): e.g., "Integer", "String" — for match arm patterns.
+    //   2. Mangled binding names: e.g., ɪɴꜱᴛᴀɴᴄᴇ⧼Castable∷cast⟨a⟩⧽ — actual implementations.
+    //   3. "builtin-raise" for the fallback arm.
     //
-    // Only "builtin-raise" is safe to capture because it's in the root_group at a slot that
-    // IS valid in the prelude's accumulated_group (root_group is always at slots 0..N-1).
-    // Using LGM(root_slot) as original_addr: at fn creation time frame.group[root_slot] =
-    // the builtin-raise thunk. Inside the Fn body: ClosureCapture(i) → closure_env[i].
-    let mut outer_names: Vec<String> = Vec::new();
-    outer_names.push("builtin-raise".to_string());
+    // All captured with LGM(slot) as original_addr (B-689 fix):
+    //   - Dispatcher is a synthesized CoreExpr::Fn at dict level.
+    //   - At fn definition time, frame.group[slot] gives the thunk directly.
+    //   - Inside fn body, ClosureCapture(cap_idx) → closure_env[cap_idx].
+    //   - De Bruijn level from resolve_name_in_frames is IGNORED — synthesized Fns don't
+    //     have real scope boundaries; all outer references are captured via LGM.
+    //
+    // scope_frames (from builtin-lower) = block_body_frames + dict_frames + env_names_frame:
+    //   - env_names_frame (INNERMOST, searched first): TypeNode values for type names.
+    //     Must be innermost so TypeNode.Int is found before ClassDecl {} from the public dict.
+    //   - dict_frames: mangled instance binding names at their LGM slots.
+    //   - block_body_frames: sequential injection frames (usually not needed for dispatcher).
+    let mut outer_names: Vec<String> = vec!["builtin-raise".to_string()];
+    for (type_name, all_instances) in &type_name_to_all_instances {
+        if !outer_names.contains(type_name) {
+            outer_names.push(type_name.clone());
+        }
+        // Also collect secondary type tags (for nested dispatch) and ALL mangled names.
+        for (type_args, mangled) in all_instances {
+            // Secondary type tags (index 1+) for nested dispatch patterns.
+            for secondary_tag in type_args.iter().skip(1) {
+                if secondary_tag
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                    && !outer_names.contains(secondary_tag)
+                {
+                    outer_names.push(secondary_tag.clone());
+                }
+            }
+            if !outer_names.contains(mangled) {
+                outer_names.push(mangled.clone());
+            }
+        }
+    }
+    if let Some(ref m) = catch_all_mangled {
+        if !outer_names.contains(m) {
+            outer_names.push(m.clone());
+        }
+    }
 
-    // Build resolved_addrs: outer_name → VarAddr to use in the body.
-    // ALL names use ClosureCapture with LGM(slot) as original_addr (B-689 fix):
-    // - The dispatcher Fn is created at dict level where frame.closure_env is empty.
-    // - LGM(slot) works at fn creation time: frame.group[slot] = the thunk.
-    // - Inside the Fn body: ClosureCapture(cap_idx) → closure_env[cap_idx].
     let mut resolved_addrs: indexmap::IndexMap<String, VarAddr> = indexmap::IndexMap::new();
     let mut capture_list: Vec<(String, VarAddr)> = Vec::new();
 
@@ -1511,26 +1520,14 @@ fn make_method_dispatcher_fn(
         if resolved_addrs.contains_key(name.as_str()) {
             continue;
         }
-        match scope_frames.and_then(|frames| resolve_name_in_frames(frames, name)) {
-            Some((_level, slot)) => {
-                // Capture with LGM(slot) as original_addr — valid for root_group entries
-                // (slot < root_group.len() ≤ prelude accumulated_group size).
-                let cap_idx = capture_list.len() as u32;
-                capture_list.push((name.clone(), VarAddr::LetrecGroupMember { depth: 0, slot }));
-                resolved_addrs.insert(name.clone(), VarAddr::ClosureCapture(cap_idx));
-            }
-            None => {
-                // Not found in scope_frames — will use Placeholder at use site.
-            }
+        if let Some((_level, slot)) =
+            scope_frames.and_then(|frames| resolve_name_in_frames(frames, name))
+        {
+            let cap_idx = capture_list.len() as u32;
+            capture_list.push((name.clone(), VarAddr::LetrecGroupMember { depth: 0, slot }));
+            resolved_addrs.insert(name.clone(), VarAddr::ClosureCapture(cap_idx));
         }
     }
-
-    // Parent dispatch DISABLED (B-689): resolve_name_in_frames_parent finds entries from the
-    // init program's block_body_frames at slots invalid in the prelude's accumulated_group.
-    // Using those slots as LGM original_addr → panic "capture miss" at fn creation time.
-    // The parent dispatch feature requires dict_frames from the defining document (B-689).
-    #[allow(dead_code)]
-    const PARENT_DISPATCH_KEY: &str = "__parent_dispatch__";
 
     // Build param list: __d0, __d1, ... __d_{n-1}
     let param_count = param_count.max(1);
@@ -1571,15 +1568,15 @@ fn make_method_dispatcher_fn(
             .collect()
     };
 
-    // Helper: build a call to a mangled binding, resolving its addr from scope_frames.
-    // Mangled bindings are in the same letrec group (level=0 → LGM, no capture needed).
+    // Build a call to a mangled binding using its pre-resolved ClosureCapture addr.
+    // All mangled names were resolved in the outer_names loop above with LGM original_addr.
     let make_mangled_call = |mangled: &str| -> CoreExpr {
-        match scope_frames.and_then(|frames| resolve_name_in_frames(frames, mangled)) {
-            Some((level, slot)) => CoreExpr::Call {
+        match resolved_addrs.get(mangled).cloned() {
+            Some(addr) => CoreExpr::Call {
                 func: Arc::new(Spanned::new(
                     CoreExpr::Var {
                         name: mangled.to_string(),
-                        addr: debruijn_to_var_addr(level, slot),
+                        addr,
                         annotation: None,
                     },
                     span.clone(),
@@ -1592,10 +1589,9 @@ fn make_method_dispatcher_fn(
         }
     };
 
-    // Helper: make a type-name pattern SurfaceNode for a match arm.
-    // The pattern is a VarRef with resolution set to the type name's VarAddr.
+    // Build a type-name pattern VarRef using its pre-resolved ClosureCapture addr.
     // When the VarRef resolves to a TypeNode unit variant, the match evaluator routes
-    // through `typenode_ctor_to_typevalue` + `value_matches_type` to check the scrutinee's type.
+    // through typenode_ctor_to_typevalue + value_matches_type to check the scrutinee's type.
     let make_type_pattern = |type_name: &str| -> Arc<SurfaceNode> {
         let resolution = crate::ast::Resolution::new();
         match resolved_addrs.get(type_name) {
@@ -1603,10 +1599,7 @@ fn make_method_dispatcher_fn(
                 resolution.set(Some(addr.clone()));
             }
             None => {
-                // Type name not found in scope — pattern will not match at runtime.
-                // This is expected for type-stage types (e.g., TypeNode) that are not
-                // visible in the runtime resolver scope. The arm is silently omitted;
-                // the catch-all handles unmatched cases.
+                // Not in scope — pattern will not match (arm silently skipped).
                 resolution.set(None);
             }
         };
@@ -1626,9 +1619,99 @@ fn make_method_dispatcher_fn(
     let mut arms: Vec<CoreMatchArm> = Vec::new();
 
     // Type-specific arms
-    for (type_name, mangled) in &type_name_to_mangled {
+    // Build type-specific dispatch arms. For primary tags with a SINGLE instance, build a
+    // simple arm body. For primary tags with MULTIPLE instances (e.g., Integer+Integer and
+    // Integer+Float for Addable/Multipliable), build a nested dispatch on the second argument.
+    for (type_name, all_instances) in &type_name_to_all_instances {
         let pattern = make_type_pattern(type_name);
-        let body = Arc::new(Spanned::new(make_mangled_call(mangled), span.clone()));
+        let body = if all_instances.len() == 1 {
+            // Single instance — simple mangled call.
+            let (_type_args, mangled) = &all_instances[0];
+            Arc::new(Spanned::new(make_mangled_call(mangled), span.clone()))
+        } else {
+            // Multiple instances with same primary tag — nested dispatch on __d1.
+            // Build: [match __d1 SecondaryTag1 → call mangled1, SecondaryTag2 → call mangled2, ... → raise]
+            let secondary_scrutinee = Arc::new(Spanned::new(
+                CoreExpr::Var {
+                    name: param_names
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(|| "__d1".to_string()),
+                    addr: VarAddr::Parameter(1),
+                    annotation: None,
+                },
+                span.clone(),
+            ));
+            let mut secondary_arms: Vec<CoreMatchArm> = Vec::new();
+            for (type_args, mangled) in all_instances {
+                let secondary_tag = type_args.get(1).map(|s| s.as_str()).unwrap_or("");
+                let sec_pattern = if secondary_tag
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
+                    make_type_pattern(secondary_tag)
+                } else {
+                    // TypeVar or no secondary tag — wildcard
+                    Arc::new(SurfaceNode::new(
+                        SurfaceExpression::Placeholder(None, None),
+                        span.clone(),
+                    ))
+                };
+                secondary_arms.push(CoreMatchArm {
+                    pattern: sec_pattern,
+                    let_bindings: None,
+                    lowered_pattern: None,
+                    guard: None,
+                    body: Arc::new(Spanned::new(make_mangled_call(mangled), span.clone())),
+                    guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                    captures: None,
+                });
+            }
+            // Add wildcard fallback for secondary dispatch.
+            let secondary_raise = match resolved_addrs.get("builtin-raise").cloned() {
+                Some(raise_addr) => CoreExpr::Call {
+                    func: Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: "builtin-raise".to_string(),
+                            addr: raise_addr,
+                            annotation: None,
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![Arc::new(Spanned::new(
+                        CoreExpr::Str(format!(
+                            "no instance of method '{}' for the given argument types",
+                            method_name
+                        )),
+                        span.clone(),
+                    ))],
+                    named_args: vec![],
+                    implied: false,
+                },
+                None => CoreExpr::Placeholder,
+            };
+            secondary_arms.push(CoreMatchArm {
+                pattern: Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Placeholder(None, None),
+                    span.clone(),
+                )),
+                let_bindings: None,
+                lowered_pattern: None,
+                guard: None,
+                body: Arc::new(Spanned::new(secondary_raise, span.clone())),
+                guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                captures: None,
+            });
+            Arc::new(Spanned::new(
+                CoreExpr::Match {
+                    scrutinee: secondary_scrutinee,
+                    arms: secondary_arms,
+                },
+                span.clone(),
+            ))
+        };
         arms.push(CoreMatchArm {
             pattern,
             let_bindings: None,
@@ -1640,71 +1723,44 @@ fn make_method_dispatcher_fn(
         });
     }
 
-    // Wildcard fallback arm: delegate to parent scope, or raise if no parent copy exists.
+    // Wildcard fallback arm: use the catch-all TypeVar instance if present, otherwise raise.
     //
     // Priority order:
     //   1. catch_all_mangled — a same-dict instance with a TypeVar (catch-all) dispatch tag.
-    //   2. Parent-scope delegation (leading-dot semantic) — the outer scope may have another
-    //      MethodDispatcher for this method that handles additional types. This enables user files
-    //      to extend prelude methods with new instances without breaking existing ones.
-    //   3. builtin-raise — no instance found anywhere in the scope chain.
+    //   2. builtin-raise — no instance found anywhere in the scope chain.
     let fallback_body = match catch_all_mangled {
         Some(ref mangled) => make_mangled_call(mangled),
-        None => match resolved_addrs.get(PARENT_DISPATCH_KEY).cloned() {
-            Some(parent_addr) => {
-                // Delegate to the outer scope's copy of this method (leading-dot semantic).
-                // Passing all params forwards the full argument list — the parent dispatcher
-                // will attempt its own type-based dispatch and eventually raise if it also
-                // has no matching instance.
-                CoreExpr::Call {
-                    func: Arc::new(Spanned::new(
-                        CoreExpr::Var {
-                            name: method_name.to_string(),
-                            addr: parent_addr,
-                            annotation: None,
-                        },
-                        span.clone(),
-                    )),
-                    args: make_call_args(),
-                    named_args: vec![],
-                    implied: false,
-                }
-            }
-            None => {
-                // No parent-scope copy of this method — raise immediately.
-                match resolved_addrs.get("builtin-raise").cloned() {
-                    Some(raise_addr) => CoreExpr::Call {
-                        func: Arc::new(Spanned::new(
-                            CoreExpr::Var {
-                                name: "builtin-raise".to_string(),
-                                addr: raise_addr,
-                                annotation: None,
-                            },
-                            span.clone(),
-                        )),
-                        args: vec![Arc::new(Spanned::new(
-                            CoreExpr::Str(format!(
-                                "no instance of method '{}' for the given argument types",
-                                method_name
-                            )),
-                            span.clone(),
-                        ))],
-                        named_args: vec![],
-                        implied: false,
+        None => match resolved_addrs.get("builtin-raise").cloned() {
+            Some(raise_addr) => CoreExpr::Call {
+                func: Arc::new(Spanned::new(
+                    CoreExpr::Var {
+                        name: "builtin-raise".to_string(),
+                        addr: raise_addr,
+                        annotation: None,
                     },
-                    None => {
-                        diagnostics.push(LowerDiagnostic {
-                            kind: LowerDiagnosticKind::Error,
-                            message: format!(
-                                "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
-                                 for method '{}' — scope_frames must be seeded with builtin_core",
-                                method_name
-                            ),
-                            span: span.clone(),
-                        });
-                        CoreExpr::Placeholder
-                    }
-                }
+                    span.clone(),
+                )),
+                args: vec![Arc::new(Spanned::new(
+                    CoreExpr::Str(format!(
+                        "no instance of method '{}' for the given argument types",
+                        method_name
+                    )),
+                    span.clone(),
+                ))],
+                named_args: vec![],
+                implied: false,
+            },
+            None => {
+                diagnostics.push(LowerDiagnostic {
+                    kind: LowerDiagnosticKind::Error,
+                    message: format!(
+                        "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
+                         for method '{}' — scope_frames must be seeded with builtin_core",
+                        method_name
+                    ),
+                    span: span.clone(),
+                });
+                CoreExpr::Placeholder
             }
         },
     };
@@ -2284,15 +2340,46 @@ fn lower_type_alias_to_constructor_dict(
     }
 }
 
-/// Extract `repr:` and `is:` metadata entries from a TypeAlias body dict.
+/// Returns true if a `SurfaceExpression` annotation (on a VarRef body) contains
+/// `is:` or `repr:` keys, indicating this is a structural alias declaration rather
+/// than a unit constructor.
 ///
-/// The TypeAlias body may contain lowercase-keyed metadata entries alongside constructors:
-/// - `repr: "Value::Int"` — identifies the Rust Value variant this type maps to
-/// - `is: [fn [let x] ...]` — predicate function for testing membership
+/// Used by `extract_constructors_from_body` to skip VarRef bodies that carry structural
+/// alias metadata (so they are not mistakenly extracted as unit constructors).
+fn has_structural_alias_metadata(ann: &crate::ast::Annotation) -> bool {
+    // Check for PropertyDict with `is:` or `repr:` string-literal keys.
+    let check_entries = |entries: &[Spanned<SurfaceEntry>]| {
+        entries.iter().any(|e| {
+            let Some(key_node) = &e.node.key else {
+                return false;
+            };
+            matches!(
+                &key_node.expr,
+                SurfaceExpression::VarRef { name, .. } if name == "is" || name == "repr"
+            )
+        })
+    };
+    match ann {
+        crate::ast::Annotation::PropertyDict(entries) => check_entries(entries),
+        crate::ast::Annotation::Annotated(_, inner) => has_structural_alias_metadata(inner),
+        _ => false,
+    }
+}
+
+/// Extract `repr:` and `is:` metadata entries from a TypeAlias body.
 ///
-/// Both keys are lowercase and are NOT constructors; they are silently skipped by
-/// `extract_constructors_from_body`. This function extracts them before the constructor
-/// extraction pass.
+/// Handles two body forms:
+///
+/// 1. **Dict body** — the body is a `[...]` dict containing lowercase-keyed metadata
+///    entries alongside constructors:
+///    - `repr: "Value::Int"` — identifies the Rust Value variant this type maps to
+///    - `is: [fn [let x] ...]` — predicate function for testing membership
+///    Both keys are lowercase and are NOT constructors; they are silently skipped by
+///    `extract_constructors_from_body`.
+///
+/// 2. **VarRef@[PropertyDict] body** — the body is a VarRef with a PropertyDict annotation,
+///    e.g., `Int@[is: predicate  repr: "Value::Int"]`. In this form, `repr:` and `is:` are
+///    annotation keys on the VarRef rather than entries in a surrounding dict body.
 ///
 /// Returns `(repr_opt, is_pred_opt)` — both are `None` when the respective key is absent.
 fn extract_repr_and_is_from_body(
@@ -2300,10 +2387,48 @@ fn extract_repr_and_is_from_body(
     diagnostics: &mut Vec<LowerDiagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> (Option<String>, Option<CoreExpr>) {
+    // VarRef@[PropertyDict] form: `Int@[is: predicate  repr: "Value::Int"]`
+    // The annotation carries `repr:` and `is:` as PropertyDict entries.
+    if let SurfaceExpression::VarRef {
+        annotation: Some(ann),
+        ..
+    } = body
+    {
+        // Extract the PropertyDict from the annotation. Handles:
+        // - Annotation::PropertyDict(entries) directly on the VarRef
+        // - Annotation::Annotated(Simple("Int"), PropertyDict(entries)) — the common form
+        let prop_dict_entries = match &ann.node {
+            crate::ast::Annotation::PropertyDict(entries) => Some(entries),
+            crate::ast::Annotation::Annotated(_, inner) => {
+                if let crate::ast::Annotation::PropertyDict(entries) = inner.as_ref() {
+                    Some(entries)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(entries) = prop_dict_entries {
+            return extract_repr_and_is_from_entries(entries, diagnostics, scope_frames);
+        }
+    }
+
     let SurfaceExpression::Dict(entries) = body else {
         return (None, None);
     };
 
+    extract_repr_and_is_from_entries(entries, diagnostics, scope_frames)
+}
+
+/// Shared implementation: scan a slice of `SurfaceEntry` for `repr:` and `is:` keys.
+///
+/// Used by `extract_repr_and_is_from_body` for both the Dict body form (entries are the
+/// dict body) and the VarRef annotation form (entries are PropertyDict annotation entries).
+fn extract_repr_and_is_from_entries(
+    entries: &[Spanned<SurfaceEntry>],
+    diagnostics: &mut Vec<LowerDiagnostic>,
+    scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
+) -> (Option<String>, Option<CoreExpr>) {
     let mut repr_opt: Option<String> = None;
     let mut is_pred_opt: Option<CoreExpr> = None;
 
@@ -2404,9 +2529,19 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
         match expr {
             // Uppercase VarRef → unit constructor.
             // May carry a PropertyDict annotation (`Red@[category: "primary"]`).
+            //
+            // Exception: if the annotation contains `is:` or `repr:` keys, this is a
+            // structural alias body (`Int@[is: pred  repr: "Value::Int"]`), not a
+            // unit constructor. Skip it here — handled by extract_repr_and_is_from_body.
             SurfaceExpression::VarRef {
                 name, annotation, ..
             } if is_ctor(name) => {
+                // Check for structural alias metadata before treating as a constructor.
+                if let Some(ann) = annotation {
+                    if has_structural_alias_metadata(&ann.node) {
+                        return;
+                    }
+                }
                 let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
                     crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
                         Some(entries.clone())

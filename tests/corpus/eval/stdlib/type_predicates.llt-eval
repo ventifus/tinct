@@ -1,0 +1,54 @@
+# Tests for runtime type predicate functions.
+# Covers int?, str?, float?, dict?, fn?, bytes?, bool?, num?, proxy?.
+# All predicates (except bool? and seq?) use type-of / payload-of / repr field comparison.
+# proxy? specifically requires ground_typevalue_of to return TypeValue.Repr("Value::Proxy")
+# rather than TypeValue.Unknown — fixed alongside the runtime-types sprint.
+[
+  # int?: Int (true), Float (false), String (false)
+  int-yes:    [int? 42]
+  int-no-flt: [int? 3.14]
+  int-no-str: [int? "hello"]
+
+  # str?: String (true), Int (false), Float (false)
+  str-yes:    [str? "hello"]
+  str-no-int: [str? 99]
+  str-no-flt: [str? 1.5]
+
+  # float?: Float (true), Int (false), String (false)
+  flt-yes:    [float? 2.5]
+  flt-no-int: [float? 0]
+  flt-no-str: [float? ""]
+
+  # dict?: Dict (true), Int (false), String (false)
+  dct-yes:    [dict? [x: 1]]
+  dct-yes-mt: [dict? []]
+  dct-no-int: [dict? 7]
+
+  # fn?: Function (true), Builtin (true), Int (false)
+  fn-yes-lam: [fn? [fn [let x] x]]
+  fn-yes-blt: [fn? builtin-int-add]
+  fn-no-int:  [fn? 0]
+
+  # bytes?: Bytes (true), String (false), Int (false)
+  byt-yes:    [bytes? [builtin-bytes]]
+  byt-no-str: [bytes? "hi"]
+  byt-no-int: [bytes? 1]
+
+  # bool?: Boolean.True (true), Boolean.False (true), Int (false)
+  boo-yes-t:  [bool? Boolean.True]
+  boo-yes-f:  [bool? Boolean.False]
+  boo-no-int: [bool? 0]
+
+  # num?: Int (true), Float (true), String (false)
+  num-yes-int: [num? 42]
+  num-yes-flt: [num? 1.0]
+  num-no-str:  [num? "3"]
+
+  # proxy?: proxy? returns Boolean.True for Proxy, Boolean.False for others.
+  # A Proxy value is created by builtin-proxy with a handler function.
+  prx-yes:    [proxy? [builtin-proxy [fn [let key] [str "field:" key]]]]
+  prx-no-int: [proxy? 42]
+  prx-no-str: [proxy? "x"]
+]
+=== out
+["int-yes": Boolean.True  "int-no-flt": Boolean.False  "int-no-str": Boolean.False  "str-yes": Boolean.True  "str-no-int": Boolean.False  "str-no-flt": Boolean.False  "flt-yes": Boolean.True  "flt-no-int": Boolean.False  "flt-no-str": Boolean.False  "dct-yes": Boolean.True  "dct-yes-mt": Boolean.True  "dct-no-int": Boolean.False  "fn-yes-lam": Boolean.True  "fn-yes-blt": Boolean.True  "fn-no-int": Boolean.False  "byt-yes": Boolean.True  "byt-no-str": Boolean.False  "byt-no-int": Boolean.False  "boo-yes-t": Boolean.True  "boo-yes-f": Boolean.True  "boo-no-int": Boolean.False  "num-yes-int": Boolean.True  "num-yes-flt": Boolean.True  "num-no-str": Boolean.False  "prx-yes": Boolean.True  "prx-no-int": Boolean.False  "prx-no-str": Boolean.False]

@@ -888,7 +888,7 @@ pub(crate) fn eval_core_expr<'a>(
                             VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                             VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                         };
-                        found.unwrap_or_else(|| {
+                        let thunk = found.unwrap_or_else(|| {
                             panic!(
                                 "capture miss for '{}': {:?} resolved to None \
                                  (closure_env.len()={}, group.len()={}, \
@@ -899,7 +899,8 @@ pub(crate) fn eval_core_expr<'a>(
                                 frame.group.len(),
                                 frame.params.len(),
                             )
-                        })
+                        });
+                        thunk
                     })
                     .collect();
                 Ok(Arc::new(Thunk::value(

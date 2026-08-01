@@ -427,9 +427,9 @@ Because `_` desugars to a single-arg lambda, combining it with the pipeline or `
 The `is:` key in a type annotation takes a predicate — any 1-argument function. It is called with the value being validated as its sole argument at runtime:
 
 ```tinct
-UInt8:  [type Int@[is: [between 0 255]   repr: u8]]   # [between 0 255 subject]
-UInt64: [type Int@[is: [>= _ 0]         repr: u64]]   # [>= subject 0]
-Port:   [type Int@[is: [between 1 65535] repr: u16]]
+UInt8:  [type Int@[is: [between 0 255]   repr: "Value::Int"]]   # [between 0 255 subject]
+UInt64: [type Int@[is: [>= _ 0]         repr: "Value::Int"]]   # [>= subject 0]
+Port:   [type Int@[is: [between 1 65535] repr: "Value::Int"]]
 ```
 
 **Why `[>= _ 0]` and not `[>= 0]`:** `[>= 0]` partially applied subject-last gives `[>= 0 subject]` = "0 >= subject" (backwards). The `_` shorthand positions the subject correctly: `[>= _ 0]` → `[fn [let _] [>= _ 0]]` → `[>= subject 0]` = "subject >= 0". Use `_` whenever the natural partial-application order would give the wrong operand arrangement.

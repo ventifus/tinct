@@ -319,7 +319,7 @@ fn check_function_arity(
 /// This is the TypeValue equivalent of the old `lower_levels_check_occurs` function.
 /// Since TypeValue payloads are async thunks, we can only inspect settled payloads.
 /// Unsettled payloads are treated conservatively (no occurs, no level lowering needed).
-fn lower_levels_check_occurs_tv(
+pub(crate) fn lower_levels_check_occurs_tv(
     ty: &TypeValue,
     var_name: &str,
     cap_level: u32,
@@ -378,10 +378,21 @@ fn lower_levels_check_occurs_tv(
                 ctx.lower_var_level(&row_var_name, cap_level);
                 found
             } else if tv_ctor(&tail).as_deref() == Some(RT_UNIFORM) {
-                // Tail is a Uniform tail — recursively check its value-type for TypeVar
-                // occurrences and perform level lowering on any TypeVars found inside it.
-                if let Some(value_type) = extract_uniform_value_type(&tail) {
+                // Tail is a Uniform tail — recursively check its value-type AND key-type for
+                // TypeVar occurrences and perform level lowering on any TypeVars found inside.
+                let value_occurs = if let Some(value_type) = extract_uniform_value_type(&tail) {
                     lower_levels_check_occurs_tv(&value_type, var_name, cap_level, ctx)
+                } else {
+                    false
+                };
+
+                if value_occurs {
+                    return true;
+                }
+
+                // Also traverse key-type (Uniform tails can have key-type constraints).
+                if let Some(key_type) = ctx.extract_uniform_key_type(&tail) {
+                    lower_levels_check_occurs_tv(&key_type, var_name, cap_level, ctx)
                 } else {
                     false
                 }
@@ -1308,12 +1319,25 @@ pub(crate) fn rowvar_occurs_in_tail(name: &str, tail: &TypeValue) -> bool {
     if extract_rowtail_var_name(tail).as_deref() == Some(name) {
         return true;
     }
-    // Indirect reference: ρ occurs inside a Uniform value-type's nested Record tail.
+    // Indirect reference: ρ occurs inside a Uniform value-type or key-type's nested Record tail.
     if tv_ctor(tail).as_deref() == Some(RT_UNIFORM) {
+        // Check value-type field.
         if let Some(value_type) = extract_uniform_value_type(tail) {
             if tv_ctor(&value_type).as_deref() == Some(TV_RECORD) {
                 if let Some(nested_tail) = extract_record_tail(&value_type) {
-                    return rowvar_occurs_in_tail(name, &nested_tail);
+                    if rowvar_occurs_in_tail(name, &nested_tail) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Also check key-type field (key-type could be a Record with RowVar tail).
+        if let Some(key_type) = extract_uniform_key_type(tail) {
+            if tv_ctor(&key_type).as_deref() == Some(TV_RECORD) {
+                if let Some(nested_tail) = extract_record_tail(&key_type) {
+                    if rowvar_occurs_in_tail(name, &nested_tail) {
+                        return true;
+                    }
                 }
             }
         }
@@ -1324,10 +1348,10 @@ pub(crate) fn rowvar_occurs_in_tail(name: &str, tail: &TypeValue) -> bool {
 /// Unify two RowTail values.
 ///
 /// - RowTail.Closed ~ RowTail.Closed: succeed
-/// - RowTail.Uniform ~ RowTail.Uniform: unify their value-types
+/// - RowTail.Uniform ~ RowTail.Uniform: unify their value-types and key-types (when both are present)
 /// - RowTail.Var ~ concrete tail: bind the RowVar to the concrete tail
 /// - RowTail.Closed ~ RowTail.Uniform: fail (closed ≠ open)
-async fn unify_rowtails(
+pub(crate) async fn unify_rowtails(
     a: &TypeValue,
     b: &TypeValue,
     ctx: &mut InferenceContext,
@@ -1354,21 +1378,34 @@ async fn unify_rowtails(
         // Closed ~ Empty dict: succeed (both closed).
         (Some(RT_CLOSED), None) | (None, Some(RT_CLOSED)) => Ok(()),
 
-        // Uniform ~ Uniform: unify their value-types.
+        // Uniform ~ Uniform: unify their value-types AND key-types.
         (Some(RT_UNIFORM), Some(RT_UNIFORM)) => {
             let a_value_type = extract_uniform_value_type(&a)
                 .expect("invariant: RowTail.Uniform payload must have value-type field");
             let b_value_type = extract_uniform_value_type(&b)
                 .expect("invariant: RowTail.Uniform payload must have value-type field");
+
+            // Unify value-types.
             Box::pin(unify(
                 &a_value_type,
                 &b_value_type,
                 ctx,
                 constraints,
-                span,
+                span.clone(),
                 0,
             ))
-            .await
+            .await?;
+
+            // Also unify key-types if both are present.
+            let a_key = extract_uniform_key_type(&a);
+            let b_key = extract_uniform_key_type(&b);
+            match (a_key, b_key) {
+                (Some(ak), Some(bk)) => {
+                    Box::pin(unify(&ak, &bk, ctx, constraints, span, 0)).await?;
+                }
+                _ => {} // One or neither has key-type — compatible (no constraint).
+            }
+            Ok(())
         }
 
         // RowVar ~ RowVar: bind the higher-level RowVar to the lower-level one.
@@ -2012,7 +2049,9 @@ fn extract_record_tail(tv: &TypeValue) -> Option<TypeValue> {
                 let tail_thunk = entries.get(&tail_key)?;
                 match tail_thunk.peek_result()? {
                     Ok(tv) => Some(Arc::new(tv.clone())),
-                    _ => None,
+                    Err(e) => panic!(
+                        "invariant violation: TypeValue.Record tail thunk is in error state: {e:?}"
+                    ),
                 }
             }
             _ => None,
@@ -2036,7 +2075,34 @@ fn extract_uniform_value_type(tail: &TypeValue) -> Option<TypeValue> {
                 let value_type_thunk = entries.get(&value_type_key)?;
                 match value_type_thunk.peek_result()? {
                     Ok(vt) => Some(Arc::new(vt.clone())),
-                    _ => None,
+                    Err(e) => panic!(
+                        "invariant violation: TypeValue.Uniform value-type thunk is in error state: {e:?}"
+                    ),
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract the key-type from a RowTail.Uniform { key-type: TypeValue? }.
+/// Returns None if the tail is not a RowTail.Uniform, the payload is unsettled, or key-type is absent.
+fn extract_uniform_key_type(tail: &TypeValue) -> Option<TypeValue> {
+    match tail.as_ref() {
+        crate::value::Value::Variant {
+            ctor,
+            payload: Some(thunk),
+            ..
+        } if ctor.as_ref() == RT_UNIFORM => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let key_type_key = crate::value::HashableValue::Str(Arc::from(RT_FIELD_KEY_TYPE));
+                let key_type_thunk = entries.get(&key_type_key)?;
+                match key_type_thunk.peek_result()? {
+                    Ok(kt) => Some(Arc::new(kt.clone())),
+                    Err(e) => panic!(
+                        "invariant violation: TypeValue.Uniform key-type thunk is in error state: {e:?}"
+                    ),
                 }
             }
             _ => None,

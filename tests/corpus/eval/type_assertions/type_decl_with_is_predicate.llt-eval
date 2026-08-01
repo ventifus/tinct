@@ -1,0 +1,20 @@
+# B-706: [type Name@[is: ...]] structural alias registration
+#
+# Verifies that [type Int@[is: predicate  repr: "Value::Int"]] is treated as a structural
+# alias with an is: predicate, extracting both keys from the VarRef annotation.
+#
+# Uses the VarRef@[is: predicate  repr: "Value::Int"] form: the type body is a VarRef
+# (not a Dict), so extract_repr_and_is_from_body must handle VarRef with PropertyDict
+# annotation containing repr: and is: keys.
+[
+  # Helper predicate for bounded integers
+  between: [fn [let lo hi x] [and [>= x lo] [<= x hi]]]
+
+  # Structural alias: Int with is: predicate and repr: declaration
+  SmallInt: [type Int@[is: [between 0 10]  repr: "Value::Int"]]
+]
+---
+# Valid value — predicate [between 0 10 5] => true, value passes through unchanged
+[@SmallInt 5]
+=== out
+Int(5)

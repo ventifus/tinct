@@ -19,7 +19,7 @@
 
 # Ensure pattern is a string (extracts .pattern from compiled dict, or passes through)
 re-ensure-pattern: [fn@String [let pattern@Unknown]
-    [if [= [type-of pattern] "String"]
+    [if [str? pattern]
         pattern
         [if [has? "pattern" pattern]
             pattern.pattern

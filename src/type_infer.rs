@@ -1797,9 +1797,10 @@ impl InferenceContext {
         use crate::value::HashableValue;
         match tail.as_ref() {
             crate::value::Value::Variant {
+                ctor,
                 payload: Some(thunk),
                 ..
-            } => match thunk.peek_result() {
+            } if ctor.as_ref() == RT_UNIFORM => match thunk.peek_result() {
                 Some(Ok(crate::value::Value::Dict { entries, .. })) => {
                     let value_type_key = HashableValue::Str(Arc::from(RT_FIELD_VALUE_TYPE));
                     let key_type_key = HashableValue::Str(Arc::from(RT_FIELD_KEY_TYPE));
@@ -1835,6 +1836,15 @@ impl InferenceContext {
             },
             _ => (None, None),
         }
+    }
+
+    /// Extract only the key-type field from a RowTail.Uniform payload.
+    ///
+    /// This is a convenience wrapper around `extract_uniform_fields` that returns only the
+    /// key-type. Used by occurs checks and unification when only the key-type is needed.
+    pub(crate) fn extract_uniform_key_type(&self, tail: &TypeValue) -> Option<TypeValue> {
+        let (_, key_type) = self.extract_uniform_fields(tail);
+        key_type
     }
 
     /// Reconstruct a TypeValue.Record with a new RowTail.Uniform tail.

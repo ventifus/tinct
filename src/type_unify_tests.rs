@@ -309,7 +309,7 @@ async fn test_types_are_not_disjoint_multi_field_records() {
 // ============================================================================
 
 /// Union-vs-Union with TypeVars: bipartite matching succeeds.
-/// unify(Union([Int, a]), Union([Str, b])) succeeds via bipartite matching (T-2073):
+/// unify(Union([Int, a]), Union([Str, b])) succeeds via bipartite matching:
 /// Int~b (binds b=Int) and a~Str (binds a=Str). Both TypeVars are equality-bound
 /// in ctx.subst since the bipartite matching arm uses unify() for each matched pair.
 ///
@@ -1374,7 +1374,7 @@ async fn test_unify_record_with_extra_fields_vs_empty_record_no_false_positive()
     let result = unify_sync(&a, &b, &mut state.ctx, &mut Vec::new(), span.clone()).await;
     assert!(
         result.is_ok(),
-        "B-680: unify({{ts,rt}}, {{}}) must not fire false 'missing field' error: {:?}",
+        "unify({{ts,rt}}, {{}}) must not fire false 'missing field' error: {:?}",
         result.as_ref().err()
     );
 
@@ -1388,11 +1388,11 @@ async fn test_unify_record_with_extra_fields_vs_empty_record_no_false_positive()
     let result2 = unify_sync(&b2, &a2, &mut state2.ctx, &mut Vec::new(), span.clone()).await;
     assert!(
         result2.is_err(),
-        "B-680: unify({{}}, {{ts,rt}}) must fail — empty record is missing required fields ts and rt"
+        "unify({{}}, {{ts,rt}}) must fail — empty record is missing required fields ts and rt"
     );
 }
 
-/// B-680 regression: records with disjoint field sets still fail unification.
+/// Regression: records with disjoint field sets still fail unification.
 /// unify({x: Int}, {y: Str}) must fail — the first constrain(a,b) already catches this.
 #[tokio::test]
 async fn test_unify_disjoint_field_records_still_fails() {
@@ -1409,11 +1409,11 @@ async fn test_unify_disjoint_field_records_still_fails() {
     let b = make_record_tv(vec![("y", str_tv)]);
 
     // constrain(a, b): b has field "y", a does not → error "missing field 'y'"
-    // This must still fail even after the B-680 fix.
+    // This must still fail (records with disjoint field sets).
     let result = unify_sync(&a, &b, &mut state.ctx, &mut Vec::new(), span).await;
     assert!(
         result.is_err(),
-        "B-680 regression: records with disjoint field sets must still fail unification"
+        "records with disjoint field sets must still fail unification"
     );
 }
 
@@ -1620,7 +1620,7 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let beta = make_typevar_value("β");
     let int_tv = make_typevalue_repr(REPR_INT);
     let str_tv = make_typevalue_repr(REPR_STRING);
-    // B-686 FIXED: constrain(Int, Union([Str, α, β])) now uses C-LB-Union arm.
+    // constrain(Int, Union([Str, α, β])) uses C-LB-Union arm.
     // Int does not match Str (concrete member), so Int is accumulated as a lower bound for α
     // (first TypeVar member). No equality binding.
     let sup = make_union_tv(vec![
@@ -1637,7 +1637,7 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
         result.unwrap_err()
     );
 
-    // B-686 FIXED: α must NOT be bound — Int is a lower bound, not an equality.
+    // α must NOT be bound — Int is a lower bound, not an equality.
     assert!(
         state.ctx.lookup("α").is_none(),
         "α must NOT be bound in ctx.subst — Int is a lower bound for α, not equality"
@@ -1671,7 +1671,7 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     );
 }
 
-/// B-686 FIXED: constrain(Int, Union([Str, TypeVar(α)])) accumulates lower bound for α.
+/// constrain(Int, Union([Str, TypeVar(α)])) accumulates lower bound for α.
 /// Int does not match Str (concrete member), so Int is accumulated as a lower bound for α.
 /// No equality binding — this preserves directionality.
 #[tokio::test]
@@ -1696,7 +1696,7 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
         result.unwrap_err()
     );
 
-    // B-686 FIXED: α must NOT be bound — Int is a lower bound, not an equality.
+    // α must NOT be bound — Int is a lower bound, not an equality.
     let alpha_bound = state.ctx.lookup("α");
     assert!(
         alpha_bound.is_none(),
@@ -1763,7 +1763,7 @@ async fn test_constrain_union_concrete_member_matches_no_typevar_binding() {
 
 /// constrain(Int, TypeVar(β)) accumulates Int as a lower bound on β.
 ///
-/// B-667 fix: constrain(sub, α) where α is a free TypeVar MUST NOT bind α via equality.
+/// constrain(sub, α) where α is a free TypeVar MUST NOT bind α via equality.
 /// Instead, sub is recorded in ctx.lower_bounds["β"]. This preserves directionality:
 /// "Int <: β" means β must accept at least Int. A later constrain(Dict, β) widens β
 /// to Dict (since Int <: Dict), not conflict with the earlier constraint.
@@ -1787,7 +1787,7 @@ async fn test_constrain_typevar_lower_bound_added() {
         result.unwrap_err()
     );
 
-    // B-667 FIXED: β must NOT be bound in ctx.subst — constrain(Int, β) is a lower
+    // β must NOT be bound in ctx.subst — constrain(Int, β) is a lower
     // bound constraint, not an equality. Equality binding would prevent later widening.
     assert!(
         state.ctx.lookup("β").is_none(),
@@ -2275,11 +2275,9 @@ async fn test_constrain_cfn_callable_as_sup_accepts_any_arity() {
 /// process_deferred_equalities with Union([Int, a]) ~ Union([Str, b]) where a→Str, b→Int.
 /// After substitution both sides reduce to Union([Int, Str]) ~ Union([Str, Int]).
 ///
-/// Correct behavior: order-insensitive bipartite matching should find Int~Int and Str~Str
-/// across positions and return Ok(()). This is T-2073.
-///
-/// Current behavior (T-2073 pending): the TV_UNION arm pairwise-zips by index, so
-/// unify(Int, Str) fails on the first pair and the whole equality is propagated as Err.
+/// Fixed: order-insensitive bipartite matching resolves Union-vs-Union unification
+/// correctly regardless of member ordering. The TV_UNION arm finds Int~Int and Str~Str
+/// across positions and returns Ok(()).
 #[tokio::test]
 async fn test_process_deferred_equalities_resolves_union_vs_union() {
     // deferred_equalities now store (Arc<Value>, Arc<Value>) pairs.
@@ -2319,8 +2317,8 @@ async fn test_process_deferred_equalities_resolves_union_vs_union() {
     )
     .await;
 
-    // T-2073 FIXED: Order-insensitive bipartite matching in TV_UNION arm.
-    // Union([Int, Str]) ~ Union([Str, Int]) now succeeds via bipartite matching:
+    // Order-insensitive bipartite matching in TV_UNION arm.
+    // Union([Int, Str]) ~ Union([Str, Int]) succeeds via bipartite matching:
     // Int matches Int at position 0->1, Str matches Str at position 1->0.
     assert!(
         result.is_ok(),
@@ -2530,7 +2528,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
 }
 
 // ============================================================================
-// T-913 / T-996: FD / resolver_deferred back-propagation tests
+// FD / resolver_deferred back-propagation tests
 // ============================================================================
 
 /// When both App(F, X) sides become ground after substitution,
@@ -3423,5 +3421,187 @@ fn test_apply_subst_traverses_uniform_tail() {
         &source[*start..*end],
         REPR_INT,
         "Uniform tail value-type should be Repr(Int)"
+    );
+}
+
+// ── Uniform tail key-type traversal and unification ──────────────────────────
+
+/// Helper: create a RowTail.Uniform with value-type and optional key-type.
+fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Arc<Value> {
+    use crate::value::{HashableValue, Thunk};
+    let mut entries = IndexMap::new();
+    entries.insert(
+        HashableValue::Str(Arc::from(RT_FIELD_VALUE_TYPE)),
+        Arc::new(Thunk::value(
+            Value::clone(value_type.as_ref()),
+            crate::rust_span!(),
+        )),
+    );
+    if let Some(kt) = key_type {
+        entries.insert(
+            HashableValue::Str(Arc::from(RT_FIELD_KEY_TYPE)),
+            Arc::new(Thunk::value(Value::clone(kt.as_ref()), crate::rust_span!())),
+        );
+    }
+    let payload = Value::Dict {
+        entries,
+        type_val: unknown_type_val(),
+    };
+    Arc::new(Value::Variant {
+        type_val: unknown_type_val(),
+        ctor: Arc::from(RT_UNIFORM),
+        payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
+    })
+}
+
+#[tokio::test]
+async fn test_b707_lower_levels_check_occurs_tv_uniform_key_type() {
+    // lower_levels_check_occurs_tv must traverse key-type in Uniform tails.
+    // Create Record { ...Uniform { value-type: Int, key-type: α } } and check that
+    // occurs check for α returns true.
+    let mut state = InferState::new();
+    let ctx = &mut state.ctx;
+
+    let alpha = ctx.fresh_typevar("alpha");
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // Create Uniform tail with value-type=Int, key-type=α.
+    let uniform_tail = make_uniform_tail(int_tv.clone(), Some(alpha.clone()));
+    let record = make_record_with_tail(vec![], uniform_tail);
+
+    // Occurs check for α in this record should return true (α is in the key-type).
+    let alpha_name = crate::type_infer::typevalue_var_name(&alpha).expect("α should be a TypeVar");
+    let alpha_level = ctx.get_level(&alpha_name);
+    let occurs = super::lower_levels_check_occurs_tv(&record, &alpha_name, alpha_level, ctx);
+    assert!(
+        occurs,
+        "Occurs check should detect α in Uniform tail key-type"
+    );
+}
+
+/// B-707: lower_levels_check_occurs_tv must level-lower TypeVars in key-type of Uniform tails.
+/// Uses a sentinel TypeVar β in the key-type to verify the level-lowering path is traversed.
+#[tokio::test]
+async fn test_b707_lower_levels_check_occurs_tv_uniform_key_type_level_lowering() {
+    let mut state = InferState::new();
+    let ctx = &mut state.ctx;
+
+    // β will be in the key-type at a high level; we check it's lowered to cap_level.
+    let beta = ctx.fresh_typevar("beta");
+    let beta_name = crate::type_infer::typevalue_var_name(&beta).expect("β should be a TypeVar");
+    ctx.levels.insert(beta_name.clone(), 5); // insert β at level 5
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // Create Uniform tail with value-type=Int, key-type=β.
+    let uniform_tail = make_uniform_tail(int_tv.clone(), Some(beta.clone()));
+    let record = make_record_with_tail(vec![], uniform_tail);
+
+    // Call with var_name="nonexistent" so occurs returns false, but level-lowering runs.
+    // cap_level = 0: β should be lowered from 5 to 0.
+    let occurs = super::lower_levels_check_occurs_tv(&record, "nonexistent", 0, ctx);
+    assert!(
+        !occurs,
+        "occurs should be false (no 'nonexistent' var in record)"
+    );
+
+    // Verify β's level was lowered by the key-type traversal.
+    assert_eq!(
+        ctx.get_level(&beta_name),
+        0,
+        "β should be level-lowered from 5 to cap_level=0"
+    );
+}
+
+#[tokio::test]
+async fn test_b707_rowvar_occurs_in_tail_uniform_key_type() {
+    // rowvar_occurs_in_tail must traverse key-type in Uniform tails.
+    // Create RowTail.Uniform { value-type: Int, key-type: Record { ...ρ } }
+    // and verify that rowvar_occurs_in_tail("rho", tail) returns true.
+    let rho = crate::type_infer::make_rowtail_var("rho");
+    let int_tv = make_typevalue_repr(REPR_INT);
+
+    // Create a Record with RowVar tail: Record { ...ρ }.
+    let key_record = make_record_with_tail(vec![], rho.clone());
+
+    // Create Uniform tail with value-type=Int, key-type=Record{...ρ}.
+    let uniform_tail = make_uniform_tail(int_tv.clone(), Some(key_record.clone()));
+
+    let rho_name = crate::type_infer::extract_rowtail_var_name(&rho).expect("ρ should be a RowVar");
+    let occurs = super::rowvar_occurs_in_tail(&rho_name, &uniform_tail);
+    assert!(
+        occurs,
+        "rowvar_occurs_in_tail should detect ρ in Uniform tail key-type"
+    );
+}
+
+#[tokio::test]
+async fn test_b709_uniform_uniform_key_type_unification_success() {
+    // Uniform~Uniform must unify key-types when both are present.
+    // Create two Uniform tails with matching key-types and verify unification succeeds.
+    let mut state = InferState::new();
+    let span = rust_span!();
+    let ctx = &mut state.ctx;
+    let mut constraints = Vec::new();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+
+    // Both Uniform tails have value-type=Int, key-type=String.
+    let tail_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+    let tail_b = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+
+    let result = super::unify_rowtails(&tail_a, &tail_b, ctx, &mut constraints, span).await;
+    assert!(
+        result.is_ok(),
+        "Uniform~Uniform with matching key-types should succeed"
+    );
+}
+
+#[tokio::test]
+async fn test_b709_uniform_uniform_key_type_unification_failure() {
+    // Uniform~Uniform must unify key-types when both are present.
+    // Create two Uniform tails with different key-types and verify unification fails.
+    let mut state = InferState::new();
+    let span = rust_span!();
+    let ctx = &mut state.ctx;
+    let mut constraints = Vec::new();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let float_tv = make_typevalue_repr(REPR_FLOAT);
+
+    // Uniform tail A: value-type=Int, key-type=String.
+    // Uniform tail B: value-type=Int, key-type=Float.
+    let tail_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+    let tail_b = make_uniform_tail(int_tv.clone(), Some(float_tv.clone()));
+
+    let result = super::unify_rowtails(&tail_a, &tail_b, ctx, &mut constraints, span).await;
+    assert!(
+        result.is_err(),
+        "Uniform~Uniform with different key-types should fail"
+    );
+}
+
+#[tokio::test]
+async fn test_b709_uniform_uniform_key_type_none_compatible() {
+    // Uniform~Uniform with one having key-type and the other not should be compatible.
+    let mut state = InferState::new();
+    let span = rust_span!();
+    let ctx = &mut state.ctx;
+    let mut constraints = Vec::new();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+
+    // Uniform tail A: value-type=Int, key-type=String.
+    // Uniform tail B: value-type=Int, no key-type.
+    let tail_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+    let tail_b = make_uniform_tail(int_tv.clone(), None);
+
+    let result = super::unify_rowtails(&tail_a, &tail_b, ctx, &mut constraints, span).await;
+    assert!(
+        result.is_ok(),
+        "Uniform~Uniform with one missing key-type should be compatible"
     );
 }

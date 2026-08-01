@@ -1,8 +1,9 @@
 # BAS negation narrowing: when [int? x] fails, the type checker narrows x to
 # Type::Negation(Int) in the false branch via apply_negation_narrowings.
 # This exercises the BAS false-branch narrowing path added in the bas-core sprint.
+# int? now works correctly, so int inputs return x+1, non-ints return 0.
 [safe-inc: [fn [let x] [if [int? x] [+ x 1] 0]]
  r1: [safe-inc 5]
  r2: [safe-inc "hello"]]
 === out
-["safe-inc": [fn [let x] ...]  "r1": 0  "r2": 0]
+["safe-inc": [fn [let x] ...]  "r1": 6  "r2": 0]

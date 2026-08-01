@@ -3017,9 +3017,9 @@ mod tests {
 
     /// Check that a value is the unknown_type_val sentinel (empty Dict).
     ///
-    /// builtin_type_of returns val.type_val() directly. During bootstrap all values carry
-    /// unknown_type_val() — an empty Value::Dict. Value::Dict falls through to `_ => false`
-    /// in PartialEq, so we verify by checking the discriminant and entry count instead.
+    /// Used to verify that a value is TypeValue.Unknown — represented as an empty Dict.
+    /// Kept for use by any future test that explicitly exercises the TypeValue.Unknown path.
+    #[allow(dead_code)]
     fn assert_is_unknown_type_val(result: &Value, context: &str) {
         match result {
             Value::Dict { entries, .. } => {
@@ -3038,8 +3038,9 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_int() {
-        // builtin_type_of returns val.type_val(). During bootstrap all Values carry
-        // unknown_type_val() — an empty Dict. The returned Value must be that sentinel.
+        // builtin_type_of now uses ground_typevalue_of, which returns TypeValue.Repr("Value::Int")
+        // for Value::Int regardless of the type_val field. This is stable even during bootstrap
+        // when all Values carry unknown_type_val().
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(
@@ -3055,12 +3056,25 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "type_of_int");
+        // ground_typevalue_of(Int) → TypeValue.Repr("Value::Int") — a Variant, not unknown.
+        match &result {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(
+                    ctor.as_ref(),
+                    crate::type_tags::TV_REPR,
+                    "type_of_int: ctor must be TypeValue.Repr"
+                );
+            }
+            other => panic!(
+                "type_of_int: expected TypeValue.Repr Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]
     async fn type_of_float() {
-        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
+        // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::Float").
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(
@@ -3076,13 +3090,24 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "type_of_float");
+        match &result {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(
+                    ctor.as_ref(),
+                    crate::type_tags::TV_REPR,
+                    "type_of_float: ctor must be TypeValue.Repr"
+                );
+            }
+            other => panic!(
+                "type_of_float: expected TypeValue.Repr Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]
     async fn type_of_string() {
-        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
-        // string_val() is constructed with type_val: unknown_type_val() by default.
+        // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::String").
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(string_val("hi"), &ctx)],
@@ -3092,12 +3117,24 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "type_of_string");
+        match &result {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(
+                    ctor.as_ref(),
+                    crate::type_tags::TV_REPR,
+                    "type_of_string: ctor must be TypeValue.Repr"
+                );
+            }
+            other => panic!(
+                "type_of_string: expected TypeValue.Repr Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]
     async fn type_of_dict() {
-        // builtin_type_of returns val.type_val() — the unknown sentinel (empty Dict) at bootstrap.
+        // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::Dict").
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(
@@ -3113,13 +3150,26 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "type_of_dict");
+        match &result {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(
+                    ctor.as_ref(),
+                    crate::type_tags::TV_REPR,
+                    "type_of_dict: ctor must be TypeValue.Repr"
+                );
+            }
+            other => panic!(
+                "type_of_dict: expected TypeValue.Repr Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]
     async fn type_of_function() {
-        // builtin_type_of returns val.type_val().
-        // Functions may carry unknown_type_val() (bootstrap) or TypeValue.Fn (post-B-681 wiring).
+        // builtin_type_of now uses ground_typevalue_of.
+        // For a Function: returns TypeValue.Fn (if type_val is already TypeValue.Fn) or
+        // TypeValue.Repr("Value::Function") (gradual fallback). Either way it is a Variant.
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 0]", &ctx).await;
         let result = mat(builtin_type_of(BuiltinArgs {
@@ -3130,23 +3180,21 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        // Accept either unknown sentinel (bootstrap) or TypeValue.Fn (type-checker wired).
-        // The type_val for functions is either empty Dict or a TypeValue.Fn Variant.
+        // ground_typevalue_of(Function) is always a Variant (TypeValue.Fn or TypeValue.Repr).
         match &result {
-            crate::value::Value::Dict { entries, .. } if entries.is_empty() => {}
             crate::value::Value::Variant { .. } => {}
             other => panic!(
-                "type_of_function: expected unknown_type_val or TypeValue.Fn Variant, got {:?}",
+                "type_of_function: expected TypeValue Variant, got {:?}",
                 other.type_name()
             ),
         }
     }
 
     #[tokio::test]
-    async fn type_of_builtin_returns_unknown_sentinel() {
-        // builtin_type_of returns val.type_val(). A Builtin constructed with unknown_type_val()
-        // returns the unknown sentinel (empty Dict). The old assertion "Function" reflected the
-        // pre-T-1951 behavior where type_of returned a string name; now it returns the TypeValue.
+    async fn type_of_builtin_returns_fn_typevalue() {
+        // builtin_type_of now uses ground_typevalue_of.
+        // ground_typevalue_of(Builtin) → TypeValue.Repr("Value::Function") — a Variant.
+        // The old test name "returns_unknown_sentinel" is stale; builtins now return Repr.
         fn dummy(
             _ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -3179,15 +3227,26 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "type_of_builtin_returns_unknown_sentinel");
+        // ground_typevalue_of(Builtin) → TypeValue.Repr("Value::Function").
+        match &result {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(
+                    ctor.as_ref(),
+                    crate::type_tags::TV_REPR,
+                    "type_of_builtin: ctor must be TypeValue.Repr"
+                );
+            }
+            other => panic!(
+                "type_of_builtin: expected TypeValue.Repr Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]
     async fn test_type_of_variant() {
-        // builtin_type_of returns val.type_val() — the runtime TypeValue dict attached at
-        // construction. A Variant constructed with unknown_type_val() returns the unknown
-        // sentinel (empty Dict). The old assertion "Color" reflected the pre-T-1951 behavior
-        // where type_of extracted the tycon name string; now it returns the TypeValue directly.
+        // builtin_type_of now uses ground_typevalue_of.
+        // ground_typevalue_of(Variant { ctor: "Color.Red" }) → TypeValue.Op("Color") — a Variant.
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
@@ -3205,7 +3264,20 @@ mod tests {
             caller_env_id: None,
         }))
         .await;
-        assert_is_unknown_type_val(&result, "test_type_of_variant");
+        // ground_typevalue_of(Variant) → TypeValue.Op(tycon) — a Variant with ctor=TV_OP.
+        match &result {
+            Value::Variant { ctor, .. } => {
+                assert_eq!(
+                    ctor.as_ref(),
+                    crate::type_tags::TV_OP,
+                    "test_type_of_variant: ctor must be TypeValue.Op"
+                );
+            }
+            other => panic!(
+                "test_type_of_variant: expected TypeValue.Op Variant, got {:?}",
+                other.type_name()
+            ),
+        }
     }
 
     #[tokio::test]

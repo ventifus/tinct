@@ -1,9 +1,8 @@
 # Pre-wiring (bootstrap) behavior: builtin-type-of returns the unknown sentinel (empty Dict)
-# for all values because type_val wiring has not yet been implemented (pending S-1004).
+# for all values because type_val wiring has not yet been implemented (T-2110).
 # builtin-has-key? "Repr" on an empty Dict returns Int(0) — no TypeValue.Repr present.
-# This test documents the bootstrap state, NOT the intended post-wiring behavior.
-# See: tests/corpus/eval/type_system/builtin_type_of_nativeint.llt-eval (added in S-1004)
-# for the test that verifies builtin-type-of 42 returns a NativeInt TypeValue.
+# This test documents the current state. The aspirational post-wiring test was removed
+# until T-2110 (wire type_val for runtime Value variants) is implemented.
 [
   int-repr:    [builtin-has-key? "Repr" [builtin-type-of 42]]
   float-repr:  [builtin-has-key? "Repr" [builtin-type-of 1.5]]

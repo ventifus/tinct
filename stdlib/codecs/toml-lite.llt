@@ -128,7 +128,7 @@ parse-toml-lines-impl: [fn@Dict [let lines]
 # Recursive path setter — entry point.
 # Type: (Dict -> Dict String -> Dict -> Dict)
 toml-set-at-path-impl-entry: [fn@Dict [let root@Dict path kv@Dict]
-    [if [= [type-of path] "String"]
+    [if [str? path]
         [merge root kv]
         [if [= [length path] 0]
             [merge root kv]
@@ -186,7 +186,7 @@ toml-append-array-rec: [fn@Dict [let root@Dict path depth@Integer]
 # Append a new dict to an array table at the given path — internal impl.
 # Type: (Dict -> Dict String -> Dict)
 toml-append-array-table-impl: [fn@Dict [let root@Dict path]
-    [if [= [type-of path] "String"]
+    [if [str? path]
         [merge root [make-entry path [append [] [get-or path [] root]]]]
         [if [= [length path] 0]
             root

@@ -853,10 +853,24 @@ pub(crate) fn builtin_big_int(
     })
 }
 
-/// `type-of`: takes 1 arg, materializes it, returns the value's TypeValue dict.
-/// The TypeValue is the `type_val` field carried by every `Value` variant, set at
-/// construction time from the runtime type registry. Inherently materializing: must
-/// inspect the value to retrieve its type_val.
+/// `type-of`: takes 1 arg, materializes it, returns the ground TypeValue for the value.
+///
+/// Uses `ground_typevalue_of` to compute the canonical TypeValue from the value's Rust
+/// discriminant. This is the stable, repr-based identity that tinct type predicates
+/// (`int?`, `str?`, `proxy?`, etc.) rely on. Using the ground typevalue ensures that
+/// values constructed with the bootstrap `unknown_type_val()` sentinel (all literals and
+/// builtins) still return the correct TypeValue after the prelude is loaded.
+///
+/// Returns:
+/// - `TypeValue.Repr("Value::Int")` for Int / U64
+/// - `TypeValue.Repr("Value::Float")` for Float
+/// - `TypeValue.Repr("Value::String")` for String
+/// - `TypeValue.Repr("Value::Dict")` for Dict
+/// - `TypeValue.Repr("Value::Proxy")` for Proxy
+/// - `TypeValue.Repr("Value::Bytes")` for Bytes
+/// - `TypeValue.Fn(...)` or `TypeValue.Repr("Value::Function")` for Function/Builtin
+/// - `TypeValue.Op(tycon)` for Variant (nominal dispatch)
+/// - `TypeValue.Unknown` (empty dict) for all other runtime-only types
 pub(crate) fn builtin_type_of(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -875,7 +889,7 @@ pub(crate) fn builtin_type_of(
             &ctx,
             call_span.clone(),
         )?;
-        let type_value = Arc::clone(val.type_val());
+        let type_value = crate::eval::ground_typevalue_of(&val);
         Ok(Arc::new(Thunk::value((*type_value).clone(), call_span)))
     })
 }
@@ -2319,23 +2333,37 @@ pub(crate) fn builtin_resolve(
         let root_map = ctx.root_group_resolver_map();
         let root_group_len = ctx.root_group.len() as u32;
 
-        let (_resolve_table, resolve_diagnostics, unreferenced_names, mut resolver_frames) =
-            crate::resolve::resolve_surface_document_with_seed_frames(
-                &doc_arc,
-                &[root_map],
-                &env_names,
-                root_group_len,
-            );
-        // Add a synthetic frame with "builtin-raise" at its env slot so that
-        // make_method_dispatcher_fn can find it when building the catch-all arm.
-        // "builtin-raise" is a tinct-level wrapper (not a Rust root-group builtin),
-        // so it's in env_names at index j → slot root_group_len + j in the accumulated_group.
-        // This slot IS valid at fn creation time (builtin-raise is in the prelude's env-dict).
-        if let Some(j) = env_names.iter().position(|n| n == "builtin-raise") {
-            let mut builtin_raise_frame = indexmap::IndexMap::new();
-            builtin_raise_frame.insert("builtin-raise".to_string(), root_group_len + j as u32);
-            resolver_frames.push(builtin_raise_frame);
+        let (
+            _resolve_table,
+            resolve_diagnostics,
+            unreferenced_names,
+            resolver_frames,
+            dict_frames_raw,
+        ) = crate::resolve::resolve_surface_document_with_seed_frames(
+            &doc_arc,
+            &[root_map],
+            &env_names,
+            root_group_len,
+        );
+
+        // Build the dispatcher_frames list for make_method_dispatcher_fn.
+        //
+        // Frame ordering is critical: resolve_name_in_frames searches INNERMOST (last) first.
+        //   1. Dict letrec frames from resolver (outermost): mangled instance binding names
+        //      at their absolute LGM slots. These are only in dict_frames (not in env_names).
+        //   2. env-names frame (innermost/last): maps every env_name to slot root_group_len + j.
+        //      Must be innermost so TypeNode values (Integer→TypeNode.Int, String→TypeNode.String)
+        //      are found BEFORE ClassDecl entries in the public dict. The public dict has
+        //      `Integer: [class ...]` which evaluates to {} — useless for type dispatch. The
+        //      env_names frame gives TypeNode values from the type-stage scope.
+        let mut dispatcher_frames: Vec<indexmap::IndexMap<String, u32>> = Vec::new();
+        dispatcher_frames.extend(dict_frames_raw);
+        // env_frame is appended LAST (innermost) so it is searched first by resolve_name_in_frames.
+        let mut env_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        for (j, name) in env_names.iter().enumerate() {
+            env_frame.insert(name.clone(), root_group_len + j as u32);
         }
+        dispatcher_frames.push(env_frame);
 
         // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2441,6 +2469,7 @@ pub(crate) fn builtin_resolve(
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
                 resolver_frames: Arc::new(resolver_frames),
+                dict_frames: Arc::new(dispatcher_frames),
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -2699,12 +2728,13 @@ pub(crate) fn builtin_typecheck_doc(
 
         // arg0: Value::Document — extract doc_arc and resolver_frames.
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, resolver_frames) = match doc_val {
+        let (doc_arc, resolver_frames, dict_frames) = match doc_val {
             Value::Document {
                 doc: d,
                 resolver_frames: rf,
+                dict_frames: df,
                 ..
-            } => (d, rf),
+            } => (d, rf, df),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-typecheck-doc".to_string(),
@@ -2953,6 +2983,7 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Document {
                 doc: doc_arc,
                 resolver_frames,
+                dict_frames,
                 type_val: crate::value::unknown_type_val(),
             }),
         );
@@ -3481,6 +3512,7 @@ pub(crate) fn builtin_program_docs(
                 Value::Document {
                     doc: doc_arc,
                     resolver_frames: Arc::new(Vec::new()),
+                    dict_frames: Arc::new(Vec::new()),
                     type_val: crate::value::unknown_type_val(),
                 },
                 call_span.clone(),
@@ -4971,8 +5003,8 @@ pub(crate) fn builtin_cap_env_has(
 /// on-demand when a Surface thunk was first forced. With `builtin-lower`, lowering is a
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
 ///
-/// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve` as of
-/// B-695) are merged into the `scope_frames` used for lowering. This ensures that
+/// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve`)
+/// are merged into the `scope_frames` used for lowering. This ensures that
 /// `make_method_dispatcher_fn` can see the document's own letrec scopes (including mangled
 /// instance method names across all dicts) when constructing MethodDispatcher functions.
 /// Cross-dict MethodDispatcher chaining works because all document-level resolver frames
@@ -4985,7 +5017,7 @@ pub(crate) fn builtin_lower(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-lower", named.as_ref(), call_span.clone())?;
@@ -4995,12 +5027,13 @@ pub(crate) fn builtin_lower(
 
         // arg0: Value::Document
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, doc_resolver_frames) = match doc_val {
+        let (doc_arc, doc_resolver_frames, doc_dict_frames) = match doc_val {
             Value::Document {
                 doc: d,
                 resolver_frames: f,
+                dict_frames: df,
                 ..
-            } => (d, f),
+            } => (d, f, df),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
@@ -5012,14 +5045,25 @@ pub(crate) fn builtin_lower(
             }
         };
 
-        // Use the document's own resolver frames (from builtin-resolve, includes synthetic
-        // "builtin-raise" frame needed by make_method_dispatcher_fn). Fall back to
-        // ctx.scope_frames for programmatically constructed documents without resolver frames.
-        let scope_frames = if !doc_resolver_frames.is_empty() {
-            Some(doc_resolver_frames.as_slice())
-        } else {
-            ctx.scope_frames.as_ref().map(|v| v.as_slice())
-        };
+        // Combine resolver_frames (block_body frames) and dict_frames (Dict letrec frames +
+        // env_names frame) for use as scope_frames in make_method_dispatcher_fn.
+        // dict_frames are appended after resolver_frames so they are more-inner (searched first
+        // by resolve_name_in_frames which searches innermost-first = last element first).
+        let combined_frames: Vec<indexmap::IndexMap<String, u32>> =
+            if !doc_resolver_frames.is_empty() || !doc_dict_frames.is_empty() {
+                let mut v = Vec::with_capacity(doc_resolver_frames.len() + doc_dict_frames.len());
+                v.extend_from_slice(&doc_resolver_frames);
+                v.extend_from_slice(&doc_dict_frames);
+                v
+            } else {
+                Vec::new()
+            };
+        let scope_frames: Option<&[indexmap::IndexMap<String, u32>]> =
+            if !combined_frames.is_empty() {
+                Some(combined_frames.as_slice())
+            } else {
+                None
+            };
         let mut entries: Vec<(
             String,
             std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,

@@ -62,16 +62,26 @@
   # produces RowTail::Uniform { key: Some(K), value: V } — distinct from bare Record.
   Map:     [fn [let key val]
     [TypeNode.Dict fields: []  open: 1  key-type: key  value-type: val]]
+  # _is-int-val: test if t is a plain Int value (not a variant or string).
+  # Uses builtin-try + builtin-int-add to probe — fails if t is not an integer.
+  _is-int-val: [fn [let t]
+    [builtin-has-key? "ok" [builtin-try [fn [] [builtin-int-add t 0]]]]]
+
+  # _is-str-val: test if t is a String value.
+  # Uses builtin-try + builtin-eq-string(t, t) — fails if t is not a String.
+  _is-str-val: [fn [let t]
+    [builtin-has-key? "ok" [builtin-try [fn [] [builtin-eq-string t t]]]]]
+
   # _wrap-typenode-value: normalize a raw integer or string value to its TypeNode
   # literal constructor so typenode_value_to_type receives a proper TypeNode variant.
   # Raw values arise when `[or 0 1]` or `[or "ok" "err"]` are written in type position —
   # the type-stage evaluator produces Value::Int / Value::String for the positional args.
-  # Using builtin-type-of (returns "Int" / "String") to dispatch avoids importing
-  # runtime builtins that are not available in the type-stage evaluator.
+  # Uses _is-int-val / _is-str-val instead of builtin-type-of string comparison because
+  # builtin-type-of now returns TypeValue.Repr variants, not plain strings.
   _wrap-typenode-value: [fn [let t]
-    [match [builtin-eq-string [builtin-type-of t] "Int"]
+    [match [_is-int-val t]
       1: [TypeNode.IntLiteral n: t]
-      0: [match [builtin-eq-string [builtin-type-of t] "String"]
+      0: [match [_is-str-val t]
            1: [TypeNode.StringLiteral s: t]
            0: t]]]
   union:   [fn [let ...types] [TypeNode.Union types: [object-map types _wrap-typenode-value]]]
@@ -83,9 +93,9 @@
   # Handle raw Int and String values first (they arise when literal values
   # flow into type-stage code), wrapping them as TypeNode.IntLiteral / TypeNode.StringLiteral.
   as-typenode: [fn [let t]
-    [match [builtin-eq-string [builtin-type-of t] "Int"]
+    [match [_is-int-val t]
       1: [TypeNode.IntLiteral n: t]
-      0: [match [builtin-eq-string [builtin-type-of t] "String"]
+      0: [match [_is-str-val t]
            1: [TypeNode.StringLiteral s: t]
            0: [TypeNode.as-type t]]]]
 
@@ -753,12 +763,15 @@ try-or-impl: [fn@[bind: [a]  return: a] [let try-result default@a]
 # builtin-resolve now takes a name-set (flat dict of all visible names, values=1)
 # rather than a scope-frames array. The env is already a flat dict of name→thunk.
 
+_is-string-val: [fn [let k]
+    [builtin-has-key? "ok" [builtin-try [fn [] [builtin-eq-string k k]]]]]
+
 env-to-name-set: [fn [let env]
   [keys: [builtin-keys env]]
   [go: [fn [let n i builder]
     [match [builtin-eq-int i n]
       0: [go n [builtin-int-add i 1]
-            [match [builtin-eq-string [builtin-type-of [builtin-dict-get i keys]] "String"]
+            [match [_is-string-val [builtin-dict-get i keys]]
               1: [builtin-builder-set [builtin-dict-get i keys] 1 builder]
               0: builder]]
       ...: [builtin-builder-finish builder]]]]
@@ -1909,19 +1922,19 @@ count@[doc: "Count elements satisfying predicate"]: [fn@[bind: [a]  return: Inte
 # and Bytes input (uses bytes-find to search for a single-byte needle).
 # Signature is Val -> Collection -> Bool (subject-last for pipeline composition).
 contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs]
-    [match [builtin-eq-string [type-of xs] "String"]
-        0: [match [builtin-eq-string [type-of xs] "Bytes"]
-            0: [if [seq? xs]
-                [contains-seq? xs val]
-                [any? [fn [let e] [= e val]] xs]]
-            ...: [if [int? val]
-                [if [>= val 0]
-                    [if [< val 256]
-                        [match [builtin-int-gte [builtin-bytes-find xs [builtin-bytes-of [0: val]]] 0] 0: Boolean.False ...: Boolean.True]
-                        [error "contains?: byte value must be in range 0-255"]]
+    [if [str? xs]
+      [str-contains? val xs]
+      [if [bytes? xs]
+        [if [int? val]
+            [if [>= val 0]
+                [if [< val 256]
+                    [match [builtin-int-gte [builtin-bytes-find xs [builtin-bytes-of [0: val]]] 0] 0: Boolean.False ...: Boolean.True]
                     [error "contains?: byte value must be in range 0-255"]]
-                [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]]
-        ...: [str-contains? val xs]]]
+                [error "contains?: byte value must be in range 0-255"]]
+            [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]
+        [if [seq? xs]
+          [contains-seq? xs val]
+          [any? [fn [let e] [= e val]] xs]]]]]
 
 uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses reduce (Rust loop) for performance."]: [fn@Dict [let xs]
   [reduce-step: [fn [let acc v]
@@ -1965,23 +1978,42 @@ Note: Threads initial value v through each function in sequence. Each function r
 # ============================================================================
 
 # Type predicates — tinct functions returning Boolean.
-# No builtins needed: tinct pattern matching covers all cases.
+# Most predicates use type-of (= builtin-type-of = ground_typevalue_of in Rust) to obtain the
+# canonical TypeValue.Repr for the value and compare the repr string against the known Value
+# variant discriminant (e.g. "Value::Int"). bool? and seq? use pattern matching because they
+# test for specific Variant tags (Boolean/Seq), not primitive Rust discriminants.
 # null? uses builtin-eq-int on the length — = would go through Equatable which calls null? (cycle).
-int?@[doc: "Check if value is Integer"  narrows: Integer]:   [fn@Boolean [let x] [match x Integer: Boolean.True  ...: Boolean.False]]
-float?@[doc: "Check if value is Float"  narrows: Float]:     [fn@Boolean [let x] [match x Float:   Boolean.True  ...: Boolean.False]]
-str?@[doc: "Check if value is String"]:    [fn@Boolean [let x] [match x String:  Boolean.True  ...: Boolean.False]]
+int?@[doc: "Check if value is Integer"  narrows: Integer]:   [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [= [get-or "" "repr" [payload-of tv]] "Value::Int"]]
+float?@[doc: "Check if value is Float"  narrows: Float]:     [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [= [get-or "" "repr" [payload-of tv]] "Value::Float"]]
+str?@[doc: "Check if value is String"]:    [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [= [get-or "" "repr" [payload-of tv]] "Value::String"]]
 bool?@[doc: "Check if value is Boolean"]:  [fn@Boolean [let x] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  ...: Boolean.False]]
 null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [match [builtin-eq-int [builtin-dict-length x] 0] 0: Boolean.False ...: Boolean.True] Boolean.False]]
-dict?@[doc: "Check if value is Dict"]:   [fn@Boolean [let x] [match x Dict:     Boolean.True  ...: Boolean.False]]
-fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x Callable: Boolean.True  ...: Boolean.False]]
-proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x Proxy:   Boolean.True  ...: Boolean.False]]
+dict?@[doc: "Check if value is Dict"]:   [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [= [get-or "" "repr" [payload-of tv]] "Value::Dict"]]
+fn?@[doc: "Check if value is a function (Function or Builtin): both map to repr \"Value::Function\""]: [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [repr: [get-or "" "repr" [payload-of tv]]]
+  [= repr "Value::Function"]]
+proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [= [get-or "" "repr" [payload-of tv]] "Value::Proxy"]]
 seq?@[doc: "Check if value is a Seq"]:   [fn@Boolean [let x] [match x Seq.Cons: Boolean.True  Seq.End: Boolean.True  ...: Boolean.False]]
-bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x] [match x Bytes:    Boolean.True  ...: Boolean.False]]
+bytes?@[doc: "Check if value is Bytes"]: [fn@Boolean [let x]
+  [tv: [type-of x]]
+  [= [get-or "" "repr" [payload-of tv]] "Value::Bytes"]]
 
 num?@[doc: "Check if value is numeric (Int or Float)"]: [fn@Boolean [let x] [or [int? x] [float? x]]]
 
 integer?@[doc: "Check if value is any Integer type (NativeInt, NativeUInt, BigInt)"  narrows: Integer]: [fn@Boolean [let x]
-  [or [int? x] [match x BigInt: Boolean.True  ...: Boolean.False]]]
+  [tv: [type-of x]]
+  [or [int? x] [= [get-or "" "repr" [payload-of tv]] "Value::BigInt"]]]
 
 # record?: True if the argument is a Dict (Record at type level, Dict at runtime).
 # At runtime, all dicts are Records — the distinction is type-checker-only.
@@ -3071,12 +3103,13 @@ Example: [length [collect [range 0 5]]] => 5  (O(1) via ft-size)
 
 Note: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict first).
 """]: [fn@Integer [let xs]
-    [match [builtin-type-of xs]
-      "String": [builtin-str-length xs]
-      "Bytes":  [builtin-bytes-length xs]
-      ...:        [if [list? xs]
-                    [ft-size xs]
-                    [builtin-dict-length xs]]]]
+    [if [str? xs]
+      [builtin-str-length xs]
+      [if [bytes? xs]
+        [builtin-bytes-length xs]
+        [if [list? xs]
+          [ft-size xs]
+          [builtin-dict-length xs]]]]]
 
 # Reconstruct a Dict from a Seq of key-value pair dicts.
 # Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
@@ -3245,7 +3278,7 @@ get?@[return: [or a Absent]  doc: "Get a value by key; returns Absent.Absent if 
   [fn [let k c] [try-or Absent.Absent [fn [] [get k c]]]]
 
 # Type introspection
-type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
+type-of@[doc: "Return the ground TypeValue for a value. Returns a TypeValue.Repr variant for primitive types (Int, Float, String, Dict, Proxy, Bytes, Function), TypeValue.Op(tycon) for nominal variants, and TypeValue.Unknown (empty dict []) for other runtime types. Use payload-of and the repr field to extract the Value discriminant string (e.g. \"Value::Int\")."]: builtin-type-of
 ast-of@[doc: "Return the AST representation of an unevaluated expression as an Expression value"]: builtin-ast-of
 
 annotation-of@[doc: "Get the annotation dict from a function (FnAnnotation.extra + doc) or annotated value"]: builtin-annotation-of
@@ -3377,7 +3410,7 @@ write-file-atomic@[doc: "Atomically write a string to a file (via temp file + re
 # write-handle removed — replaced by typeclass-dispatched write (content first, handle last).
 seek@[doc: "Seek to a position in a seekable file handle."]:
   [fn [let pos h]
-    [if [= [builtin-type-of h] "File"]
+    [if [= [get-or "" "repr" [payload-of [type-of h]]] "Value::File"]
       [match [builtin-file-seek h pos] 0: h 1: h]
       [h.seek pos h]]]
 stat@[doc: "Get file metadata under a DirCap"]: builtin-stat
@@ -3829,9 +3862,9 @@ Example: [first (str-bytes "A")] => 65
 
 Note: Works on Dict (by insertion order), String (first char), or Bytes (first byte as Int).
 """] [let xs@c]
-  [match [builtin-type-of xs]
-    "String": [builtin-str-slice xs 0 1]
-    ...:        [dict-first xs]]]
+  [if [str? xs]
+    [builtin-str-slice xs 0 1]
+    [dict-first xs]]]
 
 last: [fn@[bind: [v]  return: v  constraint: [$Indexed c v]  doc: """
 Last element of a collection.
@@ -3842,9 +3875,9 @@ Example: [last (str-bytes "Z")] => 90
 
 Note: Works on Dict (by insertion order), String (last char), or Bytes (last byte as Int).
 """] [let xs@c]
-  [match [builtin-type-of xs]
-    "String": [builtin-str-slice xs [builtin-int-sub [builtin-str-length xs] 1] [builtin-str-length xs]]
-    ...:        [dict-last xs]]]
+  [if [str? xs]
+    [builtin-str-slice xs [builtin-int-sub [builtin-str-length xs] 1] [builtin-str-length xs]]
+    [dict-last xs]]]
 
 rest: [fn@[return: Any  doc: """
 All elements after first (reindexed from 0).

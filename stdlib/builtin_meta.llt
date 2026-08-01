@@ -23,8 +23,9 @@
   builtin-tag-of:            [fn@String  [let x@Any] ...]
   # variant?: return 1 if value is a nominal variant (Value::Variant), 0 otherwise.
   builtin-variant?:          [fn@Integer [let x@Any] ...]
-  # type-of: return the tinct-level type name — the tycon for variants, kind for primitives.
-  builtin-type-of:           [fn@String  [let x@Any] ...]
+  # type-of: return the ground TypeValue for a value. Returns TypeValue.Repr for primitives,
+  # TypeValue.Op(tycon) for nominal variants, TypeValue.Unknown for other runtime types.
+  builtin-type-of:           [fn@TypeValue [let x@Any] ...]
   # annotation-of: return the PropertyDict annotation stored on a value (or []).
   builtin-annotation-of:     [fn@Dict    [let x@Any] ...]
   # make-annotated: wrap x with ann as its runtime annotation dict; returns x.

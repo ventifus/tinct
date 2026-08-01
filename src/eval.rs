@@ -1190,6 +1190,7 @@ pub(crate) fn ground_typevalue_of(v: &Value) -> Arc<Value> {
             let tycon = crate::value::tycon_name_from_ctor(ctor.as_ref());
             crate::type_infer::make_typevalue_op(tycon)
         }
+        Value::Proxy { .. } => make_typevalue_repr(REPR_PROXY),
         // Annotated is transparent — delegate to inner value's ground type.
         Value::Annotated { inner, .. } => ground_typevalue_of(inner),
         // All other runtime-only types → Unknown (gradual: accept any annotation).
@@ -1346,6 +1347,45 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     let inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
     let ground_tv = ground_typevalue_of(value);
     crate::bas::is_consistent_subtype(&ground_tv, expected, &inference_ctx)
+}
+
+/// Map a MethodDispatcher dispatch tag name to its expected TypeValue.
+///
+/// This handles the B-689 case where TypeNode values (Integer: TypeNode.Int) are NOT
+/// available as top-level named entries in the runtime scope — they're in the type-stage
+/// exports stored under "%" in ts.env. When the dispatcher captures ClassDecl {} instead
+/// of TypeNode.Int for the "Integer" dispatch tag, this function provides the correct
+/// TypeValue based on the dispatch tag name alone.
+///
+/// The mapping covers the primitive types that `typenode_ctor_to_typevalue` handles.
+/// User-defined types (not in this map) return None — they must use tag comparison.
+fn dispatch_tag_name_to_typevalue(name: &str) -> Option<crate::type_infer::TypeValue> {
+    use crate::type_infer::{
+        make_typevalue_fn_with_flags, make_typevalue_repr, make_typevalue_top,
+    };
+    use crate::type_tags::{REPR_BYTES, REPR_FLOAT, REPR_INT, REPR_PROXY, REPR_STRING};
+    match name {
+        // Integer types all map to Repr("Value::Int")
+        "Integer" | "NativeInt" | "NativeUInt" | "BigInt" => Some(make_typevalue_repr(REPR_INT)),
+        // Float types all map to Repr("Value::Float")
+        "Float" | "Float64" => Some(make_typevalue_repr(REPR_FLOAT)),
+        // String maps to Repr("Value::String")
+        "String" => Some(make_typevalue_repr(REPR_STRING)),
+        // Bytes maps to Repr("Value::Bytes")
+        "Bytes" => Some(make_typevalue_repr(REPR_BYTES)),
+        // Proxy maps to Repr("Value::Proxy")
+        "Proxy" => Some(make_typevalue_repr(REPR_PROXY)),
+        // Callable: any function
+        "Callable" => Some(make_typevalue_fn_with_flags(
+            vec![],
+            make_typevalue_top(),
+            Some(0),
+            true,
+            Vec::new(),
+        )),
+        // Unknown or user-defined type tag — cannot determine TypeValue from name alone
+        _ => None,
+    }
 }
 
 /// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.
@@ -2234,6 +2274,25 @@ pub(crate) fn match_pattern<'a>(
                                 if prefix == crate::type_tags::TYCON_TYPENODE {
                                     if let Some(typevalue) =
                                         crate::type_infer::typenode_ctor_to_typevalue(bare)
+                                    {
+                                        return Ok(value_matches_type(&value, &typevalue, ctx));
+                                    }
+                                }
+                            }
+                        }
+
+                        // B-689 fallback for MethodDispatcher arms: when the dispatch tag name
+                        // (e.g., "Integer", "Float", "String") was captured as ClassDecl {} because
+                        // TypeNode values weren't in the runtime scope at dispatcher creation time.
+                        // The prelude's type-stage exports ("Integer: TypeNode.Int") are stored
+                        // under the "%" key in ts.env, not as top-level runtime env entries.
+                        // When pinned_val is {} (empty dict = class decl with no methods), use
+                        // the VarRef's name to look up the TypeValue directly.
+                        if let Value::Dict { entries, .. } = &pinned_val {
+                            if entries.is_empty() {
+                                if let SurfaceExpression::VarRef { name, .. } = &pattern.expr {
+                                    if let Some(typevalue) =
+                                        dispatch_tag_name_to_typevalue(name.as_str())
                                     {
                                         return Ok(value_matches_type(&value, &typevalue, ctx));
                                     }
@@ -6460,7 +6519,7 @@ mod tests {
         let root_group_len = ctx.root_group.len() as u32;
 
         let doc = &program.documents[0].node;
-        let (_resolve_table, resolve_diagnostics, _unreferenced, _resolver_frames) =
+        let (_resolve_table, resolve_diagnostics, _unreferenced, _resolver_frames, _dict_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames(
                 doc,
                 &[root_map.clone()],
