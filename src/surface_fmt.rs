@@ -898,7 +898,7 @@ fn core_expr_to_tinct(
         }
 
         // Variant: `TypeName.CtorName` or `[TypeName.CtorName payload]`
-        CoreExpr::Variant { tag, payload } => {
+        CoreExpr::Variant { tag, payload, .. } => {
             if let Some(inner) = payload {
                 let inner_str =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
@@ -908,7 +908,7 @@ fn core_expr_to_tinct(
             }
         }
 
-        CoreExpr::UnitVariant { tycon, ctor } => {
+        CoreExpr::UnitVariant { tycon, ctor, .. } => {
             if tycon.is_empty() {
                 Ok(ctor.clone())
             } else {
@@ -1210,7 +1210,7 @@ fn core_expr_to_tinct_raw(
         }
 
         // Variant: tag is opaque AST data inside quotes — emit as-is.
-        CoreExpr::Variant { tag, payload } => {
+        CoreExpr::Variant { tag, payload, .. } => {
             if let Some(inner) = payload {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
@@ -1226,7 +1226,7 @@ fn core_expr_to_tinct_raw(
             }
         }
 
-        CoreExpr::UnitVariant { tycon, ctor } => {
+        CoreExpr::UnitVariant { tycon, ctor, .. } => {
             if tycon.is_empty() {
                 Ok(ctor.clone())
             } else {

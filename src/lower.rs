@@ -13,6 +13,7 @@
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
 //! - All other variants: structural lowering, recursing into child nodes
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::ast::{
@@ -22,6 +23,19 @@ use crate::ast::{
 use crate::eval_call::is_typevalue_unknown;
 use crate::rust_span;
 use crate::type_infer::{make_typevalue_fn_with_flags, make_typevalue_unknown};
+
+/// Global counter for unique type declaration IDs.
+/// Each `[type Name ...]` declaration gets a unique ID at lower time via `next_type_decl_id()`.
+/// This ID is threaded through TypeDecl, UnitVariant, and Variant nodes so the evaluator can
+/// correctly associate variants with their parent type's identity (in `type_identity_registry`)
+/// even when multiple types share the same name in different scopes.
+static TYPE_DECL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Returns the next globally unique type declaration ID.
+/// ID 0 is reserved for variants with no parent TypeDecl (should not exist in practice).
+fn next_type_decl_id() -> u64 {
+    TYPE_DECL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 /// The tinct name of the dict-field accessor builtin.
 ///
@@ -1372,7 +1386,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             annotation: None,
             do_infer_placeholder: false,
         },
-        CoreExpr::UnitVariant { tycon, ctor } => SurfaceExpression::VarRef {
+        CoreExpr::UnitVariant { tycon, ctor, .. } => SurfaceExpression::VarRef {
             name: if tycon.is_empty() {
                 ctor.clone()
             } else {
@@ -2201,6 +2215,13 @@ fn lower_type_alias_to_constructor_dict(
     // Constructors are extracted inline from the body expression.
     let ctors = extract_constructors_from_body(&body.expr);
 
+    // Generate a unique type_decl_id for this type declaration.
+    // This ID will be threaded through TypeDecl, UnitVariant, and Variant nodes so that
+    // variants can look up their parent type's identity in type_identity_registry by ID
+    // instead of by name. This prevents same-name types in nested scopes from overwriting
+    // each other's registry entries (B-714).
+    let type_decl_id = next_type_decl_id();
+
     let syn_span = rust_span!();
     let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
 
@@ -2223,12 +2244,13 @@ fn lower_type_alias_to_constructor_dict(
 
         // Create the value: either a unit variant or a constructor function
         let value = if ctor.is_unit {
-            // Unit constructor: CoreExpr::UnitVariant { tycon, ctor }
+            // Unit constructor: CoreExpr::UnitVariant { tycon, ctor, type_decl_id }
             // If the constructor carries a @[...] annotation (T-1121), wrap with make-annotated.
             let variant_call = Arc::new(Spanned::new(
                 CoreExpr::UnitVariant {
                     tycon: tycon.clone(),
                     ctor: ctor_name.clone(),
+                    type_decl_id,
                 },
                 syn_span.clone(),
             ));
@@ -2336,11 +2358,12 @@ fn lower_type_alias_to_constructor_dict(
                 syn_span.clone(),
             ));
 
-            // Build the variant body: Variant { tag, payload: Some(payload_dict) }
+            // Build the variant body: Variant { tag, payload: Some(payload_dict), type_decl_id }
             let variant_body = Arc::new(Spanned::new(
                 CoreExpr::Variant {
                     tag: qualified_tag.clone(),
                     payload: Some(payload_dict),
+                    type_decl_id,
                 },
                 syn_span.clone(),
             ));
@@ -2433,17 +2456,21 @@ fn lower_type_alias_to_constructor_dict(
     // Wrap in TypeDecl when a type name is available.
     //
     // TypeDecl instructs the evaluator (eval_core.rs) to create a stable `Arc<Value>`
-    // identity for this type and register it in `ctx.type_identity_registry["Color"]`.
+    // identity for this type and register it in `ctx.type_identity_registry[type_decl_id]`.
     // The identity is stamped on the returned constructor dict (`type_val`) and on every
     // `Value::Variant` produced by the type's constructors (`UnitVariant` and `Variant`
-    // arms look it up from the registry at construction time).
+    // arms look it up from the registry by type_decl_id at construction time).
     //
     // This enables `Arc::ptr_eq(variant.type_val, dict.type_val)` in `match_pattern` to
     // correctly identify whether a scrutinee belongs to a given type — without any hidden
     // sentinel key in the dict.
+    //
+    // The use of type_decl_id (unique u64) instead of type_name (String) prevents same-name
+    // types in nested scopes from overwriting each other's registry entries (B-714).
     match type_name_opt {
         Some(type_name) => CoreExpr::TypeDecl {
             type_name,
+            type_decl_id,
             inner: Arc::new(Spanned::new(inner_expr, syn_span)),
         },
         None => inner_expr,

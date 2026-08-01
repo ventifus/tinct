@@ -610,7 +610,7 @@ pub fn core_expr_to_expr_value(
 
         // ── Variant ──────────────────────────────────────────────────────────────
         // This is AST variant construction (Expr.Variant), NOT Value::Variant itself
-        CoreExpr::Variant { tag, payload } => {
+        CoreExpr::Variant { tag, payload, .. } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             fields.insert(HashableValue::Str("tag".into()), mk(string_val(tag)));
             fields.insert(
@@ -623,7 +623,7 @@ pub fn core_expr_to_expr_value(
             make_variant("Variant", fields)
         }
 
-        CoreExpr::UnitVariant { tycon, ctor } => {
+        CoreExpr::UnitVariant { tycon, ctor, .. } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             fields.insert(HashableValue::Str("tycon".into()), mk(string_val(tycon)));
             fields.insert(HashableValue::Str("ctor".into()), mk(string_val(ctor)));

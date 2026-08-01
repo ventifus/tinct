@@ -653,7 +653,10 @@ pub struct EvalContext {
     /// may define different types with the same name; sharing identities across contexts
     /// would create false matches. Each evaluation context holds its own registry, shared
     /// only with its child contexts (via `Arc::clone`).
-    pub type_identity_registry: Arc<Mutex<std::collections::HashMap<String, Arc<Value>>>>,
+    ///
+    /// Keyed by type_decl_id (u64) instead of type_name (String) to prevent same-name types
+    /// in nested scopes from overwriting each other's registry entries (B-714).
+    pub type_identity_registry: Arc<Mutex<std::collections::HashMap<u64, Arc<Value>>>>,
 }
 
 impl EvalContext {
@@ -6498,14 +6501,21 @@ mod tests {
         // Outer Color and inner Color are independent types despite sharing the name.
         // Outer Color.Red must match the outer Color arm; inner Color.Red must NOT
         // match the outer Color arm (different Arc identity).
+        //
+        // B-714: The test forces inner-red FIRST (before outer-red) to ensure that the
+        // inner TypeDecl's evaluation and variant forcing happens before the outer variant
+        // is forced. With the old String-keyed registry, this would trigger the overwrite
+        // timing window (inner TypeDecl overwrites outer's entry, then outer variant looks
+        // up the wrong identity). With the u64-keyed registry, the two types have independent
+        // IDs and cannot interfere.
         let thunk = eval_str(
             r#"[
           Color: [type Red Green Blue]
           inner-scope: [Color: [type Red]  val: Color.Red]
           outer-red: Color.Red
           inner-red: inner-scope.val
-          r-outer: [match outer-red  Color: "outer-match"  ...: "no-match"]
           r-inner: [match inner-red  Color: "outer-match"  ...: "no-match"]
+          r-outer: [match outer-red  Color: "outer-match"  ...: "no-match"]
         ]"#,
             &test_ctx(),
         )
@@ -6517,6 +6527,19 @@ mod tests {
         let Value::Dict { entries: ref d, .. } = val else {
             panic!("expected Dict, got {val:?}");
         };
+        // Verify r-inner first (forced first in the program) — must NOT match outer Color
+        let ri = d
+            .get(&HashableValue::Str(Arc::from("r-inner")))
+            .expect("r-inner");
+        let ri_val = super::materialize(ri, None, &test_ctx())
+            .await
+            .expect("r-inner materialize");
+        assert_eq!(
+            ri_val,
+            Value::String { source: Arc::from("no-match"), start: 0, end: 8, type_val: crate::value::unknown_type_val() },
+            "inner Color.Red must NOT match outer Color arm (independent Arc identity); got: {ri_val:?}"
+        );
+        // Verify r-outer (forced after r-inner) — must still match outer Color despite inner overwrite
         let ro = d
             .get(&HashableValue::Str(Arc::from("r-outer")))
             .expect("r-outer");
@@ -6531,18 +6554,7 @@ mod tests {
                 end: 11,
                 type_val: crate::value::unknown_type_val()
             },
-            "outer Color.Red must match outer Color arm; got: {ro_val:?}"
-        );
-        let ri = d
-            .get(&HashableValue::Str(Arc::from("r-inner")))
-            .expect("r-inner");
-        let ri_val = super::materialize(ri, None, &test_ctx())
-            .await
-            .expect("r-inner materialize");
-        assert_eq!(
-            ri_val,
-            Value::String { source: Arc::from("no-match"), start: 0, end: 8, type_val: crate::value::unknown_type_val() },
-            "inner Color.Red must NOT match outer Color arm (independent Arc identity); got: {ri_val:?}"
+            "outer Color.Red must match outer Color arm even after inner TypeDecl evaluation; got: {ro_val:?}"
         );
     }
 

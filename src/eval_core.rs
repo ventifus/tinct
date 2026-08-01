@@ -745,13 +745,17 @@ pub(crate) fn eval_core_expr<'a>(
             // the payload dict's fields remain as thunks until accessed.
             //
             // type_val: look up the type identity from ctx.type_identity_registry using the
-            // tycon prefix of the tag (e.g., tag = "Shape.Circle" → tycon = "Shape").
-            // If no identity is registered (e.g., variants created outside a TypeDecl context,
-            // or tags without a "." separator), fall back to unknown_type_val(). Registered
-            // identities are set by CoreExpr::TypeDecl before any constructor is forced.
-            CoreExpr::Variant { tag, payload } => {
-                let type_val = {
-                    let tycon = crate::value::tycon_name_from_ctor(tag.as_str());
+            // type_decl_id embedded in this CoreExpr::Variant node. If type_decl_id is 0
+            // (no parent TypeDecl — shouldn't happen in practice), fall back to unknown_type_val().
+            // Registered identities are set by CoreExpr::TypeDecl before any constructor is forced.
+            CoreExpr::Variant {
+                tag,
+                payload,
+                type_decl_id,
+            } => {
+                let type_val = if *type_decl_id == 0 {
+                    crate::value::unknown_type_val()
+                } else {
                     ctx.type_identity_registry
                         .lock()
                         .map_err(|e| {
@@ -760,7 +764,7 @@ pub(crate) fn eval_core_expr<'a>(
                                 span.clone(),
                             )
                         })?
-                        .get(tycon)
+                        .get(type_decl_id)
                         .map(Arc::clone)
                         .unwrap_or_else(crate::value::unknown_type_val)
                 };
@@ -788,12 +792,16 @@ pub(crate) fn eval_core_expr<'a>(
                 }
             }
 
-            // Unit variant: look up type identity by tycon name (T-2111).
+            // Unit variant: look up type identity by type_decl_id (B-714).
             // If CoreExpr::TypeDecl was evaluated first (which it always is, because forcing
             // Color.Red requires first forcing Color to access its "Red" entry), the registry
-            // entry for `tycon` exists and every variant of that type carries the same Arc.
-            CoreExpr::UnitVariant { tycon, ctor } => {
-                let type_val = if tycon.is_empty() {
+            // entry for `type_decl_id` exists and every variant of that type carries the same Arc.
+            CoreExpr::UnitVariant {
+                tycon,
+                ctor,
+                type_decl_id,
+            } => {
+                let type_val = if *type_decl_id == 0 {
                     crate::value::unknown_type_val()
                 } else {
                     ctx.type_identity_registry
@@ -804,7 +812,7 @@ pub(crate) fn eval_core_expr<'a>(
                                 span.clone(),
                             )
                         })?
-                        .get(tycon.as_str())
+                        .get(type_decl_id)
                         .map(Arc::clone)
                         .unwrap_or_else(crate::value::unknown_type_val)
                 };
@@ -1085,11 +1093,18 @@ pub(crate) fn eval_core_expr<'a>(
             // exact same Arc pointer as the constructor dict, enabling Arc::ptr_eq in
             // match_pattern to correctly identify type membership.
             //
+            // B-714: registry is keyed by type_decl_id (u64) instead of type_name (String)
+            // so that same-name types in nested scopes get independent identities.
+            //
             // Necessary strictness: materializing the inner dict (CoreExpr::Dict or
             // CoreExpr::ReprDecl wrapping a Dict) produces a Value::Dict with Arc<Thunk>
             // entries — the entries themselves are NOT materialized. This is the same
             // strictness point as CoreExpr::ReprDecl (which also materializes for registration).
-            CoreExpr::TypeDecl { type_name, inner } => {
+            CoreExpr::TypeDecl {
+                type_name,
+                type_decl_id,
+                inner,
+            } => {
                 // Create the type identity: a fresh Arc<Value> unique to this type declaration.
                 // The value is a unit Variant with ctor = type_name. This makes the identity
                 // self-describing in debug output. Its own type_val is unknown_type_val() —
@@ -1114,7 +1129,7 @@ pub(crate) fn eval_core_expr<'a>(
                             span.clone(),
                         )
                     })?
-                    .insert(type_name.clone(), Arc::clone(&type_id));
+                    .insert(*type_decl_id, Arc::clone(&type_id));
 
                 // Evaluate the inner constructor dict (or ReprDecl wrapping a dict).
                 let inner_thunk = eval_core_expr(inner, frame, ctx).await?;

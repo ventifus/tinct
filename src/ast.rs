@@ -1283,11 +1283,19 @@ pub enum CoreExpr {
     Variant {
         tag: String,
         payload: Option<Arc<Spanned<CoreExpr>>>,
+        /// Unique ID of the parent TypeDecl. Used to look up the type's identity Arc
+        /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
+        /// types in nested scopes from sharing identities (B-714).
+        type_decl_id: u64,
     },
 
     UnitVariant {
         tycon: String,
         ctor: String,
+        /// Unique ID of the parent TypeDecl. Used to look up the type's identity Arc
+        /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
+        /// types in nested scopes from sharing identities (B-714).
+        type_decl_id: u64,
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
@@ -1392,6 +1400,10 @@ pub enum CoreExpr {
     TypeDecl {
         /// The declared type name (e.g., `"Color"`).
         type_name: String,
+        /// Globally unique ID for this type declaration, generated at lower time.
+        /// Used to key `ctx.type_identity_registry` so same-name types in nested scopes
+        /// get independent identities (B-714).
+        type_decl_id: u64,
         /// The inner expression: `CoreExpr::Dict` or `CoreExpr::ReprDecl { inner: Dict }`.
         inner: Arc<Spanned<CoreExpr>>,
     },
