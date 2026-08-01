@@ -82,6 +82,33 @@ pub(crate) fn resolve_name_in_frames(
     None
 }
 
+/// T-2109: Resolve a name in parent scopes only, skipping both the env_names frame and the
+/// current dict's own letrec frame.
+///
+/// Used for MethodDispatcher parent chaining: find the next-outer dispatcher for this method.
+///
+/// Frame ordering (frames[0] = outermost, frames[n-1] = innermost after `iter().rev()`):
+///   level 0 (offset 0): env_names_frame — innermost, skipped (type names, not method dispatchers)
+///   level 1 (offset 1): current dict's letrec frame — skipped to avoid self-referential capture
+///   level 2+ (offset 2+): ancestor dict frames — searched for the parent dispatcher
+///
+/// Returns `None` if the name is not found in any ancestor scope (offset >= 2), which is the
+/// correct result when the document has only one dict (no parent dispatcher exists).
+fn resolve_name_in_parent_frames(
+    frames: &[indexmap::IndexMap<String, u32>],
+    name: &str,
+) -> Option<(u32, u32)> {
+    // frames[0] = outermost, frames[n-1] = innermost
+    // Skip offset 0 (env_names_frame) and offset 1 (current dict's own letrec frame).
+    // Searching from offset 2 finds the first ancestor dict that defines `name`.
+    for (offset, frame) in frames.iter().rev().enumerate().skip(2) {
+        if let Some(&slot) = frame.get(name) {
+            return Some((offset as u32, slot));
+        }
+    }
+    None
+}
+
 /// Process escape sequences in a single-quoted string literal.
 ///
 /// Recognized escapes:
@@ -1478,11 +1505,14 @@ fn make_method_dispatcher_fn(
     //   - De Bruijn level from resolve_name_in_frames is IGNORED — synthesized Fns don't
     //     have real scope boundaries; all outer references are captured via LGM.
     //
-    // scope_frames (from builtin-lower) = block_body_frames + dict_frames + env_names_frame:
-    //   - env_names_frame (INNERMOST, searched first): TypeNode values for type names.
-    //     Must be innermost so TypeNode.Int is found before ClassDecl {} from the public dict.
-    //   - dict_frames: mangled instance binding names at their LGM slots.
-    //   - block_body_frames: sequential injection frames (usually not needed for dispatcher).
+    // scope_frames (from builtin-lower) = block_body_frames + dict_frames + env_names_frame.
+    // After iter().rev(), the frame layout by offset is:
+    //   offset 0 = env_names_frame (INNERMOST, searched first by resolve_name_in_frames):
+    //              TypeNode values for type names. Innermost so TypeNode.Int is found before
+    //              ClassDecl {} from the public dict.
+    //   offset 1 = current dict's own letrec frame (skipped by resolve_name_in_parent_frames).
+    //   offset 2+= ancestor dict frames (searched by resolve_name_in_parent_frames).
+    //   (deeper offsets) = block_body_frames: sequential injection frames (usually not needed).
     let mut outer_names: Vec<String> = vec!["builtin-raise".to_string()];
     for (type_name, all_instances) in &type_name_to_all_instances {
         if !outer_names.contains(type_name) {
@@ -1723,46 +1753,87 @@ fn make_method_dispatcher_fn(
         });
     }
 
-    // Wildcard fallback arm: use the catch-all TypeVar instance if present, otherwise raise.
+    // Wildcard fallback arm: chain through catch-all, parent dispatcher, then raise.
+    //
+    // T-2109: MethodDispatcher parent chaining enables composition across dicts within the
+    // same document. When dict N declares [instance Eq MyType: ...], its MethodDispatcher
+    // for `=` should chain to dict N-1's MethodDispatcher (which handles prelude instances)
+    // as a fallback when MyType doesn't match.
     //
     // Priority order:
     //   1. catch_all_mangled — a same-dict instance with a TypeVar (catch-all) dispatch tag.
-    //   2. builtin-raise — no instance found anywhere in the scope chain.
+    //   2. parent dispatcher — the method name found at offset >= 2 (ancestor scope).
+    //   3. builtin-raise — no instance found anywhere in the scope chain.
     let fallback_body = match catch_all_mangled {
         Some(ref mangled) => make_mangled_call(mangled),
-        None => match resolved_addrs.get("builtin-raise").cloned() {
-            Some(raise_addr) => CoreExpr::Call {
-                func: Arc::new(Spanned::new(
-                    CoreExpr::Var {
-                        name: "builtin-raise".to_string(),
-                        addr: raise_addr,
-                        annotation: None,
-                    },
-                    span.clone(),
-                )),
-                args: vec![Arc::new(Spanned::new(
-                    CoreExpr::Str(format!(
-                        "no instance of method '{}' for the given argument types",
-                        method_name
-                    )),
-                    span.clone(),
-                ))],
-                named_args: vec![],
-                implied: false,
-            },
-            None => {
-                diagnostics.push(LowerDiagnostic {
-                    kind: LowerDiagnosticKind::Error,
-                    message: format!(
-                        "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
-                         for method '{}' — scope_frames must be seeded with builtin_core",
-                        method_name
-                    ),
-                    span: span.clone(),
-                });
-                CoreExpr::Placeholder
+        None => {
+            // T-2109: Check if the method exists in an ancestor scope (offset >= 2, skipping both
+            // env_names_frame and the current dict's own letrec frame). If found, forward to the
+            // parent dispatcher. Otherwise, raise.
+            let parent_dispatcher =
+                scope_frames.and_then(|frames| resolve_name_in_parent_frames(frames, method_name));
+            match parent_dispatcher {
+                Some((_level, slot)) => {
+                    // Parent dispatcher exists — capture it and forward the call.
+                    let cap_idx = capture_list.len() as u32;
+                    // depth: 0 per convention for all LGM captures in synthesized CoreExpr::Fn.
+                    // The evaluator ignores depth (uses slot directly); the type checker resolves
+                    // ClosureCapture by name lookup, never via original_addr. Only slot matters.
+                    let parent_original_addr = VarAddr::LetrecGroupMember { depth: 0, slot };
+                    capture_list.push((method_name.to_string(), parent_original_addr));
+                    let parent_closure_addr = VarAddr::ClosureCapture(cap_idx);
+                    CoreExpr::Call {
+                        func: Arc::new(Spanned::new(
+                            CoreExpr::Var {
+                                name: method_name.to_string(),
+                                addr: parent_closure_addr,
+                                annotation: None,
+                            },
+                            span.clone(),
+                        )),
+                        args: make_call_args(),
+                        named_args: vec![],
+                        implied: false,
+                    }
+                }
+                None => {
+                    // No parent dispatcher — use builtin-raise as final fallback.
+                    match resolved_addrs.get("builtin-raise").cloned() {
+                        Some(raise_addr) => CoreExpr::Call {
+                            func: Arc::new(Spanned::new(
+                                CoreExpr::Var {
+                                    name: "builtin-raise".to_string(),
+                                    addr: raise_addr,
+                                    annotation: None,
+                                },
+                                span.clone(),
+                            )),
+                            args: vec![Arc::new(Spanned::new(
+                                CoreExpr::Str(format!(
+                                    "no instance of method '{}' for the given argument types",
+                                    method_name
+                                )),
+                                span.clone(),
+                            ))],
+                            named_args: vec![],
+                            implied: false,
+                        },
+                        None => {
+                            diagnostics.push(LowerDiagnostic {
+                                kind: LowerDiagnosticKind::Error,
+                                message: format!(
+                                    "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
+                                     for method '{}' — scope_frames must be seeded with builtin_core",
+                                    method_name
+                                ),
+                                span: span.clone(),
+                            });
+                            CoreExpr::Placeholder
+                        }
+                    }
+                }
             }
-        },
+        }
     };
     let wildcard_pattern = Arc::new(SurfaceNode::new(
         SurfaceExpression::Placeholder(None, None),
@@ -3021,5 +3092,303 @@ mod tests {
         // Mutation: swapping \n and \t would fail this test.
         let result = process_escapes("\\n\\t\\r\\\\", "\"");
         assert_eq!(result, "\n\t\r\\");
+    }
+
+    // ── make_method_dispatcher_fn parent dispatch unit tests (T-2109) ────────
+    //
+    // Category 1 unit tests: `make_method_dispatcher_fn` is a Rust-internal lowering function.
+    // Its output (CoreExpr structure) is not surface-observable in tinct. These tests call it
+    // directly and assert on capture counts, VarAddr types, and CoreExpr body shape.
+    //
+    // End-to-end corpus test for parent dispatch is blocked by B-712: user-defined nominal
+    // type dispatch arms are dead code (the match evaluator's TypeNode path only fires for
+    // builtin types), so the equatable corpus test still shows Boolean.False regardless of
+    // whether parent dispatch fires or not.
+    //
+    // When B-712 is fixed, a corpus test can be added to demonstrate cross-dict dispatch chaining.
+
+    /// Build a minimal three-frame scope that correctly models the combined_frames layout used
+    /// by `builtin-lower`:
+    ///   frames[0] = outer_parent: the ancestor dict that owns `method` at `slot`
+    ///   frames[1] = current_dict: the dict currently being lowered (its own frame, skipped)
+    ///   frames[2] = env_names_frame: innermost, always skipped by resolve_name_in_parent_frames
+    ///
+    /// With `.skip(2)` in resolve_name_in_parent_frames:
+    ///   reversed: [env_names(0), current_dict(1), outer_parent(2)]
+    ///   skip(2) starts at outer_parent (offset 2) → finds `method` there at offset 2.
+    fn make_parent_dispatch_frames(
+        method: &str,
+        slot: u32,
+    ) -> Vec<indexmap::IndexMap<String, u32>> {
+        let mut outer_parent: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        outer_parent.insert(method.to_string(), slot);
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("other-current".to_string(), 99);
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("builtin-raise".to_string(), 0);
+        // frames[0]=outermost (outer_parent), frames[1]=current_dict, frames[2]=env_names (innermost)
+        // resolve_name_in_parent_frames skips offsets 0 (env_names) and 1 (current_dict),
+        // finding `method` in outer_parent at offset 2.
+        vec![outer_parent, current_dict, env_names]
+    }
+
+    #[test]
+    fn test_make_method_dispatcher_fn_parent_dispatch_fallback_is_call() {
+        // When scope_frames has `=` in the outer_parent frame (offset 2 after .skip(2)),
+        // the wildcard fallback must be a CoreExpr::Call forwarding to the captured parent
+        // dispatcher, not a raise. make_parent_dispatch_frames uses 3 frames:
+        // [outer_parent(=@slot5), current_dict, env_names] so the parent is at offset 2.
+        let span = rust_span!();
+        let frames = make_parent_dispatch_frames("=", 5);
+        let mut diags: Vec<LowerDiagnostic> = Vec::new();
+
+        let result = make_method_dispatcher_fn(
+            "=",
+            &[], // No instances — only the wildcard arm exists.
+            2,   // param_count: `=` is binary (__d0, __d1)
+            &span,
+            Some(frames.as_slice()),
+            &mut diags,
+        );
+
+        assert!(
+            diags.is_empty(),
+            "no diagnostics expected for parent dispatch path; got: {:?}",
+            diags
+        );
+
+        // Result must be a CoreExpr::Fn.
+        let CoreExpr::Fn { captures, body, .. } = result else {
+            panic!("expected CoreExpr::Fn, got {:?}", result);
+        };
+
+        // captures[0] = builtin-raise (from env_names frame, for the final no-raise fallback)
+        // captures[1] = "=" parent dispatcher (from outer_parent at offset 2 in reversed frames)
+        // depth=0 per convention for synthesized CoreExpr::Fn LGM captures (evaluator ignores depth).
+        assert_eq!(
+            captures.len(),
+            2,
+            "expected two captures (builtin-raise + parent dispatcher); got {:?}",
+            captures
+        );
+        assert_eq!(
+            captures[0].0, "builtin-raise",
+            "captures[0] must be builtin-raise"
+        );
+        assert_eq!(
+            captures[1],
+            (
+                "=".to_string(),
+                VarAddr::LetrecGroupMember { depth: 0, slot: 5 }
+            ),
+            "captures[1] must be the parent '=' with depth:0 (convention), slot 5"
+        );
+
+        // Body must be a Match. The wildcard arm (last arm) body must be a Call.
+        let CoreExpr::Match { arms, .. } = &body.node else {
+            panic!("expected CoreExpr::Match body, got {:?}", body.node);
+        };
+        assert!(
+            !arms.is_empty(),
+            "arms must be non-empty (at least the wildcard arm)"
+        );
+        let wildcard_arm = arms.last().expect("arms is non-empty");
+        let CoreExpr::Call { func, .. } = &wildcard_arm.body.node else {
+            panic!(
+                "wildcard fallback must be CoreExpr::Call (parent dispatch), got {:?}",
+                wildcard_arm.body.node
+            );
+        };
+        // The func must be a Var with VarAddr::ClosureCapture(1) — captures[1] is the parent "=".
+        // captures[0] = builtin-raise, captures[1] = parent "=" dispatcher.
+        assert!(
+            matches!(
+                func.node,
+                CoreExpr::Var {
+                    addr: crate::ast::VarAddr::ClosureCapture(1),
+                    ..
+                }
+            ),
+            "parent dispatch call func must be ClosureCapture(1) (parent '=' is at index 1), got {:?}",
+            func.node
+        );
+    }
+
+    #[test]
+    fn test_make_method_dispatcher_fn_no_parent_no_raise_name_gives_placeholder() {
+        // When scope_frames has no parent `=` and no `builtin-raise`, the wildcard
+        // fallback produces a Placeholder with a diagnostic (not a silent no-op).
+        let span = rust_span!();
+        // Single frame with only unrelated names — no parent `=`, no builtin-raise.
+        let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        frame.insert("other".to_string(), 0);
+        let frames = vec![frame];
+        let mut diags: Vec<LowerDiagnostic> = Vec::new();
+
+        let result =
+            make_method_dispatcher_fn("=", &[], 2, &span, Some(frames.as_slice()), &mut diags);
+
+        // Must produce a Fn (structure is intact) ...
+        assert!(matches!(result, CoreExpr::Fn { .. }), "expected Fn");
+        // ... but with a diagnostic about builtin-raise not found.
+        assert!(
+            !diags.is_empty(),
+            "expected a diagnostic when builtin-raise is missing from scope"
+        );
+        let has_raise_diag = diags.iter().any(|d| d.message.contains("builtin-raise"));
+        assert!(
+            has_raise_diag,
+            "diagnostic must mention 'builtin-raise'; got {:?}",
+            diags
+        );
+    }
+
+    // ── resolve_name_in_parent_frames unit tests (T-2109) ─────────────────────
+    //
+    // resolve_name_in_parent_frames skips two innermost frames (offset 0 = env_names_frame,
+    // offset 1 = current dict's own letrec frame) and searches from offset 2 outward.
+    // frames[0] = outermost, frames[n-1] = innermost.
+    //
+    // The minimal real-world layout is 3 frames:
+    //   frames[0] = ancestor_dict (what we search)
+    //   frames[1] = current_dict  (skipped — would cause self-reference)
+    //   frames[2] = env_names     (always skipped — type names, not dispatchers)
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_single_frame_returns_none() {
+        // Only one frame — .skip(2) on a 1-element reversed iterator gives empty → None.
+        let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        frame.insert("x".to_string(), 7);
+        let frames = vec![frame];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result, None,
+            "single frame: skip(2) exhausts iterator, must return None"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_two_frames_always_none() {
+        // Two frames [outer, env_names]: both are skipped (offset 0 = env_names, offset 1 = outer).
+        // This is the case where only one dict exists — no ancestor to chain to.
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("x".to_string(), 5);
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("builtin-raise".to_string(), 0);
+        // reversed: [env_names(0), current_dict(1)]; skip(2) = empty → None
+        let frames = vec![current_dict, env_names];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result, None,
+            "two frames (current_dict + env_names): both skipped, must return None"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_name_in_env_names_returns_none() {
+        // Name only in env_names_frame (offset 0) — must be skipped.
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("other".to_string(), 0);
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("x".to_string(), 5);
+        // frames[0] = current_dict, frames[1] = env_names (innermost)
+        // reversed: [env_names(0), current_dict(1)]; skip(2) = empty → None
+        let frames = vec![current_dict, env_names];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result, None,
+            "name only in env_names_frame (offset 0) must be skipped"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_name_in_ancestor_returns_offset_2() {
+        // Three frames: [ancestor_dict(x=3), current_dict, env_names].
+        // This is the minimal setup where parent dispatch finds a result.
+        // reversed: [env_names(0), current_dict(1), ancestor_dict(2)]
+        // skip(2) starts at ancestor_dict (offset 2) → Some((2, 3)).
+        let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        ancestor.insert("x".to_string(), 3);
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("other".to_string(), 0);
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("builtin-raise".to_string(), 1);
+        let frames = vec![ancestor, current_dict, env_names];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result,
+            Some((2, 3)),
+            "name in ancestor_dict (offset 2) = slot 3"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_name_in_outermost_of_three() {
+        // Three frames: name is in the outermost (offset 2 after skip(2)).
+        // reversed: [inner(0), middle(1), outermost(2)]; skip(2) gives outermost → Some((2, 9)).
+        let mut outermost: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        outermost.insert("x".to_string(), 9);
+        let mut middle: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        middle.insert("y".to_string(), 1);
+        let mut inner: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        inner.insert("z".to_string(), 2);
+        // frames[0]=outermost, frames[1]=middle (current_dict), frames[2]=inner (env_names)
+        let frames = vec![outermost, middle, inner];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result,
+            Some((2, 9)),
+            "name in outermost of 3 frames = offset 2, slot 9"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_current_dict_name_is_skipped() {
+        // Three frames: name `x` exists in both current_dict AND ancestor_dict.
+        // Must find it in ancestor_dict (offset 2), not current_dict (offset 1).
+        // This verifies that self-referential capture is impossible.
+        let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        ancestor.insert("x".to_string(), 10); // slot 10 in ancestor
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("x".to_string(), 20); // slot 20 in current dict (must be skipped)
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("builtin-raise".to_string(), 0);
+        // reversed: [env_names(0), current_dict(1), ancestor(2)]; skip(2) gives ancestor
+        let frames = vec![ancestor, current_dict, env_names];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result,
+            Some((2, 10)),
+            "must find ancestor slot 10, not current-dict slot 20 (self-reference prevention)"
+        );
+    }
+
+    #[test]
+    fn test_resolve_name_in_parent_frames_name_only_in_current_dict_returns_none() {
+        // Three frames: name `x` exists ONLY in current_dict (offset 1, skipped).
+        // Ancestor dict does NOT contain `x`. Must return None — no self-referential capture.
+        // This is the direct test case that validates the .skip(2) self-reference prevention.
+        let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        ancestor.insert("other".to_string(), 5); // ancestor has something else
+        let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        current_dict.insert("x".to_string(), 42); // x only in current dict (skipped)
+        let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
+        env_names.insert("builtin-raise".to_string(), 0);
+        // reversed: [env_names(0), current_dict(1), ancestor(2)]; skip(2) gives ancestor
+        // ancestor has no "x" → None
+        let frames = vec![ancestor, current_dict, env_names];
+
+        let result = resolve_name_in_parent_frames(&frames, "x");
+        assert_eq!(
+            result,
+            None,
+            "name only in current_dict (offset 1, skipped) must return None — prevents self-reference"
+        );
     }
 }

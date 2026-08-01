@@ -5004,11 +5004,18 @@ pub(crate) fn builtin_cap_env_has(
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
 ///
 /// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve`)
-/// are merged into the `scope_frames` used for lowering. This ensures that
-/// `make_method_dispatcher_fn` can see the document's own letrec scopes (including mangled
-/// instance method names across all dicts) when constructing MethodDispatcher functions.
-/// Cross-dict MethodDispatcher chaining works because all document-level resolver frames
-/// are merged at level=0 so all produce `LGM(slot)` references.
+/// are merged with `dict_frames` (Dict letrec frames + env_names frame) into `combined_frames`
+/// and passed as `scope_frames` to `make_method_dispatcher_fn`. This enables:
+///
+/// 1. `resolve_name_in_frames` (for builtin-raise and mangled instance names): searches all
+///    frames innermost-first to find each name's absolute LGM slot.
+///
+/// 2. `resolve_name_in_parent_frames` (for cross-dict method chaining): skips the two
+///    innermost frames (env_names at offset 0, current dict at offset 1) and searches
+///    ancestor dicts from offset 2 outward. When dict N's `=` dispatcher has no matching
+///    instance, it chains to dict N-1's `=` dispatcher (the ancestor), not to itself.
+///    `slot` is the absolute LGM slot — the only value used at runtime (depth is ignored
+///    by the evaluator and type checker resolves ClosureCapture by name).
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -5047,8 +5054,17 @@ pub(crate) fn builtin_lower(
 
         // Combine resolver_frames (block_body frames) and dict_frames (Dict letrec frames +
         // env_names frame) for use as scope_frames in make_method_dispatcher_fn.
-        // dict_frames are appended after resolver_frames so they are more-inner (searched first
-        // by resolve_name_in_frames which searches innermost-first = last element first).
+        //
+        // Layout of combined_frames (outermost first):
+        //   [block_body_frames..., dict_1_frame, dict_2_frame, ..., dict_N_frame, env_names_frame]
+        //
+        // After iter().rev() in resolve_name_in_*:
+        //   offset 0 = env_names_frame (innermost, searched first by resolve_name_in_frames)
+        //   offset 1 = dict_N_frame (current dict being lowered)
+        //   offset 2 = dict_{N-1}_frame (first ancestor; found by resolve_name_in_parent_frames)
+        //   ...
+        //
+        // dict_frames are appended after resolver_frames so they are more-inner (offset 0+).
         let combined_frames: Vec<indexmap::IndexMap<String, u32>> =
             if !doc_resolver_frames.is_empty() || !doc_dict_frames.is_empty() {
                 let mut v = Vec::with_capacity(doc_resolver_frames.len() + doc_dict_frames.len());

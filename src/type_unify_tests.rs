@@ -3605,3 +3605,51 @@ async fn test_b709_uniform_uniform_key_type_none_compatible() {
         "Uniform~Uniform with one missing key-type should be compatible"
     );
 }
+
+/// B-710: constrain_record must enforce key-type constraint when both tails are RT_UNIFORM.
+/// key-types use invariant (equality) semantics via unify(), not covariant semantics via constrain().
+#[tokio::test]
+async fn test_b710_constrain_record_key_type() {
+    use crate::type_infer::make_typevalue_repr;
+
+    let mut state = InferState::new();
+    let ctx = &mut state.ctx;
+    let mut constraints = Vec::new();
+    let span = rust_span!();
+
+    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_repr(REPR_STRING);
+    let float_tv = make_typevalue_repr(REPR_FLOAT);
+
+    // Positive: same key-type on both sides → constrain succeeds
+    let tail_same_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+    let record_same_a = make_record_with_tail(vec![], tail_same_a);
+    let tail_same_b = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+    let record_same_b = make_record_with_tail(vec![], tail_same_b);
+    let result_ok = constrain(
+        &record_same_a,
+        &record_same_b,
+        ctx,
+        &mut constraints,
+        span.clone(),
+    )
+    .await;
+    assert!(
+        result_ok.is_ok(),
+        "constrain_record should accept matching key-types in Uniform tails"
+    );
+
+    // Negative: incompatible key-types (String ≠ Float) → constrain fails (invariant equality)
+    let tail_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
+    let record_a = make_record_with_tail(vec![], tail_a);
+    let tail_b = make_uniform_tail(int_tv.clone(), Some(float_tv.clone()));
+    let record_b = make_record_with_tail(vec![], tail_b);
+    let result = constrain(&record_a, &record_b, ctx, &mut constraints, span).await;
+    assert!(
+        result.is_err(),
+        "constrain_record should reject incompatible key-types (unify enforces equality, not subtyping)"
+    );
+}
+
+// B-711: test_b709_uniform_uniform_key_type_none_compatible already covers asymmetric key-type
+// unification in both directions — no duplicate test needed here.

@@ -1,6 +1,7 @@
-# builtin-type-of returns the value's type_val.
-# During bootstrap, all values carry unknown_type_val() — an empty Dict.
-# DisplayVisitor formats an empty Dict as Dict({}).
+# builtin-type-of returns the ground TypeValue of a value via ground_typevalue_of (eval.rs).
+# T-2110 resolved in S-1014: ground_typevalue_of computes TypeValue from discriminant at call time.
+# For Int(42), ground_typevalue_of returns TypeValue.Repr { repr: "Value::Int", is: {} }.
+# DisplayVisitor formats a Variant with a dict payload as Variant(Tag, Dict({...})).
 [builtin-type-of 42]
 === out
-Dict({})
+Variant(TypeValue.Repr, Dict({"repr": String("Value::Int"), "is": Dict({})}))

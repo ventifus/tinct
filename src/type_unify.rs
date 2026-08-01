@@ -1403,7 +1403,11 @@ pub(crate) async fn unify_rowtails(
                 (Some(ak), Some(bk)) => {
                     Box::pin(unify(&ak, &bk, ctx, constraints, span, 0)).await?;
                 }
-                _ => {} // One or neither has key-type — compatible (no constraint).
+                // B-711: One or neither has key-type — the unconstrained side accepts any
+                // key-type, so no unification needed. The unified tail preserves whichever
+                // key-type exists (if any). This is correct: an unconstrained key domain
+                // is compatible with any specific key domain.
+                _ => {}
             }
             Ok(())
         }
@@ -1873,9 +1877,22 @@ async fn constrain_record(
                     &sup_value_type,
                     ctx,
                     constraints,
-                    span,
+                    span.clone(),
                 ))
                 .await?;
+
+                // B-710: Unify key-types when both tails are Uniform.
+                // Key-types are invariant: a dict with Int keys cannot be used where String keys
+                // are expected, nor vice versa. Using constrain (covariant) here would allow
+                // IntKeyMap <: StrKeyMap which is incorrect — key-types must be equal.
+                let sub_key = extract_uniform_key_type(&sub_tail);
+                let sup_key = extract_uniform_key_type(&sup_tail);
+                match (sub_key, sup_key) {
+                    (Some(sk), Some(spk)) => {
+                        Box::pin(unify(&sk, &spk, ctx, constraints, span.clone(), 0)).await?;
+                    }
+                    _ => {} // One or neither has key-type — compatible
+                }
             }
 
             Ok(())
@@ -2493,6 +2510,9 @@ pub async fn process_deferred_equalities(
     let max_iterations = 100;
     let mut iteration = 0;
     let mut progress = true;
+    // Track the most recent error for deferred pairs, so it can be propagated
+    // if the pair remains permanently unresolvable after the fixpoint.
+    let mut last_error: Option<TypeDiagnostic> = None;
     while progress && iteration < max_iterations {
         iteration += 1;
         progress = false;
@@ -2516,21 +2536,47 @@ pub async fn process_deferred_equalities(
             match result {
                 Ok(()) => {
                     progress = true;
+                    last_error = None;
                 }
-                Err(_) => {
-                    // Keep for next iteration — may become resolvable after other pairs unify.
+                Err(e) => {
+                    // Temporarily unresolvable — may become solvable once other pairs unify.
+                    // Record the error so it can be propagated if this pair never resolves.
+                    last_error = Some(e);
                     deferred.push((a_applied, b_applied));
                 }
             }
         }
     }
     // If any constraints remain after the fixpoint, they are permanently unresolvable.
-    // Propagate the first error so type errors are visible to callers.
+    // Propagate the accumulated error (or re-derive it) so type errors are visible to callers.
     if !deferred.is_empty() {
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+        // Fallback: last_error is None but deferred is non-empty.
+        // Re-derive a concrete error from the first remaining pair, then unconditionally
+        // return Err — even if that pair now unifies (it may have become satisfiable while
+        // other deferred pairs remain stuck). This ensures deferred is never silently dropped.
         let (a, b) = &deferred[0];
         let a_applied = ctx.apply_subst(a);
         let b_applied = ctx.apply_subst(b);
-        return Box::pin(unify(&a_applied, &b_applied, ctx, constraints, span, 0)).await;
+        return Box::pin(unify(
+            &a_applied,
+            &b_applied,
+            ctx,
+            constraints,
+            span.clone(),
+            0,
+        ))
+        .await
+        .and_then(|()| {
+            // First pair became satisfiable, but others remain — report generic error.
+            Err(TypeDiagnostic::error(
+                "type-error",
+                "deferred type constraints could not be fully resolved",
+                span,
+            ))
+        });
     }
     Ok(())
 }
@@ -2602,5 +2648,64 @@ mod type_unify_tests_new {
         let str_tv = make_typevalue_repr(REPR_STRING);
         let result = unify(&int_tv, &str_tv, &mut ctx, &mut constraints, make_span(), 0).await;
         assert!(result.is_err());
+    }
+
+    // B-710: Key-types in Uniform tails are invariant — constraining sub <: sup must fail
+    // in BOTH directions when key-types differ. A covariant check would only fail one way;
+    // this test pins the invariant (unify) behavior.
+    #[tokio::test]
+    async fn test_b710_key_type_invariant_both_directions_fail() {
+        use crate::type_infer::{
+            make_rowtail_uniform_with_key_type, make_typevalue_record, make_typevalue_top,
+        };
+
+        // Build Record { ...Int-keyed String-valued } (Uniform tail: key=Int, value=String)
+        let int_tv = make_typevalue_repr(REPR_INT);
+        let str_tv = make_typevalue_repr(REPR_STRING);
+        let top_tv = make_typevalue_top();
+
+        let int_key_tail = make_rowtail_uniform_with_key_type(top_tv.clone(), Some(int_tv.clone()));
+        let str_key_tail = make_rowtail_uniform_with_key_type(top_tv.clone(), Some(str_tv.clone()));
+
+        let int_key_map =
+            make_typevalue_record(indexmap::IndexMap::new(), Some(int_key_tail.clone()));
+        let str_key_map =
+            make_typevalue_record(indexmap::IndexMap::new(), Some(str_key_tail.clone()));
+
+        // Direction 1: int-key-map <: str-key-map must fail (Int ≠ String key-type)
+        {
+            let mut ctx = make_ctx();
+            let mut constraints = Vec::new();
+            let result = constrain(
+                &int_key_map,
+                &str_key_map,
+                &mut ctx,
+                &mut constraints,
+                make_span(),
+            )
+            .await;
+            assert!(
+                result.is_err(),
+                "B-710: constrain(int-key-map, str-key-map) must fail — key-types are invariant"
+            );
+        }
+
+        // Direction 2: str-key-map <: int-key-map must also fail
+        {
+            let mut ctx = make_ctx();
+            let mut constraints = Vec::new();
+            let result = constrain(
+                &str_key_map,
+                &int_key_map,
+                &mut ctx,
+                &mut constraints,
+                make_span(),
+            )
+            .await;
+            assert!(
+                result.is_err(),
+                "B-710: constrain(str-key-map, int-key-map) must also fail — key-types are invariant, not covariant"
+            );
+        }
     }
 }
