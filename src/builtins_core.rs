@@ -410,7 +410,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_raise,
             [Strictness::Seq],
             0,
-            ["msg"]
+            ["diag"]
         ),
         // builtin-try: takes 1 zero-arg function, calls it, returns `{ok: value}` on success
         // or the unified diagnostic dict `{level, kind, message, span, ...}` on failure.

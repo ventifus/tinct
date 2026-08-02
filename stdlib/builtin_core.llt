@@ -211,7 +211,7 @@
   Url: [type Url]
 
   # ── Control flow ──────────────────────────────────────────────────────────
-  builtin-raise: [fn@Never  [let msg@String] ...]
+  builtin-raise: [fn@Never  [let diag@Diagnostic] ...]
   builtin-try:   [fn@[bind: [a]  return: [or [ok: a] Diagnostic]] [let expr@a] ...]
 
   # ── Arithmetic — monomorphic typed variants ───────────────────────────────

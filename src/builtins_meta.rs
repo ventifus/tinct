@@ -110,8 +110,10 @@ pub(crate) fn builtin_force(
     })
 }
 
-/// `raise`: takes 1 arg (String message), always raises.
+/// `raise`: takes 1 arg (Diagnostic dict), always raises.
 /// Inherently materializing: constructs concrete error value.
+/// The argument must be a Diagnostic dict with at minimum a `message:` String field.
+/// Optional `notes:` field is an integer-keyed dict of Strings appended as notes.
 pub(crate) fn builtin_raise(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -130,8 +132,45 @@ pub(crate) fn builtin_raise(
             &ctx,
             call_span.clone(),
         )?;
-        let msg = require_string("raise", val, Arc::clone(&args[0]).span.clone())?;
-        Err(EvalError::user_error(msg.to_string(), call_span).into())
+        let arg_span = Arc::clone(&args[0]).span.clone();
+        let map =
+            crate::builtins::require_dict("raise", val, arg_span.clone(), &ctx, call_span.clone())
+                .await?;
+
+        // Extract required `message:` field
+        let message_thunk = map
+            .get(&HashableValue::Str("message".into()))
+            .ok_or_else(|| {
+                EvalError::user_error(
+                    "raise: Diagnostic dict missing required `message:` field".to_string(),
+                    call_span.clone(),
+                )
+            })?;
+        let message_val = materialize(message_thunk, Some(&call_span), &ctx).await?;
+        let message = require_string("raise", message_val, message_thunk.span.clone())?;
+
+        let mut err = EvalError::user_error(message, call_span.clone());
+
+        // Extract optional `notes:` field — integer-keyed dict of Strings
+        if let Some(notes_thunk) = map.get(&HashableValue::Str("notes".into())) {
+            let notes_val = materialize(notes_thunk, Some(&call_span), &ctx).await?;
+            let notes_map = crate::builtins::require_dict(
+                "raise",
+                notes_val,
+                notes_thunk.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await?;
+            // Iterate in insertion order (integer keys 0, 1, 2, ...)
+            for (_, note_thunk) in &notes_map {
+                let note_val = materialize(note_thunk, Some(&call_span), &ctx).await?;
+                let note = require_string("raise", note_val, note_thunk.span.clone())?;
+                err = err.with_note(note);
+            }
+        }
+
+        Err(err.into())
     })
 }
 
@@ -272,10 +311,14 @@ pub(crate) fn builtin_try(
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );
+                let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                for (j, note) in e.notes.iter().enumerate() {
+                    notes_dict.insert(HashableValue::Int(j as i64), mk(string_val(note)));
+                }
                 w.insert(
                     HashableValue::Str("notes".into()),
                     mk(Value::Dict {
-                        entries: IndexMap::new(),
+                        entries: notes_dict,
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );

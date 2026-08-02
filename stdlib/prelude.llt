@@ -457,7 +457,16 @@
     [var:  [builtin-gensym "𝜇" "rec"]]
     [body: [f [TypeNode.RecursiveRef name: var]]]
     [match [builtin-is-contractive body]
-      0: [builtin-raise [builtin-string-concat "non-contractive recursive type: immediate recursion without structural container (binder: " [builtin-string-concat var ")"]]]
+      0: [builtin-raise [level: "error"
+                         kind: "user-error"
+                         message: [builtin-string-concat "non-contractive recursive type: immediate recursion without structural container (binder: " [builtin-string-concat var ")"]]
+                         span: [file: ""  start-line: 0  start-col: 0  end-line: 0  end-col: 0]
+                         help: []
+                         notes: []
+                         secondary-spans: []
+                         call-stack: []
+                         macro-expand: []
+                         blame: []]]
       ...: [TypeNode.Recursive var: var  body: body]]]
 
   # ============================================================================
@@ -643,6 +652,21 @@ Boolean: [type True False]
 # Access expressions like [builtin-dict-get i ks] can't appear in key position syntactically;
 # passing through function params makes the key a plain k var_ref.
 make-entry: [fn@Dict [let k v] [$k: v]]
+
+# make-diag: construct a minimal Diagnostic dict for builtin-raise.
+# All fields required by the Diagnostic structural type are present.
+# Use for internal errors where no source span is available.
+make-diag: [fn [let msg@String]
+  [level: "error"
+   kind: "user-error"
+   message: msg
+   span: [file: ""  start-line: 0  start-col: 0  end-line: 0  end-col: 0]
+   help: []
+   notes: []
+   secondary-spans: []
+   call-stack: []
+   macro-expand: []
+   blame: []]]
 
 # `append` is a Rust-native builtin (O(1) amortized insert vs O(n) merge).
 
@@ -3003,7 +3027,7 @@ Example: [raise "something went wrong"]
 
 Note: Always fails. The error message must be a String. Use [try f] to catch
 user errors from zero-arg functions.
-"""]: [fn@Never [let msg@String] [builtin-raise msg]]
+"""]: [fn@Never [let msg@String] [builtin-raise [make-diag msg]]]
 
 # error: alias for raise. Historically used throughout the standard library
 # and user code as [error "message"]. Kept for compatibility; prefer [raise] in new code.
@@ -4406,7 +4430,7 @@ Inherently materializing: must force each attempt to catch errors.
     [match [raw-to-result [builtin-try [thunk]]]
       [case [let p] [Result.Ok p]  p.value]
       [case [let _] [Result.Error] [match [builtin-int-gte n 1]
-                     0: [builtin-raise "retry limit exceeded"]
+                     0: [builtin-raise [make-diag "retry limit exceeded"]]
                      ...: [go [builtin-int-sub n 1]]]]]]]
   [go n]]
 

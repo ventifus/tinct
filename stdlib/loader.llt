@@ -134,6 +134,21 @@
       0: [read-file f [builtin-bytes-concat acc chunk]]
       ...: acc]]
 
+  # make-diag: construct a minimal Diagnostic dict for builtin-raise.
+  # All fields required by the Diagnostic structural type are present.
+  # Use for internal errors where no source span is available.
+  make-diag: [fn [let msg@String]
+    [level: "error"
+     kind: "user-error"
+     message: msg
+     span: [file: ""  start-line: 0  start-col: 0  end-line: 0  end-col: 0]
+     help: []
+     notes: []
+     secondary-spans: []
+     call-stack: []
+     macro-expand: []
+     blame: []]]
+
   # reduce and join defined with core builtins only (prelude not yet loaded).
   _reduce-loop: [fn [let f acc xs i len]
     [match [builtin-int-gte i len]
@@ -351,7 +366,7 @@
     [_pe:           [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     # Desugar the parsed program (expands $_ lambda, pipe, etc.)
     [desugared:     [>> [match [builtin-eq-int [builtin-int-add n-parse _pe] 0]
-                          0: [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]
+                          0: [builtin-raise [make-diag [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]
                           ...: []]
                         [builtin-desugar parse-result.program]]]
     [docs:          [builtin-program-docs desugared]]
@@ -370,7 +385,7 @@
       [_re:      [builtin-dict-length [emit-diagnostics res.diagnostics]]]
       # >> forces the resolve-error check before typecheck proceeds, preventing dormancy.
       [typed:   [>> [match [builtin-eq-int [builtin-int-add n-re _re] 0]
-                      0: [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]
+                      0: [builtin-raise [make-diag [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]
                       ...: []]
                     [builtin-typecheck-doc res.doc acc.tc doc-env]]]
       [lowered: [builtin-lower typed.doc]]
@@ -473,7 +488,7 @@
     # Type-check the document. >> forces the resolve-error check first to prevent dormancy:
     # the standalone match would be a dormant thunk since typed never referenced its auto-key.
     [typed: [>> [match [builtin-eq-int [builtin-int-add [builtin-int-add n-re _re] _iw] 0]
-                  0: [builtin-raise "resolve error(s)"]
+                  0: [builtin-raise [make-diag "resolve error(s)"]]
                   ...: []]
                 [builtin-typecheck-doc doc-resolved.doc tc full-env]]]
     # Lower to CoreDocument, then evaluate with env-dict protocol.
@@ -486,7 +501,7 @@
     [caps-list: [get-or [] "caps" meta]]
     [_caps: [reduce [fn [let _ cap-name]
                [match [builtin-cap-env-has? cap-name full-env]
-                 0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                 0: [builtin-raise [make-diag [builtin-string-concat "missing required capability: " cap-name]]]
                  ...: 0]]
                0 [builtin-keys caps-list]]]
     [_result: [merge state
@@ -514,7 +529,7 @@
     # Emit parse errors as a data dependency (no >> needed).
     [_pe:          [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int _pe 0]
-      0: [builtin-raise "parse error(s)"]
+      0: [builtin-raise [make-diag "parse error(s)"]]
       ...: []]
     # Desugar + extract docs
     [desugared: [builtin-desugar parse-result.program]]
@@ -539,7 +554,7 @@
     # Emit parse errors as a data dependency (no >> needed).
     [_pe:          [builtin-dict-length [emit-diagnostics parse-result.diagnostics]]]
     [match [builtin-eq-int _pe 0]
-      0: [builtin-raise "parse error(s)"]
+      0: [builtin-raise [make-diag "parse error(s)"]]
       ...: []]
     # Desugar + extract docs
     [desugared: [builtin-desugar parse-result.program]]
@@ -604,4 +619,4 @@
 
 [match [builtin-eq-int [builtin-dict-length %programs] 0]
   0: [cli-pipeline %programs formatter [] %cwd prelude-env tc emit-ch]
-  ...: [builtin-raise "no input files or expressions specified"]]
+  ...: [builtin-raise [make-diag "no input files or expressions specified"]]]

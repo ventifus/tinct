@@ -118,7 +118,10 @@ pub fn lower_errors_to_eval_error(
             crate::lower::LowerDiagnosticKind::Error => errors.push(d),
             crate::lower::LowerDiagnosticKind::Warning => {
                 let loc = if !d.span.file.starts_with('<') {
-                    format!(" ({}:{}:{})", d.span.file, d.span.start_line, d.span.start_col)
+                    format!(
+                        " ({}:{}:{})",
+                        d.span.file, d.span.start_line, d.span.start_col
+                    )
                 } else {
                     String::new()
                 };

@@ -140,6 +140,21 @@
       0: default
       1: [builtin-dict-get key dict]]]
 
+  # make-diag: construct a minimal Diagnostic dict for builtin-raise.
+  # All fields required by the Diagnostic structural type are present.
+  # Use for internal errors where no source span is available.
+  make-diag: [fn [let msg@String]
+    [level: "error"
+     kind: "user-error"
+     message: msg
+     span: [file: ""  start-line: 0  start-col: 0  end-line: 0  end-col: 0]
+     help: []
+     notes: []
+     secondary-spans: []
+     call-stack: []
+     macro-expand: []
+     blame: []]]
+
   # log-step: write msg to state.stderr and return state with updated handle.
   # The returned state.stderr is the genuine consumer — it is forced when the next
   # stage (or the reduce's passed computation) accesses state.stderr.
@@ -387,7 +402,7 @@
            0: [f state]
            1: [f [builtin-dict-nth args 0] state]
            2: [f [builtin-dict-nth args 0] [builtin-dict-nth args 1] state]
-           ...: [builtin-raise "if-ok: only 0, 1, or 2 pre-args supported"]]]]
+           ...: [builtin-raise [make-diag "if-ok: only 0, 1, or 2 pre-args supported"]]]]]
 
   # ── Stage: load-bytes ─────────────────────────────────────────────────────────
   # Opens state.path under cap and reads all bytes. Adds: bytes.
@@ -647,7 +662,7 @@
                           [caps-validated: [reduce
                             [fn [let result cap-name]
                               [match [builtin-cap-env-has? cap-name scope]
-                                0: [builtin-raise [builtin-string-concat "missing required capability: " cap-name]]
+                                0: [builtin-raise [make-diag [builtin-string-concat "missing required capability: " cap-name]]]
                                 1: result]]
                             exports
                             [builtin-keys caps-list]]]
@@ -1037,9 +1052,9 @@
   # prelude-env is the gating name: all test code that uses prelude goes through it so
   # prelude loading errors propagate rather than being caught by per-test builtin-try.
   prelude-env: [match [builtin-eq-int [count-errors [@Dict prel.diagnostics]] 0]
-    0: [builtin-raise [join "" ["prelude failed — cannot continue\n"
+    0: [builtin-raise [make-diag [join "" ["prelude failed — cannot continue\n"
           [reduce [fn [let acc d] [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]
-                  "" [@Dict prel.diagnostics]]]]]
+                  "" [@Dict prel.diagnostics]]]]]]
     1: prel.full-env]
 
   # Pre-parse cli/out/llt.llt once (parse only — NOT resolved).
@@ -1053,8 +1068,8 @@
     # The raise message includes formatted diagnostics so the error is not silently swallowed.
     # On success (no errors), return the program directly; no emit needed for empty diagnostics.
     [match [builtin-eq-int [builtin-dict-length parse-result.diagnostics] 0]
-      0: [builtin-raise [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
-                                 "cli/out/llt.llt parse errors:\n" parse-result.diagnostics]]
+      0: [builtin-raise [make-diag [reduce [fn [let acc d] [builtin-string-concat acc [format-diagnostic d]]]
+                                 "cli/out/llt.llt parse errors:\n" parse-result.diagnostics]]]
       1: parse-result.program]]]
 
   # Bootstrap check: verify the formatter loaded correctly.
@@ -1063,8 +1078,8 @@
       [match [builtin-has-key? "ok" _raw]
         0: [call [fn [let _w]
                     [match [builtin-int-gte [builtin-dict-length _w] 0]
-                      0: [builtin-raise "llt.llt formatter failed to load"]
-                      1: [builtin-raise "llt.llt formatter failed to load"]]]
+                      0: [builtin-raise [make-diag "llt.llt formatter failed to load"]]
+                      1: [builtin-raise [make-diag "llt.llt formatter failed to load"]]]]
               [call [builtin-dict-get "write" %stderr]
                 [builtin-string-concat "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\nCause: "
                   [builtin-string-concat
@@ -1081,7 +1096,7 @@
   tests: [match [builtin-eq-int formatter-ok 1]
     0: []
     1: [match [builtin-eq-int [count-errors [@Dict prel.diagnostics]] 0]
-      0: [builtin-raise [join "" ["\nprelude has "
+      0: [builtin-raise [make-diag [join "" ["\nprelude has "
             [builtin-int->string [count-errors [@Dict prel.diagnostics]]]
             " error(s) — cannot run tests\n"
             [reduce
@@ -1089,7 +1104,7 @@
                 [match [builtin-eq-string d.level "error"]
                   0: acc
                   1: [builtin-string-concat acc [builtin-string-concat [format-diagnostic d] "\n"]]]]
-              "" [@Dict prel.diagnostics]]]]]
+              "" [@Dict prel.diagnostics]]]]]]
       1: [match [null? %programs]
            0: %programs
            ...: [find-corpus-files

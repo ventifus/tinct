@@ -1581,7 +1581,17 @@ fn make_method_dispatcher_fn(
     // resolve_name_in_parent_frames uses "second occurrence": skips offset 0 (current dict),
     // returns the first ancestor frame at offset 1+ that contains method_name, or the ambient
     // scope frame if no ancestor has it.
+    // Names needed by the Diagnostic dict synthesis in the raise fallback arms.
+    // These three builtins are used to build dynamic `notes:` entries of the form
+    // `[builtin-string-concat prefix [builtin-llt-repr [builtin-type-of __dN]]]`.
+    const BUILTIN_TYPE_OF_NAME: &str = "builtin-type-of";
+    const BUILTIN_LLT_REPR_NAME: &str = "builtin-llt-repr";
+    const BUILTIN_STRING_CONCAT_NAME: &str = "builtin-string-concat";
+
     let mut outer_names: Vec<String> = vec![BUILTIN_RAISE_NAME.to_string()];
+    outer_names.push(BUILTIN_TYPE_OF_NAME.to_string());
+    outer_names.push(BUILTIN_LLT_REPR_NAME.to_string());
+    outer_names.push(BUILTIN_STRING_CONCAT_NAME.to_string());
     for (type_name, all_instances) in &type_name_to_all_instances {
         if !outer_names.contains(type_name) {
             outer_names.push(type_name.clone());
@@ -1713,6 +1723,178 @@ fn make_method_dispatcher_fn(
         ))
     };
 
+    // Helper: build `[builtin-string-concat prefix [builtin-llt-repr [builtin-type-of __dN]]]`.
+    //
+    // Used to construct dynamic note strings for the Diagnostic dict raised when no instance
+    // matches. Each note identifies which parameter's type caused the dispatch to fail.
+    //
+    // Example: make_type_repr_note("matched parameter 0: ", 0) produces the CoreExpr for
+    //   [builtin-string-concat "matched parameter 0: " [builtin-llt-repr [builtin-type-of __d0]]]
+    //
+    // The three builtins must be in scope — they are added to outer_names before this closure
+    // is created. If any is missing, that is a lowering error (scope_frames was not seeded with
+    // builtin_core), and we emit a diagnostic and return a static string fallback.
+    let make_type_repr_note =
+        |prefix: &str, param_idx: usize, diagnostics: &mut Vec<LowerDiagnostic>| -> CoreExpr {
+            let concat_addr = match resolved_addrs.get(BUILTIN_STRING_CONCAT_NAME).cloned() {
+                Some(a) => a,
+                None => {
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: format!(
+                            "make_method_dispatcher_fn: '{}' not found in scope — \
+                             dynamic type notes unavailable for method '{}'",
+                            BUILTIN_STRING_CONCAT_NAME, method_name
+                        ),
+                        span: span.clone(),
+                    });
+                    return CoreExpr::Str(format!("{prefix}<type unavailable>"));
+                }
+            };
+            let repr_addr = match resolved_addrs.get(BUILTIN_LLT_REPR_NAME).cloned() {
+                Some(a) => a,
+                None => {
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: format!(
+                            "make_method_dispatcher_fn: '{}' not found in scope — \
+                             dynamic type notes unavailable for method '{}'",
+                            BUILTIN_LLT_REPR_NAME, method_name
+                        ),
+                        span: span.clone(),
+                    });
+                    return CoreExpr::Str(format!("{prefix}<type unavailable>"));
+                }
+            };
+            let type_of_addr = match resolved_addrs.get(BUILTIN_TYPE_OF_NAME).cloned() {
+                Some(a) => a,
+                None => {
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: format!(
+                            "make_method_dispatcher_fn: '{}' not found in scope — \
+                             dynamic type notes unavailable for method '{}'",
+                            BUILTIN_TYPE_OF_NAME, method_name
+                        ),
+                        span: span.clone(),
+                    });
+                    return CoreExpr::Str(format!("{prefix}<type unavailable>"));
+                }
+            };
+            // [builtin-type-of __dN]
+            let type_of_call = Arc::new(Spanned::new(
+                CoreExpr::Call {
+                    func: Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: BUILTIN_TYPE_OF_NAME.to_string(),
+                            addr: type_of_addr,
+                            annotation: None,
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: param_names
+                                .get(param_idx)
+                                .cloned()
+                                .unwrap_or_else(|| format!("__d{param_idx}")),
+                            addr: VarAddr::Parameter(param_idx as u32),
+                            annotation: None,
+                        },
+                        span.clone(),
+                    ))],
+                    named_args: vec![],
+                    implied: false,
+                },
+                span.clone(),
+            ));
+            // [builtin-llt-repr [builtin-type-of __dN]]
+            let repr_call = Arc::new(Spanned::new(
+                CoreExpr::Call {
+                    func: Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: BUILTIN_LLT_REPR_NAME.to_string(),
+                            addr: repr_addr,
+                            annotation: None,
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![type_of_call],
+                    named_args: vec![],
+                    implied: false,
+                },
+                span.clone(),
+            ));
+            // [builtin-string-concat prefix [builtin-llt-repr [builtin-type-of __dN]]]
+            CoreExpr::Call {
+                func: Arc::new(Spanned::new(
+                    CoreExpr::Var {
+                        name: BUILTIN_STRING_CONCAT_NAME.to_string(),
+                        addr: concat_addr,
+                        annotation: None,
+                    },
+                    span.clone(),
+                )),
+                args: vec![
+                    Arc::new(Spanned::new(
+                        CoreExpr::Str(prefix.to_string()),
+                        span.clone(),
+                    )),
+                    repr_call,
+                ],
+                named_args: vec![],
+                implied: false,
+            }
+        };
+
+    // Helper: build a Diagnostic dict CoreExpr for the no-match error.
+    //
+    // Produces: [message: "no instance found..." notes: [0: note0  1: note1  ...]]
+    //
+    // `note_exprs` is an ordered list of (key: i64, CoreExpr) note entries.  Each note is
+    // typically a dynamic `make_type_repr_note(...)` call or a static `CoreExpr::Str(...)`.
+    let make_raise_diagnostic = |note_exprs: Vec<(i64, CoreExpr)>| -> CoreExpr {
+        let message_entry = Spanned::new(
+            CoreEntry {
+                key: Some(Arc::new(Spanned::new(
+                    CoreExpr::Str("message".to_string()),
+                    span.clone(),
+                ))),
+                value: Arc::new(Spanned::new(
+                    CoreExpr::Str(format!(
+                        "no instance found for type class method '{}' with these types",
+                        method_name
+                    )),
+                    span.clone(),
+                )),
+            },
+            span.clone(),
+        );
+        let note_entries: Vec<Spanned<CoreEntry>> = note_exprs
+            .into_iter()
+            .map(|(k, expr)| {
+                Spanned::new(
+                    CoreEntry {
+                        key: Some(Arc::new(Spanned::new(CoreExpr::Int(k), span.clone()))),
+                        value: Arc::new(Spanned::new(expr, span.clone())),
+                    },
+                    span.clone(),
+                )
+            })
+            .collect();
+        let notes_dict = Spanned::new(
+            CoreEntry {
+                key: Some(Arc::new(Spanned::new(
+                    CoreExpr::Str("notes".to_string()),
+                    span.clone(),
+                ))),
+                value: Arc::new(Spanned::new(CoreExpr::Dict(note_entries), span.clone())),
+            },
+            span.clone(),
+        );
+        CoreExpr::Dict(vec![message_entry, notes_dict])
+    };
+
     // Build match arms: one arm per type_name, plus a wildcard fallback.
     let mut arms: Vec<CoreMatchArm> = Vec::new();
 
@@ -1768,6 +1950,18 @@ fn make_method_dispatcher_fn(
                 });
             }
             // Add wildcard fallback for secondary dispatch.
+            // Parameter 0 matched `type_name` (static — we know it at lowering time).
+            // Parameter 1 failed to match (dynamic — read its runtime type via builtins).
+            let secondary_diag = make_raise_diagnostic(vec![
+                (
+                    0,
+                    CoreExpr::Str(format!("matched parameter 0: {type_name}")),
+                ),
+                (
+                    1,
+                    make_type_repr_note("no match for parameter 1: ", 1, diagnostics),
+                ),
+            ]);
             let secondary_raise = match resolved_addrs.get(BUILTIN_RAISE_NAME).cloned() {
                 Some(raise_addr) => CoreExpr::Call {
                     func: Arc::new(Spanned::new(
@@ -1778,13 +1972,7 @@ fn make_method_dispatcher_fn(
                         },
                         span.clone(),
                     )),
-                    args: vec![Arc::new(Spanned::new(
-                        CoreExpr::Str(format!(
-                            "no instance of method '{}' for the given argument types",
-                            method_name
-                        )),
-                        span.clone(),
-                    ))],
+                    args: vec![Arc::new(Spanned::new(secondary_diag, span.clone()))],
                     named_args: vec![],
                     implied: false,
                 },
@@ -1929,6 +2117,11 @@ fn make_method_dispatcher_fn(
                 }
                 None => {
                     // No parent dispatcher — use builtin-raise as final fallback.
+                    // Parameter 0 failed to match (dynamic — read its runtime type via builtins).
+                    let final_diag = make_raise_diagnostic(vec![(
+                        0,
+                        make_type_repr_note("no match for parameter 0: ", 0, diagnostics),
+                    )]);
                     match resolved_addrs.get(BUILTIN_RAISE_NAME).cloned() {
                         Some(raise_addr) => CoreExpr::Call {
                             func: Arc::new(Spanned::new(
@@ -1939,13 +2132,7 @@ fn make_method_dispatcher_fn(
                                 },
                                 span.clone(),
                             )),
-                            args: vec![Arc::new(Spanned::new(
-                                CoreExpr::Str(format!(
-                                    "no instance of method '{}' for the given argument types",
-                                    method_name
-                                )),
-                                span.clone(),
-                            ))],
+                            args: vec![Arc::new(Spanned::new(final_diag, span.clone()))],
                             named_args: vec![],
                             implied: false,
                         },

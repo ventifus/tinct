@@ -648,8 +648,7 @@ pub fn merge_env_chain_into(src: &Arc<RwLock<Env>>, dst: &Arc<RwLock<Env>>) {
     let mut collected_classes: indexmap::IndexMap<String, ClassDecl> = indexmap::IndexMap::new();
     let mut collected_instances: indexmap::IndexMap<String, InstanceDecl> =
         indexmap::IndexMap::new();
-    let mut collected_tycon_defs: HashMap<String, Arc<crate::type_def::TyConDef>> =
-        HashMap::new();
+    let mut collected_tycon_defs: HashMap<String, Arc<crate::type_def::TyConDef>> = HashMap::new();
     for frame_arc in frames.iter() {
         let frame = frame_arc.read().unwrap();
         for entry in &frame.slots {

@@ -2352,8 +2352,13 @@ mod tests {
     #[tokio::test]
     async fn error_raises_with_message() {
         let ctx = test_ctx();
+        let mut diag = IndexMap::new();
+        diag.insert(
+            HashableValue::Str("message".into()),
+            thunk(string_val("boom")),
+        );
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![alloc(string_val("boom"), &ctx)],
+            args: vec![thunk_dict(diag, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2367,8 +2372,13 @@ mod tests {
     #[tokio::test]
     async fn error_custom_message() {
         let ctx = test_ctx();
+        let mut diag = IndexMap::new();
+        diag.insert(
+            HashableValue::Str("message".into()),
+            thunk(string_val("division by zero")),
+        );
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![alloc(string_val("division by zero"), &ctx)],
+            args: vec![thunk_dict(diag, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2380,7 +2390,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn error_type_mismatch_on_non_string() {
+    async fn error_type_mismatch_on_non_dict() {
+        // raise now requires a Diagnostic dict; passing a non-dict is a type mismatch.
         let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
             args: vec![alloc(
@@ -2397,12 +2408,66 @@ mod tests {
         }))
         .await
         .unwrap_err();
+        assert!(err.kind.to_string().contains("Dict"), "got: {}", err.kind);
+    }
+
+    #[tokio::test]
+    async fn error_missing_message_field() {
+        // Diagnostic dict with no `message:` field must error clearly.
+        let ctx = test_ctx();
+        let mut diag = IndexMap::new();
+        diag.insert(
+            HashableValue::Str("level".into()),
+            thunk(string_val("error")),
+        );
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![thunk_dict(diag, &ctx)],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await
+        .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected String"),
+            err.kind.to_string().contains("message"),
             "got: {}",
             err.kind
         );
-        assert!(err.kind.to_string().contains("String"), "got: {}", err.kind);
+    }
+
+    #[tokio::test]
+    async fn error_raises_with_notes() {
+        // Diagnostic dict with `notes:` field appends notes to the error.
+        let ctx = test_ctx();
+        let mut notes = IndexMap::new();
+        notes.insert(HashableValue::Int(0), thunk(string_val("note one")));
+        notes.insert(HashableValue::Int(1), thunk(string_val("note two")));
+        let mut diag = IndexMap::new();
+        diag.insert(
+            HashableValue::Str("message".into()),
+            thunk(string_val("oops")),
+        );
+        diag.insert(
+            HashableValue::Str("notes".into()),
+            thunk(Value::Dict {
+                entries: notes,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![thunk_dict(diag, &ctx)],
+            named: no_named(),
+            call_span: call_span(),
+            ctx,
+            caller_env_id: None,
+        }))
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind.to_string(), "oops");
+        assert_eq!(err.notes.len(), 2);
+        assert_eq!(err.notes[0], "note one");
+        assert_eq!(err.notes[1], "note two");
     }
 
     #[tokio::test]
@@ -4224,8 +4289,13 @@ mod tests {
                 &ctx,
             ),
         );
+        let mut diag = IndexMap::new();
+        diag.insert(
+            HashableValue::Str("message".into()),
+            thunk(string_val("boom")),
+        );
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![alloc(string_val("boom"), &ctx)],
+            args: vec![thunk_dict(diag, &ctx)],
             named: Some(named),
             call_span: call_span(),
             ctx,
