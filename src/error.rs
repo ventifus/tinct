@@ -870,7 +870,7 @@ pub struct EvalError {
     /// When present, identifies the producing/consuming stage at a `---` boundary.
     pub pipeline_stage: Option<PipelineBlame>,
     /// Text-only notes rendered as `  = note: {text}` after span notes.
-    /// Matches the `= note:` style of TypeDiagnostic for uniform error presentation.
+    /// Matches the `= note:` style of Diagnostic for uniform error presentation.
     /// Use for actual/expected type context and other human-readable annotations.
     pub notes: Vec<String>,
 }
@@ -1299,7 +1299,7 @@ impl EvalError {
     }
 
     /// Append a text-only note rendered as `  = note: {text}`.
-    /// Matches the `= note:` format of TypeDiagnostic for uniform presentation.
+    /// Matches the `= note:` format of Diagnostic for uniform presentation.
     pub fn with_note(mut self, note: String) -> Self {
         self.notes.push(note);
         self
@@ -1524,7 +1524,7 @@ impl fmt::Display for EvalError {
             write!(f, "\n  note: {label} at {}", span)?;
         }
 
-        // Text-only notes — rendered as "  = note: {text}" matching TypeDiagnostic format.
+        // Text-only notes — rendered as "  = note: {text}" matching Diagnostic format.
         for note in &self.notes {
             write!(f, "\n  = note: {note}")?;
         }
@@ -1625,24 +1625,30 @@ impl DiagnosticLevel {
     }
 }
 
-/// A type checking diagnostic (info/warn/err) with span and error code.
+/// Unified pipeline diagnostic — emitted by the parser, resolver, type checker, lowerer, and
+/// evaluator. Used both as a Rust-internal diagnostic and as the shape of the tinct-side
+/// `Diagnostic` type in `stdlib/builtin_core.llt`.
 ///
-/// `TypeDiagnostic` can have Info/Warn level for non-fatal notifications
-/// (e.g., inferred `Unknown` types).
+/// `Diagnostic` can have Info/Warn/Err level. Info diagnostics are used for structured trace
+/// output (e.g., `trace-fn-type`, `trace-lower`, `trace-call`, `trace-return`). Warn
+/// diagnostics are non-fatal notifications. Err diagnostics represent fatal pipeline errors.
 ///
-/// Propagated as `Box<TypeDiagnostic>` at function return sites to keep the error
-/// variant of `Result<T, Box<TypeDiagnostic>>` pointer-sized.
+/// At error sites, `Diagnostic` is frequently heap-allocated as `Box<Diagnostic>` to keep
+/// `Result<T, Box<Diagnostic>>` pointer-sized.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeDiagnostic {
+pub struct Diagnostic {
     pub level: DiagnosticLevel,
     pub kind: &'static str,
     pub message: String,
     pub spans: Vec<(crate::ast::Span, String)>,
     pub notes: Vec<String>,
     pub help: Option<String>,
+    pub call_stack: Vec<(String, crate::ast::Span)>,
+    pub macro_expand: Option<Box<Diagnostic>>,
+    pub blame: Option<String>,
 }
 
-impl TypeDiagnostic {
+impl Diagnostic {
     /// Construct an error-level diagnostic with a single span and no notes or help.
     pub fn error(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
         Self {
@@ -1652,6 +1658,9 @@ impl TypeDiagnostic {
             spans: vec![(span, String::new())],
             notes: Vec::new(),
             help: None,
+            call_stack: Vec::new(),
+            macro_expand: None,
+            blame: None,
         }
     }
 
@@ -1664,6 +1673,9 @@ impl TypeDiagnostic {
             spans: vec![(span, String::new())],
             notes: Vec::new(),
             help: None,
+            call_stack: Vec::new(),
+            macro_expand: None,
+            blame: None,
         }
     }
 
@@ -1676,6 +1688,9 @@ impl TypeDiagnostic {
             spans: vec![(span, String::new())],
             notes: Vec::new(),
             help: None,
+            call_stack: Vec::new(),
+            macro_expand: None,
+            blame: None,
         }
     }
 
@@ -1693,6 +1708,9 @@ impl TypeDiagnostic {
             spans,
             notes: Vec::new(),
             help: None,
+            call_stack: Vec::new(),
+            macro_expand: None,
+            blame: None,
         }
     }
 
@@ -1738,28 +1756,97 @@ impl TypeDiagnostic {
     }
 
     /// Wrap this diagnostic in a `Box` for use as `Err(diag.boxed())` in functions
-    /// that return `Result<T, Box<TypeDiagnostic>>`.
+    /// that return `Result<T, Box<Diagnostic>>`.
     pub fn boxed(self) -> Box<Self> {
         Box::new(self)
     }
 }
 
-impl std::fmt::Display for TypeDiagnostic {
+impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some((span, _)) = self.spans.first() {
             write!(
                 f,
                 "{}:{}: {}",
                 span.start_line, span.start_col, self.message
-            )
+            )?;
         } else {
-            write!(f, "{}", self.message)
+            write!(f, "{}", self.message)?;
         }
+
+        for (label, span) in &self.call_stack {
+            write!(f, "\n  in {} at {}", label, span)?;
+        }
+
+        if let Some(ref blame) = self.blame {
+            write!(f, "\n  blame: {}", blame)?;
+        }
+
+        Ok(())
     }
 }
 
-pub fn has_type_errors(diags: &[TypeDiagnostic]) -> bool {
+pub fn has_type_errors(diags: &[Diagnostic]) -> bool {
     diags.iter().any(|d| d.level == DiagnosticLevel::Err)
+}
+
+/// Format a Diagnostic with source context for display.
+///
+/// Produces: `level[kind]: message\n --> file:line:col\n  |\n  snippet\n  = note: ...\n`
+pub fn format_diagnostic(diag: &Diagnostic, source: &str, file_name: &str) -> String {
+    let level_str = match diag.level {
+        DiagnosticLevel::Info => "info",
+        DiagnosticLevel::Warn => "warning",
+        DiagnosticLevel::Err => "error",
+    };
+    let code = diag.kind;
+    let primary_span = diag.primary_span();
+    let line = primary_span.start_line;
+    let col = primary_span.start_col;
+    let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
+    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
+    let has_snippet = if let Some(snippet) = render_span_snippet(source, primary_span.clone()) {
+        out.push_str("  |\n");
+        out.push_str(&snippet);
+        true
+    } else {
+        false
+    };
+    // Render secondary spans (e.g. the specific argument that failed a type constraint).
+    for (sec_span, label) in diag.spans.iter().skip(1) {
+        out.push('\n');
+        out.push_str(&format!(
+            " --> {file_name}:{}:{}\n",
+            sec_span.start_line, sec_span.start_col
+        ));
+        if let Some(snippet) = render_span_snippet(source, sec_span.clone()) {
+            out.push_str("  |\n");
+            out.push_str(&snippet);
+            if !label.is_empty() {
+                // Label is appended after the last line of the snippet.
+                // Trim trailing newline to append inline, then re-add it.
+                let trimmed = out.trim_end_matches('\n');
+                let new_out = format!("{}  {}\n", trimmed, label);
+                out = new_out;
+            }
+        }
+    }
+    if (has_snippet || !diag.spans.is_empty()) && !diag.notes.is_empty() {
+        out.push('\n');
+    }
+    for note in &diag.notes {
+        out.push_str(&format!("  = note: {note}\n"));
+    }
+    if let Some(help) = &diag.help {
+        out.push_str(&format!("  = help: {help}\n"));
+    }
+    for (label, span) in &diag.call_stack {
+        out.push_str(&format!("  in {} at {}\n", label, span));
+    }
+    if let Some(ref blame) = diag.blame {
+        out.push_str(&format!("  blame: {}\n", blame));
+    }
+    out
 }
 
 /// Render a source snippet with caret annotations for the given span.
@@ -3602,7 +3689,7 @@ bad value (defined at src/test_util.rs:3:5-3:10)
         use crate::test_util::test_span;
 
         let span = test_span(5, 10, 5, 20);
-        let diag = TypeDiagnostic::warn(
+        let diag = Diagnostic::warn(
             "T999", // test-only sentinel — not a real production diagnostic code
             "inferred Unknown type",
             span.clone(),

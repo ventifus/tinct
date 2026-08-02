@@ -42,7 +42,7 @@ async fn unify_sync<'a>(
     ctx: &'a mut crate::type_infer::InferenceContext,
     constraints: &'a mut Vec<Arc<Value>>,
     span: crate::ast::Span,
-) -> Result<(), crate::error::TypeDiagnostic> {
+) -> Result<(), crate::error::Diagnostic> {
     unify(a, b, ctx, constraints, span, 0).await
 }
 

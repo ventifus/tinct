@@ -18,7 +18,7 @@ use crate::ast::{
     SurfaceDeclaration, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem,
     SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
-use crate::error::TypeDiagnostic;
+use crate::error::Diagnostic;
 use crate::lexer::{self, Token};
 
 /// Parser-local shorthand: create an `Arc<SurfaceNode>` with fresh inline annotations.
@@ -31,9 +31,9 @@ fn mk(expr: SurfaceExpression, span: Span) -> Arc<SurfaceNode> {
 /// Parser-internal error type: message and optional source location.
 ///
 /// Private to this module. At public API boundaries (parse(), parse_surface_expression(),
-/// format_parse_error(), ParseOutput.diagnostics) this is converted to `TypeDiagnostic`
+/// format_parse_error(), ParseOutput.diagnostics) this is converted to `Diagnostic`
 /// via the `From<ParseError>` impl (which enables `?` propagation) or by explicit
-/// `TypeDiagnostic::error(...)` calls with a context note.
+/// `Diagnostic::error(...)` calls with a context note.
 #[derive(Debug, Clone, PartialEq, Default)]
 struct ParseError {
     message: String,
@@ -58,14 +58,14 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// `From<ParseError> for TypeDiagnostic` — enables `?` and `return Err(e)` within `parse()`.
+/// `From<ParseError> for Diagnostic` — enables `?` and `return Err(e)` within `parse()`.
 ///
 /// When the error has no span, uses a Rust-source span via `rust_span!()` as a fallback.
 /// This impl is private to the parser module (ParseError is a private type).
-impl From<ParseError> for TypeDiagnostic {
+impl From<ParseError> for Diagnostic {
     fn from(err: ParseError) -> Self {
         let span = err.span.unwrap_or_else(|| crate::rust_span!());
-        let mut diag = TypeDiagnostic::error("parse-error", err.message, span);
+        let mut diag = Diagnostic::error("parse-error", err.message, span);
         if let Some(help) = err.help {
             diag.add_help(help);
         }
@@ -859,7 +859,7 @@ pub struct ParseOutput {
     pub trailing_comments: BTreeMap<u64, String>,
     pub blank_before: BTreeMap<u64, bool>,
     /// Recovered parse diagnostics (errors inside bracket forms where the parser continued).
-    pub diagnostics: Vec<TypeDiagnostic>,
+    pub diagnostics: Vec<Diagnostic>,
     /// The parsed Surface AST program — the primary output of the parser.
     pub program: crate::ast::SurfaceProgram,
 }
@@ -952,9 +952,9 @@ fn recover_from_bracket_error(
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
     current_document_items: &mut Vec<SurfaceItem>,
-    diagnostics: &mut Vec<TypeDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> usize {
-    let mut diag = TypeDiagnostic::error("parse-error", error.message, error_span.clone());
+    let mut diag = Diagnostic::error("parse-error", error.message, error_span.clone());
     if let Some(frame) = stack.last() {
         diag = diag.with_note(format!("while parsing {}", frame));
     }
@@ -1136,7 +1136,7 @@ fn recover_from_bracket_error(
         // Record secondary errors in diagnostics rather than discarding them.
         if let Err(secondary) = push_value(stack, current_document_items, partial_expr) {
             let secondary_span = secondary.span.unwrap_or_else(|| error_span.clone());
-            diagnostics.push(TypeDiagnostic::error(
+            diagnostics.push(Diagnostic::error(
                 "parse-error",
                 secondary.message,
                 secondary_span,
@@ -1176,9 +1176,9 @@ fn recover_from_failed_open(
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
     current_document_items: &mut Vec<SurfaceItem>,
-    diagnostics: &mut Vec<TypeDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> usize {
-    let mut diag = TypeDiagnostic::error("parse-error", error.message, error_span.clone());
+    let mut diag = Diagnostic::error("parse-error", error.message, error_span.clone());
     if let Some(frame) = stack.last() {
         diag = diag.with_note(format!("while parsing {}", frame));
     }
@@ -1197,7 +1197,7 @@ fn recover_from_failed_open(
         // Record secondary errors in diagnostics rather than discarding them.
         if let Err(secondary) = push_value(stack, current_document_items, error_expr) {
             let secondary_span = secondary.span.unwrap_or_else(|| error_span.clone());
-            diagnostics.push(TypeDiagnostic::error(
+            diagnostics.push(Diagnostic::error(
                 "parse-error",
                 secondary.message,
                 secondary_span,
@@ -1233,10 +1233,10 @@ fn recover_from_failed_open(
 /// `SurfaceExpression::Error` node and skipping to the matching `]`. Recovered errors are collected
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
-pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic> {
+pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(source, Arc::clone(&file))
-        .map_err(|e| TypeDiagnostic::error("parse-error", e.message, e.span))?;
+        .map_err(|e| Diagnostic::error("parse-error", e.message, e.span))?;
 
     // Stack of frames tracking bracket nesting
     let mut stack: Vec<StackFrame> = Vec::new();
@@ -1253,7 +1253,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
     let mut blank_before: BTreeMap<u64, bool> = BTreeMap::new();
 
     // Recovered parse diagnostics (errors inside bracket forms).
-    let mut diagnostics: Vec<TypeDiagnostic> = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // Track the span of the last significant token for trailing comment detection
     let mut last_significant_span: Option<Span> = None;
@@ -1325,7 +1325,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         );
                         continue;
                     }
-                    return Err(TypeDiagnostic::error(
+                    return Err(Diagnostic::error(
                         "parse-error",
                         format!("maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"),
                         span,
@@ -1844,7 +1844,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
             Token::CloseBracket => {
                 // Pop the frame and construct the AST node
                 let frame = stack.pop().ok_or_else(|| {
-                    TypeDiagnostic::error("parse-error", "unmatched closing bracket", span.clone())
+                    Diagnostic::error("parse-error", "unmatched closing bracket", span.clone())
                 })?;
                 // Record what was just popped — useful when unclosed brackets remain at EOF
                 last_popped_frame = Some(frame_info_static(&frame));
@@ -1870,7 +1870,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         let err: ParseError = $err;
                         let error_span = err.span.clone().unwrap_or_else(|| span.clone());
                         let mut diag =
-                            TypeDiagnostic::error("parse-error", err.message, error_span.clone());
+                            Diagnostic::error("parse-error", err.message, error_span.clone());
                         if let Some(frame) = stack.last() {
                             diag = diag.with_note(format!("while parsing {}", frame));
                         }
@@ -1893,7 +1893,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             {
                                 let secondary_span =
                                     secondary.span.unwrap_or_else(|| error_span.clone());
-                                diagnostics.push(TypeDiagnostic::error(
+                                diagnostics.push(Diagnostic::error(
                                     "parse-error",
                                     secondary.message,
                                     secondary_span,
@@ -2914,7 +2914,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         // the enclosing bracket is closed while an annotation was still pending.
                         // This is always a parse error — valid code never produces this state.
                         // Return a fatal error: the parse is fundamentally broken at this point.
-                        return Err(TypeDiagnostic::error(
+                        return Err(Diagnostic::error(
                             "parse-error",
                             "annotation @ requires an expression before `]`",
                             span.clone(),
@@ -3844,7 +3844,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
             Token::DocSeparator => {
                 // Document separator: finalize current document and start a new one
                 if !stack.is_empty() {
-                    return Err(TypeDiagnostic::error(
+                    return Err(Diagnostic::error(
                         "parse-error",
                         "document separator cannot appear inside bracket expressions",
                         span,
@@ -3914,13 +3914,13 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     {
                                         // Consume the annotation and ignore the section name
                                         // (bare % is still an error, but a more informative one)
-                                        return Err(TypeDiagnostic::error(
+                                        return Err(Diagnostic::error(
                                             "parse-error",
                                             "bare '%' in section header: expected a name after '%' (e.g. '--- %name' or '--- %name@Type')",
                                             id_span,
                                         ));
                                     }
-                                    return Err(TypeDiagnostic::error(
+                                    return Err(Diagnostic::error(
                                         "parse-error",
                                         "bare '%' in section header: expected a name after '%' (e.g. '--- %name')",
                                         id_span,
@@ -3930,7 +3930,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                 // Duplicate section name detection
                                 let full_name = format!("%{}", section_name);
                                 if seen_section_names.contains(&section_name) {
-                                    return Err(TypeDiagnostic::error(
+                                    return Err(Diagnostic::error(
                                         "parse-error",
                                         format!("duplicate section name '{}' in file", full_name),
                                         id_span,
@@ -3992,7 +3992,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
 
                             // Expect colon for key: value pairs
                             if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
-                                return Err(TypeDiagnostic::error(
+                                return Err(Diagnostic::error(
                                     "parse-error",
                                     format!("expected ':' after '{}' in header", key),
                                     if i < token_vec.len() {
@@ -4006,7 +4006,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
 
                             // Parse value as a simple expression — bracket or literal
                             if i >= token_vec.len() {
-                                return Err(TypeDiagnostic::error(
+                                return Err(Diagnostic::error(
                                     "parse-error",
                                     format!("expected value after '{}:' in header", key),
                                     token_vec[i - 1].span.clone(),
@@ -4024,7 +4024,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             // This handles brackets, literals, identifiers
                             loop {
                                 if i >= token_vec.len() {
-                                    return Err(TypeDiagnostic::error(
+                                    return Err(Diagnostic::error(
                                         "parse-error",
                                         format!("unexpected end of input while parsing header value for '{}'", key),
                                         token_vec[i - 1].span.clone(),
@@ -4099,7 +4099,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                                 i += 1;
                                             }
                                         } else {
-                                            return Err(TypeDiagnostic::error(
+                                            return Err(Diagnostic::error(
                                                 "parse-error",
                                                 "unexpected ']' in header value",
                                                 token_vec[i].span.clone(),
@@ -4189,7 +4189,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                                 }
                                             }
                                         }
-                                        return Err(TypeDiagnostic::error(
+                                        return Err(Diagnostic::error(
                                             "parse-error",
                                             "unexpected ':' in header value",
                                             token_vec[i].span.clone(),
@@ -4301,7 +4301,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                         }
                                     }
                                     _ => {
-                                        return Err(TypeDiagnostic::error(
+                                        return Err(Diagnostic::error(
                                             "parse-error",
                                             format!(
                                                 "unsupported token in header value: {:?}",
@@ -4315,7 +4315,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
 
                             // Extract the single parsed value
                             if temp_items.len() != 1 {
-                                return Err(TypeDiagnostic::error(
+                                return Err(Diagnostic::error(
                                     "parse-error",
                                     format!("failed to parse value for header key '{}'", key),
                                     token_vec[value_start_i].span.clone(),
@@ -4325,7 +4325,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                             {
                                 value_node = node;
                             } else {
-                                return Err(TypeDiagnostic::error(
+                                return Err(Diagnostic::error(
                                     "parse-error",
                                     format!("header value for '{}' must be an expression", key),
                                     token_vec[value_start_i].span.clone(),
@@ -4337,7 +4337,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         }
                         _ => {
                             // Unexpected token in header
-                            return Err(TypeDiagnostic::error(
+                            return Err(Diagnostic::error(
                                 "parse-error",
                                 format!(
                                     "unexpected token in section header: {:?}",
@@ -4369,7 +4369,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                         None
                     } else {
                         if let Some(SurfaceItem::Decl(_)) = current_document_items.last() {
-                            return Err(TypeDiagnostic::error(
+                            return Err(Diagnostic::error(
                                 "parse-error",
                                 "dot access requires a value expression, not a declaration",
                                 span,
@@ -4588,7 +4588,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                 // Inside [...], | terminates call argument accumulation
                 let lhs = if stack.is_empty() {
                     if current_document_items.is_empty() {
-                        return Err(TypeDiagnostic::error(
+                        return Err(Diagnostic::error(
                             "parse-error",
                             "pipe operator requires a left-hand expression before '|'",
                             span,
@@ -4597,7 +4597,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                     match current_document_items.pop().unwrap() {
                         SurfaceItem::Expr(node) => node,
                         SurfaceItem::Decl(_) => {
-                            return Err(TypeDiagnostic::error(
+                            return Err(Diagnostic::error(
                                 "parse-error",
                                 "pipe operator requires a value expression, not a declaration",
                                 span,
@@ -5079,7 +5079,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
             )
         };
 
-        return Err(TypeDiagnostic::error("parse-error", message, unclosed_span)
+        return Err(Diagnostic::error("parse-error", message, unclosed_span)
             .with_help("add a closing ] to complete the expression"));
     }
 
@@ -6747,13 +6747,13 @@ fn push_value(
 /// declaration items (`SurfaceItem::Decl`), wraps them in `SurfaceExpression::Decl` so
 /// top-level declarations can be displayed uniformly. For callers needing the raw
 /// `SurfaceProgram`, use `parse()` directly.
-pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, TypeDiagnostic> {
+pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, Diagnostic> {
     let file: Arc<str> = Arc::from("<expression>");
     let output = parse(input, Arc::clone(&file))?;
     let surface = &output.program;
 
     if surface.documents.is_empty() {
-        return Err(TypeDiagnostic::error(
+        return Err(Diagnostic::error(
             "parse-error",
             "no documents in input",
             crate::rust_span!(),
@@ -6772,7 +6772,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, TypeDia
                 decl.span.clone(),
             ))
         }
-        None => Err(TypeDiagnostic::error(
+        None => Err(Diagnostic::error(
             "parse-error",
             "no items in first document",
             first_doc.span.clone(),
@@ -6815,7 +6815,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
 
 /// Format a parse diagnostic with Rust-style rich diagnostics (snippet + caret).
 ///
-/// Produces output matching the format of `format_type_diagnostic`:
+/// Produces output matching the format of `format_diagnostic`:
 /// ```text
 /// error: parse error message
 ///  --> file.llt:10:5
@@ -6823,7 +6823,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
 /// 10 | [invalid syntax here
 ///    |               ^^^^^
 /// ```
-pub fn format_parse_error(err: &TypeDiagnostic, source: &str, file_name: &str) -> String {
+pub fn format_parse_error(err: &Diagnostic, source: &str, file_name: &str) -> String {
     use crate::error::render_span_snippet;
 
     // If there are no spans, fall back to basic message formatting
@@ -9627,8 +9627,7 @@ mod tests {
     #[test]
     fn test_format_parse_error_no_span() {
         // Create a parse diagnostic without spans (empty spans vec → no-span fallback)
-        let err =
-            TypeDiagnostic::with_spans(DiagnosticLevel::Err, "parse-error", "test error", vec![]);
+        let err = Diagnostic::with_spans(DiagnosticLevel::Err, "parse-error", "test error", vec![]);
 
         // Format it
         let formatted = format_parse_error(&err, "dummy source", "test.llt");

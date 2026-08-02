@@ -54,6 +54,140 @@ use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Va
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
+/// Serialize a `crate::error::Diagnostic` into the unified diagnostic dict format
+/// (level, kind, message, span, secondary-spans, notes, help, call-stack, macro-expand, blame).
+///
+/// `call_span` is the span used as the creation-time span for all emitted `Thunk`s.
+///
+/// The `macro-expand` field is serialized recursively: if `diag.macro_expand` is `Some`,
+/// the inner `Diagnostic` is serialized by a recursive call and wrapped in a `Value::Dict`;
+/// otherwise `{}` (empty dict) is emitted.
+fn serialize_diagnostic(
+    diag: &crate::error::Diagnostic,
+    call_span: &crate::ast::Span,
+) -> IndexMap<HashableValue, Arc<Thunk>> {
+    let mk =
+        |v: crate::value::Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
+    let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> {
+        crate::eval_materialize::make_span_dict(span, call_span)
+    };
+
+    let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+
+    w.insert(
+        HashableValue::Str("level".into()),
+        mk(string_val(&diag.level.to_string())),
+    );
+    w.insert(HashableValue::Str("kind".into()), mk(string_val(diag.kind)));
+    w.insert(
+        HashableValue::Str("message".into()),
+        mk(string_val(&diag.message)),
+    );
+    w.insert(
+        HashableValue::Str("span".into()),
+        mk_span(diag.primary_span()),
+    );
+
+    // secondary-spans: spans[1..] as [{span, label}] dicts
+    let mut secondary: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (j, (span, label)) in diag.spans.iter().skip(1).enumerate() {
+        let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        ss.insert(HashableValue::Str("span".into()), mk_span(span));
+        ss.insert(HashableValue::Str("label".into()), mk(string_val(label)));
+        secondary.insert(
+            HashableValue::Int(j as i64),
+            mk(crate::value::Value::Dict {
+                entries: ss,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+    }
+    w.insert(
+        HashableValue::Str("secondary-spans".into()),
+        mk(crate::value::Value::Dict {
+            entries: secondary,
+            type_val: crate::value::unknown_type_val(),
+        }),
+    );
+
+    // notes: integer-keyed dict of strings
+    let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (j, note) in diag.notes.iter().enumerate() {
+        notes_dict.insert(HashableValue::Int(j as i64), mk(string_val(note)));
+    }
+    w.insert(
+        HashableValue::Str("notes".into()),
+        mk(crate::value::Value::Dict {
+            entries: notes_dict,
+            type_val: crate::value::unknown_type_val(),
+        }),
+    );
+
+    // help: integer-keyed dict of strings (0 or 1 entries from Option<String>)
+    let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (j, help) in diag.help.iter().enumerate() {
+        help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
+    }
+    w.insert(
+        HashableValue::Str("help".into()),
+        mk(crate::value::Value::Dict {
+            entries: help_dict,
+            type_val: crate::value::unknown_type_val(),
+        }),
+    );
+
+    // call-stack: [{label, span}] from Diagnostic.call_stack
+    let mut call_stack_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (j, (label, span)) in diag.call_stack.iter().enumerate() {
+        let mut frame: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        frame.insert(HashableValue::Str("label".into()), mk(string_val(label)));
+        frame.insert(HashableValue::Str("span".into()), mk_span(span));
+        call_stack_dict.insert(
+            HashableValue::Int(j as i64),
+            mk(crate::value::Value::Dict {
+                entries: frame,
+                type_val: crate::value::unknown_type_val(),
+            }),
+        );
+    }
+    w.insert(
+        HashableValue::Str("call-stack".into()),
+        mk(crate::value::Value::Dict {
+            entries: call_stack_dict,
+            type_val: crate::value::unknown_type_val(),
+        }),
+    );
+
+    // macro-expand: recursively serialize inner Diagnostic, or {} if None
+    let macro_val = if let Some(inner) = &diag.macro_expand {
+        let inner_entries = serialize_diagnostic(inner, call_span);
+        crate::value::Value::Dict {
+            entries: inner_entries,
+            type_val: crate::value::unknown_type_val(),
+        }
+    } else {
+        crate::value::Value::Dict {
+            entries: IndexMap::new(),
+            type_val: crate::value::unknown_type_val(),
+        }
+    };
+    w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
+
+    // blame: string value or {} if None
+    w.insert(
+        HashableValue::Str("blame".into()),
+        mk(match &diag.blame {
+            Some(b) => string_val(b),
+            None => crate::value::Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+        }),
+    );
+
+    w
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Global counter shared by all gensym call sites. A single counter guarantees
@@ -2153,82 +2287,18 @@ pub(crate) fn builtin_parse(
             };
 
         // Build diagnostics list: fatal error (if any) + recovered errors from ParseOutput.
-        let all_parse_diagnostics: Vec<crate::error::TypeDiagnostic> =
-            if let Some(ref output) = parsed {
-                output.diagnostics.clone()
-            } else {
-                fatal_diagnostics
-            };
+        let all_parse_diagnostics: Vec<crate::error::Diagnostic> = if let Some(ref output) = parsed
+        {
+            output.diagnostics.clone()
+        } else {
+            fatal_diagnostics
+        };
 
-        // Build the integer-keyed diagnostics dict from TypeDiagnostic.
+        // Build the integer-keyed diagnostics dict from Diagnostic.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut errors_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in all_parse_diagnostics.iter().enumerate() {
-            let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            w.insert(
-                HashableValue::Str("level".into()),
-                mk(string_val(&diag.level.to_string())),
-            );
-            w.insert(HashableValue::Str("kind".into()), mk(string_val(diag.kind)));
-            w.insert(
-                HashableValue::Str("message".into()),
-                mk(string_val(&diag.message)),
-            );
-            w.insert(
-                HashableValue::Str("span".into()),
-                mk_span(diag.primary_span()),
-            );
-            let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, note) in diag.notes.iter().enumerate() {
-                notes_dict.insert(HashableValue::Int(j as i64), mk(string_val(note)));
-            }
-            w.insert(
-                HashableValue::Str("notes".into()),
-                mk(Value::Dict {
-                    entries: notes_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, help) in diag.help.iter().enumerate() {
-                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
-            }
-            w.insert(
-                HashableValue::Str("help".into()),
-                mk(Value::Dict {
-                    entries: help_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("call-stack".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("blame".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("secondary-spans".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
+            let w = serialize_diagnostic(diag, &call_span);
             errors_dict.insert(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
@@ -2390,78 +2460,14 @@ pub(crate) fn builtin_resolve(
         // so dict frames are searched before the env_names frame.
         let dispatcher_frames = unified_frames;
 
-        // Build unified diagnostics dict from TypeDiagnostics (errors + warnings).
+        // Build unified diagnostics dict from Diagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
         // There is no separate "warnings" key — diagnostics is the single bag for all severities.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         for (i, diag) in resolve_diagnostics.iter().enumerate() {
-            let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            w.insert(
-                HashableValue::Str("level".into()),
-                mk(string_val(&diag.level.to_string())),
-            );
-            w.insert(HashableValue::Str("kind".into()), mk(string_val(diag.kind)));
-            w.insert(
-                HashableValue::Str("message".into()),
-                mk(string_val(&diag.message)),
-            );
-            w.insert(
-                HashableValue::Str("span".into()),
-                mk_span(diag.primary_span()),
-            );
-            let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, note) in diag.notes.iter().enumerate() {
-                notes_dict.insert(HashableValue::Int(j as i64), mk(string_val(note)));
-            }
-            w.insert(
-                HashableValue::Str("notes".into()),
-                mk(Value::Dict {
-                    entries: notes_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, help) in diag.help.iter().enumerate() {
-                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
-            }
-            w.insert(
-                HashableValue::Str("help".into()),
-                mk(Value::Dict {
-                    entries: help_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("call-stack".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("blame".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("secondary-spans".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
+            let w = serialize_diagnostic(diag, &call_span);
             diagnostics_dict.insert(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
@@ -2485,6 +2491,7 @@ pub(crate) fn builtin_resolve(
         }
 
         let doc_span = compute_doc_span(&doc_arc, &call_span);
+        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
 
         // Return {doc: Value::Document, diagnostics: Dict, unreferenced: Dict, doc-span: SpanDict}.
         // diagnostics is a unified bag of all severities; callers read d.level to filter.
@@ -2639,73 +2646,9 @@ pub(crate) fn builtin_lint_pipeline_docs(
 
         // Build diagnostics dict using the same format as builtin-resolve.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in warnings.iter().enumerate() {
-            let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            w.insert(
-                HashableValue::Str("level".into()),
-                mk(string_val(&diag.level.to_string())),
-            );
-            w.insert(HashableValue::Str("kind".into()), mk(string_val(diag.kind)));
-            w.insert(
-                HashableValue::Str("message".into()),
-                mk(string_val(&diag.message)),
-            );
-            w.insert(
-                HashableValue::Str("span".into()),
-                mk_span(diag.primary_span()),
-            );
-            let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, note) in diag.notes.iter().enumerate() {
-                notes_dict.insert(HashableValue::Int(j as i64), mk(string_val(note)));
-            }
-            w.insert(
-                HashableValue::Str("notes".into()),
-                mk(Value::Dict {
-                    entries: notes_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, help) in diag.help.iter().enumerate() {
-                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
-            }
-            w.insert(
-                HashableValue::Str("help".into()),
-                mk(Value::Dict {
-                    entries: help_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("call-stack".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("blame".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("secondary-spans".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
+            let w = serialize_diagnostic(diag, &call_span);
             diagnostics_dict.insert(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
@@ -2961,8 +2904,8 @@ pub(crate) fn builtin_typecheck_doc(
             crate::typecheck::process_document(&doc_arc, &child_env, &mut state, &mut type_map_ref)
                 .await;
 
-        // Collect TypeDiagnostics from state.diagnostics — now includes inline CEK emissions
-        let mut type_diagnostics: Vec<crate::error::TypeDiagnostic> =
+        // Collect Diagnostics from state.diagnostics — now includes inline CEK emissions
+        let mut type_diagnostics: Vec<crate::error::Diagnostic> =
             std::mem::take(&mut state.diagnostics);
 
         // Write results back to TypeContext:
@@ -3000,7 +2943,6 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
-        let mk_span = |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
         // Merge errors and type_diagnostics into one vec
@@ -3009,85 +2951,7 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Build dict entries from all type diagnostics
         for (i, diag) in all_diagnostics.iter().enumerate() {
-            let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            w.insert(
-                HashableValue::Str("level".into()),
-                mk(string_val(&diag.level.to_string())),
-            );
-            w.insert(HashableValue::Str("kind".into()), mk(string_val(diag.kind)));
-            w.insert(
-                HashableValue::Str("message".into()),
-                mk(string_val(&diag.message)),
-            );
-            w.insert(
-                HashableValue::Str("span".into()),
-                mk_span(diag.primary_span()),
-            );
-            let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, note) in diag.notes.iter().enumerate() {
-                notes_dict.insert(HashableValue::Int(j as i64), mk(string_val(note)));
-            }
-            w.insert(
-                HashableValue::Str("notes".into()),
-                mk(Value::Dict {
-                    entries: notes_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, help) in diag.help.iter().enumerate() {
-                help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
-            }
-            w.insert(
-                HashableValue::Str("help".into()),
-                mk(Value::Dict {
-                    entries: help_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("call-stack".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("macro-expand".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            w.insert(
-                HashableValue::Str("blame".into()),
-                mk(Value::Dict {
-                    entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
-            // Secondary spans (spans[1..]) — e.g., "type declared here" from TypeAssert.
-            // Each entry is {span: ..., label: ...} in insertion order.
-            let mut ss_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            for (j, (span, label)) in diag.spans.iter().skip(1).enumerate() {
-                let mut ss_entry: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                ss_entry.insert(HashableValue::Str("span".into()), mk_span(span));
-                ss_entry.insert(HashableValue::Str("label".into()), mk(string_val(label)));
-                ss_dict.insert(
-                    HashableValue::Int(j as i64),
-                    mk(Value::Dict {
-                        entries: ss_entry,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-            }
-            w.insert(
-                HashableValue::Str("secondary-spans".into()),
-                mk(Value::Dict {
-                    entries: ss_dict,
-                    type_val: crate::value::unknown_type_val(),
-                }),
-            );
+            let w = serialize_diagnostic(diag, &call_span);
             diagnostics_dict.insert(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
@@ -4236,8 +4100,20 @@ pub(crate) fn builtin_eval_types(
         let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, node) in expression_nodes.into_iter().enumerate() {
             let (lowered, lower_diags) = crate::lower::lower(&node, scope_frames);
-            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
-                return Err(err.into());
+            {
+                let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                    .into_iter()
+                    .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                for d in info_diags {
+                    ctx.runtime_diagnostics
+                        .lock()
+                        .expect("runtime_diagnostics mutex poisoned")
+                        .push(d);
+                }
+                if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags)
+                {
+                    return Err(err.into());
+                }
             }
             let core_thunk = Arc::new(Thunk::core_expr(
                 Arc::new(lowered),
@@ -5141,7 +5017,7 @@ pub(crate) fn builtin_lower(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-lower", named.as_ref(), call_span.clone())?;
@@ -5192,8 +5068,20 @@ pub(crate) fn builtin_lower(
                 crate::ast::SurfaceItem::Decl(_) => continue,
             };
             let (core_spanned, lower_diags) = crate::lower::lower(node, scope_frames);
-            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
-                return Err(err.into());
+            {
+                let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                    .into_iter()
+                    .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                for d in info_diags {
+                    ctx.runtime_diagnostics
+                        .lock()
+                        .expect("runtime_diagnostics mutex poisoned")
+                        .push(d);
+                }
+                if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags)
+                {
+                    return Err(err.into());
+                }
             }
             let key = format!("{expr_idx}");
             entries.push((key, std::sync::Arc::new(core_spanned)));

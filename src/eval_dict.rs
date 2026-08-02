@@ -189,9 +189,21 @@ async fn eval_annotation_property_dict(
                     &mut lower_diags,
                     ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                 );
-                if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags)
                 {
-                    return Err(err);
+                    let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                        .into_iter()
+                        .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                    for d in info_diags {
+                        ctx.runtime_diagnostics
+                            .lock()
+                            .expect("runtime_diagnostics mutex poisoned")
+                            .push(d);
+                    }
+                    if let Some(err) =
+                        crate::eval_materialize::lower_errors_to_eval_error(other_diags)
+                    {
+                        return Err(err);
+                    }
                 }
                 match eval_core_expr(&core_expr, &EvalFrame::empty(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,

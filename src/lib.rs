@@ -115,8 +115,8 @@ pub use imports::{
 
 /// Error types with source spans and stack traces.
 pub use error::{
-    render_span_snippet, ArityBound, DiagnosticLevel, ErrorKind, EvalError, EvalResult, StackFrame,
-    TypeDiagnostic,
+    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel, ErrorKind,
+    EvalError, EvalResult, StackFrame,
 };
 
 /// TypeValue: the Arc<Value>-based type representation used throughout the type checker.
@@ -126,59 +126,6 @@ pub use type_class::TypeValue;
 /// injected type env). These are the canonical single-path constructors — callers must
 /// not duplicate construction logic locally (Axiom 2).
 pub use type_infer::{make_typevalue_op, make_typevalue_repr, make_typevalue_unknown};
-
-/// Format a TypeDiagnostic with source context for display.
-///
-/// Produces: `level[kind]: message\n --> file:line:col\n  |\n  snippet\n  = note: ...\n`
-pub fn format_type_diagnostic(diag: &TypeDiagnostic, source: &str, file_name: &str) -> String {
-    let level_str = match diag.level {
-        DiagnosticLevel::Info => "info",
-        DiagnosticLevel::Warn => "warning",
-        DiagnosticLevel::Err => "error",
-    };
-    let code = diag.kind;
-    let primary_span = diag.primary_span();
-    let line = primary_span.start_line;
-    let col = primary_span.start_col;
-    let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
-    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
-    let has_snippet = if let Some(snippet) = render_span_snippet(source, primary_span.clone()) {
-        out.push_str("  |\n");
-        out.push_str(&snippet);
-        true
-    } else {
-        false
-    };
-    // Render secondary spans (e.g. the specific argument that failed a type constraint).
-    for (sec_span, label) in diag.spans.iter().skip(1) {
-        out.push('\n');
-        out.push_str(&format!(
-            " --> {file_name}:{}:{}\n",
-            sec_span.start_line, sec_span.start_col
-        ));
-        if let Some(snippet) = render_span_snippet(source, sec_span.clone()) {
-            out.push_str("  |\n");
-            out.push_str(&snippet);
-            if !label.is_empty() {
-                // Label is appended after the last line of the snippet.
-                // Trim trailing newline to append inline, then re-add it.
-                let trimmed = out.trim_end_matches('\n');
-                let new_out = format!("{}  {}\n", trimmed, label);
-                out = new_out;
-            }
-        }
-    }
-    if (has_snippet || !diag.spans.is_empty()) && !diag.notes.is_empty() {
-        out.push('\n');
-    }
-    for note in &diag.notes {
-        out.push_str(&format!("  = note: {note}\n"));
-    }
-    if let Some(help) = &diag.help {
-        out.push_str(&format!("  = help: {help}\n"));
-    }
-    out
-}
 
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source_tinct;
@@ -450,7 +397,7 @@ pub async fn run_loader_pipeline(
     // All other error-level diagnostics are logged (above) but do not abort execution.
     let mut has_fatal = false;
     for diag in &loader_diagnostics {
-        eprintln!("{}", format_type_diagnostic(diag, init_source, init_path));
+        eprintln!("{}", format_diagnostic(diag, init_source, init_path));
         if diag.level == crate::error::DiagnosticLevel::Err && diag.kind == "type-assertion" {
             has_fatal = true;
         }
@@ -493,6 +440,17 @@ pub async fn run_loader_pipeline(
     eval::materialize(&loader_thunk, None, &eval_ctx_with_frames)
         .await
         .map_err(|e| format!("{e}"))?;
+
+    // Drain and print runtime diagnostics collected during evaluation.
+    {
+        let rt_diags = eval_ctx_with_frames
+            .runtime_diagnostics
+            .lock()
+            .map_err(|e| format!("runtime_diagnostics mutex poisoned: {e}"))?;
+        for diag in rt_diags.iter() {
+            eprintln!("{}", format_diagnostic(diag, init_source, init_path));
+        }
+    }
 
     Ok(())
 }

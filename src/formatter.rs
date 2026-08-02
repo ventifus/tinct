@@ -63,7 +63,7 @@ pub async fn format_source_tinct(
     // needs to fall back to a scope_frames search.
     let root_group_len = ctx.root_group.len() as u32;
     let root_frame = ctx.root_group_resolver_map();
-    let mut resolve_diags: Vec<crate::error::TypeDiagnostic> = Vec::new();
+    let mut resolve_diags: Vec<crate::error::Diagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
         let (_table, diags, _unresolved, _unified_frames) =
             resolve::resolve_surface_document_with_seed_frames(

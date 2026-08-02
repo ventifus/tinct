@@ -1563,13 +1563,9 @@ impl InferenceContext {
     /// Enforces monotonicity: returns `Err` if the variable is already bound.
     /// Callers discovering a conflict during unification should emit a type error
     /// diagnostic rather than overwriting.
-    pub fn bind(
-        &mut self,
-        name: String,
-        val: TypeValue,
-    ) -> Result<(), crate::error::TypeDiagnostic> {
+    pub fn bind(&mut self, name: String, val: TypeValue) -> Result<(), crate::error::Diagnostic> {
         if self.subst.contains_key(&name) {
-            return Err(crate::error::TypeDiagnostic::error(
+            return Err(crate::error::Diagnostic::error(
                 "inference-internal",
                 format!(
                     "type variable '{}' bound twice — monotonicity invariant violated",
@@ -2147,7 +2143,7 @@ pub struct InferState {
     pub expected_fn_params: Option<Vec<TypeValue>>,
     /// Accumulated type diagnostics (warnings, hints).
     /// Populated during type inference and generalization, extracted by the type checker.
-    pub diagnostics: Vec<crate::error::TypeDiagnostic>,
+    pub diagnostics: Vec<crate::error::Diagnostic>,
     /// Deferred equality constraints for stuck TypeStageApp applications.
     /// When a TypeStageApp has non-ground arguments or cannot be reduced, equality
     /// constraints involving it are deferred here. After each round of unification,

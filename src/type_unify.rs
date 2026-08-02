@@ -11,7 +11,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::error::TypeDiagnostic;
+use crate::error::Diagnostic;
 use crate::type_infer::{
     extract_rowtail_var_name, typevalue_ctor, typevalue_var_name, InferenceContext, TypeValue,
 };
@@ -273,9 +273,9 @@ fn check_function_arity(
     is_variadic_1: bool,
     is_variadic_2: bool,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     if p1_len != p2_len {
-        return Err(TypeDiagnostic::error(
+        return Err(Diagnostic::error(
             "type-error",
             format!(
                 "arity mismatch: expected {} arguments, got {}",
@@ -285,7 +285,7 @@ fn check_function_arity(
         ));
     }
     if is_variadic_1 != is_variadic_2 {
-        return Err(TypeDiagnostic::error(
+        return Err(Diagnostic::error(
             "type-error",
             format!(
                 "variadic mismatch: function with {} params ({}) vs {} params ({})",
@@ -467,7 +467,7 @@ fn extract_payload_typevalue_fields(tv: &TypeValue) -> Option<Vec<TypeValue>> {
 /// - TypeVar-to-TypeVar: bind higher-level to lower-level (Kiselyov L3)
 ///
 /// On success: `ctx` is updated with new TypeVar bindings.
-/// On failure: returns `TypeDiagnostic::error`.
+/// On failure: returns `Diagnostic::error`.
 pub async fn unify(
     a: &TypeValue,
     b: &TypeValue,
@@ -475,9 +475,9 @@ pub async fn unify(
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
     depth: usize,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     if depth >= MAX_UNIFY_DEPTH {
-        return Err(TypeDiagnostic::error(
+        return Err(Diagnostic::error(
             "type-error",
             format!("unification depth limit exceeded (limit: {MAX_UNIFY_DEPTH})"),
             span,
@@ -583,7 +583,7 @@ pub async fn unify(
     if let Some(name) = typevalue_var_name(&a) {
         let alpha_level = ctx.get_level(&name);
         if lower_levels_check_occurs_tv(&b, &name, alpha_level, ctx) {
-            return Err(TypeDiagnostic::error(
+            return Err(Diagnostic::error(
                 "type-error",
                 format!("infinite type: {name} occurs in type"),
                 span,
@@ -601,7 +601,7 @@ pub async fn unify(
     if let Some(name) = typevalue_var_name(&b) {
         let alpha_level = ctx.get_level(&name);
         if lower_levels_check_occurs_tv(&a, &name, alpha_level, ctx) {
-            return Err(TypeDiagnostic::error(
+            return Err(Diagnostic::error(
                 "type-error",
                 format!("infinite type: {name} occurs in type"),
                 span,
@@ -626,7 +626,7 @@ pub async fn unify(
             if repr_a == repr_b {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     format!(
                         "cannot unify {:?} with {:?}",
@@ -645,7 +645,7 @@ pub async fn unify(
             if name_a == name_b {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     format!(
                         "cannot unify type operator {:?} with {:?}",
@@ -664,7 +664,7 @@ pub async fn unify(
             if va == vb {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     format!("cannot unify integer literals {:?} and {:?}", va, vb),
                     span,
@@ -677,7 +677,7 @@ pub async fn unify(
             if extract_repr_string(&b).as_deref() == Some(REPR_INT) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     "cannot unify integer literal with non-Int type",
                     span,
@@ -688,7 +688,7 @@ pub async fn unify(
             if extract_repr_string(&a).as_deref() == Some(REPR_INT) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     "cannot unify integer literal with non-Int type",
                     span,
@@ -702,7 +702,7 @@ pub async fn unify(
             if va == vb {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     format!("cannot unify string literals {:?} and {:?}", va, vb),
                     span,
@@ -714,7 +714,7 @@ pub async fn unify(
             if extract_repr_string(&b).as_deref() == Some(REPR_STRING) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     "cannot unify string literal with non-Str type",
                     span,
@@ -725,7 +725,7 @@ pub async fn unify(
             if extract_repr_string(&a).as_deref() == Some(REPR_STRING) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     "cannot unify string literal with non-Str type",
                     span,
@@ -740,7 +740,7 @@ pub async fn unify(
             if va.map(|f| f.to_bits()) == vb.map(|f| f.to_bits()) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     format!("cannot unify float literals {:?} and {:?}", va, vb),
                     span,
@@ -753,7 +753,7 @@ pub async fn unify(
             if extract_repr_string(&b).as_deref() == Some(REPR_FLOAT) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     "cannot unify FloatLiteral with non-Float repr type",
                     span,
@@ -764,7 +764,7 @@ pub async fn unify(
             if extract_repr_string(&a).as_deref() == Some(REPR_FLOAT) {
                 Ok(())
             } else {
-                Err(TypeDiagnostic::error(
+                Err(Diagnostic::error(
                     "type-error",
                     "cannot unify non-Float repr type with FloatLiteral",
                     span,
@@ -828,7 +828,7 @@ pub async fn unify(
                 .expect("invariant: TypeValue.Union payload must be settled with members field");
             if members_a.len() != members_b.len() {
                 // Different member counts: cannot unify
-                return Err(TypeDiagnostic::error(
+                return Err(Diagnostic::error(
                     "type-error",
                     format!(
                         "cannot unify union types with different numbers of members ({} vs {})",
@@ -854,7 +854,7 @@ pub async fn unify(
                 span: Span,
                 depth: usize,
             ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<(), TypeDiagnostic>> + Send + 'a>,
+                Box<dyn std::future::Future<Output = Result<(), Diagnostic>> + Send + 'a>,
             > {
                 Box::pin(async move {
                     // Base case: all members_a have been matched.
@@ -916,7 +916,7 @@ pub async fn unify(
                     }
 
                     // No valid b_idx for members_a[a_start] — backtrack to caller.
-                    Err(TypeDiagnostic::error(
+                    Err(Diagnostic::error(
                         "type-error",
                         format!(
                             "cannot unify union types: no matching member found for type {}",
@@ -958,10 +958,10 @@ pub async fn unify(
         // resolver_injective = false is registered.
         (Some(TV_APP), Some(TV_APP)) => {
             let (op_a, arg_a) = extract_app_parts(&a).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.App", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.App", span.clone())
             })?;
             let (op_b, arg_b) = extract_app_parts(&b).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.App", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.App", span.clone())
             })?;
 
             // Check whether both ops are TV_OP with the same name and, if so, whether
@@ -1031,10 +1031,10 @@ pub async fn unify(
         // Recursive types: open with fresh TypeVar, bidirectional constrain.
         (Some(TV_RECURSIVE), Some(TV_RECURSIVE)) => {
             let body_a = extract_recursive_body(&a).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
             })?;
             let body_b = extract_recursive_body(&b).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
             })?;
             // Open both with the same fresh TypeVar (Pierce 2002 §21.8 simultaneous-opening).
             let fresh = ctx.fresh_typevar("rec");
@@ -1054,7 +1054,7 @@ pub async fn unify(
         // Recursive vs concrete: open recursive, constrain with concrete.
         (Some(TV_RECURSIVE), _) => {
             let body_a = extract_recursive_body(&a).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
             })?;
             let fresh = ctx.fresh_typevar("rec");
             let opened_a = substitute_rec_ref(&body_a, 0, &fresh);
@@ -1064,7 +1064,7 @@ pub async fn unify(
 
         (_, Some(TV_RECURSIVE)) => {
             let body_b = extract_recursive_body(&b).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
             })?;
             let fresh = ctx.fresh_typevar("rec");
             let opened_b = substitute_rec_ref(&body_b, 0, &fresh);
@@ -1075,10 +1075,10 @@ pub async fn unify(
         // Negation: contravariant (bidirectional swap).
         (Some(TV_NEG), Some(TV_NEG)) => {
             let inner_a = extract_neg_inner(&a).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.Neg", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.Neg", span.clone())
             })?;
             let inner_b = extract_neg_inner(&b).ok_or_else(|| {
-                TypeDiagnostic::error("type-error", "malformed TypeValue.Neg", span.clone())
+                Diagnostic::error("type-error", "malformed TypeValue.Neg", span.clone())
             })?;
             Box::pin(constrain(
                 &inner_b,
@@ -1098,14 +1098,14 @@ pub async fn unify(
         // Rule: τ ≤ τ₁ ∨ ... ∨ τₙ  iff  ∃i. τ ≤ τᵢ  (existential Union membership).
         (_, Some(TV_UNION)) => {
             let members = extract_union_members(&b).ok_or_else(|| {
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     "type-error",
                     "TypeValue.Union payload is unsettled or malformed",
                     span.clone(),
                 )
             })?;
             if members.is_empty() {
-                return Err(TypeDiagnostic::error(
+                return Err(Diagnostic::error(
                     "type-error",
                     "cannot unify with empty union (Never)",
                     span,
@@ -1142,7 +1142,7 @@ pub async fn unify(
                     return Ok(());
                 }
             }
-            Err(TypeDiagnostic::error(
+            Err(Diagnostic::error(
                 "type-error",
                 format!("cannot unify {} with {}", ctor_a.unwrap_or("?"), TV_UNION),
                 span,
@@ -1160,14 +1160,14 @@ pub async fn unify(
         // C-Var1 symmetric: Union vs concrete — symmetric version of the above.
         (Some(TV_UNION), _) => {
             let members = extract_union_members(&a).ok_or_else(|| {
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     "type-error",
                     "TypeValue.Union payload is unsettled or malformed",
                     span.clone(),
                 )
             })?;
             if members.is_empty() {
-                return Err(TypeDiagnostic::error(
+                return Err(Diagnostic::error(
                     "type-error",
                     "cannot unify empty union (Never) with type",
                     span,
@@ -1202,7 +1202,7 @@ pub async fn unify(
                     return Ok(());
                 }
             }
-            Err(TypeDiagnostic::error(
+            Err(Diagnostic::error(
                 "type-error",
                 format!(
                     "cannot unify TypeValue.Union with {}",
@@ -1225,7 +1225,7 @@ pub async fn unify(
         // Rule: α ∧ τ₁ ≤ τ₂  →  α ≤ ~τ₁ ∨ τ₂  (conservative: try TypeVar binding).
         (Some(TV_INTER), _) => {
             let members = extract_intersection_members(&a).ok_or_else(|| {
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     "type-error",
                     "TypeValue.Intersect payload is unsettled or malformed",
                     span.clone(),
@@ -1265,7 +1265,7 @@ pub async fn unify(
                     return Ok(());
                 }
             }
-            Err(TypeDiagnostic::error(
+            Err(Diagnostic::error(
                 "type-error",
                 format!(
                     "cannot unify TypeValue.Inter with {}",
@@ -1284,7 +1284,7 @@ pub async fn unify(
         }
 
         // Cross-ctor mismatch: type error.
-        (Some(ca), Some(cb)) if ca != cb => Err(TypeDiagnostic::error(
+        (Some(ca), Some(cb)) if ca != cb => Err(Diagnostic::error(
             "type-error",
             format!("cannot unify {} with {}", ca, cb),
             span,
@@ -1357,7 +1357,7 @@ pub(crate) async fn unify_rowtails(
     ctx: &mut InferenceContext,
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     // Apply substitution to both tails.
     let a = ctx.apply_subst(a);
     let b = ctx.apply_subst(b);
@@ -1447,7 +1447,7 @@ pub(crate) async fn unify_rowtails(
             match extract_rowtail_var_name(&a) {
                 Some(name) => {
                     if rowvar_occurs_in_tail(&name, &b) {
-                        return Err(TypeDiagnostic::error(
+                        return Err(Diagnostic::error(
                             "type-error",
                             format!(
                                 "infinite row type: row variable '{}' occurs in its own binding",
@@ -1467,7 +1467,7 @@ pub(crate) async fn unify_rowtails(
             match extract_rowtail_var_name(&b) {
                 Some(name) => {
                     if rowvar_occurs_in_tail(&name, &a) {
-                        return Err(TypeDiagnostic::error(
+                        return Err(Diagnostic::error(
                             "type-error",
                             format!(
                                 "infinite row type: row variable '{}' occurs in its own binding",
@@ -1486,7 +1486,7 @@ pub(crate) async fn unify_rowtails(
 
         // Closed ~ Uniform: fail (incompatible tails).
         (Some(RT_CLOSED), Some(RT_UNIFORM)) | (Some(RT_UNIFORM), Some(RT_CLOSED)) => {
-            Err(TypeDiagnostic::error(
+            Err(Diagnostic::error(
                 "type-error",
                 "cannot unify closed record with open uniform record",
                 span,
@@ -1494,7 +1494,7 @@ pub(crate) async fn unify_rowtails(
         }
 
         // Empty dict ~ Uniform: fail (closed ≠ open).
-        (None, Some(RT_UNIFORM)) | (Some(RT_UNIFORM), None) => Err(TypeDiagnostic::error(
+        (None, Some(RT_UNIFORM)) | (Some(RT_UNIFORM), None) => Err(Diagnostic::error(
             "type-error",
             "cannot unify closed record (empty tail) with open uniform record",
             span,
@@ -1522,7 +1522,7 @@ pub async fn constrain(
     ctx: &mut InferenceContext,
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     // Apply current substitution.
     let sub = ctx.apply_subst(sub);
     let sup = ctx.apply_subst(sup);
@@ -1612,7 +1612,7 @@ pub async fn constrain(
     // TypeVars in the union are flexible — they accumulate bounds, not equality bindings.
     if matches!(tv_ctor(&sup), Some(TV_UNION)) {
         let members = extract_union_members(&sup).ok_or_else(|| {
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 "type-error",
                 "TypeValue.Union payload is unsettled or malformed",
                 span.clone(),
@@ -1694,7 +1694,7 @@ pub async fn constrain(
             for lb in &lower_bounds {
                 // Verify lb <: sup holds.
                 if !crate::bas::is_subtype_bas(lb, &sup, ctx) {
-                    return Err(TypeDiagnostic::error(
+                    return Err(Diagnostic::error(
                         "type-error",
                         format!(
                             "accumulated lower bound is not a subtype of upper bound (incompatible constraints on type variable)"
@@ -1720,7 +1720,7 @@ pub async fn constrain(
     // constrain(Top, TypeVar) is handled by C-LB above (TypeVar in sup).
     // constrain(Top, concrete) is rejected here — Top is not a subtype of any concrete type.
     if is_top(&sub) {
-        return Err(TypeDiagnostic::error(
+        return Err(Diagnostic::error(
             "type-error",
             format!("Top (⊤) is not a subtype of a specific type"),
             span.clone(),
@@ -1731,7 +1731,7 @@ pub async fn constrain(
     // constrain(TypeVar, Never) is handled by C-UB above (TypeVar in sub).
     // constrain(concrete, Never) is rejected here — no specific type is a subtype of Never.
     if is_never(&sup) {
-        return Err(TypeDiagnostic::error(
+        return Err(Diagnostic::error(
             "type-error",
             format!("a specific type is not a subtype of Never (⊥)"),
             span.clone(),
@@ -1752,12 +1752,12 @@ async fn constrain_fn(
     ctx: &mut InferenceContext,
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     let (params_sub, ret_sub) = extract_fn_parts(sub).ok_or_else(|| {
-        TypeDiagnostic::error("type-error", "malformed TypeValue.Fn (sub)", span.clone())
+        Diagnostic::error("type-error", "malformed TypeValue.Fn (sub)", span.clone())
     })?;
     let (params_sup, ret_sup) = extract_fn_parts(sup).ok_or_else(|| {
-        TypeDiagnostic::error("type-error", "malformed TypeValue.Fn (sup)", span.clone())
+        Diagnostic::error("type-error", "malformed TypeValue.Fn (sup)", span.clone())
     })?;
 
     let sub_variadic = is_fn_variadic(sub);
@@ -1799,7 +1799,7 @@ async fn constrain_record(
     ctx: &mut InferenceContext,
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     let sup_fields = extract_record_fields(sup)
         .expect("invariant: TypeValue.Record payload must be settled with fields dict");
     let sub_fields = extract_record_fields(sub)
@@ -1814,7 +1814,7 @@ async fn constrain_record(
         if let Some(sub_ty) = sub_fields.get(k) {
             Box::pin(constrain(sub_ty, sup_ty, ctx, constraints, span.clone())).await?;
         } else {
-            return Err(TypeDiagnostic::error(
+            return Err(Diagnostic::error(
                 "type-error",
                 format!("missing field '{}': record subtype constraint", k),
                 span,
@@ -2506,13 +2506,13 @@ pub async fn process_deferred_equalities(
     ctx: &mut InferenceContext,
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     let max_iterations = 100;
     let mut iteration = 0;
     let mut progress = true;
     // Track the most recent error for deferred pairs, so it can be propagated
     // if the pair remains permanently unresolvable after the fixpoint.
-    let mut last_error: Option<TypeDiagnostic> = None;
+    let mut last_error: Option<Diagnostic> = None;
     while progress && iteration < max_iterations {
         iteration += 1;
         progress = false;
@@ -2571,7 +2571,7 @@ pub async fn process_deferred_equalities(
         .await
         .and_then(|()| {
             // First pair became satisfiable, but others remain — report generic error.
-            Err(TypeDiagnostic::error(
+            Err(Diagnostic::error(
                 "type-error",
                 "deferred type constraints could not be fully resolved",
                 span,

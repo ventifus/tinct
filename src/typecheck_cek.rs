@@ -23,7 +23,7 @@ use crate::ast::{
 };
 use crate::coverage;
 use crate::env::Env;
-use crate::error::TypeDiagnostic;
+use crate::error::Diagnostic;
 use crate::type_tags::*;
 // Constraint is Vec<Arc<Value>> in the TypeValue migration — no Constraint type import needed.
 use crate::type_def::TyConDef;
@@ -76,7 +76,7 @@ struct FnSig {
 /// Groups the three machinery parameters to keep function argument counts below threshold.
 struct TypeCheckCtx<'a, 'b> {
     state: &'a mut InferState,
-    errors: &'a mut Vec<TypeDiagnostic>,
+    errors: &'a mut Vec<Diagnostic>,
     type_map: &'a mut Option<&'b mut TypeMap>,
 }
 
@@ -93,7 +93,7 @@ struct TypeCheckCtx<'a, 'b> {
 /// `(target, computed)` is unified via `unify()`. Unification errors are pushed to `errors`.
 pub(crate) async fn run_fd_improvement_fixpoint(
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     span: Span,
 ) {
     loop {
@@ -202,6 +202,7 @@ pub(crate) enum TypeCheckCont {
         /// Number of required (non-default) fixed params. None = all params required.
         required_count: Option<usize>,
         node_span: Span,
+        trace_level: u32,
     },
 
     /// Inferred the function expression in a call — start processing arguments.
@@ -347,7 +348,7 @@ pub(crate) async fn typecheck_for_errors(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<TypeCheckCont>,
 ) {
@@ -367,7 +368,7 @@ pub(crate) async fn run_typecheck(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeValue {
@@ -430,7 +431,7 @@ async fn infer_step(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
@@ -786,7 +787,7 @@ async fn infer_step(
                     // Every tinct expression is a dict. A non-Dict in intermediate position
                     // means the program is malformed (e.g. a corpus test with a syntax error).
                     // Emit a recoverable error so init programs (test-loader) can capture it.
-                    errors.push(TypeDiagnostic::error(
+                    errors.push(Diagnostic::error(
                         "type-error",
                         "expected record type: sequential intermediate body must be a dict expression",
                         intermediate.span.clone(),
@@ -913,7 +914,7 @@ async fn infer_step(
             // Call infer_class_decl_from_surface and infer_instance_decl_from_surface directly
             // now that they are pub(crate). TypeAlias declarations in expression position have
             // no runtime type (alias body validation occurs in Pass 2 of run_typecheck_dict).
-            let result: Result<TypeValue, Vec<TypeDiagnostic>> = match decl_box.as_ref() {
+            let result: Result<TypeValue, Vec<Diagnostic>> = match decl_box.as_ref() {
                 SurfaceDeclaration::ClassDecl {
                     name,
                     params,
@@ -964,7 +965,7 @@ async fn infer_step(
                     // Alias body validation occurs in Pass 2 of run_typecheck_dict.
                     Ok(make_typevalue_top())
                 }
-                _ => Err(vec![TypeDiagnostic::error(
+                _ => Err(vec![Diagnostic::error(
                     "type-error",
                     "unexpected declaration in expression position",
                     node.span.clone(),
@@ -989,7 +990,7 @@ async fn infer_step(
                 "unexpected {} in this context",
                 crate::surface_fields::surface_expr_tag(&node.expr)
             );
-            errors.push(TypeDiagnostic::error(
+            errors.push(Diagnostic::error(
                 "type-error",
                 msg.clone(),
                 node.span.clone(),
@@ -1013,7 +1014,7 @@ async fn apply_cont(
     cont: TypeCheckCont,
     child_ty: TypeValue,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
@@ -1028,6 +1029,7 @@ async fn apply_cont(
             rest,
             required_count,
             node_span,
+            trace_level,
         } => {
             state.ctx.current_level = saved_level;
             state.expected_return = saved_expected_return;
@@ -1062,7 +1064,7 @@ async fn apply_cont(
                                 &ctx_for_check,
                             ) {
                                 errors.push(
-                                    TypeDiagnostic::error(
+                                    Diagnostic::error(
                                         "unification-failure",
                                         "return type mismatch: body type is not consistent with declared return type",
                                         node_span.clone(),
@@ -1096,7 +1098,7 @@ async fn apply_cont(
                                         )
                                     {
                                         errors.push(
-                                            TypeDiagnostic::error(
+                                            Diagnostic::error(
                                                 "unification-failure",
                                                 "body type is not consistent with function annotation member",
                                                 node_span.clone(),
@@ -1112,7 +1114,7 @@ async fn apply_cont(
 
                     // Emit diagnostic for explicit @Unknown return annotation.
                     if typevalue_ctor(&declared_ret) == Some(TV_UNKNOWN) {
-                        state.diagnostics.push(TypeDiagnostic::info(
+                        state.diagnostics.push(Diagnostic::info(
                             "explicit-unknown",
                             "explicit @Unknown return annotation — type is not statically known",
                             node_span.clone(),
@@ -1141,7 +1143,7 @@ async fn apply_cont(
                             );
                             if is_sub && !is_super {
                                 state.diagnostics.push(
-                                    TypeDiagnostic::info(
+                                    Diagnostic::info(
                                         "overbroad-annotation",
                                         "return annotation is broader than the inferred body type",
                                         node_span.clone(),
@@ -1178,6 +1180,28 @@ async fn apply_cont(
                 .iter()
                 .map(|(name, ty)| (Some(name.clone()), Arc::clone(ty)))
                 .collect();
+
+            // Emit trace diagnostic if trace_level >= 1.
+            if trace_level >= 1 {
+                let ret_str = crate::eval::format_type_for_assert(&fn_ret_ty);
+                let params_str = params
+                    .iter()
+                    .map(|(name, ty)| {
+                        format!(
+                            "{}: {}",
+                            name.as_deref().unwrap_or("_"),
+                            crate::eval::format_type_for_assert(ty)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                state.diagnostics.push(Diagnostic::info(
+                    "trace-fn-type",
+                    format!("[{}] → {}", params_str, ret_str),
+                    node_span.clone(),
+                ));
+            }
+
             let fn_type = crate::type_infer::make_typevalue_fn_with_flags(
                 params,
                 fn_ret_ty,
@@ -1193,7 +1217,7 @@ async fn apply_cont(
                     typed_variadics.iter().map(|(_, t)| Arc::clone(t)).collect(),
                 );
                 let covered_display = crate::eval::format_type_for_assert(&covered);
-                errors.push(TypeDiagnostic::error("type-error",
+                errors.push(Diagnostic::error("type-error",
                     format!(
                         "non-exhaustive variadic type dispatch: typed buckets cover {} but no fallback (...rest) handles other types — add ...rest for a wildcard bucket",
                         covered_display
@@ -1476,7 +1500,7 @@ async fn apply_cont(
 
             // Emit diagnostic for explicit @Unknown annotation
             if typevalue_ctor(&expected_resolved) == Some(TV_UNKNOWN) {
-                state.diagnostics.push(TypeDiagnostic::info(
+                state.diagnostics.push(Diagnostic::info(
                     "explicit-unknown",
                     "explicit @Unknown annotation — type is not statically known",
                     span.clone(),
@@ -1535,7 +1559,7 @@ async fn apply_cont(
                     &ctx_for_check,
                 );
                 if !passes {
-                    errors.push(TypeDiagnostic::error(
+                    errors.push(Diagnostic::error(
                         "type-error",
                         "default value type does not match the assertion's expected type",
                         default_n.span.clone(),
@@ -1638,7 +1662,7 @@ async fn apply_cont(
                                 if !name.starts_with(INTERNAL_PREFIX_INSTANCE)
                                     && !name.starts_with(INTERNAL_PREFIX_LABEL)
                                 {
-                                    state.diagnostics.push(TypeDiagnostic::warn(
+                                    state.diagnostics.push(Diagnostic::warn(
                                         "lost-binding",
                                         format!("variable '{}' is never referenced", name),
                                         def_span.clone(),
@@ -1682,7 +1706,7 @@ async fn infer_var_ref(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
     // Resolver-address primary: resolution_table → direct frame lookup.
     // LGM/ClosureCapture: slot-based via get_scheme_at; miss is a type-checker setup error.
@@ -1726,7 +1750,7 @@ async fn infer_var_ref(
                         }
                         slot_scheme
                     } else {
-                        errors.push(TypeDiagnostic::error(
+                        errors.push(Diagnostic::error(
                             "resolver-param-miss",
                             format!(
                                 "parameter '{}' at slot {} not found in current_parameter_frame",
@@ -1737,7 +1761,7 @@ async fn infer_var_ref(
                         None
                     }
                 } else {
-                    errors.push(TypeDiagnostic::error(
+                    errors.push(Diagnostic::error(
                         "resolver-param-miss",
                         format!("parameter '{}' referenced outside any parameter frame (current_parameter_frame is None)", name),
                         node.span.clone(),
@@ -1801,7 +1825,7 @@ async fn infer_var_ref(
                     }
                     slot_scheme
                 } else {
-                    errors.push(TypeDiagnostic::error(
+                    errors.push(Diagnostic::error(
                         "resolver-slot-miss",
                         format!(
                             "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address",
@@ -1845,7 +1869,7 @@ async fn infer_var_ref(
                 None => {
                     // instantiate_scheme_tv returning None on a TypeValue.Scheme-tagged value
                     // is an invariant violation: the scheme payload is malformed.
-                    errors.push(TypeDiagnostic::error(
+                    errors.push(Diagnostic::error(
                         "type-error",
                         "malformed TypeValue.Scheme: instantiation failed (payload corrupt)",
                         node.span.clone(),
@@ -1869,7 +1893,7 @@ async fn infer_var_ref(
             }
         }
 
-        let mut err = TypeDiagnostic::error(
+        let mut err = Diagnostic::error(
             "type-error",
             format!("undefined variable: {}", name),
             node.span.clone(),
@@ -1930,7 +1954,7 @@ async fn eval_args_for_errors(
     named_args: &[Spanned<SurfaceNamedArg>],
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) {
     for arg in args {
@@ -1988,7 +2012,7 @@ async fn apply_cont_call_func(
                     None => {
                         // typevalue_fn_params_and_ret returning None on a TypeValue.Fn-tagged
                         // value is an invariant violation: the Fn payload is malformed.
-                        ctx.errors.push(TypeDiagnostic::error(
+                        ctx.errors.push(Diagnostic::error(
                         "type-error",
                         "malformed TypeValue.Fn: params/return extraction failed (payload corrupt)",
                         call_node.span.clone(),
@@ -2080,7 +2104,7 @@ async fn apply_cont_call_func(
                         ctx.type_map,
                     )
                     .await;
-                    let err = TypeDiagnostic::error(
+                    let err = Diagnostic::error(
                         "type-error",
                         format!(
                             "arity mismatch: expected {} argument(s), got {}",
@@ -2172,13 +2196,11 @@ async fn apply_cont_call_func(
                 )
                 .await;
             }
-            ctx.state
-                .diagnostics
-                .push(crate::error::TypeDiagnostic::warn(
-                    "unknown-call",
-                    "calling expression of Unknown type — may not be a function",
-                    call_node.span.clone(),
-                ));
+            ctx.state.diagnostics.push(crate::error::Diagnostic::warn(
+                "unknown-call",
+                "calling expression of Unknown type — may not be a function",
+                call_node.span.clone(),
+            ));
             TypeCheckAction::Done(make_typevalue_unknown())
         }
 
@@ -2197,7 +2219,7 @@ async fn apply_cont_call_func(
                     ctx.type_map,
                 )
                 .await;
-                ctx.errors.push(TypeDiagnostic::error(
+                ctx.errors.push(Diagnostic::error(
                     "type-error",
                     format!(
                         "variant constructor takes at most 1 positional argument, got {}",
@@ -2282,7 +2304,7 @@ async fn apply_cont_call_func(
                 None => {
                     // typevalue_extract_members_pub returning None on a TypeValue.Inter-tagged
                     // value means the members payload is malformed (corrupt TypeValue structure).
-                    ctx.errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(Diagnostic::error(
                         "type-error",
                         "malformed TypeValue.Inter: members extraction failed (payload corrupt)",
                         call_node.span.clone(),
@@ -2297,7 +2319,7 @@ async fn apply_cont_call_func(
                 .collect();
 
             if fn_members.is_empty() {
-                let err = TypeDiagnostic::error(
+                let err = Diagnostic::error(
                     "type-error",
                     "expected function type, got intersection of non-function types",
                     call_node.span.clone(),
@@ -2322,7 +2344,7 @@ async fn apply_cont_call_func(
                 .collect();
 
             if matching.is_empty() {
-                let err = TypeDiagnostic::error(
+                let err = Diagnostic::error(
                     "type-error",
                     format!(
                         "no overload of intersection type accepts {} argument(s)",
@@ -2356,7 +2378,7 @@ async fn apply_cont_call_func(
                 .collect();
 
             if fn_members.is_empty() {
-                let err = TypeDiagnostic::error(
+                let err = Diagnostic::error(
                     "type-error",
                     "expected function type, got union of non-function types",
                     call_node.span.clone(),
@@ -2393,7 +2415,7 @@ async fn apply_cont_call_func(
                 ctx.type_map,
             )
             .await;
-            let err = TypeDiagnostic::error(
+            let err = Diagnostic::error(
                 "type-error",
                 format!(
                     "expected function type, got {}",
@@ -2429,7 +2451,7 @@ async fn finalize_call_no_positional_args(
     let min_required = required_count;
 
     if named_args.is_empty() && min_required > 0 {
-        let err = TypeDiagnostic::error(
+        let err = Diagnostic::error(
             "type-error",
             format!("arity mismatch: expected {} arguments, got 0", min_required),
             span.clone(),
@@ -2443,7 +2465,7 @@ async fn finalize_call_no_positional_args(
     let mut seen_named_arg_names: std::collections::HashSet<String> = Default::default();
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
-            ctx.errors.push(TypeDiagnostic::error(
+            ctx.errors.push(Diagnostic::error(
                 "type-error",
                 format!("duplicate named argument: '{}'", na.node.name),
                 na.span.clone(),
@@ -2489,7 +2511,7 @@ async fn finalize_call_no_positional_args(
             }
             None => {
                 if !variadic {
-                    ctx.errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(Diagnostic::error(
                         "type-error",
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
@@ -2546,7 +2568,7 @@ async fn apply_call_args_poly(
     // Return TypeValue.Unknown (error marker) rather than the return type to ensure definite failures
     // do not flow silently through downstream consistency checks.
     if total_supplied < min_required || (!fn_variadic && arg_types.len() > param_types.len()) {
-        let err = TypeDiagnostic::error(
+        let err = Diagnostic::error(
             "type-error",
             format!(
                 "arity mismatch: expected {} arguments, got {}",
@@ -2652,7 +2674,7 @@ async fn apply_call_args_poly(
                     rest_positional_args.push(widened);
                 } else {
                     // No rest bucket and no matching typed bucket: exhaustiveness error.
-                    let err = TypeDiagnostic::error(
+                    let err = Diagnostic::error(
                         "type-error",
                         format!(
                             "argument type does not match any variadic bucket, got {}",
@@ -2721,7 +2743,7 @@ async fn apply_call_args_poly(
     let mut unmatched_named_arg_types: Vec<(String, TypeValue)> = Vec::new();
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
-            ctx.errors.push(TypeDiagnostic::error(
+            ctx.errors.push(Diagnostic::error(
                 "type-error",
                 format!("duplicate named argument: '{}'", na.node.name),
                 na.span.clone(),
@@ -2741,7 +2763,7 @@ async fn apply_call_args_poly(
         match param_match {
             Some((param_idx, param_ty)) => {
                 if consumed_params.contains(&param_idx) {
-                    ctx.errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(Diagnostic::error(
                         "type-error",
                         format!(
                             "named argument '{}' conflicts with positional argument at position {}",
@@ -2774,7 +2796,7 @@ async fn apply_call_args_poly(
                 )
                 .await
                 {
-                    ctx.errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(Diagnostic::error(
                         "type-error",
                         format!(
                             "named argument '{}' type mismatch: {}",
@@ -2803,7 +2825,7 @@ async fn apply_call_args_poly(
                     };
                     unmatched_named_arg_types.push((na.node.name.clone(), arg_ty));
                 } else {
-                    ctx.errors.push(TypeDiagnostic::error(
+                    ctx.errors.push(Diagnostic::error(
                         "type-error",
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
@@ -2846,7 +2868,7 @@ async fn apply_call_args_poly(
         // no bucket to go into. Emit an error for each unmatched named arg.
         if rest.is_none() {
             for (name, _) in &unmatched_named_arg_types {
-                ctx.errors.push(TypeDiagnostic::error("type-error",
+                ctx.errors.push(Diagnostic::error("type-error",
                     format!(
                         "named argument '{}' cannot be routed: function has no untyped rest parameter (...rest) to accept unmatched named args",
                         name
@@ -2897,7 +2919,7 @@ async fn infer_fn_push_cont(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<TypeCheckCont>,
 ) -> TypeCheckAction {
     let (return_ann, params, body) = match &node.expr {
@@ -3152,7 +3174,7 @@ async fn infer_fn_push_cont(
                 // assigns typed buckets before rest. Declaring them in the wrong order
                 // causes silent slot inversion (data corruption at runtime).
                 if rest.is_some() {
-                    let err = TypeDiagnostic::error("type-error",
+                    let err = Diagnostic::error("type-error",
                         format!(
                             "typed variadic `...{}` declared after untyped rest parameter — typed variadics must precede the untyped fallback `...rest`",
                             p.node.name
@@ -3169,7 +3191,7 @@ async fn infer_fn_push_cont(
             // Fixed param: check it was not declared after a variadic (would invert slots).
             let seen_any_variadic = !typed_variadics.is_empty() || rest.is_some();
             if seen_any_variadic {
-                let err = TypeDiagnostic::error("type-error",
+                let err = Diagnostic::error("type-error",
                     format!(
                         "fixed parameter `{}` declared after variadic parameter — fixed params must precede all variadic params",
                         p.node.name
@@ -3231,7 +3253,7 @@ async fn infer_fn_push_cont(
             .collect();
         for (bind_name, fresh_var) in &bind_to_fresh {
             if !used_var_set.contains(fresh_var) {
-                errors.push(TypeDiagnostic::error(
+                errors.push(Diagnostic::error(
                     "unused-type-variable",
                     format!(
                         "type variable '{}' declared in bind: but never used in any parameter annotation — constraint cannot be propagated",
@@ -3280,6 +3302,19 @@ async fn infer_fn_push_cont(
         }
     };
 
+    // Extract trace level from return annotation @[trace: N].
+    let trace_level: u32 = return_ann
+        .as_ref()
+        .and_then(|ann| ann.node.get_property(crate::ast::ANNOTATION_KEY_TRACE))
+        .and_then(|node| {
+            if let SurfaceExpression::Int(n) = &node.expr {
+                Some(*n as u32)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
     // Push FnBody first (fires last: handles return type checking and fn type construction),
     // then push AfterBlock (fires first: handles parameter liveness via SLOTS-only BFS).
     stack.push(TypeCheckCont::FnBody {
@@ -3291,6 +3326,7 @@ async fn infer_fn_push_cont(
         rest,
         required_count,
         node_span: node.span.clone(),
+        trace_level,
     });
     // Set current_parameter_frame to this fn's param env before evaluating the body.
     // infer_var_ref uses it directly for VarAddr::Parameter(i) — no level=2 hack needed.
@@ -3323,7 +3359,7 @@ async fn setup_match_arm_env(
     remaining_scrutinee: &TypeValue,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<(
     Arc<RwLock<Env>>,
@@ -3548,7 +3584,7 @@ fn run_match_exhaustiveness_check(
     arms: &[SurfaceMatchArm],
     span: &Span,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
 ) {
     let tycon_env_ref = state.tycon_env_ref();
     // Coverage checking for TypeValue: inspect ctor tag to determine what kind of scrutinee.
@@ -3641,21 +3677,21 @@ fn run_match_exhaustiveness_check(
 
         if !result.exhaustive {
             let witnesses = coverage::format_witnesses(&result.uncovered);
-            errors.push(TypeDiagnostic::error(
+            errors.push(Diagnostic::error(
                 "type-error",
                 format!("non-exhaustive match: missing coverage for {}", witnesses),
                 span.clone(),
             ));
         }
         for &idx in &result.redundant {
-            errors.push(TypeDiagnostic::error(
+            errors.push(Diagnostic::error(
                 "type-error",
                 "unreachable match arm: this pattern is already covered by prior arms",
                 arms[idx].pattern.span.clone(),
             ));
         }
         for &idx in &result.inaccessible {
-            errors.push(TypeDiagnostic::error(
+            errors.push(Diagnostic::error(
                 "type-error",
                 "inaccessible match arm: reachable only via diverging (bottom) values",
                 arms[idx].pattern.span.clone(),
@@ -3710,7 +3746,7 @@ fn compute_type_assert_mismatch(
     _has_default: bool,
     span: &Span,
     state: &InferState,
-) -> Option<Vec<TypeDiagnostic>> {
+) -> Option<Vec<Diagnostic>> {
     let ctx_for_check = crate::type_infer::InferenceContext::from_snapshot(
         state.ctx.subst.clone(),
         state.ctx.levels.clone(),
@@ -3724,7 +3760,7 @@ fn compute_type_assert_mismatch(
         let expected_param_count = typevalue_fn_param_count(expected);
         if let (Some(a_count), Some(e_count)) = (actual_param_count, expected_param_count) {
             if a_count != e_count {
-                return Some(vec![TypeDiagnostic::error(
+                return Some(vec![Diagnostic::error(
                     "type-assertion",
                     format!(
                         "arity mismatch: expected {} arguments, got {}",
@@ -3748,7 +3784,7 @@ fn compute_type_assert_mismatch(
         !crate::bas::is_consistent_subtype(actual, expected, &ctx_for_check)
     };
     if definitely_fails {
-        Some(vec![TypeDiagnostic::error(
+        Some(vec![Diagnostic::error(
             "type-assertion",
             "type assertion mismatch: actual type is not consistent with expected type",
             span.clone(),
@@ -4166,7 +4202,7 @@ pub(crate) async fn entry_key_name(
     auto_index: &mut i64,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-    errors: &mut Vec<TypeDiagnostic>,
+    errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
     match &entry.key {
@@ -4277,7 +4313,7 @@ pub(crate) async fn run_typecheck_dict(
     TypeValue,
     indexmap::IndexMap<String, TypeValue>,
     std::collections::HashSet<String>,
-    Vec<TypeDiagnostic>,
+    Vec<Diagnostic>,
 ) {
     // Level management: save enclosing level, increment for dict body
     let enclosing_level = state.ctx.current_level;
@@ -4293,7 +4329,7 @@ pub(crate) async fn run_typecheck_dict(
     let mut ctor_schemes: indexmap::IndexMap<String, TypeValue> = indexmap::IndexMap::new();
     let mut key_entries: Vec<(Option<String>, bool, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
-    let mut errors: Vec<TypeDiagnostic> = Vec::new();
+    let mut errors: Vec<Diagnostic> = Vec::new();
 
     // Pass 0: Key resolution
     for entry in entries {
@@ -4695,7 +4731,7 @@ pub(crate) async fn run_typecheck_dict(
         );
         if is_class_or_instance {
             if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
-                let result: Result<TypeValue, Vec<TypeDiagnostic>> = match decl_box.as_ref() {
+                let result: Result<TypeValue, Vec<Diagnostic>> = match decl_box.as_ref() {
                     SurfaceDeclaration::ClassDecl {
                         name,
                         params,

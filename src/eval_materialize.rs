@@ -71,16 +71,18 @@ impl ProfilingSpanGuard {
             };
 
             // Creation-time data lookup via ThunkId is no longer available (ThunkId removed).
-            let id = prof.lock().unwrap().open_span(crate::profiling::SpanInfo {
-                source_file,
-                source_start,
-                source_end,
-                source_text,
-                builtin_name,
-                origin_builtin,
-                create_parent: None,
-                create_time_us: 0,
-            });
+            let id = prof.lock().expect("profiling mutex poisoned").open_span(
+                crate::profiling::SpanInfo {
+                    source_file,
+                    source_start,
+                    source_end,
+                    source_text,
+                    builtin_name,
+                    origin_builtin,
+                    create_parent: None,
+                    create_time_us: 0,
+                },
+            );
             (Some(Arc::clone(prof)), Some(id))
         } else {
             (None, None)
@@ -93,7 +95,10 @@ impl ProfilingSpanGuard {
 impl Drop for ProfilingSpanGuard {
     fn drop(&mut self) {
         if let (Some(ref profiling), Some(span_id)) = (&self.profiling, self.span_id) {
-            profiling.lock().unwrap().close_span(span_id);
+            profiling
+                .lock()
+                .expect("profiling mutex poisoned")
+                .close_span(span_id);
         }
     }
 }
@@ -109,34 +114,31 @@ type GuardDefault = (
 /// Collect all lower errors into a single EvalError, combining their messages.
 /// Warnings are emitted to stderr immediately — they are non-fatal but must be visible.
 /// Returns None if there are no errors.
-pub fn lower_errors_to_eval_error(
-    diags: Vec<crate::lower::LowerDiagnostic>,
-) -> Option<Box<EvalError>> {
-    let mut errors: Vec<crate::lower::LowerDiagnostic> = Vec::new();
+pub fn lower_errors_to_eval_error(diags: Vec<crate::error::Diagnostic>) -> Option<Box<EvalError>> {
+    let mut errors: Vec<crate::error::Diagnostic> = Vec::new();
     for d in diags {
-        match d.kind {
-            crate::lower::LowerDiagnosticKind::Error => errors.push(d),
-            crate::lower::LowerDiagnosticKind::Warning => {
-                let loc = if !d.span.file.starts_with('<') {
-                    format!(
-                        " ({}:{}:{})",
-                        d.span.file, d.span.start_line, d.span.start_col
-                    )
-                } else {
-                    String::new()
-                };
-                eprintln!("warning[lower]{}: {}", loc, d.message);
-            }
+        if d.level == crate::error::DiagnosticLevel::Err {
+            errors.push(d);
+        } else if d.level == crate::error::DiagnosticLevel::Warn {
+            let loc = if !d.spans.is_empty() && !d.spans[0].0.file.starts_with('<') {
+                format!(
+                    " ({}:{}:{})",
+                    d.spans[0].0.file, d.spans[0].0.start_line, d.spans[0].0.start_col
+                )
+            } else {
+                String::new()
+            };
+            eprintln!("warning[lower]{}: {}", loc, d.message);
         }
     }
     if errors.is_empty() {
         return None;
     }
-    let fmt_loc = |diag: &crate::lower::LowerDiagnostic| -> String {
-        if !diag.span.file.starts_with('<') {
+    let fmt_loc = |diag: &crate::error::Diagnostic| -> String {
+        if !diag.spans.is_empty() && !diag.spans[0].0.file.starts_with('<') {
             format!(
                 " (at {}:{}:{})",
-                diag.span.file, diag.span.start_line, diag.span.start_col
+                diag.spans[0].0.file, diag.spans[0].0.start_line, diag.spans[0].0.start_col
             )
         } else {
             String::new()
@@ -149,7 +151,12 @@ pub fn lower_errors_to_eval_error(
         msg.push_str(&extra.message);
         msg.push_str(&fmt_loc(extra));
     }
-    Some(EvalError::user_error(msg, first.span.clone()).into())
+    let first_span = if !first.spans.is_empty() {
+        first.spans[0].0.clone()
+    } else {
+        crate::rust_span!()
+    };
+    Some(EvalError::user_error(msg, first_span).into())
 }
 
 /// Attach materialization span and origin frame to an error.
@@ -351,6 +358,13 @@ pub(crate) struct AnnotatedWrapFinalizeData {
     pub(crate) mat_span: Option<Span>,
 }
 
+/// Payload for Cont::TraceFnReturn. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct TraceFnReturnData {
+    pub(crate) label: Arc<str>,
+    pub(crate) ctx: Arc<crate::eval::EvalContext>,
+    pub(crate) call_span: crate::ast::Span,
+}
+
 /// Continuation variants for iterative materialization. Each represents
 /// "what to do after a sub-thunk has been materialized."
 ///
@@ -405,6 +419,9 @@ pub(crate) enum Cont {
     /// After materializing the inner thunk from AnnotatedWrap, this continuation wraps the result
     /// in Value::Annotated { inner, annotation } and settles the outer thunk.
     AnnotatedWrapFinalize(Box<AnnotatedWrapFinalizeData>),
+    /// Log the function return value for trace: annotation.
+    /// Fires after the function body is materialized, logs the return value, then passes through.
+    TraceFnReturn(Box<TraceFnReturnData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
@@ -657,7 +674,12 @@ pub(crate) async fn force_step(
 
         // Thunk is InProgress (another task or same task).
         {
-            let evaluating_task = thunk.inner.unevaluated.lock().unwrap().1;
+            let evaluating_task = thunk
+                .inner
+                .unevaluated
+                .lock()
+                .expect("unevaluated mutex poisoned")
+                .1;
             let same = match (evaluating_task, tokio::task::try_id()) {
                 // Both in the block_on chain (no spawned task): same evaluation context.
                 // The main eval runs via LocalSet::block_on which does not create a
@@ -991,15 +1013,27 @@ async fn dispatch_state(
                         default_node,
                         thunk_ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                     );
-                    if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                        let decorated = attach_materialization_context(
-                            err,
-                            None,
-                            origin.as_deref(),
-                            thunk_span.clone(),
-                        );
-                        thunk.settle(Err(Arc::new((*decorated).clone())));
-                        return Action::Continue(Err(decorated));
+                    {
+                        let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                            .into_iter()
+                            .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                        for d in info_diags {
+                            thunk_ctx
+                                .runtime_diagnostics
+                                .lock()
+                                .expect("runtime_diagnostics mutex poisoned")
+                                .push(d);
+                        }
+                        if let Some(err) = lower_errors_to_eval_error(other_diags) {
+                            let decorated = attach_materialization_context(
+                                err,
+                                None,
+                                origin.as_deref(),
+                                thunk_span.clone(),
+                            );
+                            thunk.settle(Err(Arc::new((*decorated).clone())));
+                            return Action::Continue(Err(decorated));
+                        }
                     }
                     match eval_core_expr(&lowered_default, &frame, &thunk_ctx).await {
                         Ok(default_thunk) => default_thunk,
@@ -1296,6 +1330,7 @@ pub(crate) async fn apply_cont(
                             params,
                             body,
                             closure_env,
+                            annotation,
                             ..
                         } => {
                             // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
@@ -1395,6 +1430,45 @@ pub(crate) async fn apply_cont(
                                 // thunks for those positions, which is the best we can do.
                             }
 
+                            // trace: annotation — log call inputs when trace level >= 1.
+                            // Extract trace level from annotation.extra.trace (Value::Int).
+                            let trace_level: u32 = annotation
+                                .as_deref()
+                                .and_then(|ann| ann.extra.get(crate::ast::ANNOTATION_KEY_TRACE))
+                                .and_then(|v| match v {
+                                    crate::value::Value::Int { n, .. } => Some(*n as u32),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            if trace_level >= 1 {
+                                let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
+                                let args_ref = args.as_ref().expect("args set above");
+                                let args_str: String = args_ref
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, t)| {
+                                        let val_str = match t.peek_result() {
+                                            Some(Ok(v)) => format!("{v}"),
+                                            Some(Err(_)) => "<error>".to_string(),
+                                            None => "<thunk>".to_string(),
+                                        };
+                                        let name =
+                                            params.get(i).map(|p| p.name.as_str()).unwrap_or("_");
+                                        format!("{name}: {val_str}")
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                thunk_ctx
+                                    .runtime_diagnostics
+                                    .lock()
+                                    .expect("runtime_diagnostics mutex poisoned")
+                                    .push(crate::error::Diagnostic::info(
+                                        "trace-call",
+                                        format!("{}({})", fn_name, args_str),
+                                        call_span.clone(),
+                                    ));
+                            }
+
                             if tail_hint {
                                 let invoke_result = {
                                     let call_ctx = CallContext {
@@ -1457,6 +1531,21 @@ pub(crate) async fn apply_cont(
                                         })));
                                         // Memoize continuation inherits eval_stack pop responsibility
                                         eval_stack_guard.disarm();
+                                        // trace: annotation — log return value when trace level >= 1.
+                                        // Push TraceFnReturn AFTER Memoize (LIFO = fires first).
+                                        if trace_level >= 1 {
+                                            let label: Arc<str> = call_span
+                                                .name
+                                                .clone()
+                                                .unwrap_or_else(|| Arc::from("<anonymous>"));
+                                            stack.push(Cont::TraceFnReturn(Box::new(
+                                                TraceFnReturnData {
+                                                    label,
+                                                    ctx: Arc::clone(&thunk_ctx),
+                                                    call_span: call_span.clone(),
+                                                },
+                                            )));
+                                        }
                                         Action::Materialize {
                                             thunk: result_thunk,
                                             mat_span,
@@ -2115,7 +2204,16 @@ pub(crate) async fn apply_cont(
                             &default_node,
                             ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                         );
-                        if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                        let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                            .into_iter()
+                            .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                        for d in info_diags {
+                            ctx.runtime_diagnostics
+                                .lock()
+                                .expect("runtime_diagnostics mutex poisoned")
+                                .push(d);
+                        }
+                        if let Some(err) = lower_errors_to_eval_error(other_diags) {
                             Action::Continue(Err(err))
                         } else {
                             Action::EvalCore {
@@ -2158,8 +2256,18 @@ pub(crate) async fn apply_cont(
                                             &default_node,
                                             ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                                         );
+                                        let (info_diags, other_diags): (Vec<_>, Vec<_>) =
+                                            lower_diags.into_iter().partition(|d| {
+                                                d.level == crate::error::DiagnosticLevel::Info
+                                            });
+                                        for d in info_diags {
+                                            ctx.runtime_diagnostics
+                                                .lock()
+                                                .expect("runtime_diagnostics mutex poisoned")
+                                                .push(d);
+                                        }
                                         if let Some(lower_err) =
-                                            lower_errors_to_eval_error(lower_diags)
+                                            lower_errors_to_eval_error(other_diags)
                                         {
                                             return Action::Continue(Err(lower_err));
                                         } else {
@@ -2192,7 +2300,16 @@ pub(crate) async fn apply_cont(
                                 &default_node,
                                 ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                             );
-                            if let Some(err) = lower_errors_to_eval_error(lower_diags) {
+                            let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                                .into_iter()
+                                .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                            for d in info_diags {
+                                ctx.runtime_diagnostics
+                                    .lock()
+                                    .expect("runtime_diagnostics mutex poisoned")
+                                    .push(d);
+                            }
+                            if let Some(err) = lower_errors_to_eval_error(other_diags) {
                                 Action::Continue(Err(err))
                             } else {
                                 Action::EvalCore {
@@ -2900,6 +3017,20 @@ pub(crate) async fn apply_cont(
                 }
             }
         }
+        Cont::TraceFnReturn(data) => {
+            if let Ok(ref val) = result {
+                data.ctx
+                    .runtime_diagnostics
+                    .lock()
+                    .expect("runtime_diagnostics mutex poisoned")
+                    .push(crate::error::Diagnostic::info(
+                        "trace-return",
+                        format!("{} → {}", data.label, val),
+                        data.call_span.clone(),
+                    ));
+            }
+            Action::Continue(result)
+        }
     }
 }
 
@@ -3124,8 +3255,19 @@ fn eval_structural_pattern_inner<'a>(
                         pred_surface_node,
                         ctx.scope_frames.as_ref().map(|v| v.as_slice()),
                     );
-                    if let Some(err) = lower_errors_to_eval_error(lower_diags) {
-                        return Err(err);
+                    {
+                        let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                            .into_iter()
+                            .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                        for d in info_diags {
+                            ctx.runtime_diagnostics
+                                .lock()
+                                .expect("runtime_diagnostics mutex poisoned")
+                                .push(d);
+                        }
+                        if let Some(err) = lower_errors_to_eval_error(other_diags) {
+                            return Err(err);
+                        }
                     }
                     let pred_expr_core = Arc::new(lowered_pred);
 

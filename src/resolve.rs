@@ -32,7 +32,7 @@ use crate::ast::{
     class_decl_name, node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument,
     SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
 };
-use crate::error::TypeDiagnostic;
+use crate::error::Diagnostic;
 use std::sync::Arc;
 
 // ============================================================================
@@ -83,7 +83,7 @@ struct SurfaceResolver {
     /// - `kind = "resolve-error"`, `level = Err`: undefined variable in expression position.
     ///   Populated only when suppress_depth == 0 (annotation, static key, declaration, and
     ///   method-name positions are suppressed — they are not runtime variable references).
-    diagnostics: Vec<TypeDiagnostic>,
+    diagnostics: Vec<Diagnostic>,
     /// > 0 when inside a context where unresolved VarRefs are not errors
     /// > (annotation, static key, declaration position, etc.).
     suppress_depth: usize,
@@ -514,7 +514,7 @@ impl SurfaceResolver {
                         // Genuinely unresolved expression VarRef. suppress_depth > 0 when
                         // in annotation, static dict-key, LetDecl binding, or declaration
                         // method-name position — none of those are runtime variable references.
-                        self.diagnostics.push(TypeDiagnostic::error(
+                        self.diagnostics.push(Diagnostic::error(
                             "resolve-error",
                             format!("undefined variable: {}", name),
                             arc.span.clone(),
@@ -1198,7 +1198,7 @@ impl SurfaceResolver {
         self.table
     }
 
-    fn finish_with_errors(self) -> (ResolutionTable, Vec<TypeDiagnostic>) {
+    fn finish_with_errors(self) -> (ResolutionTable, Vec<Diagnostic>) {
         (self.table, self.diagnostics)
     }
 }
@@ -1216,7 +1216,7 @@ impl SurfaceResolver {
 ///
 /// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
 /// Names not found in the scope stack have their OnceLock left unset (None) and are
-/// returned as `TypeDiagnostic` entries with `kind = "resolve-error"`. Only expression-position
+/// returned as `Diagnostic` entries with `kind = "resolve-error"`. Only expression-position
 /// VarRefs are reported — annotation type names, static dict keys, LetDecl binding names,
 /// and class/instance method-name keys are suppressed (not runtime variable references).
 ///
@@ -1296,7 +1296,7 @@ pub fn resolve_surface_document_inplace(
     initial_frames: &[indexmap::IndexMap<String, u32>],
 ) -> (
     ResolutionTable,
-    Vec<TypeDiagnostic>,
+    Vec<Diagnostic>,
     Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
 ) {
     let mut resolver = SurfaceResolver::new();
@@ -1357,7 +1357,7 @@ pub fn resolve_surface_document_with_env_dict(
     doc: &crate::ast::SurfaceDocument,
     env_names: &[String],
     root_group_len: u32,
-) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>) {
+) -> (ResolutionTable, Vec<Diagnostic>, Vec<String>) {
     let mut resolver = SurfaceResolver::new();
 
     // Seed with LetrecGroupMember(root_group_len + i) for the i-th env-dict name.
@@ -1419,7 +1419,7 @@ pub fn resolve_surface_document_with_seed_frames(
     root_group_len: u32,
 ) -> (
     ResolutionTable,
-    Vec<TypeDiagnostic>,
+    Vec<Diagnostic>,
     Vec<String>,
     Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
 ) {
@@ -1544,7 +1544,7 @@ pub fn collect_document_produced_keys(
 /// - `var_field_accesses`: static `var.key` field access names from the stage's document.
 /// - `uses_dynamic_var`: whether the stage uses the pipeline variable in a non-field context.
 ///
-/// Returns a vec of `TypeDiagnostic` warnings for abandoned outputs.
+/// Returns a vec of `Diagnostic` warnings for abandoned outputs.
 pub fn lint_pipeline_stages(
     stages: &[(
         Vec<String>,      // produced keys
@@ -1552,7 +1552,7 @@ pub fn lint_pipeline_stages(
         bool,             // next doc uses pipeline variable in non-field (dynamic) context
         crate::ast::Span, // span of the producing document's final expression
     )],
-) -> Vec<TypeDiagnostic> {
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for (produced_keys, consumed_keys, uses_dynamic, span) in stages {
         if *uses_dynamic {
@@ -1563,7 +1563,7 @@ pub fn lint_pipeline_stages(
             consumed_keys.iter().map(|s| s.as_str()).collect();
         for key in produced_keys {
             if !consumed_set.contains(key.as_str()) {
-                diagnostics.push(TypeDiagnostic::warn(
+                diagnostics.push(Diagnostic::warn(
                     "abandoned-output",
                     format!(
                         "key '{}' is produced but never consumed by the next pipeline stage",

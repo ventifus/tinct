@@ -595,7 +595,7 @@ pub(crate) async fn try_fd_improvement(
     fd_depth: &mut u32,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     type_stage_fns: &std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
-    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+    diagnostics: &mut Vec<crate::error::Diagnostic>,
 ) -> Vec<(Arc<Value>, Arc<Value>)> {
     if *fd_depth >= 32 {
         return vec![];
@@ -692,7 +692,7 @@ pub(crate) async fn try_fd_improvement(
                     Ok(Some(tv)) => tv,
                     Ok(None) => continue, // Resolver not applicable — skip.
                     Err(eval_err) => {
-                        diagnostics.push(crate::error::TypeDiagnostic::error(
+                        diagnostics.push(crate::error::Diagnostic::error(
                             "type-error",
                             format!(
                                 "resolver `{}` failed during FD improvement: {}",

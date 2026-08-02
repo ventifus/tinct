@@ -20,6 +20,7 @@ use crate::ast::{
     class_decl_name, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Span, Spanned,
     SurfaceEntry, SurfaceExpression, SurfaceNode, VarAddr,
 };
+use crate::error::Diagnostic;
 use crate::eval_call::is_typevalue_unknown;
 use crate::rust_span;
 use crate::type_infer::{make_typevalue_fn_with_flags, make_typevalue_unknown};
@@ -61,28 +62,6 @@ pub(crate) const DICT_MERGE_NAME: &str = "builtin-dict-merge";
 /// `builtins_core.rs` must match this constant. A test verifies their consistency:
 /// `test_builtin_raise_name_registered_in_core_builtins` in the test module below.
 pub(crate) const BUILTIN_RAISE_NAME: &str = "builtin-raise";
-
-/// Severity of a diagnostic emitted during lowering.
-#[derive(Debug, Clone)]
-pub enum LowerDiagnosticKind {
-    Error,
-    /// Non-fatal: lowering continues but the resulting CoreExpr may be degraded.
-    Warning,
-}
-
-/// A diagnostic produced during the lowering phase.
-///
-/// Lowering errors (unresolvable variables, parse errors) are reported via this diagnostic
-/// and the corresponding expression is replaced with `CoreExpr::Placeholder`. Callers
-/// that need eager error reporting (e.g., document loading) inspect the returned diagnostic
-/// vec rather than waiting for the placeholder to be forced at runtime.
-#[derive(Debug, Clone)]
-#[must_use = "lower diagnostics must be checked; use lower_errors_to_eval_error to convert or explicitly drop with let _ = ..."]
-pub struct LowerDiagnostic {
-    pub kind: LowerDiagnosticKind,
-    pub message: String,
-    pub span: crate::ast::Span,
-}
 
 /// Resolve a mangled instance binding name to (level, slot) De Bruijn coordinates
 /// by searching the accumulated resolver scope frames.
@@ -233,7 +212,7 @@ pub(crate) fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
 /// This is the entry point for per-thunk lowering. Called eagerly during `builtin-lower`
 /// (the discrete lowering pipeline step) and from other callers that need a CoreExpr.
 ///
-/// Lowering errors (unresolvable variables, malformed AST) are reported as `LowerDiagnostic`
+/// Lowering errors (unresolvable variables, malformed AST) are reported as `Diagnostic`
 /// entries in the returned vec and the corresponding expression is replaced with
 /// `CoreExpr::Placeholder`. Callers that need eager error reporting (e.g., document loading)
 /// inspect the diagnostic vec; callers that discard it accept that the placeholder will error
@@ -250,7 +229,7 @@ pub(crate) fn debruijn_to_var_addr(level: u32, slot: u32) -> VarAddr {
 pub fn lower(
     arc: &Arc<SurfaceNode>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
-) -> (Spanned<CoreExpr>, Vec<LowerDiagnostic>) {
+) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let spanned = lower_inner(arc, &mut diagnostics, scope_frames);
     (spanned, diagnostics)
@@ -259,7 +238,7 @@ pub fn lower(
 /// Internal lowering entry point that threads the diagnostics accumulator and scope frames.
 ///
 /// Used by recursive calls within lower.rs and by eval machinery that does not need the
-/// diagnostic Vec. When a VarRef or parse error is encountered, a `LowerDiagnostic` is
+/// diagnostic Vec. When a VarRef or parse error is encountered, a `Diagnostic` is
 /// pushed and `CoreExpr::Placeholder` is emitted. Produces the same `Spanned<CoreExpr>`
 /// as the public `lower()`.
 ///
@@ -268,7 +247,7 @@ pub fn lower(
 /// De Bruijn coordinates. Pass `None` when scope frames are not available.
 pub(crate) fn lower_inner(
     arc: &Arc<SurfaceNode>,
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> Spanned<CoreExpr> {
     // Use the pipe_span from a pipe-desugared Call if present — it points at the specific
@@ -305,7 +284,7 @@ pub(crate) fn lower_inner(
 fn lower_expr(
     arc: &Arc<SurfaceNode>,
     expr: &SurfaceExpression,
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> CoreExpr {
     match expr {
@@ -358,11 +337,7 @@ fn lower_expr(
                     // the resolver pass. Emit a diagnostic and produce a Placeholder so the error
                     // surfaces at force time rather than silently producing wrong output.
                     let message = format!("undefined variable: {}", name);
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message,
-                        span: arc.span.clone(),
-                    });
+                    diagnostics.push(Diagnostic::error("lower-error", message, arc.span.clone()));
                     CoreExpr::Placeholder
                 }
             }
@@ -381,14 +356,14 @@ fn lower_expr(
             let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
                 _ => {
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message: format!(
+                    diagnostics.push(Diagnostic::error(
+                        "lower-error",
+                        format!(
                             "{FIELD_GETTER_NAME}: resolver did not populate Field.resolution for `.{}` — resolver must be seeded with root_group",
                             field
                         ),
-                        span: arc.span.clone(),
-                    });
+                        arc.span.clone(),
+                    ));
                     return CoreExpr::Placeholder;
                 }
             };
@@ -432,11 +407,11 @@ fn lower_expr(
                 annotation: None,
             },
             Some(None) => {
-                diagnostics.push(LowerDiagnostic {
-                    kind: LowerDiagnosticKind::Error,
-                    message: format!("undefined variable: .{}", name),
-                    span: arc.span.clone(),
-                });
+                diagnostics.push(Diagnostic::error(
+                    "lower-error",
+                    format!("undefined variable: .{}", name),
+                    arc.span.clone(),
+                ));
                 CoreExpr::Placeholder
             }
             None => {
@@ -444,11 +419,11 @@ fn lower_expr(
                 // This happens when the resolver skipped this node's enclosing scope
                 // (e.g. inside a TypeAlias body). The name cannot be resolved — emit
                 // a diagnostic rather than silently producing a MAX/MAX sentinel.
-                diagnostics.push(LowerDiagnostic {
-                    kind: LowerDiagnosticKind::Error,
-                    message: format!("undefined variable: .{}", name),
-                    span: arc.span.clone(),
-                });
+                diagnostics.push(Diagnostic::error(
+                    "lower-error",
+                    format!("undefined variable: .{}", name),
+                    arc.span.clone(),
+                ));
                 CoreExpr::Placeholder
             }
         },
@@ -460,11 +435,11 @@ fn lower_expr(
             field: crate::ast::DotKey::Int(_),
             ..
         } => {
-            diagnostics.push(LowerDiagnostic {
-                kind: LowerDiagnosticKind::Error,
-                message: "leading-dot integer access is not supported".to_string(),
-                span: arc.span.clone(),
-            });
+            diagnostics.push(Diagnostic::error(
+                "lower-error",
+                "leading-dot integer access is not supported".to_string(),
+                arc.span.clone(),
+            ));
             CoreExpr::Placeholder
         }
 
@@ -550,13 +525,13 @@ fn lower_expr(
                 {
                     Some(coords) => coords,
                     None => {
-                        diagnostics.push(LowerDiagnostic {
-                            kind: LowerDiagnosticKind::Error,
-                            message: format!(
+                        diagnostics.push(Diagnostic::error(
+                            "lower-error",
+                            format!(
                                 "spread-dict desugaring: '{DICT_MERGE_NAME}' not found in scope frames — resolver must be seeded with root_group"
                             ),
-                            span: span.clone(),
-                        });
+                            span.clone(),
+                        ));
                         return CoreExpr::Placeholder;
                     }
                 };
@@ -728,15 +703,15 @@ fn lower_expr(
                                             {
                                                 Some(n) => n,
                                                 None => {
-                                                    diagnostics.push(LowerDiagnostic {
-                                                        kind: LowerDiagnosticKind::Warning,
-                                                        message: format!(
+                                                    diagnostics.push(Diagnostic::warn(
+                                                        "lower-warning",
+                                                        format!(
                                                             "cannot determine param_count for method '{}': \
                                                              no instance recordings found; defaulting to 1",
                                                             method_name
                                                         ),
-                                                        span: se.span.clone(),
-                                                    });
+                                                        se.span.clone(),
+                                                    ));
                                                     1
                                                 }
                                             };
@@ -879,14 +854,14 @@ fn lower_expr(
                             } = inner
                             {
                                 if var_name.as_str() == key_name {
-                                    diagnostics.push(LowerDiagnostic {
-                                        kind: LowerDiagnosticKind::Error,
-                                        message: format!(
+                                    diagnostics.push(Diagnostic::error(
+                                        "lower-error",
+                                        format!(
                                             "self-referential binding: '{}' refers to itself; use '.{}' to reference the parent scope",
                                             key_name, key_name
                                         ),
-                                        span: se.node.value.span.clone(),
-                                    });
+                                        se.node.value.span.clone(),
+                                    ));
                                 }
                             }
                         }
@@ -1083,6 +1058,27 @@ fn lower_expr(
                 ))
             };
 
+            // Emit trace diagnostic if return_ann has trace: property with value >= 1.
+            // Value-based guard matches typecheck and runtime phases: trace: 0 does not fire.
+            let trace_level: u32 = return_ann
+                .as_ref()
+                .and_then(|ann| ann.node.get_property(crate::ast::ANNOTATION_KEY_TRACE))
+                .and_then(|node| {
+                    if let crate::ast::SurfaceExpression::Int(n) = &node.expr {
+                        Some(*n as u32)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            if trace_level >= 1 {
+                let sig = resolved_fn_type
+                    .as_ref()
+                    .map(|tv| crate::eval::format_type_for_assert(tv))
+                    .unwrap_or_else(|| "<no type>".to_string());
+                diagnostics.push(Diagnostic::info("trace-lower", sig, arc.span.clone()));
+            }
+
             CoreExpr::Fn {
                 return_ann: return_ann.clone(),
                 params: params_built,
@@ -1251,11 +1247,11 @@ fn lower_expr(
         },
 
         SurfaceExpression::Error(span) => {
-            diagnostics.push(LowerDiagnostic {
-                kind: LowerDiagnosticKind::Error,
-                message: "parse error".to_string(),
-                span: span.clone(),
-            });
+            diagnostics.push(Diagnostic::error(
+                "lower-error",
+                "parse error".to_string(),
+                span.clone(),
+            ));
             CoreExpr::Placeholder
         }
     }
@@ -1455,7 +1451,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
 /// the node is lowered normally (producing an error if unresolvable).
 fn lower_let_decl_binding(
     arc: &Arc<SurfaceNode>,
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
     let core_expr = match &arc.expr {
@@ -1514,7 +1510,7 @@ fn make_method_dispatcher_fn(
     param_count: usize,
     span: &Span,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> CoreExpr {
     // Capture management for synthesized Fn nodes.
     //
@@ -1735,49 +1731,49 @@ fn make_method_dispatcher_fn(
     // is created. If any is missing, that is a lowering error (scope_frames was not seeded with
     // builtin_core), and we emit a diagnostic and return a static string fallback.
     let make_type_repr_note =
-        |prefix: &str, param_idx: usize, diagnostics: &mut Vec<LowerDiagnostic>| -> CoreExpr {
+        |prefix: &str, param_idx: usize, diagnostics: &mut Vec<Diagnostic>| -> CoreExpr {
             let concat_addr = match resolved_addrs.get(BUILTIN_STRING_CONCAT_NAME).cloned() {
                 Some(a) => a,
                 None => {
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message: format!(
+                    diagnostics.push(Diagnostic::error(
+                        "lower-error",
+                        format!(
                             "make_method_dispatcher_fn: '{}' not found in scope — \
                              dynamic type notes unavailable for method '{}'",
                             BUILTIN_STRING_CONCAT_NAME, method_name
                         ),
-                        span: span.clone(),
-                    });
+                        span.clone(),
+                    ));
                     return CoreExpr::Str(format!("{prefix}<type unavailable>"));
                 }
             };
             let repr_addr = match resolved_addrs.get(BUILTIN_LLT_REPR_NAME).cloned() {
                 Some(a) => a,
                 None => {
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message: format!(
+                    diagnostics.push(Diagnostic::error(
+                        "lower-error",
+                        format!(
                             "make_method_dispatcher_fn: '{}' not found in scope — \
                              dynamic type notes unavailable for method '{}'",
                             BUILTIN_LLT_REPR_NAME, method_name
                         ),
-                        span: span.clone(),
-                    });
+                        span.clone(),
+                    ));
                     return CoreExpr::Str(format!("{prefix}<type unavailable>"));
                 }
             };
             let type_of_addr = match resolved_addrs.get(BUILTIN_TYPE_OF_NAME).cloned() {
                 Some(a) => a,
                 None => {
-                    diagnostics.push(LowerDiagnostic {
-                        kind: LowerDiagnosticKind::Error,
-                        message: format!(
+                    diagnostics.push(Diagnostic::error(
+                        "lower-error",
+                        format!(
                             "make_method_dispatcher_fn: '{}' not found in scope — \
                              dynamic type notes unavailable for method '{}'",
                             BUILTIN_TYPE_OF_NAME, method_name
                         ),
-                        span: span.clone(),
-                    });
+                        span.clone(),
+                    ));
                     return CoreExpr::Str(format!("{prefix}<type unavailable>"));
                 }
             };
@@ -2074,16 +2070,16 @@ fn make_method_dispatcher_fn(
                         // requires a builtin-lower pipeline call (not the default eval path)
                         // AND mangled names that appear in none of the unified_frames —
                         // an internal inconsistency that cannot arise from valid tinct source.
-                        diagnostics.push(LowerDiagnostic {
-                            kind: LowerDiagnosticKind::Warning,
-                            message: format!(
+                        diagnostics.push(Diagnostic::warn(
+                            "lower-warning",
+                            format!(
                                 "make_method_dispatcher_fn: cannot identify current dict's \
                                  frame for method '{}'; mangled instance names not found in \
                                  any scope frame — parent dispatch disabled for this method",
                                 method_name
                             ),
-                            span: span.clone(),
-                        });
+                            span.clone(),
+                        ));
                         None
                     }
                 } else {
@@ -2137,15 +2133,15 @@ fn make_method_dispatcher_fn(
                             implied: false,
                         },
                         None => {
-                            diagnostics.push(LowerDiagnostic {
-                                kind: LowerDiagnosticKind::Error,
-                                message: format!(
+                            diagnostics.push(Diagnostic::error(
+                                "lower-error",
+                                format!(
                                     "make_method_dispatcher_fn: '{}' not found in scope_frames \
                                      for method '{}' — scope_frames must be seeded with builtin_core",
                                     BUILTIN_RAISE_NAME, method_name
                                 ),
-                                span: span.clone(),
-                            });
+                                span.clone(),
+                            ));
                             CoreExpr::Placeholder
                         }
                     }
@@ -2485,7 +2481,7 @@ fn build_field_annotations_core_entry(
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> CoreExpr {
     use crate::ast::CoreEntry;
@@ -2805,7 +2801,7 @@ fn has_structural_alias_metadata(ann: &crate::ast::Annotation) -> bool {
 /// Returns `(repr_opt, is_pred_opt)` — both are `None` when the respective key is absent.
 fn extract_repr_and_is_from_body(
     body: &SurfaceExpression,
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> (Option<String>, Option<CoreExpr>) {
     // VarRef@[PropertyDict] form: `Int@[is: predicate  repr: "Value::Int"]`
@@ -2847,7 +2843,7 @@ fn extract_repr_and_is_from_body(
 /// dict body) and the VarRef annotation form (entries are PropertyDict annotation entries).
 fn extract_repr_and_is_from_entries(
     entries: &[Spanned<SurfaceEntry>],
-    diagnostics: &mut Vec<LowerDiagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
     scope_frames: Option<&[indexmap::IndexMap<String, u32>]>,
 ) -> (Option<String>, Option<CoreExpr>) {
     let mut repr_opt: Option<String> = None;
@@ -2868,12 +2864,11 @@ fn extract_repr_and_is_from_entries(
                 if let SurfaceExpression::StringLiteral { content, .. } = &entry.node.value.expr {
                     repr_opt = Some(content.clone());
                 } else {
-                    diagnostics.push(LowerDiagnostic {
-                        message: "repr: value must be a string literal (e.g., \"Value::Int\")"
-                            .to_string(),
-                        span: entry.span.clone(),
-                        kind: LowerDiagnosticKind::Error,
-                    });
+                    diagnostics.push(Diagnostic::error(
+                        "lower-error",
+                        "repr: value must be a string literal (e.g., \"Value::Int\")".to_string(),
+                        entry.span.clone(),
+                    ));
                 }
             }
             "is" => {
@@ -3201,9 +3196,9 @@ mod tests {
             "expected exactly one diagnostic for unresolvable VarRef"
         );
         assert!(
-            matches!(diags[0].kind, LowerDiagnosticKind::Error),
+            diags[0].level == crate::error::DiagnosticLevel::Err,
             "expected Error diagnostic, got {:?}",
-            diags[0].kind
+            diags[0].level
         );
         assert!(
             diags[0].message.contains("unbound"),
@@ -3496,7 +3491,7 @@ mod tests {
         // `=` at offset 1. make_parent_dispatch_frames puts `=` in all three frames.
         let span = rust_span!();
         let frames = make_parent_dispatch_frames("=", 5);
-        let mut diags: Vec<LowerDiagnostic> = Vec::new();
+        let mut diags: Vec<Diagnostic> = Vec::new();
 
         let result = make_method_dispatcher_fn(
             "=",
@@ -3579,7 +3574,7 @@ mod tests {
         let mut frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         frame.insert("other".to_string(), 0);
         let frames = vec![frame];
-        let mut diags: Vec<LowerDiagnostic> = Vec::new();
+        let mut diags: Vec<Diagnostic> = Vec::new();
 
         let result =
             make_method_dispatcher_fn("=", &[], 2, &span, Some(frames.as_slice()), &mut diags);
@@ -3695,6 +3690,158 @@ mod tests {
             "BUILTIN_RAISE_NAME '{}' is not registered in core_builtins(); \
              update the registration literal in builtins_core.rs",
             BUILTIN_RAISE_NAME
+        );
+    }
+
+    // ── T-2142: trace annotation — lowering phase emits trace-lower diagnostic ─────────────
+
+    /// Build a minimal `SurfaceExpression::Fn` whose return annotation is
+    /// `@[trace: N]` (a PropertyDict with a single `trace` key).
+    ///
+    /// `resolved_captures` is pre-set to an empty capture list so `lower()` does not panic
+    /// with "resolved_captures not set". In practice the resolver sets this; in unit tests
+    /// we must set it manually before calling `lower()`.
+    fn make_trace_fn_node(trace_value: i64, span: crate::ast::Span) -> Arc<SurfaceNode> {
+        use crate::ast::{Annotation, CapturesCell, SurfaceEntry, SurfaceParam, TypeAnnotation};
+
+        // Build the `trace: N` entry for the PropertyDict annotation.
+        // get_property() matches SurfaceExpression::StringLiteral { content, .. } as key.
+        let key_node = Arc::new(SurfaceNode::new(
+            SurfaceExpression::StringLiteral {
+                prefix: String::new(),
+                delimiter: "\"".to_string(),
+                content: crate::ast::ANNOTATION_KEY_TRACE.to_string(),
+            },
+            span.clone(),
+        ));
+        let value_node = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Int(trace_value),
+            span.clone(),
+        ));
+        let trace_entry = Spanned::new(
+            SurfaceEntry {
+                key: Some(key_node),
+                value: value_node,
+            },
+            span.clone(),
+        );
+        let return_ann = Some(Spanned::new(
+            Annotation::PropertyDict(vec![trace_entry]),
+            span.clone(),
+        ));
+
+        // Body is a trivial integer literal — no complex lowering needed.
+        let body = Arc::new(SurfaceNode::new(SurfaceExpression::Int(42), span.clone()));
+
+        // Empty param list — no typed params means no param TypeAssert checks.
+        let params: Vec<Spanned<SurfaceParam>> = Vec::new();
+
+        // resolved_captures MUST be pre-set; lower() panics with expect() if not set.
+        let captures_cell = CapturesCell::new();
+        captures_cell.set(Arc::new(Vec::new()));
+
+        Arc::new(SurfaceNode::new(
+            SurfaceExpression::Fn {
+                return_ann,
+                params,
+                body,
+                desugared: false,
+                resolved_captures: captures_cell,
+                resolved_return_annotation: TypeAnnotation::new(),
+            },
+            span,
+        ))
+    }
+
+    /// T-2142: A function with @[trace: 1] annotation must emit a "trace-lower" Info diagnostic
+    /// from the lowering pass.
+    ///
+    /// Proof this is a Rust unit test (category 1): `lower()` returns `(Spanned<CoreExpr>,
+    /// Vec<Diagnostic>)`. The `Vec<Diagnostic>` is an internal Rust value; it is not
+    /// surface-observable by running tinct code. The corpus runner observes JSON output from eval,
+    /// not lowering-phase diagnostics.
+    ///
+    /// Mutation target: if the `is_some_and(|ann| ann.node.get_property(...).is_some())` guard
+    /// were removed, trace-lower would fire on all functions, breaking
+    /// `test_no_trace_lower_without_annotation` below. If it were inverted (`.is_none()`),
+    /// this test would fail.
+    #[test]
+    fn test_trace_annotation_lower_emits_diagnostic() {
+        let span = rust_span!();
+        let node = make_trace_fn_node(1, span);
+
+        let (_lowered, diags) = lower(&node, None);
+
+        let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
+        assert!(
+            !trace_diags.is_empty(),
+            "Expected at least one trace-lower diagnostic for @[trace: 1] fn; got: {:?}",
+            diags
+        );
+        assert_eq!(
+            trace_diags[0].level,
+            crate::error::DiagnosticLevel::Info,
+            "trace-lower diagnostic must be Info level; got: {:?}",
+            trace_diags[0].level
+        );
+    }
+
+    /// T-2142 / fix-review S-1023: The trace-lower diagnostic requires trace: value >= 1,
+    /// consistent with the typecheck and runtime phases. `trace: 0` must NOT emit trace-lower.
+    ///
+    /// Previously this test asserted the opposite (key-presence check). The guard was changed
+    /// to value-based (`>= 1`) so all three trace phases behave uniformly.
+    #[test]
+    fn test_trace_lower_zero_does_not_fire() {
+        let span = rust_span!();
+        // trace: 0 — value 0 must NOT trigger trace-lower (value-based guard, same as typecheck)
+        let node = make_trace_fn_node(0, span);
+
+        let (_lowered, diags) = lower(&node, None);
+
+        let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
+        assert!(
+            trace_diags.is_empty(),
+            "Expected NO trace-lower diagnostic for @[trace: 0] — guard requires >= 1; got: {:?}",
+            diags
+        );
+    }
+
+    /// T-2142: A function with NO trace annotation must NOT emit a trace-lower diagnostic.
+    ///
+    /// Clean-path invariant: without this test, a mutation that emits trace-lower unconditionally
+    /// would pass `test_trace_annotation_lower_emits_diagnostic` but fail here.
+    #[test]
+    fn test_no_trace_lower_without_annotation() {
+        use crate::ast::{CapturesCell, SurfaceParam, TypeAnnotation};
+
+        let span = rust_span!();
+
+        // Plain function with NO return annotation — return_ann is None.
+        let body = Arc::new(SurfaceNode::new(SurfaceExpression::Int(42), span.clone()));
+        let params: Vec<Spanned<SurfaceParam>> = Vec::new();
+        let captures_cell = CapturesCell::new();
+        captures_cell.set(Arc::new(Vec::new()));
+
+        let node = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Fn {
+                return_ann: None,
+                params,
+                body,
+                desugared: false,
+                resolved_captures: captures_cell,
+                resolved_return_annotation: TypeAnnotation::new(),
+            },
+            span,
+        ));
+
+        let (_lowered, diags) = lower(&node, None);
+
+        let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
+        assert!(
+            trace_diags.is_empty(),
+            "Expected zero trace-lower diagnostics for unannotated function; got: {:?}",
+            trace_diags
         );
     }
 }

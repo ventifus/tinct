@@ -70,6 +70,7 @@ pub const ANNOTATION_KEY_CONSTRUCTOR: &str = "_constructor";
 /// ("One") or map-shaped children ("MapValues"). Declared by the type author; never inferred
 /// from the type expression's head name.
 pub const ANNOTATION_KEY_CHILD_ROLE: &str = "role";
+pub const ANNOTATION_KEY_TRACE: &str = "trace";
 
 /// Source span (start..end). Carries file path and line/column positions.
 /// Every span must carry its source file — a line/column number without a filename is meaningless.

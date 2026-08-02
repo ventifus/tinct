@@ -186,7 +186,7 @@ async fn doc_tycon_env(
 async fn test_annotation_type_var() {
     let span = crate::test_util::test_span(1, 1, 1, 5);
     // With explicit bind: required, lowercase names outside a function scope (ann_mapping=None)
-    // now produce a TypeDiagnostic — implicit TypeVar creation was removed.
+    // now produce a Diagnostic — implicit TypeVar creation was removed.
     let mut state = InferState::new();
     let mut c = Vec::new();
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
@@ -210,7 +210,7 @@ async fn test_annotation_type_var() {
 #[tokio::test]
 async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // With explicit bind: required, resolve_type_name for a lowercase name without a prior
-    // bind: declaration now produces a TypeDiagnostic at any scope level.
+    // bind: declaration now produces a Diagnostic at any scope level.
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
     state.ctx.current_level = 1;
@@ -289,7 +289,7 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
     let result =
         resolve_annotation(&ann, span, &mut st, &mut c, &mut ann_m, &mut row_m, None).await;
     // With explicit bind: required, lowercase names in annotation position without a prior
-    // bind: declaration produce a TypeDiagnostic. "noSuchType" starts lowercase → error.
+    // bind: declaration produce a Diagnostic. "noSuchType" starts lowercase → error.
     assert!(
         result.is_err(),
         "lowercase annotation name not in scope should produce undefined type error; got: {result:?}"
@@ -1402,3 +1402,207 @@ fn test_type_stage_type_vars_contains_kind_entries() {
 // doesn't load TypeNode.Callable from builtin_core.llt (causes "undefined-type: Callable").
 // B-673 regression is covered by corpus test:
 // tests/corpus/eval/typecheck/callable_annotation_multi_arg.llt-eval
+
+// ============================================================================
+// T-2142: trace annotation — typecheck phase emits trace-fn-type diagnostic
+// ============================================================================
+
+/// Run typecheck on `input` (single document) and return all diagnostics, including
+/// those accumulated in `state.diagnostics` (where trace-fn-type diagnostics land).
+///
+/// This differs from `doc_tycon_env` in that it collects rather than panics on diags,
+/// and merges state.diagnostics into the returned vec so callers can inspect all levels.
+async fn typecheck_collect_diags(input: &str) -> Vec<crate::error::Diagnostic> {
+    let program = crate::desugar::desugar_surface_program(
+        &crate::parse(input, test_file(input)).unwrap().program,
+    );
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
+    let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+        std::sync::Arc::clone(&arc_env),
+    )));
+    let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
+    let (_result_env, _ty, mut diags) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
+    // trace-fn-type diagnostics are pushed to state.diagnostics during CEK processing,
+    // not into the diags vector returned by process_document. Merge both here.
+    diags.append(&mut state.diagnostics);
+    diags
+}
+
+/// T-2142: A function with @[trace: 1] annotation must emit a "trace-fn-type" Info diagnostic
+/// during typechecking.
+///
+/// Proof this is a Rust unit test (category 1): the assertion targets `state.diagnostics`,
+/// an internal Vec<Diagnostic> accumulated during typecheck CEK processing. There is no
+/// tinct surface that exposes the typecheck-phase diagnostic list — corpus tests run through
+/// the full loader pipeline which does not expose state.diagnostics to the output JSON.
+#[tokio::test]
+async fn test_trace_annotation_typecheck_emits_diagnostic() {
+    // A function with @[trace: 1] on return annotation — no typed params needed.
+    // The annotation does not require a return: key; trace: is extracted independently.
+    let diags = typecheck_collect_diags("[fn@[trace: 1] [let x] x]").await;
+    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
+    assert!(
+        !trace_diags.is_empty(),
+        "Expected at least one trace-fn-type diagnostic; got: {:?}",
+        diags
+    );
+    assert_eq!(
+        trace_diags[0].level,
+        crate::error::DiagnosticLevel::Info,
+        "trace-fn-type diagnostic must be Info level; got: {:?}",
+        trace_diags[0].level
+    );
+}
+
+/// T-2142: A function with both return type and trace annotation emits trace-fn-type with
+/// a message that includes the inferred parameter and return types.
+#[tokio::test]
+async fn test_trace_annotation_typecheck_message_contains_types() {
+    // @[trace: 1  return: Integer] — return type is provided, parameter x is unannotated.
+    let diags = typecheck_collect_diags("[fn@[trace: 1  return: Integer] [let x] 42]").await;
+    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
+    assert!(
+        !trace_diags.is_empty(),
+        "Expected trace-fn-type diagnostic for fn with return type annotation; got: {:?}",
+        diags
+    );
+    // The message format is "[param: type, ...] → return-type" — verify structural format.
+    // Types appear as formatted TypeValues (e.g. "?", "TypeValue.NominalVariant"), not as
+    // annotation name strings, so we only assert structural tokens.
+    let msg = &trace_diags[0].message;
+    assert!(
+        msg.starts_with('['),
+        "message should start with '[': {}",
+        msg
+    );
+    assert!(msg.contains('→'), "message should contain '→': {}", msg);
+}
+
+/// T-2142: A function WITHOUT a trace annotation must NOT emit any trace-fn-type diagnostic.
+///
+/// This is the clean-path invariant: unannotated functions produce zero trace diagnostics.
+/// Without this test, a mutation that emits trace diagnostics unconditionally would pass the
+/// positive tests above but fail here.
+#[tokio::test]
+async fn test_no_trace_annotation_no_trace_diagnostic() {
+    // Plain function with no trace annotation — only return type.
+    let diags = typecheck_collect_diags("[fn@Integer [let x] 42]").await;
+    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
+    assert!(
+        trace_diags.is_empty(),
+        "Expected zero trace-fn-type diagnostics for unannotated function; got: {:?}",
+        trace_diags
+    );
+}
+
+/// T-2142: trace level 0 (explicit @[trace: 0]) must NOT emit trace-fn-type diagnostic.
+///
+/// Mutation target: changing `>= 1` to `> 0` in the guard is equivalent, but changing
+/// it to `>= 0` would cause this test to fail.
+#[tokio::test]
+async fn test_trace_level_zero_no_trace_diagnostic() {
+    let diags = typecheck_collect_diags("[fn@[trace: 0] [let x] x]").await;
+    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
+    assert!(
+        trace_diags.is_empty(),
+        "trace: 0 must not emit trace-fn-type diagnostic; got: {:?}",
+        trace_diags
+    );
+}
+
+// ============================================================================
+// S-1023 fix-review: trace annotation — runtime phase emits trace-call/trace-return
+// ============================================================================
+
+/// Parse, desugar, resolve, and evaluate `src` as a single-document program.
+/// Returns the EvalContext after evaluation so callers can inspect runtime_diagnostics.
+async fn eval_collect_runtime_diags(
+    src: &str,
+) -> (
+    crate::error::EvalResult<std::sync::Arc<crate::value::Thunk>>,
+    std::sync::Arc<crate::eval::EvalContext>,
+) {
+    use crate::ast::{SurfaceDocument, SurfaceItem, SurfaceProgram};
+    use crate::resolve::resolve_surface_program;
+    let node = crate::parser::parse_surface_expression(src)
+        .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
+    let span = node.span.clone();
+    let doc = SurfaceDocument {
+        header: indexmap::IndexMap::new(),
+        items: vec![SurfaceItem::Expr(std::sync::Arc::clone(&node))],
+    };
+    let program = crate::desugar::desugar_program_full(&SurfaceProgram {
+        documents: vec![crate::ast::Spanned::new(std::sync::Arc::new(doc), span)],
+    });
+    let ctx = crate::eval::EvalContext::new();
+    let root_frame = ctx.root_group_resolver_map();
+    let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
+    let result = crate::eval::eval_surface_file(&program, &ctx).await;
+    // Force the thunk to trigger runtime trace diagnostics.
+    if let Ok(ref thunk) = result {
+        crate::eval::materialize(thunk, None, &ctx)
+            .await
+            .expect("materialize must succeed in trace annotation test");
+    }
+    (result, ctx)
+}
+
+/// T-2142 / S-1023 fix-review: Evaluating `[call [fn@[trace: 1] [let x] x] 42]` must produce
+/// at least one `trace-call` and at least one `trace-return` Info diagnostic in
+/// `ctx.runtime_diagnostics`.
+///
+/// Note: `[[fn@...] arg]` is a two-entry dict in tinct, not a call. Use `[call ...]` to
+/// invoke a function expression.
+///
+/// This is the runtime-phase coverage that was missing from T-2142's original implementation.
+#[tokio::test]
+async fn test_trace_annotation_runtime_emits_call_and_return() {
+    let (result, ctx) = eval_collect_runtime_diags("[call [fn@[trace: 1] [let x] x] 42]").await;
+    assert!(result.is_ok(), "evaluation must succeed; got: {:?}", result);
+
+    let diags = ctx
+        .runtime_diagnostics
+        .lock()
+        .expect("runtime_diagnostics mutex poisoned");
+    let trace_call_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.kind == "trace-call" && d.level == crate::error::DiagnosticLevel::Info)
+        .collect();
+    let trace_return_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.kind == "trace-return" && d.level == crate::error::DiagnosticLevel::Info)
+        .collect();
+    assert!(
+        !trace_call_diags.is_empty(),
+        "Expected at least one trace-call diagnostic in runtime_diagnostics; got all: {:?}",
+        *diags
+    );
+    assert!(
+        !trace_return_diags.is_empty(),
+        "Expected at least one trace-return diagnostic in runtime_diagnostics; got all: {:?}",
+        *diags
+    );
+}
+
+/// S-1023 fix-review: A function WITHOUT the trace annotation must NOT produce any
+/// trace-call or trace-return diagnostics in `ctx.runtime_diagnostics`.
+#[tokio::test]
+async fn test_no_trace_annotation_no_runtime_trace_diagnostics() {
+    let (result, ctx) = eval_collect_runtime_diags("[call [fn [let x] x] 42]").await;
+    assert!(result.is_ok(), "evaluation must succeed; got: {:?}", result);
+
+    let diags = ctx
+        .runtime_diagnostics
+        .lock()
+        .expect("runtime_diagnostics mutex poisoned");
+    let trace_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.kind == "trace-call" || d.kind == "trace-return")
+        .collect();
+    assert!(
+        trace_diags.is_empty(),
+        "Expected no trace-call/trace-return diagnostics without @[trace: 1]; got: {:?}",
+        trace_diags
+    );
+}

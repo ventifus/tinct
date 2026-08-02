@@ -39,7 +39,7 @@ use std::sync::{Arc, RwLock};
 use super::typecheck_annot;
 use crate::ast::{Span, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
-use crate::error::TypeDiagnostic;
+use crate::error::Diagnostic;
 use crate::type_infer::{
     make_typevalue_float_lit, make_typevalue_int_lit, make_typevalue_repr, make_typevalue_str_lit,
     make_typevalue_unknown,
@@ -339,7 +339,7 @@ pub(crate) async fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
-) -> Result<Vec<Arc<crate::value::Value>>, Vec<TypeDiagnostic>> {
+) -> Result<Vec<Arc<crate::value::Value>>, Vec<Diagnostic>> {
     match &pattern_node.expr {
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             // Pre-pass: find `bind: [a b c]` entries and register TypeVars.
@@ -388,7 +388,7 @@ pub(crate) async fn extract_pattern_types(
             }
             Ok(types)
         }
-        _ => Err(vec![TypeDiagnostic::error(
+        _ => Err(vec![Diagnostic::error(
             "type-error",
             "instance arm pattern must be a [pattern [...]] or [let ...] declaration",
             pattern_node.span.clone(),
@@ -405,7 +405,7 @@ fn process_instance_bind_list(
     state: &mut InferState,
     bind_vars: &mut InstanceBindVars,
     span: Span,
-) -> Result<(), TypeDiagnostic> {
+) -> Result<(), Diagnostic> {
     // Collect (name, span) pairs from the Call form [a b c] or bare VarRef [a]
     let name_spans: Vec<(String, Span)> = match &node.expr {
         SurfaceExpression::Call {
@@ -415,7 +415,7 @@ fn process_instance_bind_list(
             ..
         } => {
             if !named_args.is_empty() {
-                return Err(TypeDiagnostic::error(
+                return Err(Diagnostic::error(
                     "type-error",
                     "instance bind: list must contain only bare names",
                     node.span.clone(),
@@ -425,7 +425,7 @@ fn process_instance_bind_list(
             match &func.expr {
                 SurfaceExpression::VarRef { name, .. } => v.push((name.clone(), func.span.clone())),
                 _ => {
-                    return Err(TypeDiagnostic::error(
+                    return Err(Diagnostic::error(
                         "type-error",
                         "instance bind: entries must be bare TypeVar names",
                         func.span.clone(),
@@ -438,7 +438,7 @@ fn process_instance_bind_list(
                         v.push((name.clone(), arg.span.clone()))
                     }
                     _ => {
-                        return Err(TypeDiagnostic::error(
+                        return Err(Diagnostic::error(
                             "type-error",
                             "instance bind: entries must be bare TypeVar names",
                             arg.span.clone(),
@@ -450,7 +450,7 @@ fn process_instance_bind_list(
         }
         SurfaceExpression::VarRef { name, .. } => vec![(name.clone(), node.span.clone())],
         _ => {
-            return Err(TypeDiagnostic::error(
+            return Err(Diagnostic::error(
                 "type-error",
                 "instance bind: must be a list of bare TypeVar names like [a b c]",
                 span,
@@ -460,7 +460,7 @@ fn process_instance_bind_list(
 
     for (name, name_span) in name_spans {
         if !name.starts_with(|c: char| c.is_lowercase()) {
-            return Err(TypeDiagnostic::error(
+            return Err(Diagnostic::error(
                 "type-error",
                 format!(
                     "instance bind: TypeVar name '{}' must start with lowercase",
@@ -495,8 +495,7 @@ pub(crate) fn extract_binding_types<'a>(
     state: &'a mut InferState,
     types: &'a mut Vec<Arc<crate::value::Value>>,
     bind_vars: &'a InstanceBindVars,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<TypeDiagnostic>>> + Send + 'a>>
-{
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Vec<Diagnostic>>> + Send + 'a>> {
     Box::pin(async move {
         match &binding.expr {
             // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).
@@ -633,7 +632,7 @@ pub(crate) fn extract_binding_types<'a>(
                 types.push(make_typevalue_unknown());
             }
             _ => {
-                return Err(vec![TypeDiagnostic::error(
+                return Err(vec![Diagnostic::error(
                     "type-error",
                     "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
                     binding.span.clone(),
@@ -656,7 +655,7 @@ async fn try_unify_probe(
     types_a: &[Arc<crate::value::Value>],
     types_b: &[Arc<crate::value::Value>],
     state: &mut InferState,
-) -> Result<bool, TypeDiagnostic> {
+) -> Result<bool, Diagnostic> {
     if types_a.len() != types_b.len() {
         return Ok(false);
     }
@@ -686,7 +685,7 @@ async fn try_unify_probe(
                 // This pair can unify — continue.
             }
             Err(_td) => {
-                // Probe unification failure: the TypeDiagnostic means these two TypeValues
+                // Probe unification failure: the Diagnostic means these two TypeValues
                 // cannot unify — there is no overlap. State is restored unconditionally below.
                 unified = false;
                 break;
@@ -710,7 +709,7 @@ pub(crate) async fn patterns_overlap(
     types_a: &[Arc<crate::value::Value>],
     types_b: &[Arc<crate::value::Value>],
     state: &mut InferState,
-) -> Result<bool, Vec<TypeDiagnostic>> {
+) -> Result<bool, Vec<Diagnostic>> {
     try_unify_probe(types_a, types_b, state)
         .await
         .map_err(|e| vec![e])
@@ -724,7 +723,7 @@ pub(crate) async fn types_can_unify(
     types_a: &[Arc<crate::value::Value>],
     types_b: &[Arc<crate::value::Value>],
     state: &mut InferState,
-) -> Result<bool, Vec<TypeDiagnostic>> {
+) -> Result<bool, Vec<Diagnostic>> {
     try_unify_probe(types_a, types_b, state)
         .await
         .map_err(|e| vec![e])
@@ -738,7 +737,7 @@ pub(crate) fn extract_param_indices(
     node: &Arc<SurfaceNode>,
     params: &[String],
     span: Span,
-) -> Result<Vec<usize>, Vec<TypeDiagnostic>> {
+) -> Result<Vec<usize>, Vec<Diagnostic>> {
     let mut indices = Vec::new();
 
     match &node.expr {
@@ -748,7 +747,7 @@ pub(crate) fn extract_param_indices(
             if let Some(idx) = params.iter().position(|p| p == name) {
                 indices.push(idx);
             } else {
-                return Err(vec![TypeDiagnostic::error(
+                return Err(vec![Diagnostic::error(
                     "type-error",
                     format!("functional dependency references unknown param '{}'", name),
                     span,
@@ -763,7 +762,7 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::VarRef { name, .. } => name,
                     SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
-                        return Err(vec![TypeDiagnostic::error(
+                        return Err(vec![Diagnostic::error(
                             "type-error",
                             "functional dependency param must be an identifier or string",
                             entry.span.clone(),
@@ -774,7 +773,7 @@ pub(crate) fn extract_param_indices(
                 if let Some(idx) = params.iter().position(|p| p == param_name) {
                     indices.push(idx);
                 } else {
-                    return Err(vec![TypeDiagnostic::error(
+                    return Err(vec![Diagnostic::error(
                         "type-error",
                         format!(
                             "functional dependency references unknown param '{}'",
@@ -798,7 +797,7 @@ pub(crate) fn extract_param_indices(
                 SurfaceExpression::VarRef { name, .. } => name,
                 SurfaceExpression::StringLiteral { content: s, .. } => s,
                 _ => {
-                    return Err(vec![TypeDiagnostic::error(
+                    return Err(vec![Diagnostic::error(
                         "type-error",
                         "functional dependency param must be an identifier or string",
                         func.span.clone(),
@@ -808,7 +807,7 @@ pub(crate) fn extract_param_indices(
             if let Some(idx) = params.iter().position(|p| p == head_name) {
                 indices.push(idx);
             } else {
-                return Err(vec![TypeDiagnostic::error(
+                return Err(vec![Diagnostic::error(
                     "type-error",
                     format!(
                         "functional dependency references unknown param '{}'",
@@ -823,7 +822,7 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::VarRef { name, .. } => name,
                     SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
-                        return Err(vec![TypeDiagnostic::error(
+                        return Err(vec![Diagnostic::error(
                             "type-error",
                             "functional dependency param must be an identifier or string",
                             arg.span.clone(),
@@ -833,7 +832,7 @@ pub(crate) fn extract_param_indices(
                 if let Some(idx) = params.iter().position(|p| p == arg_name) {
                     indices.push(idx);
                 } else {
-                    return Err(vec![TypeDiagnostic::error(
+                    return Err(vec![Diagnostic::error(
                         "type-error",
                         format!(
                             "functional dependency references unknown param '{}'",
@@ -845,7 +844,7 @@ pub(crate) fn extract_param_indices(
             }
         }
         _ => {
-            return Err(vec![TypeDiagnostic::error(
+            return Err(vec![Diagnostic::error(
                 "type-error",
                 "functional dependency variables must be an identifier or list",
                 span,

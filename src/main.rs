@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, format_type_diagnostic, literate, parse, string_val, unknown_type_val,
-    EvalContext, HashableValue, Thunk, Value,
+    build_core_env, format_diagnostic, literate, parse, string_val, unknown_type_val, EvalContext,
+    HashableValue, Thunk, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -2334,7 +2334,7 @@ async fn run_fmt(
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
                 .iter()
-                .map(|e| format_type_diagnostic(e, &source, file_path))
+                .map(|e| format_diagnostic(e, &source, file_path))
                 .collect();
             return Err(error_msgs.join("\n"));
         }
@@ -2355,7 +2355,7 @@ async fn run_fmt(
                 } else {
                     d.clone()
                 };
-                eprintln!("{}", format_type_diagnostic(&effective, &source, file_path));
+                eprintln!("{}", format_diagnostic(&effective, &source, file_path));
             }
             if strict && has_fatal_diag {
                 return Err(
@@ -2431,7 +2431,7 @@ async fn run_fmt(
     Ok(())
 }
 
-// format_type_diagnostic is now pub in tinct::format_type_diagnostic (src/lib.rs).
+// format_diagnostic is now pub in tinct::format_diagnostic (src/lib.rs).
 
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.

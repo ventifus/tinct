@@ -109,8 +109,19 @@ pub(crate) async fn eval_document_exprs_with_env(
     for (i, node) in expr_nodes.iter().enumerate() {
         let (core_spanned, lower_diags) =
             crate::lower::lower(node, ctx.scope_frames.as_ref().map(|v| v.as_slice()));
-        if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
-            return Err(err);
+        {
+            let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                .into_iter()
+                .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+            for d in info_diags {
+                ctx.runtime_diagnostics
+                    .lock()
+                    .expect("runtime_diagnostics mutex poisoned")
+                    .push(d);
+            }
+            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags) {
+                return Err(err);
+            }
         }
         let node_span = node.span.clone();
 
@@ -454,7 +465,7 @@ pub struct TypeContextData {
     /// Each call to `builtin-typecheck-doc` appends the errors from that document to this vec.
     /// Type diagnostics (errors + warnings + info) from the most recent typecheck pass.
     /// Currently stored for observability; not surfaced to tinct code yet.
-    pub type_diagnostics: Vec<crate::error::TypeDiagnostic>,
+    pub type_diagnostics: Vec<crate::error::Diagnostic>,
 }
 
 /// Immutable session configuration shared across evaluation.
@@ -657,6 +668,12 @@ pub struct EvalContext {
     /// Keyed by type_decl_id (u64) instead of type_name (String) to prevent same-name types
     /// in nested scopes from overwriting each other's registry entries (B-714).
     pub type_identity_registry: Arc<Mutex<std::collections::HashMap<u64, Arc<Value>>>>,
+    /// Runtime diagnostics collected during evaluation.
+    ///
+    /// Shared across all child contexts (Arc clone) so that diagnostics emitted in any scope
+    /// are accumulated in a single unified collection. Printed at the end of the pipeline
+    /// by `run_loader_pipeline` in lib.rs.
+    pub runtime_diagnostics: std::sync::Arc<std::sync::Mutex<Vec<crate::error::Diagnostic>>>,
 }
 
 impl EvalContext {
@@ -746,6 +763,7 @@ impl EvalContext {
             repr_registry,
             is_predicates,
             type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            runtime_diagnostics: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 
@@ -790,6 +808,7 @@ impl EvalContext {
             repr_registry,
             is_predicates,
             type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            runtime_diagnostics: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 
@@ -831,6 +850,7 @@ impl EvalContext {
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
+            runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
         });
         (child_ctx, child_token)
     }
@@ -876,6 +896,7 @@ impl EvalContext {
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
+            runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
         })
     }
 
@@ -924,6 +945,7 @@ impl EvalContext {
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
+            runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
         })
     }
 
@@ -967,6 +989,7 @@ impl EvalContext {
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
+            runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
         })
     }
 
@@ -1024,6 +1047,7 @@ impl EvalContext {
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
+            runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
         })
     }
 
@@ -2779,8 +2803,19 @@ mod tests {
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
         let (core_expr, lower_diags) = crate::lower::lower(&node, None);
-        if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
-            return Err(err);
+        {
+            let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                .into_iter()
+                .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+            for d in info_diags {
+                ctx.runtime_diagnostics
+                    .lock()
+                    .expect("runtime_diagnostics mutex poisoned")
+                    .push(d);
+            }
+            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags) {
+                return Err(err);
+            }
         }
         crate::eval_core::eval_core_expr(&core_expr, &crate::value::EvalFrame::empty(), ctx).await
     }
@@ -6832,10 +6867,21 @@ mod tests {
                 crate::ast::SurfaceItem::Decl(_) => continue,
             };
             let (core_spanned, lower_diags) = crate::lower::lower(node, scope_frames_slice);
-            assert!(
-                crate::eval_materialize::lower_errors_to_eval_error(lower_diags).is_none(),
-                "lowering must not produce errors"
-            );
+            {
+                let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
+                    .into_iter()
+                    .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
+                for d in info_diags {
+                    ctx.runtime_diagnostics
+                        .lock()
+                        .expect("runtime_diagnostics mutex poisoned")
+                        .push(d);
+                }
+                assert!(
+                    crate::eval_materialize::lower_errors_to_eval_error(other_diags).is_none(),
+                    "lowering must not produce errors"
+                );
+            }
             core_entries.push((expr_idx.to_string(), std::sync::Arc::new(core_spanned)));
             expr_idx += 1;
         }

@@ -11,7 +11,7 @@ use crate::ast::{
     Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
 };
 use crate::env::Env;
-use crate::error::TypeDiagnostic;
+use crate::error::Diagnostic;
 use crate::types::{generalize_tv, InferState};
 use crate::value::{unknown_type_val, Value};
 
@@ -88,11 +88,7 @@ pub async fn typecheck_program_bootstrap(
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     seed_tycon_env: crate::type_def::TyConEnv,
     type_stage_data: crate::type_infer::TypeStageData,
-) -> (
-    Vec<TypeDiagnostic>,
-    Arc<RwLock<Env>>,
-    crate::type_def::TyConEnv,
-) {
+) -> (Vec<Diagnostic>, Arc<RwLock<Env>>, crate::type_def::TyConEnv) {
     let mut errors = Vec::new();
     // Create a child Env scope for this type-checking session: reads walk through
     // to the parent (finding prelude classes/instances), writes stay in the child.
@@ -498,7 +494,7 @@ pub(crate) async fn process_document(
     parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> (Arc<RwLock<Env>>, Arc<Value>, Vec<TypeDiagnostic>) {
+) -> (Arc<RwLock<Env>>, Arc<Value>, Vec<Diagnostic>) {
     // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }
     let empty_dict_ty = make_typevalue_record(indexmap::IndexMap::new(), None);
 
@@ -586,7 +582,7 @@ pub(crate) async fn process_document(
             _ => false,
         };
         if !is_dict_ok {
-            errors.push(TypeDiagnostic::error(
+            errors.push(Diagnostic::error(
                 "type-error",
                 format!(
                     "document last expression must be a record type, got {:?}",
@@ -752,7 +748,7 @@ fn typevalue_op_name(tv: &Arc<Value>) -> Option<String> {
 pub(crate) fn infer_class_decl_from_surface(
     decl: &ClassDeclSurface<'_>,
     state: &mut InferState,
-) -> Result<Arc<Value>, Vec<TypeDiagnostic>> {
+) -> Result<Arc<Value>, Vec<Diagnostic>> {
     use crate::types::ClassDecl;
     // After S-1003: Kind deleted, params use Arc<Value> TypeValue kind.
 
@@ -769,7 +765,7 @@ pub(crate) fn infer_class_decl_from_surface(
     let span = span.clone();
 
     if name.is_empty() {
-        return Err(vec![TypeDiagnostic::error(
+        return Err(vec![Diagnostic::error(
             "type-error",
             "class declaration must have a name declared with [class [ClassName ...] ...]",
             span,
@@ -802,7 +798,7 @@ pub(crate) fn infer_class_decl_from_surface(
                 fd_indices.push((determining_indices, determined_indices));
             }
             _ => {
-                return Err(vec![TypeDiagnostic::error("type-error",
+                return Err(vec![Diagnostic::error("type-error",
                     "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
                     fd_node.span.clone(),
                 )]);
@@ -878,7 +874,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> Result<Arc<Value>, Vec<TypeDiagnostic>> {
+) -> Result<Arc<Value>, Vec<Diagnostic>> {
     use crate::types::InstanceDecl;
 
     if arms.is_empty() {
@@ -892,7 +888,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             .unwrap()
             .get_class(class_name)
             .ok_or_else(|| {
-                vec![TypeDiagnostic::error(
+                vec![Diagnostic::error(
                     "type-error",
                     format!("unknown class '{}'", class_name),
                     span.clone(),
@@ -916,7 +912,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         let pattern_types = extract_pattern_types(pattern_node, env, state).await?;
 
         if pattern_types.len() != param_count {
-            return Err(vec![TypeDiagnostic::error(
+            return Err(vec![Diagnostic::error(
                 "type-error",
                 format!(
                     "instance pattern has {} type parameters but class '{}' expects {}",
@@ -934,7 +930,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNKNOWN)
                 || matches!(tv.as_ref(), Value::Dict { entries, .. } if entries.is_empty())
         }) {
-            return Err(vec![TypeDiagnostic::error("type-error",
+            return Err(vec![Diagnostic::error("type-error",
                 format!(
                     "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax) or TypeVars declared via bind: in [let ...]",
                     class_name
@@ -952,7 +948,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let (types_j, span_j, _) = &arm_data[j];
 
             if patterns_overlap(types_i, types_j, state).await? {
-                let error = TypeDiagnostic::error("type-error",
+                let error = Diagnostic::error("type-error",
                     format!(
                         "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
                         class_name,
@@ -993,7 +989,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                             .collect();
 
                         if !types_can_unify(&determined_i, &determined_j, state).await? {
-                            let error = TypeDiagnostic::error("type-error",
+                            let error = Diagnostic::error("type-error",
                                 format!(
                                     "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
                                     class_name,
@@ -1073,7 +1069,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                         if pushed_frame {
                             state.type_stage_scope.remove(0);
                         }
-                        return Err(vec![TypeDiagnostic::error(
+                        return Err(vec![Diagnostic::error(
                             "type-error",
                             "instance method name must be a string or identifier",
                             key_node.span.clone(),
@@ -1084,7 +1080,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     if pushed_frame {
                         state.type_stage_scope.remove(0);
                     }
-                    return Err(vec![TypeDiagnostic::error(
+                    return Err(vec![Diagnostic::error(
                         "type-error",
                         "instance method must have a name",
                         method.span.clone(),
@@ -1147,7 +1143,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 // or if the method is not found, skip — unannotated params fall back to Unknown.
             }
 
-            let mut method_errors: Vec<TypeDiagnostic> = Vec::new();
+            let mut method_errors: Vec<Diagnostic> = Vec::new();
             let mut method_stack = Vec::new();
             let method_impl_type = Box::pin(typecheck_cek::run_typecheck(
                 &method.node.value,

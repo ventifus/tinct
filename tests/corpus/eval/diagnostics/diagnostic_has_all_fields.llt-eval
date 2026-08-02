@@ -1,4 +1,5 @@
-# Verify diagnostic dict has all expected fields: level, kind, message, span, notes, call-stack, macro-expand, blame.
+# Verify diagnostic dict has all expected fields:
+# level, kind, message, span, secondary-spans, notes, help, call-stack, macro-expand, blame.
 # Uses a parse error as it's the simplest to trigger.
 [call [fn [let]
   [r: [builtin-parse [builtin-str-bytes "[unclosed"] "test.llt"]]
@@ -7,11 +8,16 @@
   [has-kind: [builtin-has-key? "kind" d]]
   [has-message: [builtin-has-key? "message" d]]
   [has-span: [builtin-has-key? "span" d]]
+  [has-secondary-spans: [builtin-has-key? "secondary-spans" d]]
   [has-notes: [builtin-has-key? "notes" d]]
+  [has-help: [builtin-has-key? "help" d]]
   [has-call-stack: [builtin-has-key? "call-stack" d]]
   [has-macro-expand: [builtin-has-key? "macro-expand" d]]
   [has-blame: [builtin-has-key? "blame" d]]
-  [all-ok: [builtin-int-add [builtin-int-add [builtin-int-add has-level has-kind] [builtin-int-add has-message has-span]] [builtin-int-add [builtin-int-add has-notes has-call-stack] [builtin-int-add has-macro-expand has-blame]]]]
+  [all-ok: [builtin-int-add
+    [builtin-int-add [builtin-int-add [builtin-int-add has-level has-kind] [builtin-int-add has-message has-span]]
+                     [builtin-int-add has-secondary-spans has-notes]]
+    [builtin-int-add [builtin-int-add has-help has-call-stack] [builtin-int-add has-macro-expand has-blame]]]]
   all-ok]]
 === out
-Int(8)
+Int(10)

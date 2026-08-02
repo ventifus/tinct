@@ -3202,7 +3202,7 @@ fn literate_weave_verify_fail_when_expected_does_not_match_actual() {
 }
 
 // ---------------------------------------------------------------------------
-// Type warning channel: TypeDiagnostic emission to stderr
+// Type warning channel: Diagnostic emission to stderr
 // ---------------------------------------------------------------------------
 
 /// Verify that an explicit `@Unknown` annotation (T011) produces a diagnostic
