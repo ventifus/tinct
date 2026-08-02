@@ -2782,10 +2782,15 @@ pub(crate) fn builtin_typecheck_doc(
         // the unified scope frames for the document being type-checked. Without this, state.resolver_frames
         // stays empty, causing find_slot_in_frames to always return None and child_env seeding to
         // append entries sequentially rather than at their correct runtime slot positions.
+        // state.resolution_table is intentionally not set here. builtin_typecheck_doc calls
+        // process_document directly (never typecheck_program_bootstrap), so the InferState
+        // resolution_table is empty. All VarRef lookups in infer_var_ref therefore take the
+        // "no resolver address" branch and fall through to the name-based env.get_scheme()
+        // lookup. This is correct: builtin-resolve has already set OnceLock coordinates on
+        // each VarRef node, but the type checker reads those via state.resolution_table which
+        // is not populated here — so every VarRef appears to have no address and hits the
+        // name-based fallback. The env is properly seeded, so name-based lookup succeeds.
         state.resolver_frames = (*resolver_frames).clone();
-        // Also populate state.resolution_table from the document's resolution table so that
-        // infer_var_ref can look up VarAddr for each VarRef node.
-        state.resolution_table = Arc::clone(&doc_arc.resolution_table);
 
         // Build root_frame_for_ts: the runtime root group resolver map (builtins + caps).
         // This mirrors typecheck_program_bootstrap's approach: parent env entries are remapped
@@ -2808,7 +2813,10 @@ pub(crate) fn builtin_typecheck_doc(
             // Use root_frame_for_ts slot if available; otherwise append at end.
             for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
-                    state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied())
+                    state
+                        .resolver_frames
+                        .iter()
+                        .find_map(|(f, _kind)| f.get(name.as_str()).copied())
                 });
                 if let Some(slot) = abs_slot {
                     let idx = slot as usize;
@@ -2822,7 +2830,10 @@ pub(crate) fn builtin_typecheck_doc(
             for (name, _thunk) in &state.type_stage_fns {
                 let tv = make_typevalue_op(name);
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
-                    state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied())
+                    state
+                        .resolver_frames
+                        .iter()
+                        .find_map(|(f, _kind)| f.get(name.as_str()).copied())
                 });
                 if let Some(slot) = abs_slot {
                     let idx = slot as usize;
@@ -2836,7 +2847,10 @@ pub(crate) fn builtin_typecheck_doc(
             for (name, _kind) in &state.type_stage_type_vars {
                 let tv = make_typevalue_op(name);
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
-                    state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied())
+                    state
+                        .resolver_frames
+                        .iter()
+                        .find_map(|(f, _kind)| f.get(name.as_str()).copied())
                 });
                 if let Some(slot) = abs_slot {
                     let idx = slot as usize;
@@ -5112,10 +5126,15 @@ pub(crate) fn builtin_lower(
         };
 
         // resolver_frames already contains all scope frames (env_frame first, then Dict
-        // letrec and BlockBody frames in natural nesting order). Pass directly as scope_frames.
+        // letrec and BlockBody frames in natural nesting order). Strip FrameKind for lower.rs
+        // which only needs the name→slot maps for de Bruijn coordinate resolution.
+        let scope_frames_plain: Vec<indexmap::IndexMap<String, u32>> = doc_resolver_frames
+            .iter()
+            .map(|(frame, _kind)| frame.clone())
+            .collect();
         let scope_frames: Option<&[indexmap::IndexMap<String, u32>]> =
-            if !doc_resolver_frames.is_empty() {
-                Some(doc_resolver_frames.as_slice())
+            if !scope_frames_plain.is_empty() {
+                Some(scope_frames_plain.as_slice())
             } else {
                 None
             };

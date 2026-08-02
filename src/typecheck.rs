@@ -155,7 +155,7 @@ pub async fn typecheck_program_bootstrap(
                 state
                     .resolver_frames
                     .iter()
-                    .find_map(|f| f.get(name.as_str()).copied())
+                    .find_map(|(f, _kind)| f.get(name.as_str()).copied())
             });
             if let Some(slot) = abs_slot {
                 let idx = slot as usize;
@@ -174,7 +174,7 @@ pub async fn typecheck_program_bootstrap(
                 state
                     .resolver_frames
                     .iter()
-                    .find_map(|f| f.get(name.as_str()).copied())
+                    .find_map(|(f, _kind)| f.get(name.as_str()).copied())
             });
             if let Some(slot) = abs_slot {
                 let idx = slot as usize;
@@ -192,7 +192,7 @@ pub async fn typecheck_program_bootstrap(
                 state
                     .resolver_frames
                     .iter()
-                    .find_map(|f| f.get(name.as_str()).copied())
+                    .find_map(|(f, _kind)| f.get(name.as_str()).copied())
             });
             if let Some(slot) = abs_slot {
                 let idx = slot as usize;
@@ -482,10 +482,10 @@ fn make_typevalue_record(
 /// Used to assign resolver-correct slots to bindings that need slot insertion but were not
 /// yet inserted via `insert_at_slot` at the point of the call.
 pub(crate) fn find_slot_in_frames(
-    frames: &[indexmap::IndexMap<String, u32>],
+    frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
     name: &str,
 ) -> Option<usize> {
-    for frame in frames.iter().rev() {
+    for (frame, _kind) in frames.iter().rev() {
         if let Some(&slot) = frame.get(name) {
             return Some(slot as usize);
         }

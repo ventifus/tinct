@@ -1,0 +1,17 @@
+# T-2118 regression: document-level Boolean type must resolve correctly.
+# Before the FrameKind fix, fn-body DictLetrec frames could contaminate the
+# body_slot_base computation for DocSequential frames, causing Boolean.True
+# to be unresolvable and the match to produce a type error (output: []).
+[
+  Boolean: [type True False]
+  result: [match Boolean.True
+    Boolean.True:  "correct"
+    Boolean.False: "wrong"
+    ...:           "wrong"]
+]
+---
+%.result
+=== out
+String("correct")
+=== warn
+never consumed by the next pipeline stage

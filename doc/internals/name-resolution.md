@@ -249,7 +249,7 @@ A `VarRef` node inside a match arm pattern (or inside a case arm's pattern, the 
 pub fn resolve_surface_program(
     program: &SurfaceProgram,
     initial_frames: &[IndexMap<String, u32>],
-) -> (ResolutionTable, Vec<IndexMap<String, u32>>)
+) -> (ResolutionTable, Vec<(IndexMap<String, u32>, FrameKind)>)
 ```
 
 Resolves all documents in a `SurfaceProgram`. `initial_frames` are scope frames from prior resolver runs (e.g., the root capability frame) seeded outermost-first. Returns the `ResolutionTable` and `new_frames` — the frames added by this program's documents, which can be passed as `initial_frames` for a subsequent program.
@@ -262,17 +262,33 @@ pub fn resolve_surface_document_with_seed_frames(
     seed_frames: &[IndexMap<String, u32>],
     env_names: &[String],
     root_group_len: u32,
-) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>, Vec<IndexMap<String, u32>>)
+) -> (ResolutionTable, Vec<TypeDiagnostic>, Vec<String>, Vec<(IndexMap<String, u32>, FrameKind)>)
 ```
 
 Resolves a single document given pre-seeded outer scope frames and an env-name list. Also returns:
 - `diagnostics` — `Vec<TypeDiagnostic>` covering all resolution errors and warnings (errors for unresolved VarRefs, warnings for unused parameters and lost bindings).
 - `unreferenced` — names from `env_names` that were never referenced in the document.
-- `unified_frames` — all Dict letrec and BlockBody sequential injection frames collected during the walk, in injection order.
+- `unified_frames` — all Dict letrec and BlockBody sequential injection frames collected during the walk, in injection order. Each entry is `(name→slot map, FrameKind)`.
 
 Used internally. The public `builtin-resolve` API uses `resolve_surface_document_with_env_dict` (not this function) and returns `{doc, diagnostics, unreferenced, doc-span}`.
 
 Both functions are purely functional with respect to the AST (no mutation visible to callers), but they do write to the inline `Resolution` OnceLocks on each VarRef node.
+
+### `FrameKind`
+
+```rust
+pub enum FrameKind {
+    DocSequential,
+    DictLetrec,
+}
+```
+
+Every frame in `unified_frames` carries a `FrameKind` tag indicating its origin:
+
+- **`DocSequential`** — document-level sequential injection frames, produced by `walk_surface_document_with_offset` when it processes top-level dict bodies. These frames have absolute slot numbers >= `initial_offset` (i.e., >= `root_group_len + env_dict_len`).
+- **`DictLetrec`** — dict letrec scopes and fn-body sequential injection frames, produced when the resolver enters a nested dict scope or walks fn-body intermediate dicts. These frames may have small absolute slot numbers starting from 0, relative to the fn-body's own eval_dict_core frame.
+
+The distinction matters for the type-checker's `body_slot_base` disambiguation: when multiple frames in `resolver_frames` contain the same key name (e.g., both a document-level dict and a fn-body intermediate dict define `Boolean`), `DocSequential` frames must be preferred over `DictLetrec` frames to avoid fn-body slot numbers contaminating document-level slot base computation. The Sequential handler's Phase 2 and the `run_typecheck_dict` fallback both apply this `DocSequential`-first filter.
 
 ---
 

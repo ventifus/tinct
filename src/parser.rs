@@ -2043,7 +2043,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                                     SurfaceExpression::TypeAssert { .. }
                                 );
 
-                            // B-295 fix: when a Dict contains exactly one auto-indexed entry
+                            // When a Dict contains exactly one auto-indexed entry
                             // and that entry is a Pipe expression, unwrap it and return the
                             // Pipe directly. This allows `[[call ...] | f | g]` to work as
                             // a grouped pipeline in dict entry contexts without creating an
@@ -3851,29 +3851,33 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, TypeDiagnostic
                     ));
                 }
 
-                // Finalize current document (even if empty) with previously parsed header
+                // Finalize current document. Skip if it has no items and no header —
+                // this happens when a file begins with `---` (the leading separator
+                // creates an artifact empty document before any content). An empty
+                // headerless document is semantically inert: it produces `[]` and
+                // overwrites `last-result` with an empty dict, which breaks pipelines.
                 let items = std::mem::take(&mut current_document_items);
-                let doc_span = if items.is_empty() {
-                    // Empty document: use separator position
-                    span.clone()
-                } else {
-                    let first_span = items.first().unwrap().span();
-                    let last_span = items.last().unwrap().span();
-                    Span::new(
-                        first_span.start_line,
-                        first_span.start_col,
-                        last_span.end_line,
-                        last_span.end_col,
-                        Arc::clone(&first_span.file),
-                    )
-                };
-                documents.push(Spanned::new(
-                    Arc::new(SurfaceDocument {
-                        header: std::mem::take(&mut next_doc_header),
-                        items,
-                    }),
-                    doc_span,
-                ));
+                let header = std::mem::take(&mut next_doc_header);
+                if !items.is_empty() || !header.is_empty() {
+                    let doc_span = if items.is_empty() {
+                        // Header-only document: use separator position as span.
+                        span.clone()
+                    } else {
+                        let first_span = items.first().unwrap().span();
+                        let last_span = items.last().unwrap().span();
+                        Span::new(
+                            first_span.start_line,
+                            first_span.start_col,
+                            last_span.end_line,
+                            last_span.end_col,
+                            Arc::clone(&first_span.file),
+                        )
+                    };
+                    documents.push(Spanned::new(
+                        Arc::new(SurfaceDocument { header, items }),
+                        doc_span,
+                    ));
+                }
 
                 // Parse section header (Phase 1): generic key-value pairs
                 // Format: --- key: value  key2: value2
@@ -7058,8 +7062,8 @@ mod tests {
     ///
     /// Previously mis-labelled as a parser regression; the parser was always correct.
     /// The `#[ignore]` annotations on the corresponding typecheck tests were caused by
-    /// T-951 enforcement (undeclared lowercase type variables) and multi-document
-    /// test-helper limitations, not by a parser bug.
+    /// undeclared-lowercase-type-variable enforcement (which required explicit type parameter scope)
+    /// and multi-document test-helper limitations, not by a parser bug.
     #[test]
     fn test_type_alias_in_dict_entry_value() {
         // Single-entry: [Name: [type String]]
@@ -8785,11 +8789,34 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_document_explicit() {
-        // --- is the LLT document separator
+    fn test_leading_separator_drops_empty_document() {
+        // --- is the LLT document separator. When --- appears at the start of the file
+        // with no content before it (and no header on the current document), the empty
+        // document that would have been created is dropped — it has no semantic content.
+        // The separator still applies its header annotation to the NEXT document.
         let output = parse("---\n[a: 1]", test_file("---\n[a: 1]")).expect("parse failed");
+        assert_eq!(output.program.documents.len(), 1);
+        assert_eq!(output.program.documents[0].node.expressions().count(), 1);
+    }
+
+    #[test]
+    fn test_empty_document_before_header_separator() {
+        // When --- has no content before it but DOES set a header for the next doc,
+        // the empty document is still dropped. Only the following document (with header)
+        // is produced.
+        let output = parse("--- stage: \"type\"\n[a: 1]", test_file("sep")).expect("parse failed");
+        assert_eq!(output.program.documents.len(), 1);
+        let header = &output.program.documents[0].node.header;
+        assert!(header.contains_key("stage"), "header should have 'stage'");
+        assert_eq!(output.program.documents[0].node.expressions().count(), 1);
+    }
+
+    #[test]
+    fn test_two_documents_with_separator() {
+        // When content appears BEFORE the ---, two documents are produced.
+        let output = parse("[a: 1]\n---\n[b: 2]", test_file("sep")).expect("parse failed");
         assert_eq!(output.program.documents.len(), 2);
-        assert_eq!(output.program.documents[0].node.expressions().count(), 0);
+        assert_eq!(output.program.documents[0].node.expressions().count(), 1);
         assert_eq!(output.program.documents[1].node.expressions().count(), 1);
     }
 

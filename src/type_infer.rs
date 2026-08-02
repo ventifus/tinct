@@ -2171,11 +2171,13 @@ pub struct InferState {
     /// return None from slots).
     pub resolution_table: std::sync::Arc<crate::ast::ResolutionTable>,
     /// Unified scope frames from the resolver pass: both Dict letrec frames and
-    /// BlockBody sequential injection frames, in injection order. Each frame maps
-    /// binding names to their absolute resolver-assigned slot numbers.
+    /// BlockBody sequential injection frames, in injection order. Each entry is
+    /// `(name→slot map, FrameKind)` — the FrameKind lets the type checker distinguish
+    /// document-level sequential frames from fn-body/dict-letrec frames for
+    /// body_slot_base computation.
     /// Populated from `resolve_surface_program`; used by `find_slot_in_frames` to assign
     /// correct slot positions when inserting bindings that don't yet have one.
-    pub resolver_frames: Vec<indexmap::IndexMap<String, u32>>,
+    pub resolver_frames: Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>,
     /// EvalContext from tinct's evaluation pipeline — passed in when type-checking runs
     /// within a program evaluation (e.g. via builtin-typecheck). Used by resolve_type_head
     /// to materialize type-stage thunks without ambient filesystem access. Never created

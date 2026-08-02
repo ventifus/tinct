@@ -972,7 +972,7 @@ pub enum Value {
         /// (make_method_dispatcher_fn) for mangled instance binding name resolution.
         ///
         /// Set by builtin-resolve. Empty if the document was not resolved.
-        resolver_frames: Arc<Vec<indexmap::IndexMap<String, u32>>>,
+        resolver_frames: Arc<Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>>,
         type_val: Arc<Value>,
     },
 

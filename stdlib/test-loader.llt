@@ -116,11 +116,22 @@
 
   bytes-empty?: [fn [let b] [builtin-eq-int [builtin-bytes-length b] 0]]
 
-  # null?: test if value is [] (empty dict). Same definition as loader.llt Dict 1.
+  # null?: test if value is [] (empty dict).
+  # Calls builtin-dict-length inside a zero-arg fn, forces the result with [call ...],
+  # then wraps in builtin-try so non-Dict values produce an error dict instead of crashing.
+  # If the value is a Dict, builtin-try returns {ok: length}; the check then tests
+  # whether length equals 0. Non-Dict values produce a non-ok result (no "ok" key),
+  # which fails the has-key check and returns 0 (false). This avoids using
+  # builtin-type-of for a string-based type test (type-of returns TypeValue.Repr, not a
+  # string), and avoids the broken Dict: keyed match arm (which resolves Dict as a VarRef
+  # not-in-scope → always false per resolve.rs suppress_depth / match_pattern Some(None) path).
+  # [call ...] is required: without it, builtin-try receives a Value::Fn thunk and
+  # materializes the function object itself (no error, always {ok: fn}, never catches dict-length errors).
   null?: [fn [let x]
-    [match x
-      Dict: [builtin-eq-int [builtin-dict-length x] 0]
-      ...:  0]]
+    [_try-result: [builtin-try [call [fn [] [builtin-dict-length x]]]]]
+    [match [builtin-has-key? "ok" _try-result]
+      0:   0
+      ...: [builtin-eq-int [builtin-dict-get "ok" _try-result] 0]]]
 
 
   # get-or: safe dict access with default value

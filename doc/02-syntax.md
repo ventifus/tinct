@@ -906,6 +906,8 @@ A tinct **file** contains one or more **documents** separated by `---`. Each doc
 
 **An empty document** (zero expressions) produces an empty dict `[]`. An empty file produces a file with one document containing zero expressions.
 
+**Leading separator suppression.** A `---` separator with no preceding content (i.e., the very first `---` in a file when nothing precedes it) and no header fields produces no document — the parser suppresses the inert empty document rather than emitting it. This ensures that files that begin with a header separator (e.g., `--- stage: "type"`) do not produce a spurious empty document before the intended first document.
+
 ### Document Separator / Section Headers
 
 The `---` line may carry optional section header components:

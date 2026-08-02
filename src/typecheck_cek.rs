@@ -640,45 +640,42 @@ async fn infer_step(
                     // That causes Dict2's internal env to use Dict1's slot base, corrupting
                     // get_scheme_at lookups from nested dict expressions inside Dict2's values.
                     let static_keys_pre = crate::resolve::surface_dict_static_keys(entries);
-                    // Minimum absolute slot for a document-level frame: all document-level
-                    // slots are >= N_root (= root group size). Fn-body sequential frames
-                    // start at 0 and have small slots. We filter these out in Phase 2 so
-                    // min() does not pick a fn-body frame over the correct document frame.
-                    let doc_min_slot: u32 = state.eval_ctx.as_ref()
-                        .map(|ctx| {
-                            ctx.root_group_resolver_map()
-                                .values()
-                                .copied()
-                                .max()
-                                .map(|m| m + 1)
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0);
+                    // Two-phase body_slot_base disambiguation:
+                    //
+                    // Phase 1 (exact match): search ALL frames (regardless of FrameKind) for a
+                    // frame where slot - j == sequential_slot_offset. Fn-body sequential frames
+                    // don't cause contamination here because sequential_slot_offset tracks the
+                    // correct base for the current sequential context.
+                    //
+                    // Phase 2 (fallback): when no exact match exists, restrict to DocSequential
+                    // frames only. Fn-body DictLetrec frames have small absolute slots starting
+                    // from 0 and must not win the min() selection over document-level frames.
+                    // FrameKind::DocSequential filtering replaces the old doc_min_slot heuristic.
                     let body_slot_base_pre: u32 = static_keys_pre
                         .iter()
                         .enumerate()
                         .find_map(|(j, key)| {
+                            // Phase 1: exact match across all frames.
                             let exact = state
                                 .resolver_frames
                                 .iter()
-                                .filter_map(|frame| frame.get(key.as_str()).copied())
+                                .filter_map(|(frame, _kind)| frame.get(key.as_str()).copied())
                                 .map(|slot| slot.saturating_sub(j as u32))
                                 .find(|&base| base == sequential_slot_offset);
                             if exact.is_some() {
                                 return exact;
                             }
-                            // Filter to document-level frames only: fn-body sequential
-                            // frames use small absolute slots (< doc_min_slot) and must
-                            // not win the min() selection over document-level frames.
+                            // Phase 2: filter to DocSequential frames only so fn-body
+                            // DictLetrec frames (with small absolute slots) don't
+                            // contaminate document-level body_slot_base computation.
                             let candidates: Vec<u32> = state
                                 .resolver_frames
                                 .iter()
-                                .filter_map(|frame| frame.get(key.as_str()).copied())
-                                .filter_map(|slot| {
-                                    // Require the slot itself to be >= doc_min_slot so
-                                    // fn-body slots (0..doc_min_slot-1) are excluded.
-                                    if doc_min_slot > 0 && slot < doc_min_slot { None } else { Some(slot.saturating_sub(j as u32)) }
+                                .filter(|(_frame, kind)| {
+                                    *kind == crate::resolve::FrameKind::DocSequential
                                 })
+                                .filter_map(|(frame, _kind)| frame.get(key.as_str()).copied())
+                                .map(|slot| slot.saturating_sub(j as u32))
                                 .collect();
                             if candidates.is_empty() {
                                 return None;
@@ -693,8 +690,14 @@ async fn infer_step(
                         })
                         .unwrap_or(sequential_slot_offset);
 
-                    let (_, schemes, referenced, mut dict_errs) =
-                        run_typecheck_dict(entries, &current_env, state, type_map, Some(body_slot_base_pre)).await;
+                    let (_, schemes, referenced, mut dict_errs) = run_typecheck_dict(
+                        entries,
+                        &current_env,
+                        state,
+                        type_map,
+                        Some(body_slot_base_pre),
+                    )
+                    .await;
                     errors.append(&mut dict_errs);
 
                     // Build a span map from the entries: name → entry.span.
@@ -730,7 +733,7 @@ async fn infer_step(
 
                     // Extend env with schemes (preserving let-polymorphism).
                     // Insert into SLOTS at the resolver-assigned slot indices so that
-                    // get_scheme_at(depth, slot) finds them via slot-based lookup (T-2080).
+                    // get_scheme_at(depth, slot) finds them via slot-based lookup.
                     // Liveness data (definition_span, referenced) lives on slot entries.
                     // Propagate referenced state from the sub-run: run_typecheck_dict creates
                     // fresh EnvSlots, losing the `referenced` flag set during its internal CEK run.
@@ -803,7 +806,7 @@ async fn infer_step(
             state.current_binding = None;
             // Span-keyed BindingId: use slot.definition_span rather than frame_ptr.
             // Bindings without a definition_span (synthetic/injected) are excluded from tracking.
-            // Read from SLOTS (the authoritative liveness location after T-2080).
+            // Read from SLOTS (the authoritative liveness location).
             let pre_final_refs: Vec<std::collections::HashSet<BindingId>> = intermediate_envs
                 .iter()
                 .map(|frame| {
@@ -1620,7 +1623,7 @@ async fn apply_cont(
 
             // Step 3: emit warnings for non-live bindings.
             // Bindings without definition_span are synthetic/injected — skip them.
-            // Read from SLOTS (the authoritative liveness location after T-2080).
+            // Read from SLOTS (the authoritative liveness location).
             for env_frame in &binding_envs {
                 let env_guard = env_frame.read().unwrap();
                 for slot_entry in &env_guard.slots {
@@ -3722,7 +3725,7 @@ fn compute_type_assert_mismatch(
         if let (Some(a_count), Some(e_count)) = (actual_param_count, expected_param_count) {
             if a_count != e_count {
                 return Some(vec![TypeDiagnostic::error(
-                    "type-error",
+                    "type-assertion",
                     format!(
                         "arity mismatch: expected {} arguments, got {}",
                         e_count, a_count
@@ -3746,7 +3749,7 @@ fn compute_type_assert_mismatch(
     };
     if definitely_fails {
         Some(vec![TypeDiagnostic::error(
-            "unification-failure",
+            "type-assertion",
             "type assertion mismatch: actual type is not consistent with expected type",
             span.clone(),
         )
@@ -4332,18 +4335,25 @@ pub(crate) async fn run_typecheck_dict(
     // When slot_base_override is None (DictPassZero or nested dicts), fall back to find_map.
     let static_keys_for_slot = crate::resolve::surface_dict_static_keys(entries);
     let body_slot_base_opt: Option<u32> = slot_base_override.or_else(|| {
-        // Filter to document-level frames (slot >= doc_min_slot) to avoid fn-body
-        // sequential frames with small slots winning over document-level ones.
-        let doc_min_slot: u32 = state.eval_ctx.as_ref()
-            .map(|ctx| ctx.root_group_resolver_map().values().copied().max().map(|m| m + 1).unwrap_or(0))
-            .unwrap_or(0);
+        // DictPassZero / nested dict fallback: find the first frame that has the first key.
+        // Prefer DocSequential frames first: when run_typecheck_dict is called recursively
+        // for nested Dict values inside fn-body SCC inference (with slot_base_override=None),
+        // state.resolver_frames contains fn-body DictLetrec frames with small absolute slots
+        // starting from 0. A DictLetrec frame sharing a key name with a document-level
+        // DocSequential frame would win a naive find_map and produce an incorrect slot base.
+        // Try DocSequential-only first; if none match (genuine fn-body nested dict where no
+        // document-level frame holds the key), fall back to all frames.
         static_keys_for_slot.first().and_then(|first_key| {
             state
                 .resolver_frames
                 .iter()
-                .find_map(|frame| {
-                    let slot = frame.get(first_key.as_str()).copied()?;
-                    if doc_min_slot > 0 && slot < doc_min_slot { None } else { Some(slot) }
+                .filter(|(_, kind)| *kind == crate::resolve::FrameKind::DocSequential)
+                .find_map(|(frame, _kind)| frame.get(first_key.as_str()).copied())
+                .or_else(|| {
+                    state
+                        .resolver_frames
+                        .iter()
+                        .find_map(|(frame, _kind)| frame.get(first_key.as_str()).copied())
                 })
         })
     });
@@ -4442,9 +4452,11 @@ pub(crate) async fn run_typecheck_dict(
                             fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
                             {
                                 let mut env_write = dict_env.write().unwrap();
-                                let slot =
-                                    super::find_slot_in_frames(&state.resolver_frames, &binding_name)
-                                        .unwrap_or_else(|| env_write.slots.len());
+                                let slot = super::find_slot_in_frames(
+                                    &state.resolver_frames,
+                                    &binding_name,
+                                )
+                                .unwrap_or_else(|| env_write.slots.len());
                                 env_write.insert_at_slot(
                                     slot,
                                     binding_name,

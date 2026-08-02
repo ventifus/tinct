@@ -168,8 +168,13 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // require a working outer-frame lookup chain.
     let eval_ctx_with_frames: std::sync::Arc<crate::eval::EvalContext> = {
         let root_frame = type_stage_eval_ctx.root_group_resolver_map();
-        let (_table, new_frames) =
+        let (_table, new_frames_with_kind) =
             crate::resolve::resolve_surface_program(&program, std::slice::from_ref(&root_frame));
+        // Extract just the frames, discarding FrameKind metadata
+        let new_frames: Vec<indexmap::IndexMap<String, u32>> = new_frames_with_kind
+            .into_iter()
+            .map(|(frame, _kind)| frame)
+            .collect();
         let all_frames: Vec<indexmap::IndexMap<String, u32>> =
             std::iter::once(root_frame).chain(new_frames).collect();
         type_stage_eval_ctx.with_scope_frames(std::sync::Arc::new(all_frames))
@@ -284,7 +289,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         }
     };
 
-    // T-2085: Insert type-stage bindings into parent_env by name.
+    // Insert type-stage bindings into parent_env by name.
     // This enables name-based lookup (get_scheme, resolve_type_head, etc.) from any
     // child env frame. Slot-based insertion (for get_scheme_at) happens in
     // typecheck_program_bootstrap after the resolver assigns the correct runtime slots.
