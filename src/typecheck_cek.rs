@@ -13,6 +13,7 @@
 //! (annotation resolution, async unify) directly. The CEK loop eliminates recursive
 //! calls to `run_typecheck` itself, not all async behavior.
 
+use crate::typecheck::find_slot_in_frames;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -632,8 +633,68 @@ async fn infer_step(
             for (_i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
+                    // Compute static_keys and body_slot_base BEFORE run_typecheck_dict so we
+                    // can pass the correct slot base. Without this, run_typecheck_dict's own
+                    // find_map picks the FIRST resolver frame with the key name, which may be
+                    // from a different dict (e.g. Dict1's frame for Dict2 when both define Boolean).
+                    // That causes Dict2's internal env to use Dict1's slot base, corrupting
+                    // get_scheme_at lookups from nested dict expressions inside Dict2's values.
+                    let static_keys_pre = crate::resolve::surface_dict_static_keys(entries);
+                    // Minimum absolute slot for a document-level frame: all document-level
+                    // slots are >= N_root (= root group size). Fn-body sequential frames
+                    // start at 0 and have small slots. We filter these out in Phase 2 so
+                    // min() does not pick a fn-body frame over the correct document frame.
+                    let doc_min_slot: u32 = state.eval_ctx.as_ref()
+                        .map(|ctx| {
+                            ctx.root_group_resolver_map()
+                                .values()
+                                .copied()
+                                .max()
+                                .map(|m| m + 1)
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0);
+                    let body_slot_base_pre: u32 = static_keys_pre
+                        .iter()
+                        .enumerate()
+                        .find_map(|(j, key)| {
+                            let exact = state
+                                .resolver_frames
+                                .iter()
+                                .filter_map(|frame| frame.get(key.as_str()).copied())
+                                .map(|slot| slot.saturating_sub(j as u32))
+                                .find(|&base| base == sequential_slot_offset);
+                            if exact.is_some() {
+                                return exact;
+                            }
+                            // Filter to document-level frames only: fn-body sequential
+                            // frames use small absolute slots (< doc_min_slot) and must
+                            // not win the min() selection over document-level frames.
+                            let candidates: Vec<u32> = state
+                                .resolver_frames
+                                .iter()
+                                .filter_map(|frame| frame.get(key.as_str()).copied())
+                                .filter_map(|slot| {
+                                    // Require the slot itself to be >= doc_min_slot so
+                                    // fn-body slots (0..doc_min_slot-1) are excluded.
+                                    if doc_min_slot > 0 && slot < doc_min_slot { None } else { Some(slot.saturating_sub(j as u32)) }
+                                })
+                                .collect();
+                            if candidates.is_empty() {
+                                return None;
+                            }
+                            if let Some(initial) = doc_initial_offset {
+                                let expected = initial + sequential_slot_offset;
+                                if let Some(&b) = candidates.iter().find(|&&b| b == expected) {
+                                    return Some(b);
+                                }
+                            }
+                            candidates.into_iter().min()
+                        })
+                        .unwrap_or(sequential_slot_offset);
+
                     let (_, schemes, referenced, mut dict_errs) =
-                        run_typecheck_dict(entries, &current_env, state, type_map).await;
+                        run_typecheck_dict(entries, &current_env, state, type_map, Some(body_slot_base_pre)).await;
                     errors.append(&mut dict_errs);
 
                     // Build a span map from the entries: name → entry.span.
@@ -657,64 +718,11 @@ async fn infer_step(
                         }
                     }
 
-                    // Compute the ordered static key list — same ordering the resolver uses
-                    // to assign LGM slots via enter_scope_with_offset(all_keys, sequential_offset).
-                    // Entry j in static_keys gets LGM slot (body_slot_base + j).
-                    let static_keys = crate::resolve::surface_dict_static_keys(entries);
-
-                    // Determine the starting LGM slot for this dict body.
-                    // resolver_frames contains unified scope frames from resolve_surface_program —
-                    // both Dict letrec frames and BlockBody sequential injection frames, in
-                    // injection order. Multiple functions may have identically-
-                    // named intermediate bodies at different slot positions (e.g. join has
-                    // "loop" at slot 1, env-to-name-set has "loop" at slot 2). Disambiguation:
-                    //
-                    // 1. Prefer frames where computed base == sequential_slot_offset (exact match).
-                    //    For fn-body sequential: sequential_slot_offset IS the expected base.
-                    //    This correctly selects the right function's frame over others with the
-                    //    same key name at a different relative position.
-                    //
-                    // 2. If no exact match, accept any frame (document-level abs-slot bodies).
-                    //    For document-level body N>0: prefer the frame where base - sequential_slot_offset
-                    //    equals doc_initial_offset (learned from body 0). This disambiguates when
-                    //    multiple bodies share the same first key name (e.g. both Dict1 and Dict2 start
-                    //    with "Boolean"). For body 0 (no prior offset known), use minimum-base frame.
-                    let body_slot_base: u32 = static_keys
-                        .iter()
-                        .enumerate()
-                        .find_map(|(j, key)| {
-                            // Phase 1: look for a frame where the computed base exactly
-                            // equals sequential_slot_offset (fn-body disambiguation).
-                            let exact = state
-                                .resolver_frames
-                                .iter()
-                                .filter_map(|frame| frame.get(key.as_str()).copied())
-                                .map(|slot| slot.saturating_sub(j as u32))
-                                .find(|&base| base == sequential_slot_offset);
-                            if exact.is_some() {
-                                return exact;
-                            }
-                            // Phase 2: document-level body disambiguation.
-                            let candidates: Vec<u32> = state
-                                .resolver_frames
-                                .iter()
-                                .filter_map(|frame| frame.get(key.as_str()).copied())
-                                .map(|slot| slot.saturating_sub(j as u32))
-                                .collect();
-                            if candidates.is_empty() {
-                                return None;
-                            }
-                            if let Some(initial) = doc_initial_offset {
-                                // Body N>0: find the frame where base = initial_offset + sequential_slot_offset.
-                                let expected = initial + sequential_slot_offset;
-                                if let Some(&b) = candidates.iter().find(|&&b| b == expected) {
-                                    return Some(b);
-                                }
-                            }
-                            // Body 0 or no match: use minimum candidate (smallest abs slot = body 0's frame).
-                            candidates.into_iter().min()
-                        })
-                        .unwrap_or(sequential_slot_offset);
+                    // Reuse the static_keys and body_slot_base computed before run_typecheck_dict.
+                    // These are the same values — static_keys_pre/body_slot_base_pre were computed
+                    // above with the correct disambiguation logic for sequential position.
+                    let static_keys = static_keys_pre;
+                    let body_slot_base: u32 = body_slot_base_pre;
                     // Record doc_initial_offset from body 0's base (for subsequent bodies).
                     if doc_initial_offset.is_none() && body_slot_base > sequential_slot_offset {
                         doc_initial_offset = Some(body_slot_base - sequential_slot_offset);
@@ -755,10 +763,13 @@ async fn infer_step(
                             );
                         }
                     }
-                    // Any schemes not in static_keys (e.g. injected constructor schemes) go to extras.
+                    // Any schemes not in static_keys (e.g. injected constructor schemes) go to slots.
+                    // Use resolver-assigned slot if available; otherwise append at end.
                     for (name, scheme) in &schemes {
                         if !static_keys.contains(name) {
-                            new_env_inner.insert_scheme_named_only(name.clone(), scheme.clone());
+                            let slot = find_slot_in_frames(&state.resolver_frames, name)
+                                .unwrap_or_else(|| new_env_inner.slots.len());
+                            new_env_inner.insert_at_slot(slot, name.clone(), scheme.clone(), None);
                         }
                     }
                     // Advance the cumulative slot counter by this body's static key count.
@@ -1653,7 +1664,7 @@ async fn apply_cont(
         // structural type information.
         TypeCheckCont::DictPassZero { entries, env } => {
             let (record_type, _schemes, _referenced, mut dict_errs) =
-                Box::pin(run_typecheck_dict(&entries, &env, state, type_map)).await;
+                Box::pin(run_typecheck_dict(&entries, &env, state, type_map, None)).await;
             errors.append(&mut dict_errs);
             TypeCheckAction::Done(record_type)
         }
@@ -1800,11 +1811,12 @@ async fn infer_var_ref(
             }
         }
     } else {
-        // No resolver address — type-checker-internal binding only.
-        // (Narrowing overrides, class dispatch names — not user-written, not in liveness graph.)
+        // No resolver address — should not happen for user bindings.
         // User bindings always have resolver addresses via typecheck_program_bootstrap.
+        // Type-checker-internal bindings (narrowing overrides, class dispatch names) are
+        // now stored in slots with an appended position — look up by name via get_scheme.
         // DO NOT record use_def edge for these — they are not Sequential intermediates.
-        env.read().unwrap().get_extras_scheme(name)
+        env.read().unwrap().get_scheme(name)
     };
 
     if let Some(scheme) = scheme {
@@ -4243,7 +4255,7 @@ pub(crate) async fn entry_key_name(
 ///   by `process_document` for cross-document scoping and by `Sequential` for
 ///   let-polymorphism across multi-body function steps)
 /// - `referenced` is a `HashSet<String>` of names that were actually referenced during the
-///   internal CEK run (collected from dict_env.extras). Callers that propagate schemes into a
+///   internal CEK run (collected from dict_env.slots). Callers that propagate schemes into a
 ///   fresh env frame must also propagate this set to avoid lost-binding false positives.
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
@@ -4257,6 +4269,7 @@ pub(crate) async fn run_typecheck_dict(
     env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
+    slot_base_override: Option<u32>,
 ) -> (
     TypeValue,
     indexmap::IndexMap<String, TypeValue>,
@@ -4310,16 +4323,29 @@ pub(crate) async fn run_typecheck_dict(
     // in SOURCE ORDER (matching resolver slot assignment order from surface_dict_static_keys).
     // IndexMap preserves insertion order for deterministic iteration.
     //
-    // Dual-insert: extras (for backward-compat extras lookups) AND slots at the resolver-
-    // assigned absolute slot (for LGM-based get_scheme_at lookups — B-677 fix). The slot
-    // base is derived from resolver_frames exactly as the Sequential handler computes
-    // body_slot_base: find the first static key's absolute slot in any resolver frame.
+    // Insert at resolver-assigned absolute slots (for LGM-based get_scheme_at lookups — B-677 fix).
+    // When called from the Sequential handler, slot_base_override is the correct absolute base
+    // computed by the Sequential handler's body_slot_base disambiguation (Phase 1/2). Use it
+    // directly to avoid the find_map ambiguity that arises when multiple dicts share the same
+    // first key name (e.g. both Dict1 and Dict2 defining Boolean: the find_map picks Dict1's
+    // frame for Dict2, inserting Dict2's entries at Dict1's slots and corrupting lookups).
+    // When slot_base_override is None (DictPassZero or nested dicts), fall back to find_map.
     let static_keys_for_slot = crate::resolve::surface_dict_static_keys(entries);
-    let body_slot_base_opt: Option<u32> = static_keys_for_slot.first().and_then(|first_key| {
-        state
-            .resolver_frames
-            .iter()
-            .find_map(|frame| frame.get(first_key.as_str()).copied())
+    let body_slot_base_opt: Option<u32> = slot_base_override.or_else(|| {
+        // Filter to document-level frames (slot >= doc_min_slot) to avoid fn-body
+        // sequential frames with small slots winning over document-level ones.
+        let doc_min_slot: u32 = state.eval_ctx.as_ref()
+            .map(|ctx| ctx.root_group_resolver_map().values().copied().max().map(|m| m + 1).unwrap_or(0))
+            .unwrap_or(0);
+        static_keys_for_slot.first().and_then(|first_key| {
+            state
+                .resolver_frames
+                .iter()
+                .find_map(|frame| {
+                    let slot = frame.get(first_key.as_str()).copied()?;
+                    if doc_min_slot > 0 && slot < doc_min_slot { None } else { Some(slot) }
+                })
+        })
     });
     let mut fresh_vars_by_name: indexmap::IndexMap<String, TypeValue> = indexmap::IndexMap::new();
     let mut static_slot_idx: u32 = 0;
@@ -4356,37 +4382,35 @@ pub(crate) async fn run_typecheck_dict(
                     if !is_alias {
                         fresh_vars_by_name.insert(name.clone(), Arc::clone(&fn_type));
                     }
-                    if let Some(slot) = abs_slot {
-                        dict_env.write().unwrap().insert_at_slot(
-                            slot as usize,
+                    {
+                        let mut env_write = dict_env.write().unwrap();
+                        let slot = abs_slot
+                            .map(|s| s as usize)
+                            .unwrap_or_else(|| env_write.slots.len());
+                        env_write.insert_at_slot(
+                            slot,
                             name.clone(),
                             Arc::clone(&fn_type),
                             Some(entry.span.clone()),
                         );
                     }
-                    dict_env.write().unwrap().insert_scheme_with_span(
-                        name.clone(),
-                        Arc::clone(&fn_type),
-                        entry.span.clone(),
-                    );
                 } else {
                     let fresh_var = state.fresh_type_var(&entry.span);
                     if !is_alias {
                         fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
                     }
-                    if let Some(slot) = abs_slot {
-                        dict_env.write().unwrap().insert_at_slot(
-                            slot as usize,
+                    {
+                        let mut env_write = dict_env.write().unwrap();
+                        let slot = abs_slot
+                            .map(|s| s as usize)
+                            .unwrap_or_else(|| env_write.slots.len());
+                        env_write.insert_at_slot(
+                            slot,
                             name.clone(),
                             Arc::clone(&fresh_var),
                             Some(entry.span.clone()),
                         );
                     }
-                    dict_env.write().unwrap().insert_scheme_with_span(
-                        name.clone(),
-                        Arc::clone(&fresh_var),
-                        entry.span.clone(),
-                    );
                 }
             }
         }
@@ -4416,10 +4440,18 @@ pub(crate) async fn run_typecheck_dict(
                             );
                             let fresh_var = state.fresh_type_var(&entry.span);
                             fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
-                            dict_env
-                                .write()
-                                .unwrap()
-                                .insert_scheme_named_only(binding_name, Arc::clone(&fresh_var));
+                            {
+                                let mut env_write = dict_env.write().unwrap();
+                                let slot =
+                                    super::find_slot_in_frames(&state.resolver_frames, &binding_name)
+                                        .unwrap_or_else(|| env_write.slots.len());
+                                env_write.insert_at_slot(
+                                    slot,
+                                    binding_name,
+                                    Arc::clone(&fresh_var),
+                                    None,
+                                );
+                            }
                         }
                     }
                 }
@@ -4607,10 +4639,18 @@ pub(crate) async fn run_typecheck_dict(
                             for (ctor_name, ctor_tv) in ctor_fields {
                                 ctor_schemes.insert(ctor_name, ctor_tv);
                             }
-                            dict_env.write().unwrap().insert_scheme_named_only(
-                                name.clone(),
-                                Arc::clone(&value_scheme_ty),
-                            );
+                            {
+                                let mut env_write = dict_env.write().unwrap();
+                                let slot =
+                                    super::find_slot_in_frames(&state.resolver_frames, &name)
+                                        .unwrap_or_else(|| env_write.slots.len());
+                                env_write.insert_at_slot(
+                                    slot,
+                                    name.clone(),
+                                    Arc::clone(&value_scheme_ty),
+                                    None,
+                                );
+                            }
                         }
                     }
                 }
@@ -4825,11 +4865,21 @@ pub(crate) async fn run_typecheck_dict(
                                                     &state.ctx,
                                                 );
 
-                                                // Insert into dict_env via extras path.
-                                                dict_env
-                                                    .write()
-                                                    .unwrap()
-                                                    .insert_scheme_named_only(method_name, scheme);
+                                                // Insert into dict_env at the resolver-assigned slot.
+                                                {
+                                                    let mut env_write = dict_env.write().unwrap();
+                                                    let slot = super::find_slot_in_frames(
+                                                        &state.resolver_frames,
+                                                        &method_name,
+                                                    )
+                                                    .unwrap_or_else(|| env_write.slots.len());
+                                                    env_write.insert_at_slot(
+                                                        slot,
+                                                        method_name,
+                                                        scheme,
+                                                        None,
+                                                    );
+                                                }
                                             }
                                             Err(type_err) => {
                                                 errors.push(type_err);
@@ -4943,7 +4993,7 @@ pub(crate) async fn run_typecheck_dict(
                 let value_ty =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
                         let (ty, _schemes, _referenced, mut nested_errs) = Box::pin(
-                            run_typecheck_dict(nested_entries, &scc_env, state, type_map),
+                            run_typecheck_dict(nested_entries, &scc_env, state, type_map, None),
                         )
                         .await;
                         errors.append(&mut nested_errs);
@@ -5282,10 +5332,15 @@ pub(crate) async fn run_typecheck_dict(
 
                     if state.failed_bindings.contains_key(name) {
                         let scheme = generalize_tv(enclosing_level, ty, &state.ctx);
-                        dict_env
-                            .write()
-                            .unwrap()
-                            .insert_scheme_named_only(name.clone(), scheme);
+                        {
+                            let mut env_write = dict_env.write().unwrap();
+                            let slot = env_write
+                                .slot_index
+                                .get(name.as_str())
+                                .copied()
+                                .unwrap_or_else(|| env_write.slots.len());
+                            env_write.insert_at_slot(slot, name.clone(), scheme, None);
+                        }
                         continue;
                     }
 
@@ -5307,10 +5362,15 @@ pub(crate) async fn run_typecheck_dict(
 
                     state.constraints = saved_constraints;
 
-                    dict_env
-                        .write()
-                        .unwrap()
-                        .insert_scheme_named_only(name.clone(), scheme);
+                    {
+                        let mut env_write = dict_env.write().unwrap();
+                        let slot = env_write
+                            .slot_index
+                            .get(name.as_str())
+                            .copied()
+                            .unwrap_or_else(|| env_write.slots.len());
+                        env_write.insert_at_slot(slot, name.clone(), scheme, None);
+                    }
                 }
             }
         }
@@ -5322,10 +5382,18 @@ pub(crate) async fn run_typecheck_dict(
             if let Some(name) = key_name {
                 if let Some(def) = state.tycon_env.get(name.as_str()) {
                     if def.params.is_empty() {
-                        dict_env
-                            .write()
-                            .unwrap()
-                            .insert_scheme_named_only(name.clone(), adt_value_type(&def.body));
+                        let mut env_write = dict_env.write().unwrap();
+                        let slot = env_write
+                            .slot_index
+                            .get(name.as_str())
+                            .copied()
+                            .unwrap_or_else(|| env_write.slots.len());
+                        env_write.insert_at_slot(
+                            slot,
+                            name.clone(),
+                            adt_value_type(&def.body),
+                            None,
+                        );
                     }
                 }
             }
@@ -5382,14 +5450,16 @@ pub(crate) async fn run_typecheck_dict(
     let referenced: std::collections::HashSet<String> = {
         let dict_env_guard = dict_env.read().unwrap();
         dict_env_guard
-            .extras
+            .slots
             .iter()
-            .filter_map(|(name, slot)| {
-                if slot.referenced {
-                    Some(name.clone())
-                } else {
-                    None
-                }
+            .filter_map(|entry| {
+                entry.as_ref().and_then(|(name, slot)| {
+                    if slot.referenced {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
             })
             .collect()
     };

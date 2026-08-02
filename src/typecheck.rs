@@ -161,8 +161,12 @@ pub async fn typecheck_program_bootstrap(
                 let idx = slot as usize;
                 child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
                 covered.insert(idx);
+            } else {
+                // No resolver slot for this type-stage name — append at end so name-based
+                // lookup (get_scheme via slot_index) still works.
+                let idx = child_inner.slots.len();
+                child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
             }
-            child_inner.insert_scheme_named_only(name.clone(), Arc::clone(tv));
         }
         for (name, _thunk) in &state.type_stage_fns {
             let tv = make_typevalue_op(name);
@@ -176,8 +180,11 @@ pub async fn typecheck_program_bootstrap(
                 let idx = slot as usize;
                 child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
                 covered.insert(idx);
+            } else {
+                // No resolver slot for this type-stage fn — append at end.
+                let idx = child_inner.slots.len();
+                child_inner.insert_at_slot(idx, name.clone(), tv, None);
             }
-            child_inner.insert_scheme_named_only(name.clone(), tv);
         }
         for (name, _kind) in &state.type_stage_type_vars {
             let tv = make_typevalue_op(name);
@@ -191,11 +198,22 @@ pub async fn typecheck_program_bootstrap(
                 let idx = slot as usize;
                 child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
                 covered.insert(idx);
+            } else {
+                // No resolver slot for this type-stage type var — append at end.
+                let idx = child_inner.slots.len();
+                child_inner.insert_at_slot(idx, name.clone(), tv, None);
             }
-            child_inner.insert_scheme_named_only(name.clone(), tv);
         }
 
         // Walk parent_env chain from outermost to innermost (innermost wins on conflict).
+        // Only copy entries that belong to the runtime root frame (builtins + caps), remapping
+        // to their correct runtime slot positions. parent_env (builtin_env_base) was resolved
+        // with an empty root frame (initial_offset=0), so its type-stage entries (Integer, Float,
+        // etc.) occupy slots 0, 1, 2, ... which collide with runtime builtin slots. We ONLY copy
+        // entries that root_frame_for_ts knows about, at the slot root_frame_for_ts assigns them.
+        // Type-stage names not in root_frame_for_ts are skipped — they are accessible via
+        // get_scheme(name) through the parent chain's slot_index, and via type_stage_scope for
+        // annotation resolution.
         let mut chain: Vec<Arc<RwLock<Env>>> = Vec::new();
         {
             let mut cursor = Some(Arc::clone(&parent_env));
@@ -206,13 +224,21 @@ pub async fn typecheck_program_bootstrap(
         }
         for frame in chain.iter().rev() {
             let frame_read = frame.read().unwrap();
-            for (idx, slot_entry) in frame_read.slots.iter().enumerate() {
+            for (_, slot_entry) in frame_read.slots.iter().enumerate() {
                 if let Some((name, env_slot)) = slot_entry {
                     if let Some(ref scheme) = env_slot.scheme {
-                        if !covered.contains(&idx) {
-                            child_inner.insert_at_slot(idx, name.clone(), Arc::clone(scheme), None);
-                            child_inner.insert_scheme_named_only(name.clone(), Arc::clone(scheme));
-                            covered.insert(idx);
+                        // Remap to the runtime slot; skip names not in the runtime root frame.
+                        if let Some(&rt_slot) = root_frame_for_ts.get(name.as_str()) {
+                            let target_idx = rt_slot as usize;
+                            if !covered.contains(&target_idx) {
+                                child_inner.insert_at_slot(
+                                    target_idx,
+                                    name.clone(),
+                                    Arc::clone(scheme),
+                                    None,
+                                );
+                                covered.insert(target_idx);
+                            }
                         }
                     }
                 }
@@ -224,7 +250,6 @@ pub async fn typecheck_program_bootstrap(
             let idx = slot as usize;
             if !covered.contains(&idx) {
                 child_inner.insert_at_slot(idx, name.clone(), make_typevalue_unknown(), None);
-                child_inner.insert_scheme_named_only(name.clone(), make_typevalue_unknown());
             }
         }
     }
@@ -268,8 +293,7 @@ pub async fn typecheck_program_bootstrap(
 /// callers holding the child Env can see all new bindings.
 ///
 /// Since `target_env.parent == parent_env`, schemes that already exist in the parent
-/// chain are already visible — no filtering is needed. Duplicate insertion is safe
-/// (`insert_scheme_named_only` and `insert_scheme_with_span` are idempotent for same-name, same-value).
+/// chain are already visible — no filtering is needed.
 fn merge_env_schemes_into_env(
     source_env: &Arc<RwLock<Env>>,
     target_env: &Arc<RwLock<Env>>,
@@ -298,20 +322,18 @@ fn merge_env_schemes_into_env(
         let frame = frame_arc.read().unwrap();
         for (name, slot) in frame.iter_slots() {
             if let Some(ref scheme) = slot.scheme {
-                if let Some(ref span) = slot.definition_span {
-                    guard.insert_scheme_with_span(name.to_string(), scheme.clone(), span.clone());
+                // Find existing slot in target or append a new one.
+                let target_slot = if let Some(&pos) = guard.slot_index.get(name) {
+                    pos
                 } else {
-                    guard.insert_scheme_named_only(name.to_string(), scheme.clone());
-                }
-            }
-        }
-        for (name, slot) in &frame.extras {
-            if let Some(ref scheme) = slot.scheme {
-                if let Some(ref span) = slot.definition_span {
-                    guard.insert_scheme_with_span(name.clone(), scheme.clone(), span.clone());
-                } else {
-                    guard.insert_scheme_named_only(name.clone(), scheme.clone());
-                }
+                    guard.slots.len()
+                };
+                guard.insert_at_slot(
+                    target_slot,
+                    name.to_string(),
+                    scheme.clone(),
+                    slot.definition_span.clone(),
+                );
             }
         }
         for (_, decl) in &frame.classes {
@@ -455,6 +477,22 @@ fn make_typevalue_record(
     })
 }
 
+/// Look up `name` in `frames` (innermost-first) and return its slot as `usize`, or `None`.
+///
+/// Used to assign resolver-correct slots to bindings that need slot insertion but were not
+/// yet inserted via `insert_at_slot` at the point of the call.
+pub(crate) fn find_slot_in_frames(
+    frames: &[indexmap::IndexMap<String, u32>],
+    name: &str,
+) -> Option<usize> {
+    for frame in frames.iter().rev() {
+        if let Some(&slot) = frame.get(name) {
+            return Some(slot as usize);
+        }
+    }
+    None
+}
+
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     parent_env: &Arc<RwLock<Env>>,
@@ -576,10 +614,11 @@ pub(crate) async fn process_document(
     // and are handled separately below via the tycon_env diff.
     if let Some(fields) = extract_record_fields(&result_ty) {
         for (name, field_tv) in fields {
-            // After S-1003: generalize returns a TypeValue (possibly TypeValue.Scheme for polymorphic).
-            // insert_scheme_named_only takes TypeValue directly.
             let tv = generalize_tv(enclosing_level, &field_tv, &state.ctx);
-            result_env_inner.insert_scheme_named_only(name, tv);
+            // Use resolver-assigned slot if available; otherwise append at end.
+            let slot = find_slot_in_frames(&state.resolver_frames, &name)
+                .unwrap_or_else(|| result_env_inner.slots.len());
+            result_env_inner.insert_at_slot(slot, name, tv, None);
         }
     }
 
@@ -593,12 +632,16 @@ pub(crate) async fn process_document(
     for (name, def) in &state.tycon_env {
         if !tycon_keys_before.contains(name) && def.params.is_empty() {
             let value_ty = typecheck_cek::adt_value_type(&def.body);
-            // After S-1003: insert_scheme_named_only takes TypeValue directly.
-            result_env_inner.insert_scheme_named_only(name.clone(), Arc::clone(&value_ty));
+            // Use resolver-assigned slot if available; otherwise append at end.
+            let slot = find_slot_in_frames(&state.resolver_frames, name)
+                .unwrap_or_else(|| result_env_inner.slots.len());
+            result_env_inner.insert_at_slot(slot, name.clone(), Arc::clone(&value_ty), None);
             // Insert each constructor name with its variant TypeValue.
             if let Some(ctor_fields) = extract_record_fields(&value_ty) {
                 for (ctor_name, ctor_tv) in ctor_fields {
-                    result_env_inner.insert_scheme_named_only(ctor_name, ctor_tv);
+                    let ctor_slot = find_slot_in_frames(&state.resolver_frames, &ctor_name)
+                        .unwrap_or_else(|| result_env_inner.slots.len());
+                    result_env_inner.insert_at_slot(ctor_slot, ctor_name, ctor_tv, None);
                 }
             }
         }
@@ -1136,14 +1179,15 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
             let scheme = generalize_tv(state.ctx.current_level, &method_impl_type, &state.ctx);
 
-            // Insert into the parent dict env. The env parameter is the dict's environment,
-            // so inserting here makes the ɪ-prefixed binding visible to the same scope as
-            // the instance declaration itself (letrec scope).
-            // All dict bindings go to extras via insert_scheme_named_only; infer_var_ref
-            // finds them through get_extras_scheme when the slot lookup fails.
-            env.write()
-                .unwrap()
-                .insert_scheme_named_only(binding_name, scheme);
+            // Insert into the parent dict env at the resolver-assigned slot, or append.
+            // The ɪ-prefixed binding name is assigned a slot by the resolver since lower.rs
+            // creates a concrete dict entry for it.
+            {
+                let mut env_write = env.write().unwrap();
+                let slot = find_slot_in_frames(&state.resolver_frames, &binding_name)
+                    .unwrap_or_else(|| env_write.slots.len());
+                env_write.insert_at_slot(slot, binding_name, scheme, None);
+            }
         }
 
         // Pop the type param scope frame pushed before method body checking.

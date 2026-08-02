@@ -284,25 +284,37 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         }
     };
 
-    // T-2085: Insert type-stage bindings into parent_env extras by name.
+    // T-2085: Insert type-stage bindings into parent_env by name.
     // This enables name-based lookup (get_scheme, resolve_type_head, etc.) from any
     // child env frame. Slot-based insertion (for get_scheme_at) happens in
     // typecheck_program_bootstrap after the resolver assigns the correct runtime slots.
+    // Type-stage names have no pre-assigned slots in parent_env at this point — append.
     {
         let mut env_write = parent_env.write().unwrap();
         // Resolved entries: insert their TypeValue directly.
         for (name, tv) in type_stage_data.scope.iter().flat_map(|m| m.iter()) {
-            env_write.insert_scheme_named_only(name.clone(), Arc::clone(tv));
+            let slot = env_write.slots.len();
+            env_write.insert_at_slot(slot, name.clone(), Arc::clone(tv), None);
         }
         // Function entries: insert make_typevalue_op placeholder.
         for (name, _thunk) in &type_stage_data.fns {
-            env_write
-                .insert_scheme_named_only(name.clone(), crate::type_infer::make_typevalue_op(name));
+            let slot = env_write.slots.len();
+            env_write.insert_at_slot(
+                slot,
+                name.clone(),
+                crate::type_infer::make_typevalue_op(name),
+                None,
+            );
         }
         // TypeVar entries: insert make_typevalue_op placeholder.
         for (name, _kind) in &type_stage_data.type_vars {
-            env_write
-                .insert_scheme_named_only(name.clone(), crate::type_infer::make_typevalue_op(name));
+            let slot = env_write.slots.len();
+            env_write.insert_at_slot(
+                slot,
+                name.clone(),
+                crate::type_infer::make_typevalue_op(name),
+                None,
+            );
         }
     }
 

@@ -6821,8 +6821,7 @@ mod tests {
     async fn build_core_env_has_builtins() {
         let env = build_core_env();
         let env_ref = env.read().unwrap();
-        // After T-1897, Env builtins are in extras (name-only, no resolver slot).
-        // Check that builtin names are reachable via has_name.
+        // Check that builtin names are reachable via has_name (inserted via insert_slot_name_only).
         assert!(
             env_ref.has_name(crate::lower::BUILTIN_RAISE_NAME),
             "missing builtin builtin-raise in core env"
@@ -7626,8 +7625,7 @@ mod tests {
         let core_env = build_core_env();
         let env = core_env.read().unwrap();
 
-        // After T-1897, builtins are in extras (name-only, no resolver slot).
-        // Verify builtin names are reachable via has_name.
+        // Verify builtin names are reachable via has_name (inserted via insert_slot_name_only).
         let required_names: &[&str] = &[
             crate::lower::BUILTIN_RAISE_NAME,
             "builtin-type-of",

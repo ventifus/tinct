@@ -376,7 +376,7 @@ This is the single canonical call-checking path — the old `check_call`/`check_
 
 **Carries:** `remaining_arms`, `env`, `accumulated_types`, `scrutinee_ty`, `remaining_scrutinee`, `span`, `arm_body_env`.
 
-`arm_body_env: Option<Arc<RwLock<Env>>>` — the env frame containing the case arm's let-binding extras, if this arm had a `[case [let ...] ...]` form. `Some(env)` for case arms with let-bindings; `None` for keyed arms. Used after the arm body evaluates to detect unreferenced case arm bindings (lost-binding warnings via `env_guard.extras` slots with `referenced = false`).
+`arm_body_env: Option<Arc<RwLock<Env>>>` — the env frame containing the case arm's let-binding slots, if this arm had a `[case [let ...] ...]` form. `Some(env)` for case arms with let-bindings; `None` for keyed arms. Used after the arm body evaluates to detect unreferenced case arm bindings (lost-binding warnings via slot entries with `referenced = false`).
 
 **What `apply_cont` does:** receives one arm body type. Emits lost-binding warnings for any unreferenced slots in `arm_body_env` (if present). Appends the body type to `accumulated_types`. If `remaining_arms` is non-empty, calls `setup_match_arm_env` for the next arm and pushes another `MatchArm`. When all arms are processed, computes the union of `accumulated_types` and returns `Done(union_type)`.
 

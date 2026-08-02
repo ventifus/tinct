@@ -2168,13 +2168,13 @@ pub struct InferState {
     ///
     /// Always populated: entry points run the resolver before type-checking. Tests that
     /// construct InferState directly get an empty table (no VarRef resolution → all lookups
-    /// fall through to extras).
+    /// return None from slots).
     pub resolution_table: std::sync::Arc<crate::ast::ResolutionTable>,
     /// Unified scope frames from the resolver pass: both Dict letrec frames and
     /// BlockBody sequential injection frames, in injection order. Each frame maps
     /// binding names to their absolute resolver-assigned slot numbers.
-    /// Populated from `resolve_surface_program`; retained for future use or introspection.
-    /// Dict bindings now go to extras via `insert_scheme_named_only` (not slot-indexed).
+    /// Populated from `resolve_surface_program`; used by `find_slot_in_frames` to assign
+    /// correct slot positions when inserting bindings that don't yet have one.
     pub resolver_frames: Vec<indexmap::IndexMap<String, u32>>,
     /// EvalContext from tinct's evaluation pipeline — passed in when type-checking runs
     /// within a program evaluation (e.g. via builtin-typecheck). Used by resolve_type_head

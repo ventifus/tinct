@@ -2776,6 +2776,23 @@ pub(crate) fn builtin_typecheck_doc(
             (state, parent_env)
         };
 
+        // Install the child document's resolver frames into state so that slot-based lookups
+        // (get_scheme_at, find_slot_in_frames) use the correct slot assignments for THIS document.
+        // resolver_frames comes from Value::Document (produced by builtin-resolve) and contains
+        // the unified scope frames for the document being type-checked. Without this, state.resolver_frames
+        // stays empty, causing find_slot_in_frames to always return None and child_env seeding to
+        // append entries sequentially rather than at their correct runtime slot positions.
+        state.resolver_frames = (*resolver_frames).clone();
+        // Also populate state.resolution_table from the document's resolution table so that
+        // infer_var_ref can look up VarAddr for each VarRef node.
+        state.resolution_table = Arc::clone(&doc_arc.resolution_table);
+
+        // Build root_frame_for_ts: the runtime root group resolver map (builtins + caps).
+        // This mirrors typecheck_program_bootstrap's approach: parent env entries are remapped
+        // to their runtime slot positions (not the parent's slot positions, which are for a
+        // different document's resolver scope).
+        let root_frame_for_ts: indexmap::IndexMap<String, u32> = ctx.root_group_resolver_map();
+
         // Seed child_env with all root-group entries so that get_scheme_at(N, slot) correctly
         // finds them at depth N via normal parent-chain traversal. Same priority model as
         // typecheck_program_bootstrap: type-stage entries first, then parent_env chain, then Unknown.
@@ -2783,23 +2800,60 @@ pub(crate) fn builtin_typecheck_doc(
             Arc::clone(&parent_env),
         )));
         {
-            use crate::type_infer::make_typevalue_op;
+            use crate::type_infer::{make_typevalue_op, make_typevalue_unknown};
             let mut child_inner = child_env.write().unwrap();
+            let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
             // Type-stage entries get their actual TypeValues (highest priority).
+            // Use root_frame_for_ts slot if available; otherwise append at end.
             for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
-                child_inner.insert_scheme_named_only(name.clone(), Arc::clone(tv));
+                let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
+                    state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied())
+                });
+                if let Some(slot) = abs_slot {
+                    let idx = slot as usize;
+                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
+                    covered.insert(idx);
+                } else {
+                    let idx = child_inner.slots.len();
+                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
+                }
             }
             for (name, _thunk) in &state.type_stage_fns {
                 let tv = make_typevalue_op(name);
-                child_inner.insert_scheme_named_only(name.clone(), tv);
+                let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
+                    state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied())
+                });
+                if let Some(slot) = abs_slot {
+                    let idx = slot as usize;
+                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
+                    covered.insert(idx);
+                } else {
+                    let idx = child_inner.slots.len();
+                    child_inner.insert_at_slot(idx, name.clone(), tv, None);
+                }
             }
             for (name, _kind) in &state.type_stage_type_vars {
                 let tv = make_typevalue_op(name);
-                child_inner.insert_scheme_named_only(name.clone(), tv);
+                let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
+                    state.resolver_frames.iter().find_map(|f| f.get(name.as_str()).copied())
+                });
+                if let Some(slot) = abs_slot {
+                    let idx = slot as usize;
+                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
+                    covered.insert(idx);
+                } else {
+                    let idx = child_inner.slots.len();
+                    child_inner.insert_at_slot(idx, name.clone(), tv, None);
+                }
             }
 
-            // Walk parent_env chain from outermost to innermost (innermost wins on conflict).
+            // Walk parent_env chain from outermost to innermost, remapping entries to their
+            // runtime root-group slot positions (via root_frame_for_ts). This mirrors
+            // typecheck_program_bootstrap's approach: only copy entries whose names are in the
+            // runtime root group, at the slot root_frame_for_ts assigns them. Entries not in
+            // root_frame_for_ts are skipped — they belong to a different document's scope
+            // and are accessible via the parent chain's name-based lookup (get_scheme).
             let mut chain: Vec<Arc<std::sync::RwLock<crate::env::Env>>> = Vec::new();
             {
                 let mut cursor = Some(Arc::clone(&parent_env));
@@ -2810,10 +2864,32 @@ pub(crate) fn builtin_typecheck_doc(
             }
             for frame in chain.iter().rev() {
                 let frame_read = frame.read().unwrap();
-                for (name, env_slot) in &frame_read.extras {
-                    if let Some(ref scheme) = env_slot.scheme {
-                        child_inner.insert_scheme_named_only(name.clone(), Arc::clone(scheme));
+                for (_, slot_entry) in frame_read.slots.iter().enumerate() {
+                    if let Some((name, env_slot)) = slot_entry {
+                        if let Some(ref scheme) = env_slot.scheme {
+                            // Remap to the runtime slot; skip names not in the runtime root frame.
+                            if let Some(&rt_slot) = root_frame_for_ts.get(name.as_str()) {
+                                let target_idx = rt_slot as usize;
+                                if !covered.contains(&target_idx) {
+                                    child_inner.insert_at_slot(
+                                        target_idx,
+                                        name.clone(),
+                                        Arc::clone(scheme),
+                                        None,
+                                    );
+                                    covered.insert(target_idx);
+                                }
+                            }
+                        }
                     }
+                }
+            }
+
+            // Fill remaining root-frame slots with Unknown (pure-Rust builtins, capability vars).
+            for (name, &slot) in &root_frame_for_ts {
+                let idx = slot as usize;
+                if !covered.contains(&idx) {
+                    child_inner.insert_at_slot(idx, name.clone(), make_typevalue_unknown(), None);
                 }
             }
         }

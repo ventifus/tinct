@@ -2170,10 +2170,17 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let netcap = || tinct::make_typevalue_op("NetCap");
             let mut inj = Env::new();
             // CLI-injected values: types match what is actually injected above.
-            inj.insert_injected("%programs".to_string(), dict());
-            inj.insert_injected("%args".to_string(), dict());
-            inj.insert_injected("%cwd".to_string(), dircap());
-            inj.insert_injected("%libdir".to_string(), dircap());
+            // Each capability gets a consecutive slot (no resolver-assigned slots at this point).
+            macro_rules! inj_cap {
+                ($env:expr, $name:expr, $tv:expr) => {{
+                    let slot = $env.slots_len();
+                    $env.insert_at_slot(slot, $name, $tv, None);
+                }};
+            }
+            inj_cap!(inj, "%programs".to_string(), dict());
+            inj_cap!(inj, "%args".to_string(), dict());
+            inj_cap!(inj, "%cwd".to_string(), dircap());
+            inj_cap!(inj, "%libdir".to_string(), dircap());
             // User --cap-fs entries: each becomes a %NAME: DirCap.
             for (name, _cap_dir, _perms) in open_cap_fs_entries(&cap_fs, no_fs)? {
                 let scoped = if name.starts_with('%') {
@@ -2181,7 +2188,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                 } else {
                     format!("%{name}")
                 };
-                inj.insert_injected(scoped, dircap());
+                inj_cap!(inj, scoped, dircap());
             }
             // User --cap-net entries: each becomes a %NAME: NetCap.
             for entry in &cap_net {
@@ -2191,7 +2198,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     } else {
                         format!("%{name}")
                     };
-                    inj.insert_injected(scoped, netcap());
+                    inj_cap!(inj, scoped, netcap());
                 }
             }
             Some(std::sync::Arc::new(std::sync::RwLock::new(inj)))

@@ -374,13 +374,46 @@ pub async fn run_loader_pipeline(
     let core_env_for_tc = Arc::clone(&builtin_env_base);
     let core_tycon_for_tc = seed_tycon_env.clone();
     // Chain injected types (from caller) above the builtin env so the type-checker
-    // sees %programs, %cwd, etc. without any builtin_core declarations.
+    // sees %programs, %cwd, etc. at their correct runtime slot positions.
+    //
+    // Capabilities (%cwd, %libdir, %args, etc.) are in eval_ctx.root_group at slots
+    // N_builtins..N_builtins+N_caps-1. The resolver (via root_group_resolver_map) assigns
+    // those same slot numbers to capability names. The type-checker's builtin_env_base
+    // only has N_builtins entries (slots 0..N-1). We extend it with capability entries
+    // via insert_at_slot so that get_scheme_at(N+i) succeeds during type-checking.
+    // All capability entries go into slots at resolver-assigned slot positions.
     let builtin_env = {
-        let mut wrapper = crate::env::Env::with_parent(builtin_env_base);
-        if let Some(ref inj) = injected_type_env {
-            let r = inj.read().unwrap();
-            for (name, slot) in &r.extras {
-                wrapper.extras.insert(name.clone(), slot.clone());
+        let mut wrapper = crate::env::Env::with_parent(Arc::clone(&builtin_env_base));
+        // Add capability entries at their correct runtime slot positions.
+        // root_group_resolver_map returns all root_group entries (builtins + caps).
+        // builtin_env_base.slots already covers builtins; we fill in the cap slots.
+        let root_map = eval_ctx.root_group_resolver_map();
+        let builtin_slots_len = {
+            let base = builtin_env_base.read().unwrap();
+            base.slots.len()
+        };
+        // Build a name→TypeValue lookup from injected_type_env for capability types.
+        // Capabilities are stored in slots (via insert_at_slot) in the injected_type_env.
+        let cap_types: std::collections::HashMap<String, crate::type_infer::TypeValue> =
+            if let Some(ref inj) = injected_type_env {
+                let r = inj.read().unwrap();
+                r.iter_slots()
+                    .filter_map(|(name, slot_entry)| {
+                        slot_entry.scheme.clone().map(|tv| (name.to_string(), tv))
+                    })
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+        for (name, slot) in &root_map {
+            let slot = *slot as usize;
+            if slot >= builtin_slots_len {
+                // This slot is a capability — inject it with its type (Unknown if not found).
+                let tv = cap_types
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(crate::type_infer::make_typevalue_top);
+                wrapper.insert_at_slot(slot, name.clone(), tv, None);
             }
         }
         Arc::new(std::sync::RwLock::new(wrapper))
@@ -399,20 +432,10 @@ pub async fn run_loader_pipeline(
     eval_ctx_with_frames.set_tycon_env(loader_tycon_env);
     // Emit ALL diagnostics (errors and warnings). Never drop any.
     // Only errors are fatal — warnings are informational.
-    //
-    // Exception: `resolver-slot-miss` errors are not fatal. They occur when the
-    // type-checker's env is built from `build_builtin_core_envs()` (N_builtins entries)
-    // while the runtime resolver uses `eval_ctx.root_group_resolver_map()` which also
-    // includes capability entries (%cwd, %libdir, etc., N_caps more). This slot-count
-    // mismatch causes the type-checker CEK to report resolver-slot-miss for references
-    // to loader Dict 1 entries from Dict 3. The evaluator uses runtime slots correctly;
-    // the mismatch is a type-checker tooling limitation, not a code bug in the loader.
     let mut has_errors = false;
     for diag in &loader_diagnostics {
         eprintln!("{}", format_type_diagnostic(diag, init_source, init_path));
-        if diag.level == crate::error::DiagnosticLevel::Err
-            && diag.kind != "resolver-slot-miss"
-        {
+        if diag.level == crate::error::DiagnosticLevel::Err {
             has_errors = true;
         }
     }
