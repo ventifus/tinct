@@ -403,6 +403,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             ["a", "b"]
         ),
         // ── Control flow ─────────────────────────────────────────────────────────────
+        // The builtin! macro requires a literal; BUILTIN_RAISE_NAME is verified against
+        // this literal by test_builtin_raise_name_registered_in_core_builtins in lower.rs.
         builtin!(
             "builtin-raise",
             builtin_raise,

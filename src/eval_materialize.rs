@@ -107,14 +107,25 @@ type GuardDefault = (
 );
 
 /// Collect all lower errors into a single EvalError, combining their messages.
+/// Warnings are emitted to stderr immediately — they are non-fatal but must be visible.
 /// Returns None if there are no errors.
 pub fn lower_errors_to_eval_error(
     diags: Vec<crate::lower::LowerDiagnostic>,
 ) -> Option<Box<EvalError>> {
-    let errors: Vec<_> = diags
-        .into_iter()
-        .filter(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-        .collect();
+    let mut errors: Vec<crate::lower::LowerDiagnostic> = Vec::new();
+    for d in diags {
+        match d.kind {
+            crate::lower::LowerDiagnosticKind::Error => errors.push(d),
+            crate::lower::LowerDiagnosticKind::Warning => {
+                let loc = if !d.span.file.starts_with('<') {
+                    format!(" ({}:{}:{})", d.span.file, d.span.start_line, d.span.start_col)
+                } else {
+                    String::new()
+                };
+                eprintln!("warning[lower]{}: {}", loc, d.message);
+            }
+        }
+    }
     if errors.is_empty() {
         return None;
     }

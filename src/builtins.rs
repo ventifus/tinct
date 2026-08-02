@@ -3015,27 +3015,6 @@ mod tests {
         );
     }
 
-    /// Check that a value is the unknown_type_val sentinel (empty Dict).
-    ///
-    /// Used to verify that a value is TypeValue.Unknown — represented as an empty Dict.
-    /// Kept for use by any future test that explicitly exercises the TypeValue.Unknown path.
-    #[allow(dead_code)]
-    fn assert_is_unknown_type_val(result: &Value, context: &str) {
-        match result {
-            Value::Dict { entries, .. } => {
-                assert!(
-                    entries.is_empty(),
-                    "{context}: expected unknown_type_val() (empty Dict), but Dict had {} entries",
-                    entries.len()
-                );
-            }
-            other => panic!(
-                "{context}: expected unknown_type_val() (empty Dict), got {:?}",
-                other.type_name()
-            ),
-        }
-    }
-
     #[tokio::test]
     async fn type_of_int() {
         // builtin_type_of now uses ground_typevalue_of, which returns TypeValue.Repr("Value::Int")
@@ -6845,7 +6824,7 @@ mod tests {
         // After T-1897, Env builtins are in extras (name-only, no resolver slot).
         // Check that builtin names are reachable via has_name.
         assert!(
-            env_ref.has_name("builtin-raise"),
+            env_ref.has_name(crate::lower::BUILTIN_RAISE_NAME),
             "missing builtin builtin-raise in core env"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
@@ -7650,7 +7629,7 @@ mod tests {
         // After T-1897, builtins are in extras (name-only, no resolver slot).
         // Verify builtin names are reachable via has_name.
         let required_names: &[&str] = &[
-            "builtin-raise",
+            crate::lower::BUILTIN_RAISE_NAME,
             "builtin-type-of",
             "builtin-keys",
             "builtin-dict-get",

@@ -278,7 +278,7 @@
           0: [merge acc [builtin-module name]]
           1: [merge acc [builtin-module name]]]]
       []
-      module-names]]
+      module-names]]]
 
   # ── Fundamental-types TypeContext ─────────────────────────────────────────
   # Start from an empty TypeContext and populate it by type-checking

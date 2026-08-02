@@ -53,11 +53,21 @@ pub(crate) const FIELD_GETTER_NAME: &str = "builtin-dict-get";
 /// Using a core builtin name ensures spread-dict works regardless of which prelude (if any)
 /// is loaded — it is resolved from the root group (always present) rather than user scope.
 pub(crate) const DICT_MERGE_NAME: &str = "builtin-dict-merge";
+/// Name of the raise builtin — used by MethodDispatcher synthesis as the final no-match
+/// fallback. Resolved from scope_frames. Part of the Rust-tinct protocol (doc/16b §7).
+///
+/// The `builtin!` macro in `src/builtins_core.rs` requires a literal (`$name:literal`)
+/// and cannot accept this constant directly. The registration literal `"builtin-raise"` in
+/// `builtins_core.rs` must match this constant. A test verifies their consistency:
+/// `test_builtin_raise_name_registered_in_core_builtins` in the test module below.
+pub(crate) const BUILTIN_RAISE_NAME: &str = "builtin-raise";
 
 /// Severity of a diagnostic emitted during lowering.
 #[derive(Debug, Clone)]
 pub enum LowerDiagnosticKind {
     Error,
+    /// Non-fatal: lowering continues but the resulting CoreExpr may be degraded.
+    Warning,
 }
 
 /// A diagnostic produced during the lowering phase.
@@ -703,11 +713,33 @@ fn lower_expr(
                                                         .collect(),
                                                     None => vec![], // No instances found for this class — dispatcher has no dispatch arms.
                                                 };
-                                            let param_count = all_method_instances
+                                            // The None arm below is an internal invariant guard:
+                                            // method_name is extracted from an InstanceDecl entry
+                                            // in the current dict, and collect_instance_methods_pre_pass
+                                            // also walks those same entries. So all_method_instances
+                                            // should always contain method_name here. If it does not,
+                                            // something went wrong in the pre-pass — emit a Warning.
+                                            // No corpus test covers this path because it requires
+                                            // internal inconsistency that cannot occur from valid tinct.
+                                            let param_count = match all_method_instances
                                                 .get(&method_name)
                                                 .and_then(|v| v.first())
                                                 .map(|(_, _, n)| *n)
-                                                .unwrap_or(1);
+                                            {
+                                                Some(n) => n,
+                                                None => {
+                                                    diagnostics.push(LowerDiagnostic {
+                                                        kind: LowerDiagnosticKind::Warning,
+                                                        message: format!(
+                                                            "cannot determine param_count for method '{}': \
+                                                             no instance recordings found; defaulting to 1",
+                                                            method_name
+                                                        ),
+                                                        span: se.span.clone(),
+                                                    });
+                                                    1
+                                                }
+                                            };
                                             let dispatcher = make_method_dispatcher_fn(
                                                 &method_name,
                                                 &dispatcher_instances,
@@ -1549,7 +1581,7 @@ fn make_method_dispatcher_fn(
     // resolve_name_in_parent_frames uses "second occurrence": skips offset 0 (current dict),
     // returns the first ancestor frame at offset 1+ that contains method_name, or the ambient
     // scope frame if no ancestor has it.
-    let mut outer_names: Vec<String> = vec!["builtin-raise".to_string()];
+    let mut outer_names: Vec<String> = vec![BUILTIN_RAISE_NAME.to_string()];
     for (type_name, all_instances) in &type_name_to_all_instances {
         if !outer_names.contains(type_name) {
             outer_names.push(type_name.clone());
@@ -1736,11 +1768,11 @@ fn make_method_dispatcher_fn(
                 });
             }
             // Add wildcard fallback for secondary dispatch.
-            let secondary_raise = match resolved_addrs.get("builtin-raise").cloned() {
+            let secondary_raise = match resolved_addrs.get(BUILTIN_RAISE_NAME).cloned() {
                 Some(raise_addr) => CoreExpr::Call {
                     func: Arc::new(Spanned::new(
                         CoreExpr::Var {
-                            name: "builtin-raise".to_string(),
+                            name: BUILTIN_RAISE_NAME.to_string(),
                             addr: raise_addr,
                             annotation: None,
                         },
@@ -1819,7 +1851,7 @@ fn make_method_dispatcher_fn(
             let mangled_for_trim: Vec<&str> = outer_names
                 .iter()
                 .filter(|n| {
-                    n.as_str() != "builtin-raise"
+                    n.as_str() != BUILTIN_RAISE_NAME
                         && n.starts_with(crate::type_tags::INTERNAL_PREFIX_INSTANCE)
                 })
                 .map(|s| s.as_str())
@@ -1836,8 +1868,6 @@ fn make_method_dispatcher_fn(
                     // mangled name), .all() and .any() are equivalent — both find the innermost
                     // frame, which may be the inner dict's rather than the outer's. This is a
                     // degenerate case (semantically redundant identical instances at nested scopes).
-                    // The fallback to untrimmed scope_frames applies, matching pre-fix behavior.
-                    // Tracked as B-717 (structural fix) and B-719 (diagnostic emission).
                     let current_offset = frames
                         .iter()
                         .rev()
@@ -1846,7 +1876,27 @@ fn make_method_dispatcher_fn(
                         let actual_idx = frames.len().saturating_sub(1 + inner_offset);
                         Some(&frames[..=actual_idx])
                     } else {
-                        scope_frames
+                        // Invariant violation: no frame in scope_frames contains all of
+                        // this dict's mangled instance names. This should not occur when
+                        // mangled names are unique across nesting levels. Emit a warning
+                        // and return None — the parent dispatcher lookup will not fire,
+                        // and the wildcard fallback raises "no instance" for unmatched types.
+                        //
+                        // No corpus test covers this path. Triggering it from valid tinct
+                        // requires a builtin-lower pipeline call (not the default eval path)
+                        // AND mangled names that appear in none of the unified_frames —
+                        // an internal inconsistency that cannot arise from valid tinct source.
+                        diagnostics.push(LowerDiagnostic {
+                            kind: LowerDiagnosticKind::Warning,
+                            message: format!(
+                                "make_method_dispatcher_fn: cannot identify current dict's \
+                                 frame for method '{}'; mangled instance names not found in \
+                                 any scope frame — parent dispatch disabled for this method",
+                                method_name
+                            ),
+                            span: span.clone(),
+                        });
+                        None
                     }
                 } else {
                     scope_frames
@@ -1879,11 +1929,11 @@ fn make_method_dispatcher_fn(
                 }
                 None => {
                     // No parent dispatcher — use builtin-raise as final fallback.
-                    match resolved_addrs.get("builtin-raise").cloned() {
+                    match resolved_addrs.get(BUILTIN_RAISE_NAME).cloned() {
                         Some(raise_addr) => CoreExpr::Call {
                             func: Arc::new(Spanned::new(
                                 CoreExpr::Var {
-                                    name: "builtin-raise".to_string(),
+                                    name: BUILTIN_RAISE_NAME.to_string(),
                                     addr: raise_addr,
                                     annotation: None,
                                 },
@@ -1903,9 +1953,9 @@ fn make_method_dispatcher_fn(
                             diagnostics.push(LowerDiagnostic {
                                 kind: LowerDiagnosticKind::Error,
                                 message: format!(
-                                    "make_method_dispatcher_fn: 'builtin-raise' not found in scope_frames \
+                                    "make_method_dispatcher_fn: '{}' not found in scope_frames \
                                      for method '{}' — scope_frames must be seeded with builtin_core",
-                                    method_name
+                                    BUILTIN_RAISE_NAME, method_name
                                 ),
                                 span: span.clone(),
                             });
@@ -3241,7 +3291,7 @@ mod tests {
         // After iter().rev(): offset 0=current_dict, offset 1=outer_parent, offset 2=env_names.
         // "Second occurrence" algorithm skips current_dict (offset 0), returns outer_parent (offset 1).
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        env_names.insert("builtin-raise".to_string(), 0);
+        env_names.insert(BUILTIN_RAISE_NAME.to_string(), 0);
         env_names.insert(method.to_string(), 200);
         let mut outer_parent: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         outer_parent.insert(method.to_string(), slot);
@@ -3291,7 +3341,7 @@ mod tests {
             captures
         );
         assert_eq!(
-            captures[0].0, "builtin-raise",
+            captures[0].0, BUILTIN_RAISE_NAME,
             "captures[0] must be builtin-raise"
         );
         assert_eq!(
@@ -3354,7 +3404,7 @@ mod tests {
             !diags.is_empty(),
             "expected a diagnostic when builtin-raise is missing from scope"
         );
-        let has_raise_diag = diags.iter().any(|d| d.message.contains("builtin-raise"));
+        let has_raise_diag = diags.iter().any(|d| d.message.contains(BUILTIN_RAISE_NAME));
         assert!(
             has_raise_diag,
             "diagnostic must mention 'builtin-raise'; got {:?}",
@@ -3412,7 +3462,7 @@ mod tests {
     #[test]
     fn test_resolve_name_in_parent_frames_name_only_in_current_returns_none() {
         let mut env_names: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        env_names.insert("builtin-raise".to_string(), 0);
+        env_names.insert(BUILTIN_RAISE_NAME.to_string(), 0);
         let mut ancestor: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         ancestor.insert("other".to_string(), 5);
         let mut current_dict: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
@@ -3445,5 +3495,19 @@ mod tests {
         current_dict.insert("x".to_string(), 2);
         let frames = vec![env_names, current_dict];
         assert_eq!(resolve_name_in_parent_frames(&frames, "y"), None);
+    }
+
+    #[test]
+    fn test_builtin_raise_name_registered_in_core_builtins() {
+        // Verify that a builtin with name BUILTIN_RAISE_NAME is actually registered in
+        // core_builtins(). The builtin! macro requires a literal, so the registration in
+        // builtins_core.rs cannot directly reference the constant — this test catches drift.
+        let builtins = crate::builtins_core::core_builtins();
+        assert!(
+            builtins.iter().any(|b| b.name == BUILTIN_RAISE_NAME),
+            "BUILTIN_RAISE_NAME '{}' is not registered in core_builtins(); \
+             update the registration literal in builtins_core.rs",
+            BUILTIN_RAISE_NAME
+        );
     }
 }

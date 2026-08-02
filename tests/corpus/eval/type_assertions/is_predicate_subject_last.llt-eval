@@ -7,7 +7,7 @@
 #
 # NOTE: The positive cases alone do not prove subject-last semantics — a value
 # like 50 passes both [between 1 100 50] (subject-last) and any reasonable
-# ordering. The is_predicate_out_of_range.llt-eval test proves directionality:
+# ordering. The inline subj-last-proof case below proves directionality:
 # [<= _ 100] with subject-last gives [<= 50 100]=true; subject-first [<= 100 50]=false.
 [
   ok-low:  [@[type: Int  is: [between 1 100]] 1]    # between 1 100 1 => true
