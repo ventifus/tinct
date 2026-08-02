@@ -157,11 +157,11 @@
 
   # null?: test if value is [] (empty dict).
   # Uses builtin-try to attempt builtin-dict-length. If the value is a Dict, returns the
-  # length; if not, returns an error dict (non-zero check fails). This avoids using
-  # builtin-type-of for a string-based type test, which is incompatible with the TypeValue
-  # approach used by ground_typevalue_of (type-of now returns TypeValue.Repr, not strings).
+  # length; if not, returns an error dict (non-zero check fails). [call ...] is required
+  # because without it, builtin-try receives a Value::Fn thunk that materializes to the
+  # function object itself (no error, always {ok: fn}), never catching dict-length errors.
   null?: [fn [let x]
-    [_try-result: [builtin-try [fn [] [builtin-dict-length x]]]]
+    [_try-result: [builtin-try [call [fn [] [builtin-dict-length x]]]]]
     [match [builtin-has-key? "ok" _try-result]
       0: 0
       ...: [builtin-eq-int [builtin-dict-get "ok" _try-result] 0]]]
