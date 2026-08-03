@@ -1,5 +1,7 @@
 # Test that named args are type-checked by try_clause Step 2b.
 # A typed param called with wrong-type named arg should produce an error.
+# This test uses ONLY named args (no positional), so the "no matching clause"
+# error can ONLY come from Step 2b (named arg type checking). Verified adequate.
 [
   greet: [fn@String [let name@String] [str "Hello, " name]]
   result: [greet name: 42]

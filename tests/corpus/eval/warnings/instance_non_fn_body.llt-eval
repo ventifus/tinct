@@ -1,0 +1,16 @@
+# B-729 coverage: instance method body is a VarRef (not [fn ...]).
+# Triggers lower-warning: "non-fn body cannot carry instance_of stamp".
+# The warning is emitted to stderr at lowering time; program evaluates normally.
+# The VarRef body is still a valid function, just without dispatch instance_of.
+[
+  Show: [class [let a]]
+  my-show: [fn@String [let x@Integer] [str x]]
+  [instance Show [let a@Integer]: [show: my-show]]
+  result: [my-show 42]
+]
+---
+%.result
+=== out
+String("42")
+=== warn
+never consumed by the next pipeline stage
