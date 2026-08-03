@@ -482,6 +482,24 @@ pub fn make_typevalue_record(
     })
 }
 
+/// Create the open-dict TypeValue — the structural representation of `@Dict`.
+///
+/// This is the canonical TypeValue produced when resolving an `@Dict` annotation:
+/// `Record { fields: {}, tail: Uniform { value-type: Top } }`.
+///
+/// Use this (not `make_typevalue_op("Dict")`) wherever a "Dict" type is needed as
+/// a static TypeValue in the type checker — e.g., when injecting capability types
+/// like `%programs` and `%args` into the type environment. Using `make_typevalue_op`
+/// produces a nominal type-constructor reference that is incompatible with the structural
+/// open-record produced by annotation resolution, causing spurious unification errors
+/// when annotated functions are called with capability values.
+pub fn make_typevalue_open_dict() -> TypeValue {
+    make_typevalue_record(
+        indexmap::IndexMap::new(),
+        Some(make_rowtail_uniform(make_typevalue_top())),
+    )
+}
+
 /// Create a TypeValue.Union Arc<Value> for a union of types.
 ///
 /// Members are ordered positionally (0, 1, 2, ...) in the payload dict.

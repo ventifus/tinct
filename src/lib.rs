@@ -125,7 +125,9 @@ pub use type_class::TypeValue;
 /// TypeValue construction helpers exposed for use in crate embedders (e.g., main.rs CLI
 /// injected type env). These are the canonical single-path constructors — callers must
 /// not duplicate construction logic locally (Axiom 2).
-pub use type_infer::{make_typevalue_op, make_typevalue_repr, make_typevalue_unknown};
+pub use type_infer::{
+    make_typevalue_op, make_typevalue_open_dict, make_typevalue_repr, make_typevalue_unknown,
+};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source_tinct;

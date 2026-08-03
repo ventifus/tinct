@@ -2169,7 +2169,12 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let injected_type_env = {
             use tinct::Env;
             let dircap = || tinct::make_typevalue_op("DirCap");
-            let dict = || tinct::make_typevalue_op("Dict");
+            // Dict capabilities (%programs, %args) must use the structural open-record TypeValue,
+            // not make_typevalue_op("Dict"). The annotation @Dict resolves to
+            // Record{fields:{}, tail:Uniform(Top)} via the type-stage scope; using Op("Dict")
+            // instead causes a cross-ctor mismatch in unify when annotated functions like
+            // `null?` (param x@Dict) are called with %programs as the argument.
+            let dict = || tinct::make_typevalue_open_dict();
             let netcap = || tinct::make_typevalue_op("NetCap");
             let mut inj = Env::new();
             // CLI-injected values: types match what is actually injected above.

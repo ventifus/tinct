@@ -125,13 +125,8 @@
   # builtin-type-of for a string-based type test (type-of returns TypeValue.Repr, not a
   # string), and avoids the broken Dict: keyed match arm (which resolves Dict as a VarRef
   # not-in-scope → always false per resolve.rs suppress_depth / match_pattern Some(None) path).
-  # [call ...] is required: without it, builtin-try receives a Value::Fn thunk and
-  # materializes the function object itself (no error, always {ok: fn}, never catches dict-length errors).
-  null?: [fn [let x]
-    [_try-result: [builtin-try [call [fn [] [builtin-dict-length x]]]]]
-    [match [builtin-has-key? "ok" _try-result]
-      0:   0
-      ...: [builtin-eq-int [builtin-dict-get "ok" _try-result] 0]]]
+  # x@Dict guarantees x is a Dict; builtin-dict-length always succeeds on a Dict.
+  null?: [fn@Integer [let x@Dict] [builtin-eq-int [builtin-dict-length x] 0]]
 
 
   # get-or: safe dict access with default value
@@ -468,11 +463,10 @@
                        [name: [get-or "" "name" hdr]]
                        # Build env: merge exports into current env, add %: last-result and
                        # optional named doc entry so subsequent docs can reference this doc's output.
-                       [env: [merge scope
-                                [merge [%: exports]
-                                  [match [builtin-eq-string name ""]
-                                    0: [$name: exports]
-                                    1: []]]]]
+                       [env-base: [merge scope [%: exports]]]
+                       [env: [match [builtin-eq-string name ""]
+                                0: [merge env-base [$name: exports]]
+                                1: env-base]]
                        [merge acc [env: .env  tc: acc.tc  last-result: exports  stderr: err]]]]]
                    # Catch-all: evaled is an error Diagnostic. Accumulate without formatting
                    # (format-diagnostic requires narrowed Diagnostic type; evaled is a union).
@@ -636,10 +630,9 @@
             # The first document (idx == 0) has no upstream %; later documents receive
             # the previous document's result as %, mirroring how prelude.llt threads % through
             # a multi-document pipeline.
-            [scope: [merge env [merge mods.impls
-                         [match [builtin-eq-int idx 0]
-                           0: [%: prev]
-                           1: []]]]]
+            [scope: [match [builtin-eq-int idx 0]
+                       0: [merge env [merge mods.impls [%: prev]]]
+                       1: [merge env mods.impls]]]
             [names: [env-to-name-set scope]]
             [r:     [builtin-resolve doc names]]
             [err:   [emit-diagnostics r.diagnostics mods.stderr]]
@@ -1074,7 +1067,7 @@
 
   # Bootstrap check: verify the formatter loaded correctly.
   # On failure, print the actual error from builtin-try and raise — never silently swallow it.
-  formatter-ok: [call [fn [let _raw]
+  formatter-ok: [call [fn [let _raw@Dict]
       [match [builtin-has-key? "ok" _raw]
         0: [call [fn [let _w]
                     [match [builtin-int-gte [builtin-dict-length _w] 0]
@@ -1085,7 +1078,7 @@
                   [builtin-string-concat
                     [match [builtin-has-key? "message" _raw]
                       0: "(unknown — try result has no message field)"
-                      1: [@String [@[message: String] _raw].message]]
+                      1: [get-or "" "message" _raw]]
                     "\n"]] %stderr]]
         1: 1]]
     [builtin-try [builtin-program-docs formatter-src]]]
