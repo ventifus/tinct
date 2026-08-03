@@ -1,0 +1,23 @@
+--- desc: B-729 — instance method with non-fn body emits lower-warning
+[
+  # Define a simple class
+  Monoid: [class [let a]]
+
+  # Define a function that will be used as a method
+  my-add: [fn [let a@Int b@Int] [+ a b]]
+
+  # Instance with non-fn body — should emit warning
+  MonoidInt: [instance Monoid [let a@Int]: [append: my-add]]
+
+  # Use the instance
+  result: [MonoidInt.append 3 4]
+]
+=== out
+[0: [
+  Monoid: <class Monoid>
+  my-add: <fn>
+  MonoidInt: [append: <fn>]
+  result: 7
+]]
+=== warn
+instance method 'append': non-fn body cannot carry instance_of stamp — use an explicit [fn ...] wrapper

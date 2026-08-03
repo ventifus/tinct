@@ -112,27 +112,22 @@ type GuardDefault = (
 );
 
 /// Collect all lower errors into a single EvalError, combining their messages.
-/// Warnings are emitted to stderr immediately — they are non-fatal but must be visible.
-/// Returns None if there are no errors.
-pub fn lower_errors_to_eval_error(diags: Vec<crate::error::Diagnostic>) -> Option<Box<EvalError>> {
+/// Returns (error, warnings) where error is None if there are no Err-level diagnostics.
+/// Warnings are returned separately so callers can push them to runtime_diagnostics.
+pub fn lower_errors_to_eval_error(
+    diags: Vec<crate::error::Diagnostic>,
+) -> (Option<Box<EvalError>>, Vec<crate::error::Diagnostic>) {
     let mut errors: Vec<crate::error::Diagnostic> = Vec::new();
+    let mut warnings: Vec<crate::error::Diagnostic> = Vec::new();
     for d in diags {
         if d.level == crate::error::DiagnosticLevel::Err {
             errors.push(d);
         } else if d.level == crate::error::DiagnosticLevel::Warn {
-            let loc = if !d.spans.is_empty() && !d.spans[0].0.file.starts_with('<') {
-                format!(
-                    " ({}:{}:{})",
-                    d.spans[0].0.file, d.spans[0].0.start_line, d.spans[0].0.start_col
-                )
-            } else {
-                String::new()
-            };
-            eprintln!("warning[lower]{}: {}", loc, d.message);
+            warnings.push(d);
         }
     }
     if errors.is_empty() {
-        return None;
+        return (None, warnings);
     }
     let fmt_loc = |diag: &crate::error::Diagnostic| -> String {
         if !diag.spans.is_empty() && !diag.spans[0].0.file.starts_with('<') {
@@ -156,7 +151,10 @@ pub fn lower_errors_to_eval_error(diags: Vec<crate::error::Diagnostic>) -> Optio
     } else {
         crate::rust_span!()
     };
-    Some(EvalError::user_error(msg, first_span).into())
+    (
+        Some(EvalError::user_error(msg, first_span).into()),
+        warnings,
+    )
 }
 
 /// Attach materialization span and origin frame to an error.
@@ -1024,7 +1022,15 @@ async fn dispatch_state(
                                 .expect("runtime_diagnostics mutex poisoned")
                                 .push(d);
                         }
-                        if let Some(err) = lower_errors_to_eval_error(other_diags) {
+                        let (err_opt, warnings) = lower_errors_to_eval_error(other_diags);
+                        for w in warnings {
+                            thunk_ctx
+                                .runtime_diagnostics
+                                .lock()
+                                .expect("runtime_diagnostics mutex poisoned")
+                                .push(w);
+                        }
+                        if let Some(err) = err_opt {
                             let decorated = attach_materialization_context(
                                 err,
                                 None,
@@ -2308,7 +2314,14 @@ pub(crate) async fn apply_cont(
                                 .expect("runtime_diagnostics mutex poisoned")
                                 .push(d);
                         }
-                        if let Some(err) = lower_errors_to_eval_error(other_diags) {
+                        let (err_opt, warnings) = lower_errors_to_eval_error(other_diags);
+                        for w in warnings {
+                            ctx.runtime_diagnostics
+                                .lock()
+                                .expect("runtime_diagnostics mutex poisoned")
+                                .push(w);
+                        }
+                        if let Some(err) = err_opt {
                             Action::Continue(Err(err))
                         } else {
                             Action::EvalCore {
@@ -2361,9 +2374,15 @@ pub(crate) async fn apply_cont(
                                                 .expect("runtime_diagnostics mutex poisoned")
                                                 .push(d);
                                         }
-                                        if let Some(lower_err) =
-                                            lower_errors_to_eval_error(other_diags)
-                                        {
+                                        let (err_opt, warnings) =
+                                            lower_errors_to_eval_error(other_diags);
+                                        for w in warnings {
+                                            ctx.runtime_diagnostics
+                                                .lock()
+                                                .expect("runtime_diagnostics mutex poisoned")
+                                                .push(w);
+                                        }
+                                        if let Some(lower_err) = err_opt {
                                             return Action::Continue(Err(lower_err));
                                         } else {
                                             return Action::EvalCore {
@@ -2404,7 +2423,14 @@ pub(crate) async fn apply_cont(
                                     .expect("runtime_diagnostics mutex poisoned")
                                     .push(d);
                             }
-                            if let Some(err) = lower_errors_to_eval_error(other_diags) {
+                            let (err_opt, warnings) = lower_errors_to_eval_error(other_diags);
+                            for w in warnings {
+                                ctx.runtime_diagnostics
+                                    .lock()
+                                    .expect("runtime_diagnostics mutex poisoned")
+                                    .push(w);
+                            }
+                            if let Some(err) = err_opt {
                                 Action::Continue(Err(err))
                             } else {
                                 Action::EvalCore {
@@ -3316,7 +3342,14 @@ fn eval_structural_pattern_inner<'a>(
                                 .expect("runtime_diagnostics mutex poisoned")
                                 .push(d);
                         }
-                        if let Some(err) = lower_errors_to_eval_error(other_diags) {
+                        let (err_opt, warnings) = lower_errors_to_eval_error(other_diags);
+                        for w in warnings {
+                            ctx.runtime_diagnostics
+                                .lock()
+                                .expect("runtime_diagnostics mutex poisoned")
+                                .push(w);
+                        }
+                        if let Some(err) = err_opt {
                             return Err(err);
                         }
                     }

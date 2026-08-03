@@ -199,9 +199,15 @@ async fn eval_annotation_property_dict(
                             .expect("runtime_diagnostics mutex poisoned")
                             .push(d);
                     }
-                    if let Some(err) =
-                        crate::eval_materialize::lower_errors_to_eval_error(other_diags)
-                    {
+                    let (err_opt, warnings) =
+                        crate::eval_materialize::lower_errors_to_eval_error(other_diags);
+                    for w in warnings {
+                        ctx.runtime_diagnostics
+                            .lock()
+                            .expect("runtime_diagnostics mutex poisoned")
+                            .push(w);
+                    }
+                    if let Some(err) = err_opt {
                         return Err(err);
                     }
                 }

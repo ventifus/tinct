@@ -3873,7 +3873,14 @@ pub(crate) async fn eval_type_stage_expr(
                 .expect("runtime_diagnostics mutex poisoned")
                 .push(diag);
         }
-        if let Some(lower_err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags) {
+        let (err_opt, warnings) = crate::eval_materialize::lower_errors_to_eval_error(other_diags);
+        for w in warnings {
+            ctx.runtime_diagnostics
+                .lock()
+                .expect("runtime_diagnostics mutex poisoned")
+                .push(w);
+        }
+        if let Some(lower_err) = err_opt {
             return Err(Diagnostic::error(
                 "type-error",
                 format!("type-stage expression lowering failed: {lower_err}"),

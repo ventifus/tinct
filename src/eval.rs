@@ -119,7 +119,15 @@ pub(crate) async fn eval_document_exprs_with_env(
                     .expect("runtime_diagnostics mutex poisoned")
                     .push(d);
             }
-            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags) {
+            let (err_opt, warnings) =
+                crate::eval_materialize::lower_errors_to_eval_error(other_diags);
+            for w in warnings {
+                ctx.runtime_diagnostics
+                    .lock()
+                    .expect("runtime_diagnostics mutex poisoned")
+                    .push(w);
+            }
+            if let Some(err) = err_opt {
                 return Err(err);
             }
         }
@@ -2314,7 +2322,15 @@ mod tests {
                     .expect("runtime_diagnostics mutex poisoned")
                     .push(d);
             }
-            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(other_diags) {
+            let (err_opt, warnings) =
+                crate::eval_materialize::lower_errors_to_eval_error(other_diags);
+            for w in warnings {
+                ctx.runtime_diagnostics
+                    .lock()
+                    .expect("runtime_diagnostics mutex poisoned")
+                    .push(w);
+            }
+            if let Some(err) = err_opt {
                 return Err(err);
             }
         }
@@ -6409,10 +6425,15 @@ mod tests {
                         .expect("runtime_diagnostics mutex poisoned")
                         .push(d);
                 }
-                assert!(
-                    crate::eval_materialize::lower_errors_to_eval_error(other_diags).is_none(),
-                    "lowering must not produce errors"
-                );
+                let (err_opt, warnings) =
+                    crate::eval_materialize::lower_errors_to_eval_error(other_diags);
+                for w in warnings {
+                    ctx.runtime_diagnostics
+                        .lock()
+                        .expect("runtime_diagnostics mutex poisoned")
+                        .push(w);
+                }
+                assert!(err_opt.is_none(), "lowering must not produce errors");
             }
             core_entries.push((expr_idx.to_string(), std::sync::Arc::new(core_spanned)));
             expr_idx += 1;
