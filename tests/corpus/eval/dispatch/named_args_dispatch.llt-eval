@@ -1,0 +1,20 @@
+# Named args with dispatch — ensure try_clause correctly binds named arguments.
+# Named arguments bypass positional order: the clause must match names to params slots.
+# The slot_for_key lookup must succeed for every provided named arg key.
+[
+  # Simple named params — single clause, named call
+  greet: [fn [let name@String greeting@String] [str greeting ", " name "!"]]
+  r1:    [greet name: "Alice" greeting: "Hello"]
+  r2:    [greet greeting: "Hi" name: "Bob"]
+
+  # Mixed positional and named params (positional first, named after)
+  tag:   [fn [let prefix@String x count@Integer] [str prefix ": " [str x] " (" [str count] ")"]]
+  r3:    [tag "label" 42 count: 3]
+
+  # Named args only, verify order-independence
+  calc:  [fn [let x@Integer y@Integer op@String] [str op " " [str x] " " [str y]]]
+  r4:    [calc op: "add" x: 10 y: 32]
+  r5:    [calc y: 5 op: "mul" x: 7]
+]
+=== out
+Dict({"greet": Function(name, greeting), "r1": String("Hello, Alice!"), "r2": String("Hi, Bob!"), "tag": Function(prefix, x, count), "r3": String("label: 42 (3)"), "calc": Function(x, y, op), "r4": String("add 10 32"), "r5": String("mul 7 5")})

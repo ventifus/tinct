@@ -1125,6 +1125,26 @@ This forces `w` via the equality check (which materializes both operands), then 
 
 ---
 
+## Strictness Exceptions
+
+The `try_clause` function in `src/eval_call.rs` introduces three necessary materialization points that deviate from full laziness. Each is required by the dispatch mechanism — without these, clause selection cannot determine which arm to execute.
+
+### Type Guard (Step 2)
+
+When a clause parameter carries a type annotation (e.g., `x@Integer`, `s@String`), `try_clause` materializes the corresponding argument to check its runtime type via `value_matches_type`. Without materialization, thunks are opaque and their type cannot be inspected. This is the mechanism that drives typeclass instance selection — different instances declare different type annotations, and materialization reveals which instance matches the actual argument.
+
+### Structural Pattern (Step 3)
+
+When a clause has a `lowered_pattern` (match arms, destructuring), `try_clause` materializes the scrutinee to test whether it matches the pattern structure — dict keys, variant tags, nested patterns. A lazy thunk cannot be structurally inspected without forcing it.
+
+### Guard Expression (Step 4)
+
+When a clause has a guard expression, `try_clause` evaluates the guard and materializes its result to test for truthiness. The guard's boolean outcome determines whether the arm is taken or skipped, which requires a concrete value.
+
+These three points are the only places where `try_clause` forces evaluation. All other clause processing — arity checking (Step 1) and body evaluation (Step 5) — operates without materialization. Arity is checked by counting parameters, and body evaluation produces a thunk that is only forced by its consumer.
+
+---
+
 ## Cancellation and Evaluation Contexts
 
 ### EvalContext and the `cancel` Field

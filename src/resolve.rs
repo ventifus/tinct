@@ -298,6 +298,19 @@ impl SurfaceResolver {
         // variable → add to the innermost function's capture list.
         if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
             if match_depth < fn_boundary {
+                // Typeclass method inside a fn body: emit EffectPerform instead of
+                // ClosureCapture so the evaluator performs open dispatch at call time.
+                // The name must NOT be added to the capture list — EffectPerform looks up
+                // instances by scanning the accumulated group at call time, not via the
+                // closure_env captured at definition time. This check must come BEFORE the
+                // capture cascade to avoid pushing wasted captures into intermediate fn levels.
+                if let Some(&class_id) = self.class_methods.get(name) {
+                    return Some(VarAddr::EffectPerform {
+                        class_id,
+                        method: name.to_string(),
+                    });
+                }
+
                 // Free variable: found in a scope outside the current function boundary.
                 //
                 // Determine the original_addr to store in the captures list. This is the
@@ -410,18 +423,6 @@ impl SurfaceResolver {
                         last_addr
                     }
                 };
-                // Typeclass method inside a fn body: emit EffectPerform instead of
-                // ClosureCapture so the evaluator performs open dispatch at call time.
-                // The name must NOT be added to the capture list — EffectPerform looks up
-                // instances by scanning the accumulated group at call time, not via the
-                // closure_env captured at definition time. This is the inside-fn-body
-                // counterpart to the Dispatch→EffectPerform conversion in walk_surface_expr.
-                if let Some(&class_id) = self.class_methods.get(name) {
-                    return Some(VarAddr::EffectPerform {
-                        class_id,
-                        method: name.to_string(),
-                    });
-                }
 
                 let capture_list = self
                     .fn_capture_lists

@@ -1309,7 +1309,31 @@ fn lower_expr(
                                 desugared,
                                 return_ann,
                             },
-                            other => other,
+                            // Non-Fn body (e.g., a VarRef to an existing function):
+                            // wrap in a zero-param Fn so instance_of is stamped.
+                            // VarAddr::EffectPerform scans for Value::Function with
+                            // instance_of=Some((class_id, method)) — the stamp must
+                            // always be present regardless of the body expression type.
+                            other => {
+                                let body_expr =
+                                    Arc::new(Spanned::new(other, lowered_value.span.clone()));
+                                let wrapper_clause = CoreClause {
+                                    params: vec![],
+                                    lowered_pattern: None,
+                                    guard: None,
+                                    body: body_expr,
+                                    guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                                    captures: Arc::new(vec![]),
+                                };
+                                CoreExpr::Fn {
+                                    clauses: vec![wrapper_clause],
+                                    captures: Arc::new(vec![]),
+                                    instance_of: Some((class_decl_id, method_name.clone())),
+                                    resolved_fn_type: None,
+                                    desugared: false,
+                                    return_ann: None,
+                                }
+                            }
                         };
                         let value = Arc::new(lowered_value);
                         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));

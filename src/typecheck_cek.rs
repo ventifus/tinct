@@ -3329,14 +3329,14 @@ async fn infer_fn_push_cont(
             }
         } else {
             // Unannotated fixed param: use expected type from class method signature if available,
-            // otherwise fall back to Unknown for gradual typing.
+            // otherwise fall back to a fresh TypeVar for HM inference.
             if let Some(ref expected) = expected_params {
                 expected
                     .get(fixed_param_idx)
                     .cloned()
-                    .unwrap_or_else(make_typevalue_unknown)
+                    .unwrap_or_else(|| state.fresh_type_var(&p.span))
             } else {
-                make_typevalue_unknown()
+                state.fresh_type_var(&p.span)
             }
         };
         // Store the resolved type back onto the SurfaceParam so the lowerer can carry it

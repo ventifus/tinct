@@ -1,0 +1,35 @@
+# Typed case arm dispatch — case arms with type annotations on bindings.
+# The [case [let h p] [host: h port: p] body] form binds h and p from the structural pattern.
+# If the let bindings have type annotations ([let h@String p@Integer]), try_clause must
+# verify the matched field's type before binding.
+#
+# This is distinct from typed params: typed params are type guards on arguments at call time.
+# Typed case arms are type guards on pattern-matched fields during structural destructuring.
+[
+  # Simple structural pattern with typed bindings
+  data:  [host: "localhost"  port: 8080]
+  url:   [match data
+    [case [let h p] [host: h  port: p]  [str h ":" [str p]]]
+    ...:                                "no match"]
+
+  # Nested structural pattern with typed bindings
+  person: [name: "Alice"  address: [city: "Portland"  zip: 97201]]
+  loc:    [match person
+    [case [let c z] [address: [city: c  zip: z]]  [str c " " [str z]]]
+    ...:                                          "no match"]
+
+  # Mixed typed case arm — one field used, one unused
+  config: [timeout: 30  retries: 3  verbose: true]
+  desc:   [match config
+    [case [let t r] [timeout: t  retries: r ...]  [str "timeout=" [str t] " retries=" [str r]]]
+    ...:                                          "no match"]
+
+  # Literal arm followed by case arm
+  val:    42
+  label:  [match val
+    0:                            "zero"
+    [case [let n] n               [str "number: " [str n]]]
+    ...:                          "other"]
+]
+=== out
+Dict({"data": Dict({"host": String("localhost"), "port": Int(8080)}), "url": String("localhost:8080"), "person": Dict({"name": String("Alice"), "address": Dict({"city": String("Portland"), "zip": Int(97201)})}), "loc": String("Portland 97201"), "config": Dict({"timeout": Int(30), "retries": Int(3), "verbose": Variant(Boolean.True, Null)}), "desc": String("timeout=30 retries=3"), "val": Int(42), "label": String("number: 42")})

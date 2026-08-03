@@ -236,6 +236,26 @@ pub(crate) async fn try_clause(
         }
     }
 
+    // Step 2b — Named arg type guard: same check as Step 2 but for named arguments.
+    // A named arg may supply a value for an annotated param that was not covered positionally.
+    // Without this check, named args bypass type dispatch entirely.
+    if let Some(named_map) = named {
+        for param in params.iter() {
+            let Some(tv) = &param.resolved_type else {
+                continue;
+            };
+            if is_typevalue_unknown(tv) {
+                continue;
+            }
+            if let Some(named_thunk) = named_map.get(&param.name) {
+                let value = materialize(named_thunk, Some(call_span), ctx).await?;
+                if !value_matches_type(&value, tv, ctx) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
     // Step 3 — Lowered pattern: structural match against the first positional argument.
     // The current lowerer never produces CoreExpr::Fn clauses with lowered_pattern = Some(...)
     // (fn clauses have lowered_pattern = None; only match arm clauses set it). If a fn clause

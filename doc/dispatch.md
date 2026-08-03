@@ -20,7 +20,7 @@ An ordinary function is a single wildcard clause (no pattern, no guard). A match
 
 ## 2. try_clause: Unified Evaluation Order
 
-The `try_clause` function in `src/eval.rs` implements the common dispatch logic for all clauses. Evaluation proceeds in strict order:
+The `try_clause` function in `src/eval_call.rs` implements the common dispatch logic for all clauses. Evaluation proceeds in strict order:
 
 1. **Arity check** — verify positional argument count matches required params
 2. **Type guards** — if params have type annotations (`@Integer`, `@String`), materialize arguments and check runtime types via `value_matches_type`
@@ -51,9 +51,9 @@ This is the common case. The resolver determines the binding site at resolution 
 
 Open dispatch via accumulated instance group scan. The name is a typeclass method (e.g., `+`, `=`, `<`). At call time, the evaluator uses a two-phase **collect-then-select** strategy:
 
-**Phase 1 — Collect:** Scan the accumulated instance group (built during letrec evaluation) from innermost slot to outermost for all `Value::Function` entries whose `instance_of` matches `(class_id, method)`, regardless of argument type. Concatenate their clauses (innermost-first) into a synthesized dispatch function. If no candidates are found, raise a "no instance" error.
+**Phase 1 — Collect:** Collect all `Value::Function` entries whose `instance_of` matches `(class_id, method)` as candidates (innermost-first). Each candidate preserves its own `closure_env`. If no candidates are found, raise a "no instance" error.
 
-**Phase 2 — Select:** Invoke the synthesized function via `invoke_function`, which calls `try_clause` on each concatenated clause in order. Type discrimination happens here — Step 2 of `try_clause` materializes arguments and checks runtime types via `value_matches_type` against each clause's parameter annotations. The first clause whose type guards, pattern, and guard all pass is executed.
+**Phase 2 — Select:** Iterate candidates; for each, call `invoke_function` which tries each clause via `try_clause`. The first candidate whose clauses match is executed. Type discrimination happens here — Step 2 of `try_clause` materializes arguments and checks runtime types via `value_matches_type` against each clause's parameter annotations. The first clause whose type guards, pattern, and guard all pass is executed.
 
 Used for:
 
@@ -201,7 +201,7 @@ This is the same path for ordinary functions, match arms, and instance methods. 
 
 **Remaining work:**
 
-- T-2141: Per-clause closure environments for synthesized dispatch functions (instance methods currently assume empty closure_env)
+None. All dispatch tasks are resolved. (T-2141 per-clause closure environments was resolved by T-2146 EffectPerformDispatcher — each candidate now preserves its own `closure_env`.)
 
 ---
 
