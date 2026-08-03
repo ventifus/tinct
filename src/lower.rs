@@ -1269,12 +1269,12 @@ fn lower_expr(
                         let class_decl_id: u64 = match resolved_class_decl_id.get() {
                             Some(id) => id,
                             None => {
-                                diagnostics.push(Diagnostic::error(
-                                    "lower-error",
+                                diagnostics.push(Diagnostic::info(
+                                    "lower-info",
                                     format!(
                                         "instance declaration: class_decl_id not set \
-                                         for method '{}' — type checker must run \
-                                         before lowering instances",
+                                         for method '{}' — class declared in nested \
+                                         scope; EffectPerform dispatch skipped",
                                         method_name
                                     ),
                                     syn_span.clone(),

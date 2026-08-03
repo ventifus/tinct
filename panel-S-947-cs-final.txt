@@ -1,0 +1,264 @@
+## Review: computer-scientist
+
+Sprint: S-947 (value-send-migration)
+Reviewer: computer-scientist
+Date: 2026-07-21
+
+### Scope Examined
+
+All 64 modified files in the working tree diff (src/, doc/, stdlib/, tests/).
+Key files read in full: src/value.rs (Value::Dict, Thunk, UnevaluatedState),
+src/arena.rs (ScopeArena, Scope, ThunkId), src/eval_dict.rs (eval_dict_core,
+letrec scoping), src/env.rs (merge_env_chain_into two-pass),
+src/builtins_meta.rs (builtin_lower, builtin_eval, builtin_typecheck_doc),
+src/error.rs (render_span_snippet, EvalError::Display, write_frame_snippet),
+src/ast.rs (Span compaction), src/lib.rs (run_loader_pipeline, visit_value),
+src/main.rs (CLI error display), doc/internals/scope-arena.md,
+doc/internals/lower-eval.md, doc/internals/thunk.md,
+doc/internals/evaluator.md, doc/16-architecture.md, doc/10-errors.md,
+doc/feature/source-text-availability.md, stdlib/test-loader.llt,
+tests/corpus/eval/meta/builtin_lower_*.llt-eval.
+
+### Findings
+
+1. FINDING: `doc/internals/scope-arena.md` "Code Issues" section describes missing features
+   (`slot_names` field, `name` parameter on push_slot/reserve_slot,
+   `lookup_name_in_scope_chain`, `iter_named`) as required for compilation. The code
+   compiles fine without them — names are carried via `Thunk.span.name` (set by
+   `span.with_name()` in eval_dict.rs:305), not a separate `slot_names` vec. The
+   "Code Issues" section §255-265 falsely claims "All four missing items are required
+   for the codebase to compile correctly. They represent an incomplete edit of
+   src/arena.rs." The data model diagram (line 15-17) shows `slot_names: Vec<String>`
+   on Scope, which does not exist. Invariants 1, 2, 3 (lines 87-89) reference
+   `slot_names`. The comparison table (line 244) references it. Six separate passages
+   describe features that do not exist in the code.
+   | SCOPE: fix-now | FILE: doc/internals/scope-arena.md:15,87-89,244,251-265
+   | MODEL: doc is forward spec; when code diverges from spec, fix the code. Exception:
+   when doc makes a factually false claim about the current state (as here), the doc
+   needs correction. The "Code Issues" section is not aspirational spec — it is a
+   false empirical claim about the code ("required for compilation"). Either remove
+   the section or rewrite it as a future-work proposal.
+
+2. FINDING: `doc/16-architecture.md` line 47 describes BuiltinArgs as carrying
+   `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`. The actual
+   code (src/value.rs:50-51) has `args: Vec<ThunkId>`,
+   `named: Option<IndexMap<String, ThunkId>>`. Doc/code mismatch.
+   | SCOPE: fix-now | FILE: doc/16-architecture.md:47
+   | MODEL: doc is forward spec. But this is not aspirational — it describes
+   the current contract incorrectly. Callers reading this doc will pass the wrong types.
+
+3. FINDING: `builtin-lower` produces `Value::CoreDocument` but `builtin-eval` only
+   accepts `Value::Document`. There is no `builtin-eval` path that consumes
+   `CoreDocument`. The pipeline from `builtin-lower` to evaluation is not wired —
+   `builtin-lower` is defined but not consumed by anything.
+   | SCOPE: fix-later | FILE: src/builtins_meta.rs:5394-5486, 3583-3707
+   | MODEL: The lowering step is a defunctionalized pipeline stage (Ager et al. 2003).
+   For it to be meaningful, the downstream consumer must accept the lowered
+   representation. Currently `builtin-lower` is dead code — it can be called but its
+   output cannot feed into eval. The `builtin_meta.llt` type declarations don't
+   include `builtin-lower` either. This is acceptable as in-progress work (the doc
+   at doc/internals/lower-eval.md describes the intended pipeline) but should be
+   tracked.
+
+4. FINDING: `doc/internals/scope-arena.md` line 247 references
+   `lookup_name_in_scope_chain` as the type-stage integration path. This method does
+   not exist anywhere in the codebase. The actual type-stage lookup path uses
+   `type_stage_map` (a HashMap) populated by `run_loader_pipeline` in lib.rs.
+   | SCOPE: fix-now | FILE: doc/internals/scope-arena.md:247,259
+   | MODEL: false empirical claim about code that doesn't exist.
+
+---
+
+### Theoretical Verification
+
+#### 1. Value::Dict with Arc<Thunk> — letrec correctness
+
+**Model:** Launchbury (1993) natural semantics for lazy evaluation; letrec
+allocation requires all bindings to be allocated as pending thunks before any body
+is forced.
+
+**Verification:** eval_dict_core (eval_dict.rs:248-442) correctly implements
+two-phase letrec:
+- Phase 1: All static-key entries are collected as `(slot_idx, Arc<Thunk>)` tuples
+  in `letrec_slots` (line 274).
+- Phase 2: Batch fill — first `reserve_slot` for all entries (lines 416-422), then
+  `fill_slot_arc` for all entries (lines 423-425).
+- The same `Arc<Thunk>` is placed in both `dict_map` and the ScopeArena scope
+  (via `fill_slot_arc`). This preserves thunk identity — settling the thunk via
+  either reference settles it for both, which is the call-by-need memoization
+  guarantee.
+
+**Arc cycle risk (T-1774):** Dict entries hold `Arc<Thunk>`. Those thunks hold
+`UnevaluatedState::CoreExpr { env_id, ctx }` where `env_id` is a u32 index (not
+an Arc) and `ctx` is `Arc<EvalContext>`. The EvalContext holds
+`Rc<RefCell<ScopeArena>>` which holds `Arc<Thunk>`s. This is the pre-existing
+`ctx -> arena -> thunks -> ctx` reference cycle. The Dict migration to `Arc<Thunk>`
+does NOT introduce any new cycle path — the same thunks were already reachable
+through the ScopeArena. The Dict merely adds a second Arc strong reference to the
+same Thunk objects that the arena already holds. No new cycle risk from T-1772.
+
+**VERDICT: SOUND.** The two-phase letrec invariant is maintained. Thunk identity
+preservation is correct. No new Arc cycle paths.
+
+#### 2. merge_env_chain_into two-pass — scoping correctness
+
+**Model:** Damas-Milner let-polymorphism (1982) — each `let` binding introduces
+a new scope that shadows the same name in the enclosing scope.
+
+**Verification:** The function (env.rs:745-826) implements two-pass merging:
+- Pass 1 (lines 762-804): Collects entries from the src chain using `or_insert_with`.
+  Frames are iterated innermost-first (line 766 iterates `frames.iter()` where
+  `frames[0]` is the innermost scope). `or_insert_with` means the first insertion
+  wins — inner scope shadows outer scope within the chain. This is correct lexical
+  scoping.
+- Pass 2 (lines 807-826): Inserts collected entries into `dst` using `insert`
+  (unconditional overwrite). This implements cross-document shadowing: later documents
+  override earlier documents' bindings. This is right-biased merge semantics,
+  consistent with tinct's `merge` operator.
+
+**Scoping model:** Within a single document's scope chain, inner let-bindings shadow
+outer ones (standard Damas-Milner). Across documents, later documents shadow earlier
+ones (multi-file pipeline semantics). The two-pass design correctly separates these
+two shadowing dimensions.
+
+**All six binding categories are merged:** slots, extras, type_aliases, classes,
+instances, tycon_defs. This is complete — no binding category is silently dropped.
+
+**VERDICT: SOUND.** The two-pass semantics are consistent with Damas-Milner scoping
+within documents and right-biased merge across documents.
+
+#### 3. Span compaction — error message quality
+
+**Model:** Error messages must provide enough information for the user to locate and
+understand the error. Source snippets are an enhancement, not a requirement. The
+minimal requirement is file + line + column.
+
+**Verification:**
+- Span retains: `file: Arc<str>`, `start_line: u32`, `start_col: u32`,
+  `end_line: u32`, `end_col: u32`, `name: Option<Arc<str>>`.
+- Span Display: `"file:start_line:start_col-end_line:end_col"` — full location info.
+- Source snippet rendering: `render_span_snippet(source, span)` is available as a
+  public helper. Callers that have the source text (CLI, tests, parser) use it.
+- EvalError::Display: no longer renders inline snippets. This is documented at
+  error.rs:1523-1525 with a T-1771 reference.
+- `write_frame_snippet` is a no-op (error.rs:1506-1508).
+- CLI integration: `format_type_diagnostic` (main.rs:2488) calls
+  `render_span_snippet` with the source text.
+- doc/10-errors.md and doc/feature/source-text-availability.md both document the
+  caller-provides-source design.
+
+**Degradation path:** The loader (loader.llt, test-loader.llt) formats errors
+using a tinct-level `format-diagnostic` function that has no access to source text
+— it formats location coordinates only. This means errors from included files
+(loaded via the tinct-side loader pipeline) will not show source snippets in the
+tinct-formatted error output. The CLI's top-level error handler only renders
+snippets for the init program's source, not for sources loaded by `include`.
+
+This is a known limitation of the caller-provides-source design (same as Nickel's
+`to_diagnostic(files)` pattern). A future improvement would be to thread a source
+registry through the error chain, but this is not a regression — the pre-sprint
+code also did not embed source text in spans for included files.
+
+**VERDICT: ACCEPTABLE.** Error location information is preserved. Snippet rendering
+is available where source text is available. The design matches established practice
+(Nickel, rustc).
+
+#### 4. builtin-lower — interface soundness
+
+**Model:** The pipeline stages form a defunctionalized continuation chain
+(Ager, Biernacki, Danvy & Midtgaard, 2003). Each stage consumes the output of the
+previous stage and produces input for the next. The interface must be type-correct
+at each boundary.
+
+**Verification:**
+- `builtin-lower` (builtins_meta.rs:5409-5486) accepts `Value::Document` and
+  produces `Value::CoreDocument { entries, span }`.
+- `entries` is `Arc<Vec<(String, Arc<Spanned<CoreExpr>>)>>` — each entry is a
+  (key_name, lowered_expression) pair.
+- Lowering uses `crate::lower::lower(node, scope_frames)` — the standard lowering
+  function. Lower diagnostics are converted to `EvalError` via
+  `lower_errors_to_eval_error`. This is correct — lowering errors are eagerly
+  reported.
+- Decl items are correctly skipped (line 5455: `SurfaceItem::Decl(_) => continue`),
+  and `expr_idx` is incremented only for Expr items. This ensures key contiguity.
+- The test `builtin_lower_skips_decl_items.llt-eval` verifies this.
+
+**Interface gap:** `builtin-eval` does not accept `CoreDocument`. The lowered
+representation cannot be fed into eval. This is tracked above as fix-later finding 3.
+
+**Can all valid programs be lowered before eval?** Yes. `lower()` is a pure function
+of the `SurfaceNode` and inline OnceLock fields. It requires no runtime state. Any
+resolved+typechecked document can be lowered. The only constraint is that scope_frames
+must be available for `call_dispatch` resolution — this is threaded through the
+EvalContext.
+
+**VERDICT: SOUND** for the lowering step itself. The lowering function is correct and
+produces well-formed CoreExpr. The pipeline integration gap (CoreDocument not consumed
+by eval) is a completeness issue, not a soundness issue.
+
+---
+
+### Axiom Verification
+
+**Prelude speaks the Rust protocol:** PASS.
+Rust defines: `Value::Dict(IndexMap<HashableValue, Arc<Thunk>>)`,
+`Value::CoreDocument`, `builtin-lower`, `builtin-eval`, `merge_env_chain_into`.
+Prelude implements the protocol through standard tinct code. No prelude-specific
+behavior embedded in Rust. The `builtin-lower` step is a protocol extension — it
+defines a new pipeline step that the loader can optionally use.
+
+**No fast paths, no fallbacks, no backwards compatibility:** PASS.
+The Dict representation changed from ThunkId to Arc<Thunk> — one correct path.
+The old ThunkId-based Dict path is removed. `write_frame_snippet` is a no-op
+(not a fallback — it delegates to callers who have source text). The Builder
+type's `AtomicBool` frozen check (value.rs:399) is documented as a "fast-path"
+in comments — but this is a mutex-avoidance optimization, not a semantic fast
+path. The frozen check and the mutex guard check are redundant but not divergent
+(both return the same error for frozen builders).
+
+**Correctness, not performance:** PASS.
+The `letrec_slots` batch-fill pattern (eval_dict.rs:407-426) reduces borrow overhead
+but does not change semantics. The two-phase reserve-then-fill maintains the letrec
+invariant correctly. No complexity was added to skip a check or avoid an allocation.
+
+**Loader/prelude agnosticism:** PASS.
+`builtin-lower` operates on `SurfaceDocument` and `SurfaceNode` — it does not
+reference any prelude type names. `merge_env_chain_into` operates on generic `Env`
+frames with no prelude-specific binding names. The span compaction is universal.
+
+**General case, not specific:** PASS.
+`merge_env_chain_into` solves the general scope-chain flattening problem (any chain,
+any depth, any number of binding categories). `builtin-lower` lowers any document,
+not just specific patterns. No special cases.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Three fix-now findings:
+
+1. `doc/internals/scope-arena.md` "Code Issues" section makes false empirical claims
+   about the codebase (claims code won't compile without features that don't exist
+   and aren't needed). The data model, invariants, comparison table, and 6+ passages
+   reference `slot_names` which doesn't exist on `Scope`. Remove the Code Issues
+   section and correct the data model/invariants to reflect actual code.
+
+2. `doc/16-architecture.md` line 47 describes `BuiltinArgs` with wrong types
+   (`Vec<Arc<Thunk>>` vs actual `Vec<ThunkId>`). Fix to match code.
+
+3. `doc/internals/scope-arena.md` references `lookup_name_in_scope_chain` which
+   doesn't exist. Remove or replace with actual lookup mechanism description.
+
+### References
+
+- Launchbury, J. (1993). A natural semantics for lazy evaluation. In *POPL '93*,
+  pp. 144-154. ACM. doi:10.1145/158511.158618
+- Damas, L. & Milner, R. (1982). Principal type-schemes for functional programs.
+  In *POPL '82*, pp. 207-212. ACM. doi:10.1145/582153.582176
+- Ager, M.S., Biernacki, D., Danvy, O. & Midtgaard, J. (2003). A functional
+  correspondence between evaluators and abstract machines. In *PPDP '03*,
+  pp. 8-19. ACM. doi:10.1145/888251.888254
+- Tofte, M. & Talpin, J.-P. (1997). Region-based memory management. *Information
+  and Computation*, 132(2), 109-176. doi:10.1006/inco.1996.2613

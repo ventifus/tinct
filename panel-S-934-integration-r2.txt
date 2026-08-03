@@ -1,0 +1,57 @@
+## Review: integration-verifier (S-934 backlog-catchall-3, Round 2)
+
+### F-07 Verification: Annotated serializer/deserializer symmetry
+
+**surface_fields.rs (serializer):** PASS. Lines 643-649: `Annotation::Annotated` emits only `"inner-ann"` via `annotation_inner_to_value`. No `"inner"` string field is emitted for the inner annotation in this path. The comment at line 644 correctly states this is the only serialization form.
+
+**surface_convert.rs (deserializer, Variant path):** PASS. Lines 775-780: deserializer reads `"inner-ann"` only — `get_field(d, "inner-ann", path, ctx)`. No fallback to `"inner"` in this path. Round 1 finding fully resolved.
+
+**Note on remaining `"inner"` occurrences:** Three other occurrences of `"inner"` exist in the codebase. All are in independent, symmetric pairs not implicated by F-07:
+- `surface_convert.rs:2092` / `surface_convert.rs:810`: `annotation_to_thunk_id` (Dict/kind format) serializes and deserializes `"inner"` for `builtin-program-docs` params/return-ann. This is a distinct wire format with its own symmetric deserializer — not a fallback from the F-07 path.
+- `surface_fields.rs:512`: inline `"inner"` string field in the PropertyDict `parts` list for annotated VarRef entries (e.g. `@[Seq k]`). This is a read-only display path, not the Annotated round-trip path.
+These are correctly left unchanged.
+
+**Axiom check for F-07:**
+- **No fast paths, no fallbacks, no backwards compatibility:** PASS. The fallback branch that tried `"inner"` after failing to find `"inner-ann"` is gone. One path, one field name.
+- **Correctness, not performance:** PASS. The fix is structurally correct — inner is now a recursive `Annotation` variant, not a lossy Display string.
+
+**Regression coverage gap (nit):** No corpus test and no Rust unit test explicitly exercises the `annotation_inner_to_value` → `dict_to_annotation` round-trip for `Annotation::Annotated` with a non-Simple inner annotation. The existing chained-annotation corpus tests (`chained_property_dict_annotation.llt-eval`) verify evaluation correctness but do not go through `builtin-program-docs` / `builtin-resolve` with an `Annotation::Annotated` inner, so a regression to `"inner"` in `surface_fields.rs` would not be caught by the current corpus. This is a pre-existing gap, not introduced by the fix.
+
+---
+
+### F-06 Verification: builtin-typecheck-doc arity error uses ArityBound::Range(2,3)
+
+**builtins_meta.rs:2683-2684:** PASS. The arity guard reads:
+
+    if args.len() != 2 && args.len() != 3 {
+        return Err(EvalError::arity_mismatch_bound(
+            ArityBound::Range(2, 3),
+            args.len(),
+            call_span,
+        ).into());
+
+`ArityBound::Range(2, 3)` formats as `"2 to 3 arguments"` (verified via `test_arity_bound_display` at error.rs:2325: `assert_eq!(format!("{}", ArityBound::Range(1, 3)), "1 to 3 arguments")`). The error message for a call with 1 arg would read "expected 2 to 3 arguments, got 1" — specific and actionable.
+
+**Axiom check for F-06:**
+- **Correctness, not performance:** PASS. The arity constraint accurately reflects the actual accepted arities (2 or 3), not an approximation.
+- **No fast paths, no fallbacks:** PASS. The fix removes the misleading single-arity message; there is one correct error message.
+
+---
+
+### Axiom Verdicts
+
+- **Prelude speaks the Rust protocol:** PASS. Both fixes are in Rust — protocol defined in Rust, no prelude-specific accommodations.
+- **No fast paths, no fallbacks, no backwards compatibility:** PASS. F-07 fallback removed (F-07). Misleading arity approximation replaced with exact bound (F-06).
+- **Correctness, not performance:** PASS. Both fixes are structurally correct.
+- **Loader/prelude agnosticism:** PASS. Neither fix introduces prelude-specific behavior.
+- **General case, not specific:** PASS. `ArityBound::Range` is the general mechanism; using it for 2-or-3 is correct application of the existing abstraction, not a special case.
+
+---
+
+### Findings
+
+- FINDING: No corpus test exercises the `annotation_inner_to_value` → `dict_to_annotation` Annotated round-trip through `builtin-program-docs` + `builtin-resolve`. A regression to `"inner"` in the serializer would not be caught. | SCOPE: fix-later | FILE: tests/corpus/eval/annotation-system/chained_property_dict_annotation.llt-eval
+
+### Verdict
+
+APPROVE

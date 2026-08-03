@@ -1,0 +1,217 @@
+## Review: eval-engine — Sprint S-947 Round 2 Verification
+
+Reviewer: eval-engine panel
+Sprint: S-947 (value-send-migration)
+Date: 2026-07-21
+
+Source of round 1 findings:
+  - panel-S-947-eval-final.txt   (F-01 through F-04: eval-engine panel)
+  - panel-S-947-tests-final.txt  (F-05 through F-07: test-crafter panel)
+  - panel-S-947-integration-final.txt (F-08 through F-09: integration-verifier panel)
+  - panel-S-947-cs-final.txt     (F-10 through F-11: computer-scientist panel)
+Round 1 verification record: panel-S-947-round2-verify.txt
+  (10 VERIFIED, 1 PARTIAL — F-11 had stale sketch comment not yet updated)
+
+-----------------------------------------------------------------------
+
+FINDING VERIFICATION
+-----------------------------------------------------------------------
+
+F-01 | arena.rs — stale panic claim in AnnotatedWrap comment (lines 522-536)
+STATUS: VERIFIED
+
+src/arena.rs lines 524-536 now correctly describe AnnotatedWrap handling:
+"AnnotatedWrap is handled by migrating its inner ThunkId and carrying ctx unchanged.
+ctx is Arc<EvalContext>, which keeps the source arena alive via the EvalContext's own
+Arc refcount — so carrying it into the migrated state does not produce a dangling
+reference."
+No mention of unreachable!() or panic claim. Matches implementation.
+
+-----------------------------------------------------------------------
+
+F-02 | arena.rs — Dict branch missing cycle-break explanation (lines 436-448)
+STATUS: VERIFIED
+
+src/arena.rs lines 440-448 now contain a detailed comment explaining why no
+pre-insert cycle-break sentinel is used: Arc<Thunk> values have no ThunkId identity
+in thunk_map, and materialized Value::Dict cycles are impossible in tinct's value
+model. Comment is accurate and present.
+
+-----------------------------------------------------------------------
+
+F-03 | value.rs — DirCap Clone try_clone().expect() needs SAFETY comment (lines 721-728)
+STATUS: VERIFIED
+
+src/value.rs lines 722-727 now contain:
+  // SAFETY: DirCap values are always created from valid OS file descriptors
+  // (main.rs and builtins_io.rs construction sites). try_clone() can fail with
+  // EMFILE (too many open files) or EBADF (invalid descriptor) only if the
+  // descriptor is closed or the fd table is exhausted. DirCap values are assumed
+  // to remain valid for their Arc lifetime — the descriptor is never explicitly
+  // closed while a DirCap holding it is alive.
+Comment explains both failure modes and the invariant. Correct.
+
+Note (nit, not blocking): RevocableDirCap at line 738 uses the same try_clone().expect()
+pattern without a SAFETY comment. This was not in scope for F-03 (which referenced
+lines 721-735) and was not flagged by the round 1 verifier. Noted for future cleanup
+but does not affect this verdict.
+
+-----------------------------------------------------------------------
+
+F-04 | eval_dict.rs — dead empty_env + vestigial env param deleted (lines 503-533)
+STATUS: VERIFIED
+
+Grep for "empty_env" and "let _ = env" in src/eval_dict.rs: no matches.
+eval_str signature (line 505): async fn eval_str(src: &str, ctx: &Arc<EvalContext>)
+No env parameter, no dead code. RwLock import removed from test module.
+
+-----------------------------------------------------------------------
+
+F-05 | lower.rs — Decl-skip key contiguity unit test added
+STATUS: VERIFIED
+
+src/lower.rs line 2026: test_builtin_lower_decl_skip_key_contiguity is present.
+Test constructs SurfaceDocument with leading Decl + Expr, runs the builtin-lower
+key-assignment loop, asserts entries.len() == 1 and entries[0].0 == "0".
+Directly catches the enumerate() regression where Decl would increment expr_idx.
+
+-----------------------------------------------------------------------
+
+F-06 | env.rs — merge_env_chain_into slots shadowing test added
+STATUS: VERIFIED
+
+src/env.rs line 1047: test_merge_env_chain_slots_src_shadows_dst is present.
+Test verifies slots (the most semantically critical merge field) uses later-document-wins
+semantics: src slot with scheme shadows dst's name-only slot after merge_env_chain_into.
+
+-----------------------------------------------------------------------
+
+F-07 | ast.rs — Span PartialEq/Hash unit tests added
+STATUS: VERIFIED
+
+Three tests present in src/ast.rs:
+  line 1441: test_span_partialeq_excludes_name — same file/line/col, different name => equal
+  line 1467: test_span_hash_excludes_name — same location, different name => same hash;
+             also checks name=Some("x") vs name=None at same location => same hash
+  line 1500: test_span_partialeq_different_location_not_equal — different line => not equal
+
+These pin the invariant that name is excluded from Span identity. Guards TypeMap/SchemeMap
+keying correctness.
+
+-----------------------------------------------------------------------
+
+F-08 | eval.rs — get_thunk_rc renamed to get_thunk_arc
+STATUS: VERIFIED
+
+Grep for "get_thunk_rc" in src/eval.rs: 0 matches.
+Grep for "get_thunk_arc" in src/eval.rs: 8 matches.
+  - Line 2141: function definition
+  - Lines 2310, 2367, 2955, 2984, 3380, 3485, 5140: call sites
+Rename is complete across all call sites.
+
+-----------------------------------------------------------------------
+
+F-09 | surface_fmt.rs — misleading let _ = ctx removed
+STATUS: VERIFIED
+
+src/surface_fmt.rs lines 57-64: no "let _ = ctx;" present.
+Comment at line 63 now accurately reads: "ctx is passed to to_tinct; only required
+if value is a Function." ctx is used at line 64 (value.to_tinct(ctx)?).
+Comment and code are consistent.
+
+-----------------------------------------------------------------------
+
+F-10 | doc/internals/scope-arena.md — false Code Issues section deleted
+STATUS: VERIFIED
+
+Grep for "Code Issues", "slot_names", "lookup_name_in_scope_chain" in
+doc/internals/scope-arena.md: no Code Issues section found, no slot_names on Scope,
+no lookup_name_in_scope_chain anywhere.
+The only slot_names mention (line 23) correctly states:
+"There is no slot_names parallel vec on Scope."
+Document accurately reflects current code. False empirical claims removed.
+
+-----------------------------------------------------------------------
+
+F-11 | doc/16-architecture.md — BuiltinArgs wrong types in sketch comment
+STATUS: VERIFIED (was PARTIAL in round 1)
+
+Round 1 partial: prose at line 47 was correct, but sketch comment at lines 348-349
+still showed Vec<Arc<Thunk>> and Option<IndexMap<String, Arc<Thunk>>>.
+
+Current state verified:
+  Line 47 (prose): "BuiltinArgs carries owned args: Vec<ThunkId>,
+    named: Option<IndexMap<String, ThunkId>>, call_span: Span, ctx: Arc<EvalContext>"
+  Lines 348-349 (sketch comment):
+    // BuiltinArgs { args: Vec<ThunkId>, named: Option<IndexMap<String, ThunkId>>,
+    //               call_span: Span, ctx: Arc<EvalContext> }
+    // (see src/value.rs for current type alias)
+
+Both the prose description and the sketch comment now show the correct ThunkId types.
+F-11 is fully fixed.
+
+-----------------------------------------------------------------------
+
+AXIOM VERIFICATION
+-----------------------------------------------------------------------
+
+Prelude speaks the Rust protocol: PASS
+All four nit fixes (F-01 through F-04) are comment/dead-code changes. Tests (F-05
+through F-09) are in Rust test modules and test-only code. Documentation fixes
+(F-10, F-11) correct false empirical claims. None of these changes alter the protocol
+surface. Rust continues to define the protocol; prelude implements it unchanged.
+
+No fast paths, no fallbacks, no backwards compatibility: PASS
+No new evaluation paths, fast paths, or fallbacks introduced. All changes are comments,
+dead-code removal, unit tests, and documentation corrections. The single correct
+evaluation path is unchanged.
+
+Correctness, not performance: PASS
+The fixes are strictly correctness-oriented (removing stale comments, adding missing
+SAFETY documentation, adding tests that guard against real regressions). No complexity
+was added to skip a check or avoid an allocation.
+
+Loader/prelude agnosticism: PASS
+No changes touch loader.llt, prelude, or any loader/prelude protocol. Tests and
+documentation corrections are agnostic to which loader/prelude is in use.
+
+General case, not specific: PASS
+No special cases added. The unit tests (F-05, F-06, F-07) test general properties
+(Decl-skip key contiguity for any SurfaceItem::Decl, slots shadowing for any slot
+name, Span identity for any file/line/col/name combination).
+
+-----------------------------------------------------------------------
+
+SUMMARY
+-----------------------------------------------------------------------
+
+| #    | Finding                                              | Round 1   | Round 2  |
+|------|------------------------------------------------------|-----------|----------|
+| F-01 | arena.rs AnnotatedWrap comment (panic claim)         | VERIFIED  | VERIFIED |
+| F-02 | arena.rs Dict branch cycle-break explanation         | VERIFIED  | VERIFIED |
+| F-03 | value.rs DirCap Clone SAFETY comment                 | VERIFIED  | VERIFIED |
+| F-04 | eval_dict.rs empty_env + env param deleted           | VERIFIED  | VERIFIED |
+| F-05 | lower.rs Decl-skip key contiguity unit test          | VERIFIED  | VERIFIED |
+| F-06 | env.rs slots shadowing test added                    | VERIFIED  | VERIFIED |
+| F-07 | ast.rs Span PartialEq/Hash unit tests                | VERIFIED  | VERIFIED |
+| F-08 | eval.rs get_thunk_rc -> get_thunk_arc rename         | VERIFIED  | VERIFIED |
+| F-09 | surface_fmt.rs let _ = ctx removed                   | VERIFIED  | VERIFIED |
+| F-10 | doc/internals/scope-arena.md Code Issues deleted     | VERIFIED  | VERIFIED |
+| F-11 | doc/16-architecture.md BuiltinArgs types (sketch)    | PARTIAL   | VERIFIED |
+
+11 of 11 findings: VERIFIED
+
+-----------------------------------------------------------------------
+
+### Verdict
+
+APPROVE
+
+All 11 findings from round 1 are verified correct in the actual code and documentation.
+F-11 — the only PARTIAL from round 1 — is now fully resolved: both the prose description
+(doc/16-architecture.md:47) and the sketch comment (lines 348-349) correctly show
+Vec<ThunkId> and Option<IndexMap<String, ThunkId>>.
+
+No new eval-engine correctness issues observed. All five axioms pass. Laziness model
+is preserved through the Rc->Arc/owned migration (verified in round 1 and not disturbed
+by the round 2 nit fixes).

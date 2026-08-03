@@ -1,0 +1,27 @@
+## Review: stdlib-author
+
+### Findings
+
+- FINDING: `parse-expr` in `stdlib/codecs/stream.llt` skips `builtin-typecheck-doc` between resolve and eval — the correct pipeline is parse → desugar → resolve → typecheck → eval. Omitting typecheck is a fast path that violates the "No fast paths" axiom. | SCOPE: fix-now | FILE: stdlib/codecs/stream.llt:73-80
+
+- FINDING: `parse-expr` evaluates in hardcoded root scope (scope 0) with empty frames (`builtin-resolve doc []`, `builtin-eval resolved.doc 0`), discarding all caller context including prelude. Any stream expression using prelude functions silently fails with a resolution error. This violates "Loader/prelude agnosticism" and "General case, not specific" — the correct form threads the caller's scope-id. | SCOPE: fix-now | FILE: stdlib/codecs/stream.llt:78-79
+
+- FINDING: `parse-expr` calls `builtin-parse`, `builtin-desugar`, `builtin-program-docs`, `builtin-resolve`, `builtin-eval` directly — raw `builtin-*` names from a non-prelude stdlib file. T002 Builtin Privacy violation: `prelude.llt` exports `resolve` and `eval` (wrappers over `builtin-resolve`/`builtin-eval`), but `builtin-parse`, `builtin-desugar`, `builtin-program-docs` have no prelude wrappers. `stream.llt` must not call raw builtins. Fix: add `parse`, `desugar`, `program-docs` wrappers to `prelude.llt`; update `stream.llt` to use them; use prelude-exported `resolve` and `eval` instead of `builtin-resolve` and `builtin-eval`. | SCOPE: fix-now | FILE: stdlib/codecs/stream.llt:74-79, stdlib/prelude.llt (missing wrappers)
+
+- FINDING: `cli/in/stream.llt` comment says "parsed and macro-expanded to an Expression node" — stale for both the old version (returned Document) and the new version (returns Any). The docstring mismatch hides the contract change and will mislead callers. | SCOPE: fix-now | FILE: stdlib/cli/in/stream.llt:4-5
+
+- FINDING: New corpus tests `annotation_based_narrowing.llt-eval` and `key_annotation_narrows.llt-eval` use `_:` match arm wildcards (`[match x [@Integer _]: Boolean.True _: Boolean.False]`) in files introduced by this sprint. The sprint's own migration goal is `_:` → `...:` for wildcard match arms. New tests should use `...:` not `_:`. | SCOPE: fix-now | FILE: tests/corpus/eval/typecheck/annotation_based_narrowing.llt-eval:8, tests/corpus/eval/typecheck/key_annotation_narrows.llt-eval:8
+
+- FINDING: No corpus tests for `stdlib/codecs/stream.llt` — neither `bracket-count`, `balanced-exprs`, `scan`, nor `parse-expr` have any corpus test coverage. The sprint added behavior to `parse-expr` (now evaluates) without adding a single test for the codec. | SCOPE: fix-now | FILE: stdlib/codecs/stream.llt (no corresponding tests/corpus/eval/stdlib/stream_* files)
+
+### Axiom Assessment
+
+- **Prelude speaks the Rust protocol**: FAIL — `stream.llt` calls raw `builtin-parse`, `builtin-desugar`, `builtin-program-docs`, `builtin-resolve`, `builtin-eval` directly from a non-prelude file. Prelude does not export wrappers for `builtin-parse`, `builtin-desugar`, or `builtin-program-docs`.
+- **No fast paths, no fallbacks, no backwards compatibility**: FAIL — `parse-expr` skips `builtin-typecheck-doc`, taking a shortcut through the eval pipeline.
+- **Correctness, not performance**: FAIL — evaluating in root scope (scope 0) produces incorrect results for any expression that references names outside root scope.
+- **Loader/prelude agnosticism**: FAIL — hardcoding scope 0 (root) bakes in knowledge that root scope is the execution environment; the correct form accepts a caller-supplied scope-id.
+- **General case, not specific**: FAIL — `parse-expr` is specialized for root-scope evaluation instead of being general-purpose. A general `parse-expr` accepts a scope-id parameter from the caller.
+
+### Verdict
+
+REQUEST_CHANGES

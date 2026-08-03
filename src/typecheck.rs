@@ -3,7 +3,6 @@
 //! unification for polymorphic function calls.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::type_tags::*;
@@ -40,16 +39,11 @@ use typecheck_narrow::{
     extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify,
 };
 
-/// Global counter for unique class declaration IDs.
-/// Each `[class ...]` declaration gets a unique ID at type-check time via `next_class_decl_id()`.
-/// This ID enables stable class identity across scopes instead of relying on string name matching.
-/// Same mechanism as `TYPE_DECL_ID_COUNTER` in lower.rs for nominal types.
-static CLASS_DECL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
 /// Returns the next globally unique class declaration ID.
-/// ID 0 is reserved as a placeholder for ClassDecl objects created before ID assignment.
+/// Delegates to `type_class::next_class_decl_id` — the counter is defined there so the
+/// resolver's Phase 1b scan and the type-checker share the same AtomicU64.
 fn next_class_decl_id() -> u64 {
-    CLASS_DECL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    crate::type_class::next_class_decl_id()
 }
 
 /// Map from source span `(start_line, start_col, end_line, end_col)` to inferred TypeValue.
@@ -74,6 +68,11 @@ pub(crate) struct ClassDeclSurface<'a> {
     pub resolver: Option<String>,
     /// Whether the resolver is injective (from `resolver_injective:` in class metadata).
     pub resolver_injective: bool,
+    /// Pre-assigned class declaration ID from the resolver's Phase 1b scan.
+    /// When `Some`, the type-checker reads this ID instead of allocating a new one,
+    /// ensuring the EffectPerform dispatch chain uses a consistent class_decl_id.
+    /// `None` means the resolver did not run Phase 1b (e.g. bootstrap typecheck path).
+    pub pre_assigned_class_decl_id: Option<&'a crate::ast::ClassDeclIdCell>,
 }
 
 /// Type-check a `SurfaceProgram` — minimal bootstrap entry point.
@@ -780,6 +779,7 @@ pub(crate) fn infer_class_decl_from_surface(
         span,
         resolver,
         resolver_injective,
+        pre_assigned_class_decl_id,
     } = decl;
     let span = span.clone();
 
@@ -830,8 +830,16 @@ pub(crate) fn infer_class_decl_from_surface(
         _ => crate::type_class::StructuralDischarge::None,
     };
 
+    // Use the pre-assigned class_decl_id if the resolver's Phase 1b scan set one.
+    // This ensures the EffectPerform dispatch chain uses the same ID that was written
+    // into VarAddr::EffectPerform during resolution. Fall back to a fresh ID for
+    // the bootstrap typecheck path (where Phase 1b does not run).
+    let class_decl_id = pre_assigned_class_decl_id
+        .and_then(|cell| cell.get())
+        .unwrap_or_else(next_class_decl_id);
+
     let class_decl = ClassDecl {
-        class_decl_id: next_class_decl_id(),
+        class_decl_id,
         name: name.to_string(),
         params: params
             .iter()

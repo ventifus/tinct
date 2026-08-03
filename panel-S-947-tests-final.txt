@@ -1,0 +1,153 @@
+## Review: test-crafter — S-947 value-send-migration
+
+### Findings
+
+---
+
+FINDING: builtin_lower_skips_decl_items.llt-eval does NOT catch the regression it was written to
+test. The test's own comment (lines 9-20) admits that the original enumerate() bug — where
+expr_idx is incremented for Decl items, producing key "1" instead of "0" — is not detectable
+at the tinct level. All three checks (expr-count-ok, lower-type-ok, eval-ok) would return
+Int(1) even with the buggy code: (1) builtin-doc-expressions reads from the SurfaceDocument,
+not the CoreDocument, so Decl skip is independent of the key counter; (2) builtin-lower always
+returns CoreDocument regardless of key correctness; (3) builtin-eval in the test takes
+typed.doc (a Value::Document, not Value::CoreDocument) and independently filters Decl items
+itself at lines 3650-3656. The result is Int(3) with the bug and Int(3) without. Mutation
+target: revert the expr_idx fix (change `let mut expr_idx: usize = 0` / increment only on
+Expr back to `enumerate()` over all items) — the test still passes.
+
+The missing test: a unit test in src/builtins_meta.rs or src/lower.rs that lowering a document
+with a leading Decl item produces a CoreDocument whose single entry has key "0" (not "1").
+Since CoreDocument entries are an Arc<Vec<(String, Arc<Spanned<CoreExpr>>)>>, a unit test can
+directly inspect the key string. This is the ONLY way to catch the specific regression.
+| SCOPE: fix-now | FILE: tests/corpus/eval/meta/builtin_lower_skips_decl_items.llt-eval
+
+---
+
+FINDING: merge_env_chain_into unit tests test only tycon_defs — five of the six fields merged
+by the function are untested. The implementation merges slots, extras, type_aliases, classes,
+and instances (env.rs:768-803) in addition to tycon_defs. All five merge_env_chain_into tests
+use make_def() and insert_tycon_def() exclusively. A bug in the slots, extras, type_aliases,
+classes, or instances merge paths (e.g., off-by-one in Phase 1 or Phase 2, or an accidental
+or_insert instead of insert on the Phase 2 dst write) would not be caught. Cross-document
+shadowing for type aliases and class/instance bindings is the critical semantic: a later
+document must override an earlier document's type alias of the same name. This is untested.
+Specifically: test_merge_env_chain_src_shadows_dst only verifies tycon_defs shadowing.
+| SCOPE: fix-now | FILE: src/env.rs:1024
+
+---
+
+FINDING: No Span equality/hash unit test after the T-1771 layout change. The Span struct was
+completely restructured (dropped Arc<SourceFile> + Position, added start_line/start_col/
+end_line/end_col inline). The PartialEq and Hash impls were rewritten. No test in ast.rs
+(which has no #[test] for Span) and no test in error.rs verifies that two Spans at the same
+file+line+col are equal, or that name: Some("x") vs name: None at the same location produces
+equal Spans (name is excluded from identity per the comment at line 64). The display tests in
+error.rs (test_span_display_*) verify formatting only, not identity semantics. A regression in
+the hash or eq impl — e.g., accidentally including name in Hash — would silently corrupt
+TypeMap and SchemeMap keying (both use Span as a map key after the T-1771 key change).
+| SCOPE: fix-now | FILE: src/ast.rs:67
+
+---
+
+FINDING: builtin_lower_returns_core_document.llt-eval is a meaningful but minimal smoke test.
+It verifies that the pipeline parse->desugar->program-docs->resolve->typecheck-doc->lower
+completes without error and that builtin-type-of returns "CoreDocument". The mutation guard
+works: returning a wrong type from builtin-lower (e.g., Value::Document instead of
+Value::CoreDocument) causes builtin-type-of to return "Document", making builtin-eq-string
+return Int(0) instead of Int(1), failing the === out Int(1) assertion. This test is genuinely
+useful for pipeline wiring regression detection. However: it does not test that the CoreDocument
+has any entries, or that its entries have correct content. An implementation that always returns
+an empty CoreDocument would pass.
+| SCOPE: fix-later | FILE: tests/corpus/eval/meta/builtin_lower_returns_core_document.llt-eval
+
+---
+
+FINDING: No error path test for builtin-lower when given a wrong-type argument. The
+builtin_lower function returns EvalError::type_mismatch_ctx when given non-Document input
+(builtins_meta.rs:5432-5440). No corpus test in tests/corpus/eval/errors/ exercises this path.
+The "no error test for a named error path" pattern is a standard coverage gap. Missing test:
+  [builtin-lower 42]
+  === error
+  [E042] type mismatch
+or equivalent. (The specific error code and message should be confirmed from the implementation
+at builtins_meta.rs:5432.)
+| SCOPE: fix-later | FILE: tests/corpus/eval/errors/
+
+---
+
+FINDING: Value::Dict ThunkId->Arc<Thunk> migration (T-1772): the existing unit test
+test_migrate_dict_value in arena.rs (lines 1154-1217) tests that Arc<Thunk> values in a
+migrated dict remain accessible after the source scope is dropped. This is the primary
+correctness property for T-1772 and the test is tight — it checks specific values (Int(1),
+Int(2)) by key after drop. The key regression (dict thunks becoming dangling after source
+scope drop) would be caught. No gap here for the primary correctness property.
+
+However: there is no test for Value::Builder Arc<Thunk> construction. Value::Builder.inner
+was changed from IndexMap<HashableValue, ThunkId> to IndexMap<HashableValue, Arc<Thunk>>
+in parallel with Dict. The builtin_builder_set/builtin_builder_finish/builtin_builder_snapshot
+paths in builtins_dict.rs now return Arc<Thunk> from builder entries. No unit test directly
+exercises the builder's new Arc<Thunk> storage — only the high-level corpus tests that use
+build-dict indirectly (if any). A bug in builder Arc<Thunk> construction would surface only
+as a runtime failure.
+| SCOPE: fix-later | FILE: src/builtins_dict.rs
+
+---
+
+FINDING: Deleted tests (memory_budget, UnevaluatedState::Surface, arena migration of Surface)
+are appropriately accounted for. T-1770 deleted memory_budget.rs entirely because the RLIMIT_AS
+backstop replaces the soft counter — this is an architectural deletion, not test suppression.
+UnevaluatedState::Surface was deleted because builtin-lower now replaces lazy on-demand
+lowering — the variant no longer exists. Arena migration arms for Surface disappeared with the
+variant. These are correct deletions: the functionality is gone, not hidden. The B-544 memory
+budget double-counting bug was also resolved by deletion. No stale tests remain masking real
+behavior.
+| SCOPE: (informational — no action required)
+
+---
+
+### Axiom Checks
+
+**Prelude speaks the Rust protocol** — PASS. builtin-lower is defined in Rust (builtins_meta.rs)
+and registered as a named builtin. Prelude could use it if needed; it currently does not. The
+protocol boundary is clean. Value::CoreDocument is produced by Rust and consumed by Rust
+(builtin-eval). The tinct side only observes the type string via builtin-type-of.
+
+**No fast paths, no fallbacks, no backwards compatibility** — PASS with note. The T-1771
+"backward compat" fallback for "inner" field in Annotated deserialization (surface_convert.rs)
+flagged in S-934 review was not part of this sprint. Within S-947 scope: UnevaluatedState::Surface
+is fully deleted (not preserved with a fallback). The ThunkId->Arc<Thunk> migration in Dict/Builder
+is a clean replacement. No old path preserved.
+
+**Correctness, not performance** — PASS. DirCap now uses try_clone() (a real fd dup) rather than
+Rc::clone. Arc<Mutex<File>> for Value::File is correct over Rc<RefCell>. No shortcuts taken.
+The merge_env_chain_into two-phase design (or_insert for inner-wins within chain, insert for
+later-document-wins into dst) is provably correct for the described semantics.
+
+**Loader/prelude agnosticism** — PASS. builtin-lower is in the meta module, not wired into
+loader.llt or prelude. The pipeline step is tinct-callable and prelude-agnostic. Users who
+replace prelude/loader can use builtin-lower independently.
+
+**General case, not specific** — PASS. The Decl-skip loop in builtin-lower uses a generic
+SurfaceItem::Expr/Decl match — it does not special-case [type ...] declarations specifically.
+Any SurfaceItem::Decl (including future class/instance declarations) would be skipped correctly.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Fix-now findings:
+
+1. builtin_lower_skips_decl_items.llt-eval does not catch the expr_idx regression it was
+   written to test. Requires a unit test that directly inspects the CoreDocument entry key
+   string (e.g., assert entries[0].0 == "0" not "1") in src/builtins_meta.rs or src/lower.rs.
+
+2. merge_env_chain_into tests cover only tycon_defs. slots, extras, type_aliases, classes,
+   and instances merge paths are untested. At minimum: one test for slots shadowing and one
+   for type_aliases shadowing to verify cross-document semantic correctness.
+
+3. No Span PartialEq/Hash unit test after the T-1771 struct layout change. A test that (a)
+   two Spans at identical file+line+col are equal, and (b) name does not affect equality,
+   is needed in src/ast.rs to guard the TypeMap/SchemeMap keying invariant.

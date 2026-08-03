@@ -2655,6 +2655,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 resolver,
                                 resolver_injective,
                                 structural,
+                                pre_assigned_class_decl_id: crate::ast::ClassDeclIdCell::new(),
                             };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
                             if stack.is_empty() {
@@ -6306,6 +6307,7 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
                         resolver,
                         resolver_injective,
                         structural,
+                        pre_assigned_class_decl_id: crate::ast::ClassDeclIdCell::new(),
                     };
                     return mk(
                         SurfaceExpression::Decl(Box::new(new_decl)),

@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -26,6 +27,19 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::type_tags::*;
 use crate::value::{unknown_type_val, HashableValue, Thunk, Value};
+
+/// Global counter for unique class declaration IDs.
+/// Shared between the resolver's Phase 1b scan (which pre-assigns IDs before type-checking)
+/// and the type-checker (which reads the pre-assigned ID from the AST node).
+/// ID 0 is reserved as a placeholder for ClassDecl objects created before ID assignment.
+static CLASS_DECL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Returns the next globally unique class declaration ID.
+/// Called by the resolver's Phase 1b scan to pre-assign IDs before type-checking runs,
+/// and by the type-checker as a fallback when no pre-assigned ID exists.
+pub fn next_class_decl_id() -> u64 {
+    CLASS_DECL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Structural discharge rule for a typeclass — a general mechanism for declaring
 /// that a typeclass is satisfied by a structural property of the type rather than

@@ -2234,6 +2234,7 @@ fn surface_decl_to_thunk_id(
             resolver,
             resolver_injective,
             structural: _,
+            pre_assigned_class_decl_id: _,
         } => {
             variant_tag = "ClassDecl";
             dict.insert(

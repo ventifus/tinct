@@ -1,0 +1,68 @@
+## Review: integration-verifier
+
+### Findings
+
+- FINDING: `get_thunk_rc` helper in eval.rs test module has stale "rc" suffix — function body is now `Arc::clone(thunk)` after T-1772; comment says "After T-1772, dict values are Arc<Thunk> directly" | SCOPE: fix-now | FILE: src/eval.rs:2141
+
+- FINDING: `surface_fmt.rs` receives a `ctx` parameter that is now unused in the dict formatting path — `let _ = ctx;` deadcode comment with T-1772 annotation; the parameter could be removed or the comment should explicitly note it will be cleaned up | SCOPE: fix-now | FILE: src/surface_fmt.rs:59
+
+- FINDING: `merge_env_chain_into` unit tests only exercise the `tycon_defs` field; `slots`, `extras`, `classes`, and `instances` shadowing semantics are untested — the two-pass semantics (inner-wins within chain, later-doc shadows dst) apply to all six field types but only one is verified | SCOPE: fix-now | FILE: src/env.rs:908-1043
+
+- FINDING: `builtin-lower` produces `Value::CoreDocument` but `builtin-eval` still accepts only `Value::Document` and does lazy lowering inline — the pipeline described as "parse→desugar→resolve→typecheck→lower→eval" is incomplete: `CoreDocument` has no evaluator path and is rejected by the serializer with `value_not_serializable`. Pre-existing gap (not introduced by this sprint), but S-947 is specifically called out to verify "builtin-lower pipeline interfaces are consistent" — they are not | SCOPE: fix-later | FILE: src/builtins_meta.rs:3599-3614, src/builtins_meta.rs:5394-5485
+
+### Detailed Findings
+
+**F-01 (Nit / fix-now): `get_thunk_rc` stale name**
+`eval.rs:2141` — `fn get_thunk_rc(thunk: &Arc<Thunk>) -> Arc<Thunk> { Arc::clone(thunk) }`. The "rc" suffix is a leftover from the Rc-based pre-T-1772 design. The comment at line 2138 says "Clone an Arc<Thunk> from a dict entry for tests that need direct thunk access (e.g. inspecting ThunkState or materializing with a custom mat_span). After T-1772, dict values are Arc<Thunk> directly — no ThunkId lookup needed." The name should match the type. Fix: rename `get_thunk_rc` → `get_thunk_arc` (or simply `get_thunk`) across all call sites in eval.rs tests (lines ~2310, 2367, 2955, 3380, 3485). This is internal test-only code with no public surface.
+
+**F-02 (Nit / fix-now): `surface_fmt.rs` dead `ctx` parameter**
+`surface_fmt.rs:59` — `let _ = ctx; // ctx no longer needed for thunk access (T-1772)`. The parameter is received but immediately discarded. If `ctx` is still needed for `value.to_tinct(ctx)?` at line 65, it must not be discarded. If it is not needed, the parameter should be removed (or at minimum the `let _ = ctx` removed and the parameter marked with a path-to-removal comment). The current code is confusing: `ctx` is used at line 65 but shadowed-discarded at line 59. Reading the code, `ctx` IS passed to `value.to_tinct(ctx)` at line 65, so the `let _ = ctx` at line 59 is just a comment artifact and the parameter is still used. The comment "ctx no longer needed for thunk access" is misleading — it is still needed for Function serialization. Fix: remove the `let _ = ctx;` line entirely and update the comment to clarify ctx is still needed for Function values.
+
+**F-03 (Minor / fix-now): `merge_env_chain_into` tests cover only `tycon_defs`**
+`src/env.rs:908-1043` — All five unit tests use only `insert_tycon_def` / `lookup_tycon_def`. The function merges six field types: `slots`, `extras`, `type_aliases`, `classes`, `instances`, `tycon_defs`. The two-pass semantics (inner-wins via or_insert in Phase 1, later-doc shadows via insert in Phase 2) apply identically to all six. Cross-document shadowing of `slots` (type schemes in the type-check env) is untested. Fix: add at least one test that exercises `slots` shadowing (e.g. use `insert_slot`/`get_slot` to verify inner-wins and dst-shadows semantics hold for the runtime value field).
+
+**F-04 (Major / fix-later): `builtin-lower` → `builtin-eval` pipeline gap**
+`src/builtins_meta.rs:3599` — `builtin-eval` accepts only `Value::Document` and errors with `type_mismatch_ctx("Document", other.type_name(), call_span)` for any other input including `Value::CoreDocument`. `builtin-lower` at line 5409 produces `Value::CoreDocument` containing pre-lowered `Arc<Spanned<CoreExpr>>` entries. `lib.rs:686` rejects `CoreDocument` with `value_not_serializable`. The "parse → desugar → resolve → typecheck → lower → eval" pipeline is therefore broken at the lower→eval seam: nothing can consume a `CoreDocument`. The intended completion path is for `builtin-eval` to accept `CoreDocument` and evaluate its pre-lowered entries via `eval_core_expr` directly, bypassing the inline lowering in `eval_document_exprs_with_env`. This is a pre-existing design gap not introduced by S-947. Tracked as future work; create tracker item if not already present.
+
+### Axiom Verdicts
+
+- **Prelude speaks the Rust protocol**: PASS. Rust defines `Arc<Thunk>` dict layout; prelude accesses via `builtin-get`, `builtin-dict-nth`, etc. No Rust-embedded prelude assumptions.
+- **No fast paths, no fallbacks, no backwards compatibility**: PASS. Dict migration is a clean replacement. No ThunkId fallback in any dict access path. HashableValue::Str uses Arc<str> everywhere with no Rc<str> fallback.
+- **Correctness, not performance**: PASS. Arc<Thunk> is slightly larger than ThunkId but provably correct and enables span access without arena round-trip.
+- **Loader/prelude agnosticism**: PASS. Dict layout change is transparent to tinct code; no loader-specific handling.
+- **General case, not specific**: PASS. `migrate_value` Value::Dict branch handles all migrated dicts uniformly; no special-casing. `translate_unevaluated_state` handles all UnevaluatedState variants correctly.
+
+### Cross-Layer Integration Summary
+
+1. **Span compaction**: PASS. All files use `file: Arc<str>`, `start_line/start_col/end_line/end_col`. Span::Display, make_span_dict, error.rs, profiling, and test-loader.llt are all consistent. No SourceFile/Position anywhere.
+
+2. **Dict ThunkId→Arc<Thunk>**: PASS. Consistent across eval_dict.rs, eval_core.rs, eval_materialize.rs, builtins.rs, builtins_dict.rs, builtins_meta.rs, builtins_io.rs, surface_convert.rs, surface_fields.rs, lib.rs, main.rs. The arena's `fill_slot_arc` method correctly handles the new pattern. The `migrate_value` Dict branch in arena.rs correctly migrates Arc<Thunk> values without ThunkId registration.
+
+3. **UnevaluatedState::Surface deletion**: PASS. No Surface variant in UnevaluatedState anywhere. force_step in eval_materialize.rs matches exactly 6 variants: BuiltinCall, FnCall, Guarded, AstField, CoreExpr, AnnotatedWrap.
+
+4. **builtin-lower pipeline**: PARTIAL PASS. The lower step is correctly implemented. The eval step is the gap (see F-04). This is pre-existing, not introduced here.
+
+5. **merge_env_chain_into two-pass semantics**: PASS (tests cover the critical cross-document shadowing case via `test_merge_env_chain_src_shadows_dst`). See F-03 for test coverage nit.
+
+### Remediation Plan
+
+**Item 1 [nit / independent]: Fix `get_thunk_rc` stale name**
+Rename `get_thunk_rc` to `get_thunk_arc` in `src/eval.rs`. Search all call sites in the test module (lines ~2310, 2367, 2955, 3380, 3485) and update.
+
+**Item 2 [nit / independent]: Fix misleading `let _ = ctx` in `surface_fmt.rs`**
+Remove the `let _ = ctx;` line at `src/surface_fmt.rs:59`. Update the comment at line 58 to: "ctx is still required for Function serialization (value.to_tinct(ctx)); dict thunk spans are now accessible directly via Arc<Thunk> (T-1772)."
+
+**Item 3 [independent]: Add `slots` coverage to `merge_env_chain_into` tests**
+In `src/env.rs`, add two tests:
+- `test_merge_env_chain_slots_inner_wins`: verify inner frame's slot shadows outer frame's slot
+- `test_merge_env_chain_slots_src_shadows_dst`: verify src chain's slot shadows dst's pre-existing slot
+Use `env.slots.insert(name, slot)` and `env.slots.get(name)` directly (or add an `insert_slot`/`get_slot` helper following the tycon_defs pattern).
+
+**Item 4 [fix-later / requires tracker item]: CoreDocument eval path**
+Create tracker item: "`builtin-eval` should accept `Value::CoreDocument` and evaluate its pre-lowered `Arc<Spanned<CoreExpr>>` entries via `eval_core_expr`, completing the parse→desugar→resolve→typecheck→lower→eval pipeline." This is future work; do not block S-947 approval on it.
+
+### Verdict
+
+APPROVE
+
+F-01 and F-02 are nits that should be fixed immediately. F-03 is a minor test gap to fix now. F-04 is a pre-existing pipeline gap that predates this sprint and requires its own tracker sprint. None of the fix-now findings block the sprint's core T-1772 migration, which is correct and complete across all layers.

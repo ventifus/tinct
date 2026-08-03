@@ -329,8 +329,13 @@ pub(crate) struct MatchGuardCheckData {
     /// Arc to the original CoreExpr::Match node. The arms vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) match_expr: Arc<Spanned<CoreExpr>>,
-    /// EvalFrame for arm body and guard evaluation.
+    /// EvalFrame for arm body and guard evaluation (the case arm's call frame).
     pub(crate) frame: Arc<EvalFrame>,
+    /// Original parent frame from MatchDispatch — used when the guard fails to continue
+    /// to the next arm in the correct scope. Distinct from `frame` (the arm frame) because
+    /// the arm frame contains the arm's bound variables and must not be propagated to
+    /// sibling arms on guard failure (B-724/B-732).
+    pub(crate) parent_frame: Arc<EvalFrame>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
     /// The scrutinee value (needed for predicate invocation and fallback)
@@ -2822,10 +2827,12 @@ pub(crate) async fn apply_cont(
                                 // The lowered_pattern head determines dispatch type:
                                 // - CoreExpr::Var with pre-resolved TypeNode binding → structural
                                 // - CoreExpr::Placeholder → wildcard (structural)
+                                // - CoreExpr::Dict → structural dict pattern (field destructure)
                                 // - Other (CoreExpr::Call etc.) → guard expression
                                 let is_structural = match &lowered_pattern.node {
                                     CoreExpr::Var { .. } => true,
                                     CoreExpr::Placeholder => true,
+                                    CoreExpr::Dict(_) => true,
                                     _ => false,
                                 };
 
@@ -2985,6 +2992,7 @@ pub(crate) async fn apply_cont(
                                             arm_idx: i,
                                             match_expr: Arc::clone(&match_expr),
                                             frame: Arc::clone(&arm_frame),
+                                            parent_frame: Arc::clone(&frame),
                                             ctx: Arc::clone(&ctx),
                                             match_span: match_span.clone(),
                                             scrutinee_value: scrutinee_value.clone(),
@@ -3015,6 +3023,7 @@ pub(crate) async fn apply_cont(
                                     arm_idx: i,
                                     match_expr: Arc::clone(&match_expr),
                                     frame: Arc::clone(&arm_frame),
+                                    parent_frame: Arc::clone(&frame),
                                     ctx: Arc::clone(&ctx),
                                     match_span: match_span.clone(),
                                     scrutinee_value: scrutinee_value.clone(),
@@ -3053,6 +3062,7 @@ pub(crate) async fn apply_cont(
                 arm_idx,
                 match_expr,
                 frame,
+                parent_frame,
                 ctx,
                 match_span,
                 scrutinee_value,
@@ -3099,6 +3109,7 @@ pub(crate) async fn apply_cont(
                                 arm_idx,
                                 match_expr: Arc::clone(&match_expr),
                                 frame: Arc::clone(&frame),
+                                parent_frame: Arc::clone(&parent_frame),
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                                 scrutinee_value,
@@ -3139,11 +3150,16 @@ pub(crate) async fn apply_cont(
                             }
                         }
                         Ok(false) => {
-                            // Guard failed — try the next arm
+                            // Guard failed — try the next arm in the original parent frame.
+                            // Using parent_frame (not the arm's frame) ensures that sibling
+                            // arms and keyed arms see the correct outer scope, not the failed
+                            // arm's bound variables. Using arm frame here caused B-724/B-732:
+                            // fns created in sibling keyed arms got the arm's closure_env
+                            // (too small) instead of the match expression's enclosing frame.
                             stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
                                 arm_idx: arm_idx + 1,
                                 match_expr: Arc::clone(&match_expr),
-                                frame,
+                                frame: parent_frame,
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                             })));

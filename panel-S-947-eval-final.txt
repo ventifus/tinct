@@ -1,0 +1,137 @@
+## Review: eval-engine — Sprint S-947 (value-send-migration)
+
+Files read in full:
+- src/value.rs (all sections)
+- src/eval_dict.rs (all sections including tests)
+- src/eval.rs (EvalContext, all constructors, merge_env_chain_into)
+- src/arena.rs (migrate_value, migrate_thunk_id, translate_unevaluated_state)
+- src/eval_materialize.rs (AnnotatedWrap arm, LetrecChainStep)
+- src/eval_core.rs (Sequential arm)
+- src/builtins.rs (require_dict, flatten_overlay)
+- src/builtins_dict.rs (builder_set, builder_finish, builder_snapshot, builtin_keys)
+- src/builtins_meta.rs (builtin_lower, merge_env_chain_into call site)
+- src/env.rs (merge_env_chain_into, two-pass semantics)
+- src/lib.rs (visit_value Dict branch)
+- stdlib/test-loader.llt (test harness changes)
+
+### Findings
+
+- FINDING: `translate_unevaluated_state` doc comment says AnnotatedWrap causes `unreachable!()` panic,
+  but the actual implementation at line 672 handles it (migrates inner ThunkId, carries ctx through).
+  The comment is a stale artefact from a design that was subsequently changed. The implementation is
+  correct — `ctx: Arc<EvalContext>` keeps the source arena alive via Rc ref-counting so there is no
+  actual use-after-free — but the comment actively misleads anyone reading it about what the code does.
+  Remove the panic claim from the precondition and update the comment to describe the actual behaviour
+  and why the ctx field is safely carried through unchanged.
+  | SCOPE: fix-now | FILE: src/arena.rs:522-526
+
+- FINDING: `migrate_value` for `Value::Dict` (arena.rs:435-458) does not pre-register the newly
+  allocated placeholder ThunkId in `thunk_map` before recursing into `migrate_value` for each dict
+  value. In `migrate_thunk_id` the two-phase cycle-safe pattern (pre-insert → recurse → fill) is
+  explicit and documented. The Dict branch omits this step because Dict values are `Arc<Thunk>` with
+  no ThunkId identity, so `thunk_map` cannot index them. This is architecturally correct — cycles
+  in materialized Dict values are impossible in tinct's value model — but there is no comment
+  explaining WHY the cycle-break sentinel is omitted here when it is explicitly present in every
+  other branch. This creates a readability trap: reviewers seeing the pattern broken without
+  explanation will assume it is an oversight. Add a comment at the Dict branch explaining why
+  the cycle-break is not needed (Arc<Thunk> values have no ThunkId identity in thunk_map; materalized
+  Value::Dict cycles are impossible in the value model).
+  | SCOPE: fix-now | FILE: src/arena.rs:440-456
+
+- FINDING: `Value::Clone` for `DirCap` and `RevocableDirCap` uses `try_clone().expect("...")` (value.rs:722,732).
+  Prior to this sprint these fields were `Rc<Dir>` (pointer-clone, infallible); with owned `Dir` the
+  clone requires a syscall that can fail with EMFILE or EBADF. A panic in Value::Clone propagates
+  to arbitrary call sites (match arm bodies, dict construction, function application) with no span
+  or EvalError context. The fix-now scope is a comment documenting the known panic site and the
+  constraint that callers must ensure cap_std::fs::Dir is valid before cloning. A tracker item for
+  converting to EvalResult<Value>::clone (requires changing the Clone impl signature to a fallible
+  method) should be filed — this is future work because the Clone trait is infallible by definition
+  and changing it requires a larger refactor (replace Clone-based value passing with explicit
+  clone_or_error helpers at each call site). For now: add a `// SAFETY:` comment explaining the
+  invariant that DirCap values are always valid OS handles at clone time, and what happens if the
+  invariant is violated.
+  | SCOPE: fix-now | FILE: src/value.rs:721-735
+
+- FINDING: `empty_env()` helper in eval_dict.rs tests (line 503) constructs and passes an
+  `Arc<RwLock<crate::env::Env>>` to `eval_str`, but `eval_str` discards it on line 533
+  (`let _ = env;`). The parameter exists purely to satisfy a historical API shape that no longer
+  applies. This is dead code in the test helpers. Remove the `empty_env` function and the `env`
+  parameter from `eval_str`, then update the three call sites that pass `empty_env()`. Keeps
+  test code honest about what it actually uses.
+  | SCOPE: fix-now | FILE: src/eval_dict.rs:503-533
+
+### Axiom Verdicts
+
+- **Prelude speaks the Rust protocol**: PASS. `builtin-lower`, `builtin-eval`, `builtin-builder-*`
+  all expose clean protocol surface; prelude uses them correctly. No special-casing of prelude names
+  in Rust.
+
+- **No fast paths, no fallbacks, no backwards compatibility**: PASS. The literal key fast-path in
+  `eval_key_core` is semantically equivalent to the general path (keys must be materialized; literals
+  have no eval state; no span or cycle-detection semantics are skipped). `UnevaluatedState::Surface`
+  deletion is complete — no fallback retained.
+
+- **Correctness, not performance**: PASS. `alloc_thunk(0, ...)` for anonymous thunks is a correct
+  established pattern. Two-phase letrec batch-fill is safe because no `.await` occurs between
+  letrec_slots collection and batch-fill (cooperative async — no preemption between these two steps).
+  `Arc<Thunk>` dict values preserve laziness exactly as `ThunkId` did.
+
+- **Loader/prelude agnosticism**: PASS. `builtin-lower` is agnostic to what's in prelude — it
+  operates on `Value::Document` regardless of which init program produced it.
+
+- **General case, not specific**: PASS. `core_expr_is_static_key` uses structural matching, not
+  name matching. No special-casing of specific field names or function names in eval paths.
+
+### Laziness Audit
+
+- **Dict construction (eval_dict_core)**: PASS. Non-literal values become `UnevaluatedState::CoreExpr`
+  thunks pointing to `env_id` (dict scope). Literals take the `Thunk::value` fast path. All thunks
+  are stored as `Arc<Thunk>` in `dict_map`; no premature materialization.
+
+- **AnnotatedWrap**: PASS. Pre-materialized inner values (literal dict entries) get a direct
+  `Value::Annotated` wrapper. Non-literal inner values get a deferred `UnevaluatedState::AnnotatedWrap`
+  thunk that forces the inner on demand. Laziness is preserved.
+
+- **Builder values**: PASS. `builtin_builder_set` stores `ctx.get_thunk(args[1])` directly —
+  value is NOT materialized before insertion. `builtin_builder_finish` and `builtin_builder_snapshot`
+  return `Value::Dict` containing the same `Arc<Thunk>` values, preserving their lazy state.
+
+- **visit_value (lib.rs)**: PASS. Dict values are materialized on demand via
+  `eval::materialize(thunk, None, ctx).await?` — one at a time as the visitor processes each entry.
+
+- **flatten_overlay (builtins.rs)**: PASS. Layers are collected as `IndexMap<HashableValue, Arc<Thunk>>`
+  — dict values are NOT materialized during flattening. Only the overlay structure is forced.
+
+- **merge_env_chain_into (env.rs)**: PASS. Two-pass semantics are correct: Phase 1 `or_insert`
+  gives inner scope priority within the chain; Phase 2 `insert` makes later documents shadow earlier
+  ones in dst. No laziness implications (this is the type env, not the value env).
+
+- **LetrecChain (was Sequential)**: PASS. Rename is purely nominal. CEK machine processes
+  `CoreExpr::Sequential` via `LetrecChainStep` continuations, preserving iterative (non-recursive)
+  stack discipline.
+
+- **program_store deletion**: PASS. No references found anywhere in src/. `EvalContext` cloning
+  methods (with_base_dir, with_cancel_token, with_explicit_cancel, with_timeout_ms) all compile
+  cleanly without it.
+
+- **memory_budget.rs deletion**: PASS. T-1770 complete. Only two comments reference it — in
+  builtins_meta.rs (noting the removal) and main.rs (noting the hard RLIMIT_AS backstop remains).
+
+- **UnevaluatedState::Surface deletion**: PASS. Zero references to `UnevaluatedState::Surface` in
+  any source file. The discrete `builtin-lower` step replaces on-demand Surface lowering.
+
+### Verdict
+
+REQUEST_CHANGES
+
+Fix-now findings:
+1. Stale panic claim in `translate_unevaluated_state` comment (src/arena.rs:522-526) — misleads reviewers
+2. Missing cycle-break explanation in Dict branch of `migrate_value` (src/arena.rs:440-456)
+3. `Value::Clone` panic sites for DirCap need SAFETY comment (src/value.rs:721-735)
+4. Dead `empty_env` / vestigial `env` param in eval_dict.rs test helpers (src/eval_dict.rs:503-533)
+
+All four are nit-level fixes (comments, dead code). No eval-engine correctness issues found.
+The laziness model is fully preserved through the Rc→Arc/owned migration: dict values remain
+`Arc<Thunk>` (lazy), builder values are stored and returned without materialization, AnnotatedWrap
+defers annotation wrapping for non-literal inner values, and the letrec scope invariant is upheld
+by the two-phase batch-fill that is atomic across a cooperative yield boundary.

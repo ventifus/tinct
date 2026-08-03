@@ -942,6 +942,12 @@ pub enum SurfaceDeclaration {
         /// Structural discharge rule — parsed from `structural: "closed-dict"` in class metadata.
         /// Empty string = None (normal instance resolution).
         structural: String,
+        /// Pre-assigned class declaration ID, written by the resolver's Phase 1b scan.
+        /// Read by the type-checker to create ClassDecl with a consistent ID so that
+        /// VarAddr::EffectPerform { class_id } emitted during resolution matches the
+        /// class_decl_id used in the type environment and instance lowering.
+        /// Same pattern as InstanceDecl.resolved_class_decl_id.
+        pre_assigned_class_decl_id: ClassDeclIdCell,
     },
     InstanceDecl {
         class_name: Arc<SurfaceNode>,

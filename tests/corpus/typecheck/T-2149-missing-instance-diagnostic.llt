@@ -1,0 +1,26 @@
+--- description: T-2149: info diagnostic for typeclass method calls with types lacking instances
+--- skip: test infrastructure pending
+
+[
+  # T-2149 implementation adds Diagnostic::info("missing-instance", ...) when:
+  # 1. A typeclass method (EffectPerform VarRef) is called
+  # 2. The first argument has a concrete type (not TypeVar/Unknown/Top/Never)
+  # 3. No instance of the class exists for that concrete type
+  #
+  # The check is in apply_call_args_poly (typecheck_cek.rs:2714-2770) after args are inferred.
+  #
+  # Example scenario that would trigger the diagnostic:
+  #   [class [let a] Show  show: [Fn@String [a]]]
+  #   [instance Show [let a@Int]  show: [fn [let x] [str x]]]
+  #   [show "hello"]  # ← String has no Show instance → info diagnostic
+  #
+  # This corpus test is skipped because it requires:
+  # - Custom typeclass declarations
+  # - Instance registration in the test environment
+  # - EffectPerform resolution for user-defined classes
+  #
+  # The unit test in src/typecheck_cek.rs::tests::test_t2149_missing_instance_diagnostic_placeholder
+  # documents the expected behavior. Full validation requires integration test infrastructure.
+
+  result: 42
+]

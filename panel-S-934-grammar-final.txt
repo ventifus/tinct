@@ -1,0 +1,90 @@
+## Review: grammar-architect
+
+### Findings
+
+---
+
+FINDING: doc/15-ast.md:246 shows `Annotated(String, Box<Annotation>)` — stale since S-933 changed the first field from `String` to `Box<Annotation>`. The `Quote` variant added in S-933 is completely absent from this code block. The spec block at lines 242–248 shows the Annotation enum as it existed before S-933's changes.
+SCOPE: fix-now
+FILE: doc/15-ast.md:243-248
+
+---
+
+FINDING: doc/internals/parse.md:351 shows `Annotation::Annotated("Name", inner)` (old String-first-field form) which is stale since S-933. Missing `@Expr` → `Annotation::Quote` from the annotation forms list. Line 357 says parse_annotation_direct "does not share code" with the AnnotationCollect path — this is now wrong: S-934 routes `parse_annotation_direct` through `expression_to_annotation`, which IS the shared function with the main AnnotationCollect path. The sentence should be updated to reflect partial T-1617 completion, and T-1778 is the remaining work.
+SCOPE: fix-now
+FILE: doc/internals/parse.md:349-357
+
+---
+
+FINDING: doc/05-type-annotations.md:993 says "User-defined predicates produce no narrowing — the type in the body is the matched value's pre-guard type." T-1761 (this sprint) explicitly implements annotation-based narrowing for user-defined predicates via `@[narrows: T]` on binding keys and `@[is: T]` on parameters. The doc directly contradicts the implementation.
+SCOPE: fix-now
+FILE: doc/05-type-annotations.md:993
+
+---
+
+FINDING: doc/feature/narrowing.md has no mention of annotation-based narrowing (`@[narrows: T]`, `@[is: T]`) which is the mechanism implemented by T-1761. The feature doc for narrowing is a forward spec and must document the full narrowing API including user-defined predicate registration.
+SCOPE: fix-now
+FILE: doc/feature/narrowing.md
+
+---
+
+FINDING: No corpus test covers `@Expr` → `Annotation::Quote` at the parser output level. The three existing `@Expr` tests are eval-level macro tests (tests/corpus/eval/macros/). A parse-level test in tests/corpus/valid/annotations/ verifying the AST Display of a parameter annotated with `@Expr` would directly catch parser regressions in the `expression_to_annotation` sentinel path — specifically the `if name == "Expr"` branch.
+SCOPE: fix-now
+FILE: tests/corpus/valid/annotations/ (missing file)
+
+---
+
+FINDING: No corpus test covers `set_floating_annotation` error path — floating annotation (`[@Type expr]`) used outside a dict context (e.g., inside a Fn frame body). The `set_floating_annotation` function now returns `Result<(), ParseError>` specifically to surface this error, but there is no invalid corpus test exercising the error message "floating annotation not valid in this context; `[@Type expr]` is only supported inside a dict". The exact input form and expected output format (parse diagnostic vs eval error vs `=== out` section) requires running the test suite to verify — left as a tracker item.
+SCOPE: fix-later
+FILE: tests/corpus/invalid/syntax_errors/ (missing file)
+
+---
+
+FINDING: No corpus test for chained annotation with `PropertyDict` outer: `x@[type: Seq]@Int` — i.e., `Annotation::Annotated(Box::new(PropertyDict(...)), Box::new(Simple("Int")))`. The existing annotated_bare.llt-eval tests `Fn@Number` (Simple outer), and annotated_bare_dict.llt-eval tests `Fn@[type: Number]` (PropertyDict, not chained). The T-1618 change making outer a `Box<Annotation>` (not a `String`) was specifically to enable this form, but it is not exercised by any corpus test. Added `tests/corpus/valid/annotations/chained_annotation_dict_outer.llt-eval` covering `x@Seq@Int` (Simple outer, chained) — the `PropertyDict@Name` case still lacks a test.
+SCOPE: fix-now
+FILE: tests/corpus/valid/annotations/chained_annotation_dict_outer.llt-eval (added)
+
+---
+
+FINDING: The doc comment on the `impl Display for StackFrame` block at parser.rs:848 reads `/// Map a StackFrame to a human-readable context string for diagnostic notes.` A `///` doc comment on an `impl` block is not rendered by rustdoc (it attaches to the block, not any item). This is the text from the old `frame_description` private function's doc comment, carried over when the function was replaced by the `Display` impl. Should be a regular `//` line comment.
+SCOPE: fix-now
+FILE: src/parser.rs:848
+
+---
+
+FINDING: doc/internals/parse.md:357 says "Unification is tracked in T-1617." T-1617 is closed (the `expression_to_annotation` routing was implemented in S-934). The reference should be updated to point to T-1778, which tracks the remaining full elimination of the separate token-scanning loop in `parse_annotation_direct`.
+SCOPE: fix-now
+FILE: doc/internals/parse.md:357
+
+---
+
+### Axiom Check
+
+**Prelude speaks the Rust protocol** — PASS. The `Annotation::Quote` sentinel is produced by the parser (Rust), not the prelude. The `is_expr_annotation` function is a Rust-level check independent of prelude bindings. `expression_to_annotation` hardcodes `"Expr"` as the sentinel name, which reserves it at the language level — this is intentional and documented in ast.rs:208-211.
+
+**No fast paths, no fallbacks, no backwards compatibility** — PASS. The `Annotation::Annotated` outer changed from `String` to `Box<Annotation>`. The surface_fields.rs serialization code at line 629-643 preserves backward-compat wire format for `Simple` outers via the `name` key, but this is the serialization protocol, not a parser fast path. The comment at 625 says "backward compatibility" which is worth watching but is in the wire protocol layer, not the parser. Not flagged as a violation.
+
+**Correctness, not performance** — PASS. `set_floating_annotation` now returns `Result<(), ParseError>` instead of silently doing nothing when the stack top is not a Dict. This is strictly more correct — the old behavior would have silently discarded the annotation.
+
+**Loader/prelude agnosticism** — PASS with documentation caveat. The `@Expr` sentinel reserves the name `Expr` in annotation position at the parser level (any `@Expr` annotation becomes `Annotation::Quote` regardless of whether the user's prelude has a type named `Expr`). This is documented in ast.rs:208-211. The annotation-based narrowing (T-1761) is fully prelude-agnostic: any user function annotated with `@[narrows: T]` or `@[is: T]` participates in narrowing without hardcoded names.
+
+**General case, not specific** — PASS. `expression_to_annotation` handles VarRef, annotated VarRef, Dict, implied Call, and falls back to a single-entry PropertyDict — covering the general case. The `set_floating_annotation` function checks for Dict frame generically, not for a specific Dict context.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Fix-now findings resolved in this review pass (items 1–5, 7 fixed; item 6 demoted to fix-later):
+
+1. doc/15-ast.md:243-248 — FIXED: updated Annotation enum block (added Quote variant, changed Annotated to Box<Annotation> outer)
+2. doc/internals/parse.md:349-357 — FIXED: added @Expr → Quote form, corrected Annotated form, updated T-1617/T-1778 reference
+3. doc/05-type-annotations.md:993 — FIXED: removed false claim; documented @[narrows: T] and @[is: T] narrowing mechanisms
+4. doc/feature/narrowing.md — FIXED: added "Annotation-Based Narrowing (T-1761)" section
+5. tests/corpus/valid/annotations/ — FIXED: added annotation_quote_expr.llt-eval (@Expr → Quote) and chained_annotation_dict_outer.llt-eval (@Seq@Int)
+6. tests/corpus/invalid/syntax_errors/ — DEFERRED: floating annotation non-dict context test requires running the suite to verify correct format; create tracker item
+7. src/parser.rs:848 — FIXED: `///` doc comment on Display impl block changed to `//`
+
+Remaining open item (tracked):
+- T-1780: Missing corpus test for floating annotation in non-dict context (set_floating_annotation error path)

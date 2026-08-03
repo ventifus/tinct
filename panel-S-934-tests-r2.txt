@@ -1,0 +1,165 @@
+## Review: test-crafter (Round 2)
+
+Sprint: S-934 backlog-catchall-3
+Files reviewed:
+  - tests/corpus/eval/annotation-system/annotated_fn_property_dict.llt-eval
+  - tests/corpus/eval/annotation-system/chained_property_dict_annotation.llt-eval
+  - tests/corpus/eval/annotation-system/expr_annotation_of.llt-eval
+  - tests/corpus/invalid/syntax_errors/floating_annotation_in_call.llt-eval
+  - tests/corpus/eval/stdlib/stream_balanced_exprs.llt-eval
+  - tests/corpus/eval/stdlib/stream_bracket_count.llt-eval
+  - tests/corpus/eval/typecheck/annotation_based_narrowing.llt-eval (F-14 wildcard fix)
+  - tests/corpus/eval/typecheck/key_annotation_narrows.llt-eval (F-14 wildcard fix)
+  - src/eval_dict.rs (AnnotatedWrap code path — source of truth for F-15)
+  - src/builtins_meta.rs (builtin_annotation_of — source of truth for F-15/F-19)
+  - stdlib/test-loader.llt (test runner format — source of truth for F-17 format)
+  - stdlib/codecs/stream.llt (source of truth for F-18)
+  - stdlib/cli/in/stream.llt (F-13 comment fix)
+
+### Findings
+
+FINDING: floating_annotation_in_call.llt-eval — wrong test input, wrong section type | SCOPE: fix-now | FILE: tests/corpus/invalid/syntax_errors/floating_annotation_in_call.llt-eval
+
+  Three distinct problems with this test:
+
+  (1) Wrong input — `[fn [let x] [@Int x]]` does NOT trigger "floating annotation not
+  valid in this context". The parser handles `[@Int x]` inside a function body by pushing
+  a Dict frame when it sees `[` followed by `@` (parser.rs:1630-1644). This makes `@Int`
+  a valid floating annotation on the inner Dict frame, producing a TypeAssert node — not
+  an error. The test input parses and evaluates successfully as a function definition.
+
+  (2) Wrong section type — `=== out` is used. In `invalid/syntax_errors/`, ALL existing
+  tests use `=== out` with the error message formatted as `line:col: message` (e.g.,
+  `duplicate_varref_key.llt-eval`: `2:8: duplicate key "k"`). Even if the input triggered
+  the error, the expected value `floating annotation not valid in this context` is missing
+  the location prefix. The actual output would be `ERROR: floating annotation not valid...`
+  anyway.
+
+  (3) Wrong location — a parse-time error test must produce a PARSE error, which goes in
+  `invalid/syntax_errors/` with the `line:col: message` format. An eval/runtime error
+  would go in `eval/errors/` with `=== error`. The round 1 fix plan (mempalace entry)
+  specified `[fn @Integer [let x] x]` as the correct input and `=== error` as the
+  section, but the implementation used the wrong input and section.
+
+  The correct fix:
+    File: tests/corpus/invalid/syntax_errors/floating_annotation_in_fn_return.llt-eval
+    Content:
+      [fn @Integer [let x] x]
+      === out
+      1:4: floating annotation not valid in this context; ...
+
+  OR, if the parse error is recovered (not fatal) and the test runner format differs from
+  what I computed, verify the exact error message and location by running the test. The
+  underlying issue is that the test as committed does NOT exercise the target code path.
+
+FINDING: expr_annotation_of.llt-eval — does not test @Expr → Annotation::Quote conversion | SCOPE: fix-later | FILE: tests/corpus/eval/annotation-system/expr_annotation_of.llt-eval
+
+  The test comment claims to exercise "F-19: @Expr on a function parameter produces
+  Annotation::Quote at parse time." The test is:
+    f@[doc: "accepts expr"]: [fn [let x@Expr] x]
+    ann: [annotation-of f]
+    result: [= ann.doc "accepts expr"]
+
+  This only verifies that annotation-of on the OUTER PropertyDict (f@[doc:...]) returns
+  {doc: "accepts expr"}. The @Expr annotation on the parameter x is never inspected.
+  A mutation that changes Annotation::Quote to Annotation::Simple("Expr") would leave
+  this test passing.
+
+  To actually test F-19, the test needs to verify the parameter annotation. Options:
+    (a) Use builtin-annotation-of on the function's parameter via sig-from-ast or
+        annotation-of within the function's parameter metadata.
+    (b) Check that annotation-of returns a "return" field with value "Expr" when the
+        function has @Expr as its return type annotation.
+    (c) At minimum, add a comment making clear this test only verifies the outer
+        PropertyDict and is NOT testing the @Expr → Quote conversion.
+
+  The test IS correctly exercising the AnnotatedWrap path (F-15) and is well-formed. It
+  is just overly loose with respect to its stated F-19 purpose.
+
+FINDING: chained_property_dict_annotation.llt-eval — does not test inner-ann round-trip | SCOPE: fix-later | FILE: tests/corpus/eval/annotation-system/chained_property_dict_annotation.llt-eval
+
+  The test comment claims to verify T-1618 (Annotation::Annotated with PropertyDict as
+  outer — chained annotation). The test:
+    x@[doc: "help"]@Inner: 42
+    result: [= x 42]
+
+  This verifies that chained annotation evaluates without error and that x == 42. However:
+
+  (a) Eval_dict.rs line 331 checks `if let Annotation::PropertyDict(ann_entries) = &annotation.node`.
+  For x's key, the annotation is `Annotation::Annotated(PropertyDict, Simple("Inner"))` —
+  NOT PropertyDict at the outermost level. The `if let Annotation::PropertyDict` check
+  FAILS, so the else branch (line 362) executes: `value_thunk` is used unmodified with
+  no Value::Annotated wrapping. The x binding is just Int(42) — no runtime annotation
+  stored at all.
+
+  (b) The "inner-ann round-trip" claim from T-1618 (surface_fields.rs serializes
+  Annotation::Annotated with "inner-ann" field; surface_convert.rs reads it) is NOT
+  exercised. The test passes even if surface_fields/surface_convert Annotated
+  serialization is completely broken.
+
+  (c) A mutation removing the entire Annotated case from surface_convert.rs would not
+  cause this test to fail.
+
+  The test DOES verify that chained annotations at dict key position don't crash the
+  evaluator, which is useful as a smoke test. It should be kept and its comment
+  corrected to reflect what it actually tests.
+
+### Summary of fixed findings (verified PASS):
+
+F-13 PASS: cli/in/stream.llt comment updated — file correctly describes stream input
+  formatter. Verified.
+
+F-14 PASS: annotation_based_narrowing.llt-eval and key_annotation_narrows.llt-eval now
+  use `...:` not `_:` for wildcards. Verified by reading both files.
+
+F-15 PASS: annotated_fn_property_dict.llt-eval correctly exercises AnnotatedWrap path.
+  f@[doc:...version:...]: [fn ...] creates AnnotatedWrap (non-literal value, annotation
+  is PropertyDict). When annotation-of f is called, the thunk materializes through
+  AnnotatedWrap → Value::Annotated → annotation dict returned. If AnnotatedWrap code
+  deleted, annotation-of returns empty dict, ann.doc is undefined, eval fails.
+  The test IS tight: deleting eval_dict.rs:354 (annotated_wrap creation) breaks it.
+
+F-18 PASS: stream_balanced_exprs.llt-eval and stream_bracket_count.llt-eval are
+  well-formed, correct tinct syntax, expected outputs match the code paths in
+  codecs/stream.llt. stream_bracket_count correctly tests 0 (balanced), 2 (two opens),
+  0 (no brackets). stream_balanced_exprs correctly expects Int(3) for 3 non-blank
+  expressions. Both are meaningful regression tests.
+
+F-14 NARROW CONCERN: The annotation-based narrowing tests verify eval correctness but
+  not type narrowing. A mutation where param_narrowings is always Vec::new() does not
+  change eval output. This was noted in round 1 as a major finding. No typecheck/warnings
+  test was added to pin the narrowing behavior. However since round 1 classified this as
+  MAJOR (not critical), it does not block approval on its own.
+
+### Axiom checks:
+
+Prelude speaks the Rust protocol:
+  PASS — AnnotatedWrap is defined in Rust (eval_dict.rs, eval_materialize.rs, arena.rs).
+  Prelude uses annotation-of (builtin-annotation-of), which is a Rust builtin reading
+  Value::Annotated. No prelude-specific behavior embedded in Rust.
+
+No fast paths, no fallbacks, no backwards compatibility:
+  CONCERN (deferred, pre-existing) — surface_convert.rs:766 comment reads "for backward
+  compatibility" when deserializing Annotation::Annotated with missing "outer" field.
+  This fallback uses a "name" string field. Pre-existing from round 1, tracked as future
+  work. No new violations introduced in this round.
+
+Correctness, not performance:
+  PASS — AnnotatedWrap correctly defers wrapping until materialization, no shortcuts.
+
+Loader/prelude agnosticism:
+  PASS — stream.llt tests use `[include %libdir "codecs/stream.llt"]` which works with
+  any loader. annotation-of tests use prelude but the builtin_annotation_of is in Rust.
+
+General case, not specific:
+  PASS — AnnotatedWrap handles any non-literal annotated value. bracket-count handles
+  any string. No special cases for specific inputs.
+
+### Verdict
+REQUEST_CHANGES
+
+floating_annotation_in_call.llt-eval (F-17) is a fix-now finding: the test exercises
+the wrong code path ([@Int x] inside fn body parses as TypeAssert, not a floating
+annotation error) and would pass vacuously even if the target error handling were
+removed. The test must be replaced with an input that actually triggers
+set_floating_annotation returning Err in a non-Dict context.

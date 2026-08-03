@@ -735,13 +735,33 @@ pub(crate) fn eval_core_expr<'a>(
                         // Each candidate is a complete Value::Function with its own closure_env,
                         // clauses, and annotation. We collect them and return a PendingEffectPerform
                         // thunk that will try each candidate in order until one matches.
-                        let group = &frame.group;
-                        let group_len = group.len();
+                        //
+                        // Instance fns live in the DOCUMENT-LEVEL accumulated group
+                        // (init_accumulated_group), not in the current function call frame's group.
+                        // frame.group only holds the fn's sequential body thunks. Using it caused
+                        // "no instance found" errors when EffectPerform was called from inside a fn.
+                        // The document-level group has all instance binding thunks regardless of
+                        // call depth. Fall back to frame.group in bootstrap/test contexts where
+                        // init_accumulated_group is unavailable.
+                        let init_group = ctx.get_init_accumulated_group();
+                        let scan_group: &crate::value::GroupSpine = match init_group {
+                            Some(g) => g,
+                            None => &frame.group,
+                        };
+                        let scan_len = scan_group.len();
                         let mut candidates: Vec<Arc<Value>> = Vec::new();
 
                         // Iterate from innermost (highest slot index) to outermost (slot 0).
-                        for i in (0..group_len).rev() {
-                            let Some(slot_thunk) = group.get(i) else {
+                        // Innermost instances take priority (inner scopes can shadow outer ones).
+                        //
+                        // Instance fn thunks are settled at definition time: eval_dict_core
+                        // immediately materializes CoreExpr::Fn thunks after patching the letrec
+                        // frame (see eval_dict.rs). peek_result() therefore always returns
+                        // Some(Ok(Value::Function{...})) for instance fns, and returns None for
+                        // non-Fn thunks that haven't been forced (which are not instance methods).
+                        // This preserves lazy evaluation — only Fn thunks are eagerly settled.
+                        for i in (0..scan_len).rev() {
+                            let Some(slot_thunk) = scan_group.get(i) else {
                                 continue;
                             };
                             if let Some(Ok(
@@ -752,7 +772,6 @@ pub(crate) fn eval_core_expr<'a>(
                             )) = slot_thunk.peek_result()
                             {
                                 if cid == class_id && m == method {
-                                    // Found a matching instance — collect the complete function.
                                     candidates.push(Arc::new(func_value.clone()));
                                 }
                             }
@@ -770,7 +789,7 @@ pub(crate) fn eval_core_expr<'a>(
                                     "no instance found for typeclass method '{}' (class_id={}): \
                                      no Value::Function with instance_of=Some({}, {:?}) \
                                      in accumulated group ({} entries)",
-                                    method, class_id, class_id, method, group_len
+                                    method, class_id, class_id, method, scan_len
                                 ),
                                 span.clone(),
                             )

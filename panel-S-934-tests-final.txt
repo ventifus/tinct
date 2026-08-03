@@ -1,0 +1,355 @@
+## Review: test-crafter — S-934 backlog-catchall-3
+
+### Changed files (from git status)
+src: arena.rs, ast.rs, builtins_core.rs, builtins_meta.rs, desugar.rs, env.rs,
+eval_dict.rs, eval_materialize.rs, parser.rs, resolve.rs, surface_convert.rs,
+surface_fields.rs, type_env.rs, type_infer.rs, typecheck.rs, typecheck_annot.rs,
+typecheck_cek.rs, typecheck_narrow.rs, typecheck_tests.rs, value.rs
+stdlib: codecs/stream.llt, test-loader.llt
+tests: corpus/README.md
+new corpus tests: eval/builtins/display_chain_stdlib_varref.llt-eval,
+                  eval/typecheck/annotation_based_narrowing.llt-eval,
+                  eval/typecheck/key_annotation_narrows.llt-eval
+
+---
+
+### B-518 coverage assessment
+
+stream.llt parse-expr fix (B-518) is covered by `run_stream_in_stream_out_round_trip` in
+tests/cli_tests.rs (line ~4767). The consumer program returns `%` (the Seq of values from
+parse-expr) and the test asserts `x` and `y` appear in the output. This is sufficient to
+catch the regression: a Document return value would display differently. Coverage ADEQUATE.
+
+---
+
+### Findings
+
+---
+
+#### FINDING 1 — CRITICAL: UnevaluatedState::AnnotatedWrap materialization path has no corpus test
+
+SCOPE: fix-now
+FILE: src/eval_materialize.rs:1366–1386, src/eval_dict.rs:337–355, src/value.rs:1323
+
+T-1621 introduced UnevaluatedState::AnnotatedWrap, which is created when a dict-key
+has a PropertyDict annotation and the value is a non-literal thunk (function, VarRef, or
+call expression). When materialized, it forces `inner` and produces Value::Annotated.
+
+The existing dict_key_annotation.llt-eval test:
+  [Pi@[doc: "mathematical constant"  precision: 5]: 3.14159]
+  === out
+  Dict({"Pi": Float(3.14159)})
+
+Pi is a literal (Float). This hits the `try_get_materialized()` → Some branch in
+eval_dict.rs line 337 — the AnnotatedWrap path is NOT exercised. The test passes even if
+the AnnotatedWrap arm in dispatch_state is completely removed.
+
+The AnnotatedWrap path fires only when the annotated value is non-literal — e.g., a
+function, a VarRef reference, or a call. No corpus test verifies that:
+  (a) A function-valued entry annotated with @[doc: "..."] produces Value::Annotated
+  (b) The AnnotatedWrap thunk actually materializes to Value::Annotated when forced
+  (c) annotation-of on such a value reads the annotation dict correctly
+
+Mutation target: deleting the UnevaluatedState::AnnotatedWrap arm from dispatch_state
+would silently error (unreachable or wrong value type) — but no corpus test would catch
+the regression before the deletion.
+
+Required test (eval/annotation-system/annotated_fn_property_dict.llt-eval):
+  # Value::Annotated wrapping for non-literal (function) annotated dict entry (T-1621)
+  [
+    f@[doc: "adds one"]: [fn [let x] [+ x 1]]
+    ann: [annotation-of f]
+  ]
+  === out
+  Dict({"f": Function(x), "ann": Dict({"doc": String("adds one")})})
+
+This would fail if AnnotatedWrap is not created or not materialized correctly.
+
+---
+
+#### FINDING 2 — CRITICAL: Annotation::Annotated round-trip (T-1618 inner-ann key) has no corpus test
+
+SCOPE: fix-now
+FILE: src/surface_fields.rs:644–659, src/surface_convert.rs:778–787
+
+T-1618 changed Annotation::Annotated from (String, Box<Annotation>) to
+(Box<Annotation>, Box<Annotation>), allowing PropertyDict as the outer annotation.
+surface_fields.rs serializes Annotated by emitting both "inner" (flat string, backward
+compat) AND "inner-ann" (structured recursive Annotation value) at lines 657–658.
+surface_convert.rs deserializes by checking "inner-ann" first (line 778), falling back
+to "inner" (line 784).
+
+The "inner-ann" key is the entire purpose of T-1618's round-trip fix: if a non-Simple
+inner annotation (e.g., PropertyDict or Annotated) is serialized, the flat "inner" string
+loses structural information; "inner-ann" preserves it.
+
+The existing chained_annotation.llt-eval test:
+  [x@Integer@Integer: 42  x]
+  === out
+  Int(42)
+
+This only verifies eval output, not the Annotation round-trip through
+surface_fields/surface_convert. It does NOT verify that:
+  - The "inner-ann" field is present in the serialized Annotation::Annotated payload
+  - Deserializing "inner-ann" reconstructs the correct inner Annotation (PropertyDict case)
+  - A PropertyDict outer + PropertyDict inner chain round-trips correctly
+  - Mutation: removing the "inner-ann" field from surface_fields.rs line 657 would make
+    all non-Simple inner annotations silently degrade to Simple on round-trip, but the
+    existing test would still pass because "inner" (flat string) still exists and the
+    inner annotation happens to be Simple("Integer").
+
+Required test (eval/annotation-system/annotated_inner_ann_roundtrip.llt-eval):
+  # T-1618: @[...]@[...] chained annotation round-trip — inner-ann field preserves
+  # PropertyDict inner annotation through surface_fields serialization and
+  # surface_convert deserialization.
+  [
+    # Annotated(PropertyDict([doc: "x"]), PropertyDict([type: Int])) form
+    # Access annotation-of to force the round-trip through surface_fields/surface_convert
+    f@[doc: "outer"]@[type: Integer]: [fn [let x] x]
+    ann: [annotation-of f]
+  ]
+  === out
+  ...
+
+Note: if annotation-of cannot directly expose the chained annotation structure, the test
+should at minimum use builtin-annotation-of or builtin-surface-fields to verify the
+"inner-ann" key is present in the Annotated payload.
+
+---
+
+#### FINDING 3 — CRITICAL: B-519 set_floating_annotation error has no corpus/invalid test
+
+SCOPE: fix-now
+FILE: src/parser.rs:6162–6178
+
+B-519 fixed set_floating_annotation to return Err when the parent frame is not Dict.
+The error message is: "floating annotation not valid in this context; `[@Type expr]` is
+only supported inside a dict"
+
+No corpus test in tests/corpus/invalid/ verifies that:
+  - [@Type expr] inside a [fn ...] frame produces this error
+  - [@Type expr] inside a [call ...] frame produces this error
+
+Mutation target: reverting set_floating_annotation to silently return Ok(()) (the old
+behavior) would not be caught by any existing test — the annotation is simply lost.
+
+Required test (tests/corpus/invalid/syntax_errors/floating_annotation_in_fn.llt-eval):
+  [fn @Integer [let x] x]
+  === error
+  floating annotation not valid in this context
+
+The error section must be present (not === out) and must contain the distinctive error
+text. The test belongs in tests/corpus/invalid/syntax_errors/ since this is a parse error.
+
+---
+
+#### FINDING 4 — MAJOR: annotation_based_narrowing.llt-eval is overly loose — does not verify narrowing actually occurred
+
+SCOPE: fix-now
+FILE: tests/corpus/eval/typecheck/annotation_based_narrowing.llt-eval
+
+The test verifies that [describe 41] → 42 and [describe "hello"] → "not an int".
+This confirms the program evaluates correctly, but it does NOT verify that type narrowing
+is active. If `extract_narrowings` never fires (param_narrowings never populated), the
+test could still pass because [builtin-int-add x 1] at runtime accepts any value that is
+actually an Int — the type checker's narrowing does not affect evaluation correctness.
+
+The test also does not capture any type warnings (no === warn section). This is correct
+IF the code is well-typed. But the test is not checking what it claims: that x is narrowed
+to Int in the true branch. A mutation where param_narrowings is always Vec::new() would
+not cause this test to fail.
+
+The correct mechanism for verifying narrowing is a typecheck/warnings test: the narrowed
+branch should produce zero warnings, while a test WITHOUT the @[is: T] annotation on the
+same code pattern should produce a type warning (e.g., passing a non-Int to
+builtin-int-add without narrowing).
+
+However, since eval-mode tests run the full pipeline (including typecheck), the real
+mutation risk is: typecheck narrowing is not occurring but the eval is correct because
+the runtime type happens to be Int. A tighter test would use a typecheck warning to
+confirm narrowing DID change the type environment (e.g., call a function that requires
+exactly Int and verify no warning).
+
+The key_annotation_narrows.llt-eval has the same looseness issue.
+
+Both tests are acceptable as smoke tests that the feature doesn't crash, but neither is
+tight enough to catch a subtly broken param_narrowings population path. They should be
+supplemented by a test in tests/corpus/eval/typecheck/warnings/ that asserts:
+  - WITHOUT @[is: T], passing x to builtin-int-add in the narrowed branch produces
+    a type warning
+  - WITH @[is: T], the same pattern produces no warning
+
+This confirms the narrowing mechanism is actually being applied, not just that the
+program happens to evaluate correctly.
+
+---
+
+#### FINDING 5 — MAJOR: as_type_dispatch via type_stage_map (T-1565) has no corpus test
+
+SCOPE: fix-now
+FILE: src/typecheck_annot.rs (as_type_dispatch function)
+
+T-1565 restored as_type_dispatch to look up "as-typenode" in state.type_stage_map and
+dispatch through it. This is the hook for custom TypeNode constructors (e.g., TypeNode.Bool,
+TypeNode.SizedBytes) that are not recognized by typenode_value_to_type.
+
+No corpus test exercises:
+  - A user-defined TypeNode type that requires as_type_dispatch (typenode_value_to_type
+    returns None, fallback to as-typenode)
+  - Correct result when as-typenode normalizes to a known type
+  - Graceful handling when as-typenode is absent from type_stage_map (None path)
+
+Mutation target: returning None unconditionally from as_type_dispatch would silently
+degrade custom TypeNode dispatch to unknown-type errors — no existing test catches this.
+
+The function is wired as a fallback in eval_type_stage_value and eval_type_stage_expr,
+making it critical for prelude-agnosticism. Without a test, the implementation is
+unverified.
+
+---
+
+#### FINDING 6 — MINOR: eval_annotation_property_dict async change (T-1620) — non-literal annotation values — has no corpus test
+
+SCOPE: fix-now
+FILE: src/eval_dict.rs eval_annotation_property_dict (async)
+
+T-1620 made eval_annotation_property_dict async and extended it to evaluate non-literal
+annotation values (VarRefs, calls). The test dict_key_annotation.llt-eval uses a
+PropertyDict annotation with string literals only, which does not exercise the non-literal
+evaluation path.
+
+A test with a computed annotation value would verify the non-literal path:
+  [
+    x: "hello"
+    f@[doc: [str "greeting: " x]]: [fn [let n] n]
+    ann: [annotation-of f]
+  ]
+  === out
+  Dict({"x": String("hello"), "f": Function(n), "ann": Dict({"doc": String("greeting: hello")})})
+
+This is distinct from Finding 1 (which covers the AnnotatedWrap thunk) — this covers the
+eval_annotation_property_dict function's internal path for non-literal annotation field
+values. Marking fix-now because it directly validates a significant behavioral change
+(the move from "simple path for now" to full evaluation).
+
+---
+
+#### FINDING 7 — MINOR: drop_range_and_truncate tests do not verify reuse after truncation + free_list interaction
+
+SCOPE: fix-now
+FILE: src/arena.rs:1493–1527
+
+test_drop_range_and_truncate_no_free_list_corruption verifies that after
+drop_range_and_truncate, the free_list is empty and a subsequent alloc_root gets index 1.
+This is solid for the regression case.
+
+However, the test does not cover:
+  - free_list already non-empty at the time of drop_range_and_truncate — existing free
+    slots must not be corrupted by the truncation
+  - drop_scope followed by drop_range_and_truncate — the combination must not produce
+    stale free_list entries beyond start_env_id
+
+Marking fix-now because these are edge cases of the free_list correctness invariant that
+the PR description explicitly says were changed (ScopeArena free_list + drop_range_and_truncate).
+
+---
+
+#### FINDING 8 — MINOR: parse_annotation_direct routing fix (T-1617) has no dedicated parser unit test
+
+SCOPE: fix-now (but minimal — one test)
+FILE: src/parser.rs:205–370
+
+T-1617 refactored parse_annotation_direct to route through expression_to_annotation
+(same path as the main AnnotationCollect mechanism). The existing parser unit tests
+do not include a test for parse_annotation_direct's behavior with:
+  - @[key: val] in a document header (--- expects: @Dict form)
+  - @Name in a document header
+  - @Name@Inner in a document header (chained form through parse_annotation_direct)
+
+The chained_annotation.llt-eval corpus test covers the main body case (via
+AnnotationCollect), but does not cover the header case (via parse_annotation_direct).
+A mutation that breaks parse_annotation_direct but not AnnotationCollect would not be
+caught.
+
+---
+
+### Axiom Check
+
+- **Prelude speaks the Rust protocol**: PASS
+  - annotation-based narrowing: param_narrowings is populated by Rust (typecheck_cek.rs),
+    read by Rust (typecheck_narrow.rs). Prelude participates via @[narrows:]/[is:] annotations.
+  - as-typenode: Rust defines the protocol (D-6 decision); prelude implements it.
+  - AnnotatedWrap: Rust-defined thunk type; prelude has no awareness of it.
+  - set_floating_annotation: pure parser Rust behavior.
+
+- **No fast paths, no fallbacks, no backwards compatibility**: CONDITIONAL PASS
+  - T-1618: "inner-ann" field adds forward path while "inner" field is kept for backward
+    compatibility with "serialized data that predates the round-trip fix" (surface_convert.rs:776).
+    The comment explicitly says "backward compatibility" — this is an Axiom 2 concern.
+    The "inner" fallback path is justified only if there is no existing serialized data that
+    will be read by production code; if the "Annotated" serialization format is only ever
+    round-tripped within a single process invocation, the backward compat fallback is
+    unnecessary complexity. Flag for review: if the "inner" fallback is truly needed, it
+    must be documented as a temporary migration path with a tracker item to remove it.
+    MINOR VIOLATION — not a fix-now finding, but should be tracked.
+
+- **Correctness, not performance**: PASS
+  - AnnotatedWrap uses deferred thunk (correct, lazy) rather than eager force (would break
+    laziness guarantee for function-valued annotated entries).
+  - type_stage_map uses HashMap O(1) lookup replacing iterative search — this is documented
+    as a refactor, not a performance optimization introduced at correctness cost.
+
+- **Loader/prelude agnosticism**: PASS
+  - param_narrowings mechanism requires no hardcoded prelude predicate names.
+  - as_type_dispatch requires "as-typenode" to exist in the prelude — this is a named
+    protocol entry (D-6), not a hardcoded prelude dependency.
+  - typecheck_narrow.rs module doc: "=", "and", "has?", "type-of" structural narrowing
+    still hardcoded (B-545, tracked).
+
+- **General case, not specific**: PASS
+  - annotation-based narrowing works for any function, not just prelude predicates.
+  - AnnotatedWrap applies to any non-literal annotated entry, not just functions.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Fix-now findings: 1, 2, 3, 4, 5, 6, 7, 8
+
+Summary of required work (ordered):
+
+1. **[independent]** Add corpus test for UnevaluatedState::AnnotatedWrap materialization
+   with a function-valued annotated dict entry (Finding 1).
+   File: tests/corpus/eval/annotation-system/annotated_fn_property_dict.llt-eval
+
+2. **[independent]** Add corpus test for B-519 floating annotation error in non-Dict
+   context (Finding 3).
+   File: tests/corpus/invalid/syntax_errors/floating_annotation_in_fn.llt-eval
+
+3. **[independent]** Add corpus test for as_type_dispatch via type_stage_map (Finding 5).
+   File: tests/corpus/eval/typecheck/ (new file exercising custom TypeNode dispatch)
+
+4. **[independent]** Add corpus test for eval_annotation_property_dict non-literal path
+   (Finding 6).
+   File: tests/corpus/eval/annotation-system/annotated_fn_computed_annotation.llt-eval
+
+5. **[independent]** Add arena unit test for free_list + drop_range_and_truncate
+   interaction (Finding 7).
+   File: src/arena.rs test module
+
+6. **[depends on 1]** Add tighter narrowing tests in typecheck/warnings/ that confirm
+   param_narrowings is actually changing type inference (Finding 4).
+   File: tests/corpus/eval/typecheck/warnings/annotation_narrowing_active.llt-eval (or similar)
+
+7. **[independent]** Add parser unit test for parse_annotation_direct routing fix in
+   header context (Finding 8).
+   File: src/parser.rs test module
+
+8. **[independent]** Add corpus test for Annotation::Annotated inner-ann round-trip
+   with non-Simple inner annotation (Finding 2).
+   File: tests/corpus/eval/annotation-system/annotated_inner_ann_roundtrip.llt-eval
+
+9. **[nit]** Track backward-compat "inner" fallback in surface_convert.rs as a temporary
+   migration path with a tracker item for removal. (Axiom 2 minor concern)

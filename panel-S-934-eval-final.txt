@@ -1,0 +1,201 @@
+## Review: eval-engine (S-934 backlog-catchall-3)
+
+### Axiom Checks
+
+- **Prelude speaks the Rust protocol**: FAIL — see finding #1.
+- **No fast paths, no fallbacks, no backwards compatibility**: PASS — no new fallback branches; AnnotatedWrap follows the general path.
+- **Correctness, not performance**: PASS overall — AnnotatedWrap, match_pattern dispatch, Arc<str> change are all correct. One correctness bug found in arena (#2).
+- **Loader/prelude agnosticism**: FAIL — same as #1; ANNOTATION_EVAL_EXCLUDED_KEYS encodes type-system key names in the evaluator.
+- **General case, not specific**: FAIL — same as #1; the excluded-key logic is a list of specific key names, not a general mechanism.
+
+---
+
+### Findings
+
+**FINDING: `eval_annotation_property_dict` silently drops entries for ANNOTATION_EVAL_EXCLUDED_KEYS** |
+SCOPE: fix-now | FILE: src/eval_dict.rs:138-143
+
+The function evaluates `@[key: value]` annotation dicts at dict construction time. For
+non-literal values whose key is in `ANNOTATION_EVAL_EXCLUDED_KEYS` ("return",
+"constraint", "bind", "kinds"), the entry is silently skipped via `continue` — neither
+the key nor the value appears in the resulting `Value::Dict`. This is prelude/type-system
+knowledge embedded directly in the evaluator.
+
+This violates three axioms simultaneously:
+- **Prelude speaks the Rust protocol**: the evaluator encodes which annotation keys have
+  runtime semantics and which are type-level-only. That decision belongs to the type
+  checker (which already handles these keys), not the evaluator.
+- **General case, not specific**: the fix is a list of specific key names, not a
+  general mechanism.
+- **Loader/prelude agnosticism**: a user who uses "return" or "constraint" as a plain
+  annotation key (not a type annotation) will silently lose that data.
+
+The evaluator should not know about type-system annotation keys at all. The correct fix
+depends on why these entries fail to evaluate:
+
+  The comment says these keys "contain type-level VarRefs with no runtime resolution
+  slots." The root cause is that the resolver does not assign de Bruijn slots to VarRefs
+  inside type annotations — these VarRefs resolve to `resolution: None` and would
+  produce an `EvalError::internal("resolver did not run...")` if evaluated. The proper
+  fix is one of:
+
+  (a) The resolver runs on type-level annotation values so they resolve correctly (then
+  the evaluator can evaluate them uniformly without special-casing), or
+  (b) The evaluator treats an unresolved VarRef in annotation value position as a string
+  literal (the name) rather than a scope lookup error — since annotation keys in
+  `@[Doc: "..."]` form are type identifiers, not scope variables.
+
+  Either way, the `ANNOTATION_EVAL_EXCLUDED_KEYS` list must be deleted from
+  `eval_dict.rs`. The type checker's own key-exclusion list in `ast.rs` may remain
+  (it serves a different purpose: preventing the type checker from trying to infer
+  types for these entries), but the runtime evaluator must not replicate it.
+
+The same pattern appears in `eval_core.rs:584` (where `extract_fn_annotation_extra` also
+uses `ANNOTATION_EVAL_EXCLUDED_KEYS`). Both sites are violations of the same axiom and
+must be fixed together.
+
+---
+
+**FINDING: `drop_range_and_truncate` leaves stale free_list entries** |
+SCOPE: fix-now | FILE: src/arena.rs:223-236
+
+`drop_range_and_truncate(start_env_id)` truncates `scopes` to length `start_env_id`.
+However, it does not clean stale `free_list` entries. If `drop_scope` was previously
+called for any scope with id >= `start_env_id`, those ids are in `free_list` but will
+be out of bounds after truncation. A subsequent `alloc_root` or `alloc_child` that pops
+a stale entry from `free_list` will index `scopes` out of bounds and panic.
+
+The "Stack-top contract" (only drop an arena that is the most recently allocated) only
+partially mitigates this: `drop_scope` is called in `type_normalize.rs:302` on call
+frames that may interleave with arena regions. The contract is enforced only by a
+`debug_assert` in `builtin_arena_drop`, which is inactive in release builds.
+
+Fix: `drop_range_and_truncate` must filter `free_list` to remove any entries with id >=
+`start_env_id` before truncating:
+
+```rust
+self.free_list.retain(|id| id.0 < start_env_id);
+self.scopes.truncate(start_env_id as usize);
+```
+
+The per-scope clear loop preceding truncation should remain (it handles memory budget
+accounting and Arc<Thunk> release).
+
+---
+
+**FINDING: `lower_inner` called with discarded diagnostics** |
+SCOPE: fix-now | FILE: src/eval_dict.rs:144-148
+
+`eval_annotation_property_dict` calls `crate::lower::lower_inner` with `&mut Vec::new()`
+as the diagnostics sink, silently discarding all lowering warnings for annotation values.
+If a user writes a syntactically valid but semantically problematic annotation value (e.g.,
+a call that the lowerer warns about), the warning is dropped. This is inconsistent with
+how lowering diagnostics are handled elsewhere, where they are collected and surfaced.
+
+Fix: thread the diagnostics vec from the call site or return lowering diagnostics as part
+of the error. At minimum, if any diagnostics are emitted, convert the first to an
+`EvalError` and propagate it.
+
+---
+
+**FINDING: match_pattern constructs a temporary String for every variant tag comparison** |
+SCOPE: fix-later | FILE: src/eval.rs:1698, 1732, 1846
+
+Each constructor pattern match in `match_pattern` calls `format!("{}.{}", tycon, ctor)`
+to build a tag string, then compares it against the pattern tag string from
+`flatten_dot_access_to_tag`. With `tycon: Arc<str>` and `ctor: Arc<str>`, a direct
+comparison without allocation is possible by splitting the pattern tag at the first dot:
+
+```rust
+if let Some((tycon_part, ctor_part)) = tag.split_once('.') {
+    tycon.as_ref() == tycon_part && ctor.as_ref() == ctor_part
+}
+```
+
+This is a performance concern (avoids 3 heap allocations per match dispatch), not a
+correctness issue. The current code is correct.
+
+---
+
+### Laziness Audit
+
+**AnnotatedWrap (UnevaluatedState::AnnotatedWrap)**: The new `AnnotatedWrap` thunk state
+is correctly lazy. The wrapper is only forced when `materialize()` is called on the
+outer thunk (eval_materialize.rs:1366-1386). Dict construction wraps non-literal
+annotated values in `Thunk::annotated_wrap(...)` rather than forcing them immediately
+(eval_dict.rs:347-354). This is the correct pattern.
+
+**eval_annotation_property_dict materialization at line 150**: Materializing annotation
+dict *values* at construction time is **Necessary**. `Value::Annotated { annotation }`
+holds a `Box<Value>`, not a thunk — annotation metadata is consumed by introspection
+builtins (`annotation-of`) and must be a concrete Value. The annotation dict itself is
+not part of the data flow graph; it is metadata attached to a thunk. Eagerly forcing it
+is correct and unavoidable given the data type.
+
+**match_pattern field-thunk materialization**: Each dict-pattern field is materialized
+with `materialize(&field_thunk, ...)`. This is **Necessary** — pattern matching is a
+strictness point; structural matching requires knowing the concrete value. Dict pattern
+matches only materialize the fields that are mentioned in the pattern, which is correct.
+
+**AnnotatedWrap wrapping a literal thunk**: `value_thunk.try_get_materialized()` at
+eval_dict.rs:337 checks whether the value is already materialized and, if so, wraps
+immediately in `Value::Annotated` rather than creating an `AnnotatedWrap` thunk. This
+is a pre-approved fast path: the wrapped literal is already a materialized constant; the
+`AnnotatedWrap` thunk would force it and produce the same `Value::Annotated` immediately.
+The fast path preserves semantics.
+
+---
+
+### Pattern Enum Deletion (match_pattern rewrite)
+
+The removal of the `Pattern` enum and replacement with dispatch on `SurfaceExpression`
+variants is architecturally correct. The new implementation is the general path: it
+dispatches on the actual AST node rather than a redundant intermediate representation.
+
+The critical invariant — CaseArm bodies use `eval_case_arm_structural_pattern` with
+an explicit binding map, not `match_pattern` — is maintained. `match_pattern` is called
+on `arm.pattern` (always a wildcard sentinel for CaseArm arms), and the structural
+pattern inside the CaseArm is processed separately by `eval_case_arm_structural_pattern`.
+There is no confusion between bind patterns and pin patterns in the new dispatch.
+
+One semantic note: when `resolution.get()` returns `Some(None)` for a VarRef in
+pattern position (name not found in scope), the arm silently fails to match (returns
+`Ok(None)`). This is defensible for the transitional B-515 period but should be
+reviewed: an unresolvable pin name in pattern position is likely a programmer error
+and should eventually produce a diagnostic, not a silent non-match.
+
+---
+
+### Arc<str> for Variant.tycon/ctor
+
+The change from `String` to `Arc<str>` for `Value::Variant.tycon` and `.ctor` is
+correct. `Arc<str>` is cheaper to clone (no heap copy, just refcount increment) and
+avoids unnecessary allocations when variants are passed through the thunk graph.
+Tag comparison via `format!("{}.{}", tycon, ctor)` is correct for the current pattern
+matching code. See fix-later finding above for the allocation optimization.
+
+---
+
+### free_list Scope Reuse
+
+The new `free_list` in `ScopeArena` (arena.rs:43) is functionally correct for the
+`drop_scope` → `alloc_root/alloc_child` reuse path. The only correctness gap is the
+interaction with `drop_range_and_truncate` described above. The `drop_scope` → `free_list`
+path (used by type_normalize.rs) and the `drop_range_and_truncate` path (used by
+builtin_arena_drop) must not interleave on overlapping scope ranges.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Fix-now items:
+1. Delete `ANNOTATION_EVAL_EXCLUDED_KEYS` usage from `eval_dict.rs:138-143` (and the
+   parallel usage in `eval_core.rs:584`). Fix the root cause: either run the resolver on
+   annotation values or treat unresolved annotation VarRefs as string identifiers rather
+   than scope lookups. The evaluator must not contain a list of type-system key names.
+2. Add `free_list` cleanup to `drop_range_and_truncate` in `arena.rs:235`:
+   `self.free_list.retain(|id| id.0 < start_env_id);` before truncation.
+3. Surface or propagate lowering diagnostics from `eval_annotation_property_dict`
+   rather than silently discarding them into `Vec::new()`.

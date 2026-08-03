@@ -1,0 +1,78 @@
+## Review: eval-engine (S-934 backlog-catchall-3, round 2)
+
+### Findings
+
+FINDING: F-01 VERIFIED — drop_range_and_truncate in src/arena.rs:242-243 correctly calls
+`self.free_list.retain(|id| id.0 < start_env_id)` before `self.scopes.truncate(start_env_id as usize)`.
+The implementation is correct. | SCOPE: verified | FILE: src/arena.rs:227-244
+
+FINDING: F-01 nit — test_drop_range_and_truncate_no_free_list_corruption did NOT cover the
+`retain` branch: the scenario where `drop_scope` was called on scopes within the truncation range
+before `drop_range_and_truncate` is called, leaving stale free_list entries that need to be pruned.
+The `retain` call is the safety net for this case and was untested. FIXED: added
+`test_drop_range_and_truncate_cleans_stale_free_list_entries` at src/arena.rs:1536-1581.
+| SCOPE: fix-now (fixed inline) | FILE: src/arena.rs:1536-1581
+
+FINDING: F-02 VERIFIED — eval_annotation_property_dict in src/eval_dict.rs:44-156 is now
+`async fn` with `parent_env_id: u32` parameter. `lower_diags` is `Vec::new()` (not `()`). Diagnostics
+are propagated via `crate::eval_materialize::lower_errors_to_eval_error(lower_diags)` with
+`return Err(err)`. Non-literal annotation values are lowered via `lower_inner` and materialized.
+This is correct. | SCOPE: verified | FILE: src/eval_dict.rs:144-155
+
+FINDING: B-547 CORRECTLY DEFERRED — ANNOTATION_EVAL_EXCLUDED_KEYS workaround is documented in
+src/ast.rs:27-28, src/eval_dict.rs:132-143, src/eval_core.rs:583-584. Comment at
+src/typecheck_narrow.rs:191-194 references B-547/B-545. Tracker item B-547 exists in backlog with
+full description and fix options. Not re-raised here. | SCOPE: verified | FILE: src/ast.rs:27-28
+
+FINDING: NEW BUG B-549 — `translate_unevaluated_state` in src/arena.rs:714-722 uses `unreachable!()`
+for `UnevaluatedState::AnnotatedWrap`. The precondition comment says callers must force all
+AnnotatedWrap thunks before calling migrate_thunk_id. However, `builtin_arena_migrate` in
+src/builtins_meta.rs:5483-5493 calls `migrate_thunk_id` on `args[0]` without first materializing
+it. If `args[0]` contains an unevaluated AnnotatedWrap thunk (created by T-1621 for non-literal
+annotated dict-key values), `builtin_arena_migrate` panics instead of returning an EvalError. This
+is a latent correctness bug — panics are not EvalErrors. Tracked as B-549. This is a deferred fix;
+arena migration of annotated non-literal dict entries is a narrow use case not covered by existing
+tests. | SCOPE: fix-later | FILE: src/arena.rs:714-722, src/builtins_meta.rs:5483-5493
+
+FINDING: Materialization in eval_annotation_property_dict (line 155) is NECESSARY —
+`materialize(&thunk, ...)` forces annotation values to concrete `Value` at dict construction time.
+This is a confirmed strictness exception: annotations must be concrete to be attached to
+Value::Annotated. Not a laziness violation. | SCOPE: verified | FILE: src/eval_dict.rs:154-155
+
+FINDING: AnnotatedWrap CEK arm in eval_materialize.rs:1366-1386 calls `materialize()` inline
+inside force_step, consistent with the existing pattern used by other arms (e.g., GuardedValidate,
+MatchPredicateCheck). Not a new deviation from the general path. | SCOPE: verified |
+FILE: src/eval_materialize.rs:1366-1386
+
+### Axiom Checks
+
+Prelude speaks the Rust protocol: PASS — typecheck_narrow.rs now uses annotation-driven
+param_narrowings (T-1761) for predicate narrowing; hardcoded predicate names (B-507) removed.
+The remaining hardcoded structural patterns (=, and, has?, type-of) are acknowledged as B-545,
+a pre-existing tracked issue.
+
+No fast paths, no fallbacks, no backwards compatibility: PASS — no new fast paths introduced
+in the eval domain. eval_annotation_property_dict follows the general lower_inner path for
+non-literals. AnnotatedWrap is a new UnevaluatedState variant, not a bypass.
+
+Correctness, not performance: PASS — the F-02 fix evaluates non-literal annotation values through
+the full lower_inner + eval_core_expr + materialize pipeline. No shortcuts taken.
+
+Loader/prelude agnosticism: PASS — no new prelude function names hardcoded in eval code.
+B-547 remains tracked.
+
+General case, not specific: PASS — no new special-cases for specific value types or variable
+names added in the eval domain changes.
+
+### Verdict
+
+APPROVE
+
+The one fix-now finding (F-01 nit: missing test for the `retain` branch in
+drop_range_and_truncate) was fixed inline by adding
+`test_drop_range_and_truncate_cleans_stale_free_list_entries` at src/arena.rs:1536-1581.
+F-01 and F-02 are correctly implemented. B-547 is correctly deferred and tracked.
+
+B-549 (AnnotatedWrap arena migration panic) is a new finding tracked in the backlog as a
+fix-later item. It does not affect any current test paths and does not block approval of this
+sprint.

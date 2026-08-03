@@ -929,6 +929,7 @@ async fn infer_step(
                     resolver,
                     resolver_injective,
                     structural,
+                    pre_assigned_class_decl_id,
                 } => {
                     let resolver_name: Option<String> =
                         resolver.as_ref().and_then(|rnode| match &rnode.expr {
@@ -950,6 +951,7 @@ async fn infer_step(
                             span: node.span.clone(),
                             resolver: resolver_name,
                             resolver_injective: *resolver_injective,
+                            pre_assigned_class_decl_id: Some(pre_assigned_class_decl_id),
                         },
                         state,
                     )
@@ -4960,6 +4962,7 @@ pub(crate) async fn run_typecheck_dict(
                         resolver,
                         resolver_injective,
                         structural,
+                        pre_assigned_class_decl_id,
                     } => {
                         let resolver_name: Option<String> =
                             resolver.as_ref().and_then(|rnode| match &rnode.expr {
@@ -4981,6 +4984,7 @@ pub(crate) async fn run_typecheck_dict(
                                 span: entry.node.value.span.clone(),
                                 resolver: resolver_name,
                                 resolver_injective: *resolver_injective,
+                                pre_assigned_class_decl_id: Some(pre_assigned_class_decl_id),
                             },
                             state,
                         )

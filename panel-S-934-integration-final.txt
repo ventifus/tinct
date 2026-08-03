@@ -1,0 +1,182 @@
+## Review: integration-verifier
+
+### Sprint S-934 (backlog-catchall-3)
+
+Changed files reviewed:
+  src/arena.rs, src/ast.rs, src/builtins_core.rs, src/builtins_meta.rs,
+  src/desugar.rs, src/env.rs, src/eval_dict.rs, src/eval_materialize.rs,
+  src/parser.rs, src/resolve.rs, src/surface_convert.rs, src/surface_fields.rs,
+  src/type_env.rs, src/type_infer.rs, src/typecheck.rs, src/typecheck_annot.rs,
+  src/typecheck_cek.rs, src/typecheck_narrow.rs, src/typecheck_tests.rs,
+  src/value.rs, stdlib/codecs/stream.llt, stdlib/test-loader.llt,
+  tests/corpus/README.md,
+  tests/corpus/eval/builtins/display_chain_stdlib_varref.llt-eval,
+  tests/corpus/eval/typecheck/annotation_based_narrowing.llt-eval,
+  tests/corpus/eval/typecheck/key_annotation_narrows.llt-eval
+
+---
+
+### Findings
+
+---
+
+FINDING: Axiom violation — backwards compatibility fallback in Annotation::Annotated
+serialization. surface_fields.rs emits BOTH "inner" (Display string) and "inner-ann"
+(structured recursive Annotation value) for every Annotated variant. The deserializer in
+surface_convert.rs tries "inner-ann" first, then falls back to "inner" as a backward-compat
+path. Since the serializer always emits "inner-ann", the "inner" field and the fallback in
+the deserializer are dead code that exists solely for backwards compatibility — an explicit
+axiom violation. Fix: remove the redundant "inner" field from the serializer (surface_fields.rs
+lines 648-653) and remove the fallback to "inner" in the deserializer
+(surface_convert.rs lines 783-785). Only "inner-ann" should be used in both directions.
+| SCOPE: fix-now | FILE: src/surface_fields.rs:644 and src/surface_convert.rs:783
+
+---
+
+FINDING: Arity mismatch error message is misleading for builtin-typecheck-doc.
+builtins_meta.rs line 2682 accepts 2 or 3 args but uses `EvalError::arity_mismatch(2, …)`
+which produces "expected 2, got N". For N=1 or N≥4, user sees a confusing message since the
+function actually accepts 2 or 3. Fix: use `EvalError::arity_mismatch_bound(ArityBound::Range(2, 3), args.len(), call_span)` (ArityBound::Range already exists for this case).
+| SCOPE: fix-now | FILE: src/builtins_meta.rs:2683
+
+---
+
+### Integration Point Verification
+
+1. Pattern enum deleted in ast.rs; match_pattern dispatches on SurfaceExpression:
+   PASS. ast.rs line 193 documents the deletion. resolve.rs (lines 799-800) walks
+   arm.pattern as a SurfaceNode with suppress_depth incremented. lower.rs (line 881)
+   passes Arc::clone(&arm.pattern) through unchanged. coverage.rs (line 440) dispatches
+   on SurfaceExpression variants directly in ast_pattern_to_coverage. All three layers
+   agree: patterns are Arc<SurfaceNode>, not Pattern enum instances. Desugar (line 300)
+   passes arm.pattern.clone() through unchanged. No cross-layer disagreement found.
+
+2. Annotation::Annotated(Box<A>, Box<A>) — serializer/deserializer symmetry:
+   PARTIAL PASS. The serializer (surface_fields.rs lines 623-660) and deserializer
+   (surface_convert.rs lines 763-790) handle the Variant format. The outer field is
+   symmetric: "name" for Simple outer, "outer" for non-Simple outer; deserializer tries
+   "outer" first, then "name" — matches because serializer only emits one of the two.
+   The inner field is NOT symmetric: serializer emits both "inner" (string) and "inner-ann"
+   (structured), deserializer prefers "inner-ann". The "inner" fallback violates the
+   no-backwards-compat axiom (see finding above). typecheck_annot.rs expand_named correctly
+   handles Annotated at lines 1410-1424 and 1461+.
+
+3. UnevaluatedState::AnnotatedWrap — arena/eval_materialize/value handling:
+   PASS. arena.rs lines 695-714: translate_unevaluated_state marks AnnotatedWrap as
+   unreachable!() with a precondition violation message. eval_materialize.rs lines
+   1366-1386: dispatches AnnotatedWrap by forcing inner thunk then wrapping in
+   Value::Annotated, correctly using thunk.span as the call-site for materialize().
+   value.rs lines 1589-1597: with_replaced_ctx correctly replaces ctx in AnnotatedWrap
+   while preserving inner and annotation fields.
+
+4. eval_annotation_property_dict async — callers async, parent_env_id scoping:
+   PASS. eval_annotation_property_dict (eval_dict.rs line 44) is async fn. The single
+   caller eval_dict_core (line 329) is also async and awaits it correctly. parent_env_id
+   (the enclosing dict's scope, not the new dict's letrec scope env_id) is used — this
+   is correct: annotation values should evaluate in the enclosing scope so they cannot
+   reference the dict's own letrec bindings, avoiding circular initialization.
+
+5. drop_range_and_truncate in arena.rs:
+   PASS (confirmed from S-946 review already in mempalace). arena.rs lines 223-236:
+   drops scopes in the range [start_env_id, len) WITHOUT pushing to free_list, then
+   calls scopes.truncate(). The comment "Do NOT push to free_list" is explicit. The
+   regression test at line 1493-1515 verifies free_list.len()==0 after the call.
+   builtins_meta.rs line 5320 correctly calls drop_range_and_truncate instead of
+   the old drop_scope+truncate pattern.
+
+6. Error span quality — new error paths:
+   PASS. eval_annotation_property_dict error paths (eval_dict.rs lines 77-97) use
+   key_node.span.clone() and entry.span.clone() — real AST spans.
+   typecheck_cek.rs lines 4570-4588 use ann_span.span.clone() (derived from
+   narrows_node.span.clone()) — real AST spans from the annotation node.
+   The @[is: T] path at lines 4602-4621 uses is_node.span.clone() — real span.
+   AnnotatedWrap materialize error at eval_materialize.rs line 1372 passes
+   Some(&thunk.span) as call-site span — correct dual-span threading.
+
+---
+
+### New Feature Integration: Annotation-based Narrowing (T-1761)
+
+param_narrowings field: PASS. type_infer.rs line 199 adds
+Vec<Option<Type>> to TypeScheme. All TypeScheme construction sites
+(env.rs:100, type_env.rs:757/802/1078/2130, typecheck_tests.rs:633,
+typecheck_cek.rs:4191) correctly set param_narrowings: Vec::new().
+
+TypeScheme propagation: PASS. generalize_with_doc sets scheme.param_narrowings at
+lines 4642 and 4663, covering both failed_bindings and normal paths.
+
+env.get_scheme(): PASS. Returns cloned TypeScheme including param_narrowings.
+extract_narrowings() correctly reads scheme.param_narrowings.first() for
+single-arg call narrowing.
+
+stub_env = TypeEnv::new() pattern: ACCEPTABLE. resolve_annotation uses state.tycon_env
+(not the passed TypeEnv) for type name resolution, so user-defined types registered
+before pass 4 will resolve correctly. Types defined later in the same dict may produce
+a fresh TypeVar (fallback), silently failing to narrow — this is acceptable behavior
+since SCC ordering ensures most referenced types are already registered by pass 4.
+
+Hardcoded predicate names ("=", "has?", "and", "type-of") in typecheck_narrow.rs:
+PRE-EXISTING, tracked as B-545. Not introduced by this sprint. The new T-1761
+annotation mechanism is correctly documented as being prelude-agnostic.
+
+---
+
+### New Feature Integration: builtin-scope-frame (display chain)
+
+Registration: PASS. builtins_core.rs lines 598-604 registers "builtin-scope-frame"
+with Strictness::Seq, arity 1. builtin_scope_frame returns {name: Int(slot)} for all
+slots whose thunk has a span.name set.
+
+Span name propagation: PASS. eval_dict_core sets span.name via with_name() for all
+string-keyed entries (line 286-292). So tinct dict literals like [%: ev.result] cause
+the thunk for ev.result to carry span.name = "%", making it visible to builtin-scope-frame.
+
+scope-to-frames in test-loader.llt: PASS. _scope-to-frames-inner walks the parent chain
+from innermost to outermost via builtin-scope-parent, prepending each level's frame.
+The resulting frames array matches resolve.rs ordering (initial_frames[0] = outermost).
+builtin-resolve (lines 2390-2434) consumes the frames correctly.
+
+"Clean scope" pattern (line 671 of test-loader.llt): PASS BY DESIGN.
+[builtin-scope-new st.scope-id [builtin-scope-frame ev.scope-id]] creates a scope
+whose own slots contain Int values (not named thunks), so builtin-scope-frame of this
+new scope returns empty. Resolve frames come from the parent chain (st.scope-id and
+ancestors). This intentionally prevents % pollution in multi-doc pipelines. Second-doc
+code can only access first-doc results via %, not by name — correct pipeline semantics.
+
+---
+
+### Axiom Verdicts
+
+- Prelude speaks the Rust protocol: PASS for T-1761 (param_narrowings protocol defined
+  in Rust; prelude implements via @[is: T] / @[narrows: T]). Pre-existing B-545 violation
+  for structural narrowing hardcoded names — not introduced in this sprint.
+
+- No fast paths, no fallbacks, no backwards compatibility: FAIL — "inner" string field +
+  deserializer fallback in Annotation::Annotated Variant serialization. See finding above.
+
+- Correctness, not performance: PASS. No performance shortcuts observed. The
+  drop_range_and_truncate path (S-946) is provably correct. eval_annotation_property_dict
+  materializes non-literal values correctly via lower+eval+materialize.
+
+- Loader/prelude agnosticism: PASS for new features. T-1761 is fully annotation-driven;
+  no predicate names are hardcoded in Rust. builtin-scope-frame is a general mechanism.
+
+- General case, not specific: PASS. param_narrowings is a general Vec (any param can
+  declare narrowing). builtin-scope-frame works for any scope, not just specific patterns.
+
+---
+
+### Verdict
+
+REQUEST_CHANGES
+
+Fix-now findings:
+1. Remove redundant "inner" string field from Annotation::Annotated serialization in
+   surface_fields.rs (lines 644-653) and remove the "inner" fallback in the deserializer
+   in surface_convert.rs (lines 783-785). The backwards compat fallback violates the
+   no-backwards-compat axiom. The "inner-ann" path is always emitted and should be
+   the sole path.
+
+2. Replace EvalError::arity_mismatch(2, …) with EvalError::arity_mismatch_bound(
+   ArityBound::Range(2, 3), …) in builtin-typecheck-doc (builtins_meta.rs line 2683)
+   to produce an accurate error message for the 2-or-3 arg function.

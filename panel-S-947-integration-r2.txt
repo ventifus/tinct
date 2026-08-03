@@ -1,0 +1,68 @@
+## Review: integration-verifier (Round 2)
+
+Sprint: S-947 (value-send-migration)
+Round: 2 — verifying fixes for all 11 findings from round 1
+
+### Findings
+
+No new fix-now findings.
+
+### Finding-by-Finding Verification
+
+F-01 | arena.rs AnnotatedWrap comment | VERIFIED (pre-existing VERIFIED in round2-verify.txt)
+F-02 | arena.rs Dict branch cycle-break explanation | VERIFIED (pre-existing VERIFIED)
+F-03 | value.rs DirCap Clone SAFETY comment | VERIFIED (pre-existing VERIFIED)
+F-04 | eval_dict.rs empty_env deleted, env param removed from eval_str
+      - eval_str signature is now (src: &str, ctx: &Arc<EvalContext>) — no env param.
+      - Grep for "empty_env": 0 matches. Grep for "let _ = env": 0 matches.
+      STATUS: VERIFIED
+F-05 | lower.rs Decl-skip key contiguity unit test
+      - test_builtin_lower_decl_skip_key_contiguity present at lower.rs:2026.
+      - Tests that a leading SurfaceItem::Decl does not increment the expr key counter,
+        so the first Expr gets key "0" (not "1").
+      STATUS: VERIFIED
+F-06 | env.rs slots shadowing test added
+      - test_merge_env_chain_slots_src_shadows_dst present at env.rs:1047.
+      - Tests slots field specifically with later-document-wins (src shadows dst) semantics.
+      STATUS: VERIFIED
+F-07 | ast.rs Span PartialEq/Hash unit tests after T-1771
+      - test_span_partialeq_excludes_name, test_span_hash_excludes_name,
+        test_span_partialeq_different_location_not_equal — all three present at ast.rs:1441-1523.
+      STATUS: VERIFIED
+F-08 | eval.rs get_thunk_rc renamed to get_thunk_arc
+      - fn get_thunk_arc at eval.rs:2141. All 7 call sites use get_thunk_arc.
+      - Grep for "get_thunk_rc": 0 matches.
+      STATUS: VERIFIED
+F-09 | surface_fmt.rs let _ = ctx removed at line 59
+      - No "let _ = ctx" in surface_fmt.rs. ctx is used directly at line 64 via
+        value.to_tinct(ctx). Comment at line 63 now reads "ctx is passed to to_tinct;
+        only required if value is a Function." — accurate.
+      STATUS: VERIFIED
+F-10 | doc/internals/scope-arena.md Code Issues section deleted | VERIFIED (pre-existing VERIFIED)
+F-11 | doc/16-architecture.md BuiltinArgs types — ThunkId in BOTH locations
+      - Line 47 (prose): "args: Vec<ThunkId>, named: Option<IndexMap<String, ThunkId>>" — CORRECT.
+      - Lines 348-349 (sketch comment): "// BuiltinArgs { args: Vec<ThunkId>,
+        named: Option<IndexMap<String, ThunkId>>," — CORRECT.
+      - Round-2-verify.txt noted this as PARTIAL (lines 348-349 still showed Arc<Thunk>).
+        The current file has been updated: both locations now show ThunkId.
+      STATUS: VERIFIED
+
+### Axiom Verdicts
+
+- Prelude speaks the Rust protocol: PASS. Arc<Thunk> dict layout is Rust-defined;
+  prelude accesses via builtin-get/builtin-dict-nth etc. No prelude-specific Rust behavior.
+- No fast paths, no fallbacks, no backwards compatibility: PASS. Dict migration is a clean
+  replacement. No ThunkId fallback path in dict access. No Rc<Thunk> fallback.
+- Correctness, not performance: PASS. Arc<Thunk> is slightly larger than ThunkId but
+  provably correct and eliminates arena round-trips for dict span access.
+- Loader/prelude agnosticism: PASS. Dict layout change is opaque to tinct code.
+- General case, not specific: PASS. migrate_value handles all Value variants uniformly.
+
+### Verdict
+
+APPROVE
+
+All 11 findings from round 1 are fully resolved. The two previously PARTIAL items
+(F-11 doc sketch comment still showed Arc<Thunk>) has been corrected — both the
+prose description at doc/16-architecture.md:47 and the sketch comment at lines 348-349
+now correctly show ThunkId. No new issues were introduced by the round-2 fixes.

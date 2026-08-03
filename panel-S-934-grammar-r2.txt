@@ -1,0 +1,98 @@
+## Review: grammar-architect
+
+### Round 2 Verification of Round 1 Fixes
+
+All seven fix-now items from round 1 are verified correct.
+
+---
+
+**Fix 1: doc/15-ast.md:243-248 — Annotation enum updated**
+PASS. `doc/15-ast.md:246` now shows `Annotated(Box<Annotation>, Box<Annotation>)` (outer is
+`Box<Annotation>`, not `String`). `Quote` variant is present at line 247 with correct inline
+comment. Matches `src/ast.rs:200,212` exactly.
+
+---
+
+**Fix 2: doc/internals/parse.md:349-364 — @Expr form and T-1778 reference**
+PASS. `doc/internals/parse.md:351-353` now documents `@Expr → Annotation::Quote` as a distinct
+annotation form with explanation that `Expr` is effectively reserved in annotation position.
+`doc/internals/parse.md:354` shows the corrected `Annotated` form with `Box::new(Simple("Name"))`
+outer (not the old `String` form). Line 364 correctly references T-1778 (not closed T-1617) for the
+remaining full elimination work. Line 31 retains the original T-1617 reference in context — that is
+correct because T-1617 is mentioned there as the unification effort that was partially completed
+(the `expression_to_annotation` routing), with T-1778 tracking what remains.
+
+---
+
+**Fix 3: doc/05-type-annotations.md:993 — False claim removed**
+PASS. Line 993 now reads "Type narrowing. Any predicate function can declare narrowing behavior
+using annotations on its binding or parameters:" followed by correct documentation of `@[narrows: T]`
+and `@[is: T]`. The old false claim "User-defined predicates produce no narrowing" is gone.
+
+---
+
+**Fix 4: doc/feature/narrowing.md — Annotation-based narrowing section**
+PASS. Section "Annotation-Based Narrowing (T-1761)" added at line 175. Both `@[narrows: T]` key
+annotation and `@[is: T]` parameter annotation are documented with examples and mechanism
+explanation. The B-545 limitation note (structural narrowing still hardcodes function names) is
+correctly documented at line 202.
+
+---
+
+**Fix 5a: tests/corpus/valid/annotations/annotation_quote_expr.llt-eval — @Expr corpus test**
+PASS. File exists. Input `[fn [let x@Expr] x]`, expected output `[fn [let x@Expr] x]`. Correct
+`=== out` section format. Tests that `Annotation::Quote` round-trips through Display as `Expr`.
+
+---
+
+**Fix 5b: tests/corpus/valid/annotations/chained_annotation_dict_outer.llt-eval — Chained annotation test**
+PASS. File exists. Input `[x@Seq@Int: 42]`, expected output `[x@Seq@Int: 42]`. Correct `=== out`
+section format. Tests the T-1618 `Box<Annotation>` outer for the Simple-outer-chained case.
+
+---
+
+**Fix 7: src/parser.rs:848 — `///` doc comment changed to `//`**
+PASS. Line 848 now reads `// Map a 'StackFrame' to a human-readable context string for diagnostic
+notes.` — a regular line comment, not a doc comment. The `impl std::fmt::Display for StackFrame`
+block at line 849 is no longer incorrectly carrying a doc comment.
+
+---
+
+### Axiom Checks
+
+**Prelude speaks the Rust protocol** — PASS. `Annotation::Quote` is a Rust-level sentinel
+produced by `expression_to_annotation` in the parser. The `is_expr_annotation` predicate
+is a Rust function. The quoting mechanism is defined at the Rust level; the prelude implements
+the protocol it exposes, not the other way around.
+
+**No fast paths, no fallbacks, no backwards compatibility** — PASS. No new fast paths or
+fallbacks introduced by the round 1 fixes. Changes are doc corrections and corpus tests only
+(plus the `///` → `//` nit in parser.rs).
+
+**Correctness, not performance** — PASS. No performance tradeoffs in the grammar/spec domain.
+
+**Loader/prelude agnosticism** — PASS. `@Expr` → `Annotation::Quote` conversion is
+parser-level, independent of what the loader or prelude defines. The annotation-based narrowing
+mechanism (`@[narrows: T]`, `@[is: T]`) works with any user-defined predicate function, with no
+prelude names hardcoded in Rust.
+
+**General case, not specific** — PASS. `expression_to_annotation` handles the general case
+(VarRef, annotated VarRef, Dict, implied Call, fallback). The `@Expr` special case is documented
+as a reserved sentinel, which is a language-level decision, not a specific-caller accommodation.
+
+---
+
+### Remaining Open Item
+
+The one deferred item from round 1 (T-1780: floating annotation non-dict corpus test) remains
+in the tracker as `fix-later`. No new fix-now items have emerged.
+
+---
+
+### Findings
+
+(No new fix-now findings.)
+
+### Verdict
+
+APPROVE

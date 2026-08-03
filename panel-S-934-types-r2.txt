@@ -1,0 +1,102 @@
+## Review: type-theorist (Round 2)
+
+Sprint: S-934 (backlog-catchall-3)
+Round: 2 — verify four Round 1 fixes; confirm B-546 and D-7 correctly tracked
+
+---
+
+### Fix Verification
+
+**F-03: try_eq_literal true/false → Type::Unknown**
+STATUS: CORRECTLY FIXED
+`src/typecheck_narrow.rs:157` — The arms for `n == "true" || n == "false"` now return `None`,
+not `Narrowing::EqLiteral { ty: Type::Unknown }`. A comment citing Axiom 4 explains the
+rationale. The variable retains its pre-condition type in the true branch; no Unknown
+contamination.
+
+**F-04: try_type_of "Bool"/"Seq" → Type::Unknown**
+STATUS: CORRECTLY FIXED
+`src/typecheck_narrow.rs:195` — `"Bool" | "Seq" => None` is in place, replacing the prior
+`Some(Type::Unknown)`. Comment cites B-547/B-545 and explains that no narrowing is the
+correct behavior (variable retains original type). No Unknown emitted.
+
+**F-12: typecheck_narrow.rs module doc — "entirely annotation-driven" claim**
+STATUS: CORRECTLY FIXED
+`src/typecheck_narrow.rs:25-30` — The module doc now has two distinct paragraphs:
+  - "Predicate narrowing (`@[is: T]`, `@[narrows: T]`) is entirely annotation-driven — no
+    predicate names are hardcoded in Rust." — accurate: the hardcoded `fn?`/`seq?` arms were
+    deleted; the annotation-based arm is the sole predicate-narrowing path.
+  - "Structural pattern narrowing (`=`, `and`, `has?`, `type-of`) still uses hardcoded
+    function names (B-545)." — accurately cavets what remains hardcoded.
+The comment is now factually correct. The fn?/seq? gap (no narrowing without @[is: T]) is
+tracked as B-546 rather than documented in this module comment, which is appropriate since
+it is a prelude gap, not a Rust implementation gap.
+
+**F-20: typecheck_annot.rs references D-6 instead of D-7**
+STATUS: CORRECTLY FIXED
+`src/typecheck_annot.rs:4877,4908,4914` — All three occurrences of "D-6" in the
+`as_type_dispatch` doc block have been updated to "D-7". No remaining D-6 references
+in typecheck_annot.rs (grep confirms zero matches).
+
+---
+
+### Deferred Item Verification
+
+**B-546: fn?/seq? narrowing regression**
+STATUS: CORRECTLY TRACKED
+`mcp__tracker__item_get("B-546")` confirms the item exists in backlog, unassigned to a sprint,
+with accurate description of the regression (no @[is: T] annotations on fn?/seq? in
+prelude.llt) and correct blocking dependency on T-1753. Not re-raised as a new finding.
+
+**D-7: as-typenode decision record**
+STATUS: CORRECTLY TRACKED
+`mcp__tracker__item_get("D-7")` confirms the item exists in backlog with description covering
+the required decision record content: Axiom 1 protocol entry declaration, type_stage_map
+lookup mechanism, and prelude contract. Title has a minor artifact ("D-6:" prefix in the
+title string) but the item ID is correct and the description is accurate. Not re-raised.
+
+---
+
+### Axiom Compliance Sweep
+
+**Prelude speaks the Rust protocol**: PASS
+`as_type_dispatch` in `src/typecheck_annot.rs:4916` defines the `as-typenode` protocol
+contract. Rust specifies the name and calling convention; prelude implements it. The
+annotation-based narrowing mechanism (`@[is: T]`, `@[narrows: T]`) similarly defines a
+protocol that prelude functions opt into via annotations — no names hardcoded in Rust.
+
+**No fast paths, no fallbacks, no backwards compatibility**: PASS
+The true/false arms in `try_eq_literal` were removed (return None, not Unknown). The
+Bool/Seq arms in `try_type_of` were corrected (return None, not Unknown). No dead
+compatibility shims introduced. The `as_type_dispatch` function returns None on all
+error paths rather than falling back to Unknown.
+
+**Correctness, not performance**: PASS
+`try_eq_literal` and `try_type_of` now return the provably correct result (no narrowing)
+for cases where no type information is statically available. No shortcuts were taken.
+
+**Loader/prelude agnosticism**: PASS
+Predicate narrowing is now entirely annotation-driven — any prelude can name predicates
+anything and add `@[is: T]` annotations. The `as-typenode` dispatch is a named protocol
+entry (D-7), not embedded behavior. The gap in B-546 (fn?/seq? lacking @[is: T]) is a
+prelude authorship issue, not a language feature dependency.
+
+**General case, not specific**: PASS
+The annotation-based narrowing mechanism generalizes to all predicates in any prelude
+via `@[narrows: T]` / `@[is: T]`. The structural pattern narrowing (`=`, `and`, `has?`,
+`type-of`) uses hardcoded names tracked as B-545 — a known remaining violation deferred
+to a future sprint.
+
+---
+
+### New Findings
+
+None. No new type-system issues were found in the round 2 changes.
+
+The type-theorist domain has no fix-now findings.
+
+---
+
+### Verdict
+
+APPROVE

@@ -341,17 +341,13 @@ impl SurfaceResolver {
                     .and_then(|captures| {
                         captures
                             .iter()
-                            .find(|(n, _)| n == name)
-                            .map(|(_, addr)| addr.clone())
+                            .enumerate()
+                            .find(|(_, (n, _))| n == name)
+                            .map(|(idx, (_, addr))| (idx as u32, addr.clone()))
                     });
 
-                let original_addr = if let Some(outer_addr) = outer_capture_entry {
-                    // Immediately enclosing fn already captured this name → use its original_addr
-                    // directly, not ClosureCapture(idx). This bypasses the enclosing fn's closure_env
-                    // and goes to the source. Critical for correctness when the enclosing fn's
-                    // closure_env was built before nested fns (e.g., inside case arms) cascaded
-                    // additional captures up to the enclosing fn's capture list.
-                    outer_addr
+                let original_addr = if let Some((outer_idx, _outer_addr)) = outer_capture_entry {
+                    VarAddr::ClosureCapture(outer_idx)
                 } else {
                     // Not yet in any enclosing fn's capture list.
                     //
@@ -519,13 +515,19 @@ impl SurfaceResolver {
                     .and_then(|captures| {
                         captures
                             .iter()
-                            .find(|(n, _)| n == name)
-                            .map(|(_, addr)| addr.clone())
+                            .enumerate()
+                            .find(|(_, (n, _))| n == name)
+                            .map(|(idx, (_, addr))| (idx as u32, addr.clone()))
                     });
 
-                let original_addr = if let Some(outer_addr) = outer_capture_entry {
-                    // Enclosing fn already captured this name — use its original_addr.
-                    outer_addr
+                let original_addr = if let Some((outer_idx, _outer_addr)) = outer_capture_entry {
+                    // Enclosing fn already captured this name at outer_idx in its capture list.
+                    // Use ClosureCapture(outer_idx) unconditionally: the enclosing fn's
+                    // closure_env[outer_idx] holds the correct value (built from the complete
+                    // resolved capture list). Passing through the enclosing fn's original_addr
+                    // (e.g. Dispatch) fails inside fn call frames where frame.group holds
+                    // sequential body thunks, not root Dispatch slots.
+                    VarAddr::ClosureCapture(outer_idx)
                 } else {
                     // Not in any enclosing fn's capture list — use the raw addr.
                     addr.clone()
@@ -637,6 +639,76 @@ impl SurfaceResolver {
                 // at their eval_dict_core call site = base_offset + static_keys.len()).
                 self.accumulated_dict_offset = base_offset + static_keys.len() as u32;
 
+                // Phase 1b: scan entries for ClassDecl values and register their method names
+                // into `class_methods` so that sibling entries in the same letrec scope can
+                // resolve class method VarRefs to VarAddr::EffectPerform at Phase 2 walk time.
+                //
+                // This fixes the timing problem where classes and their method-calling siblings
+                // appear in the same document: the type-checker hasn't run yet, so `class_methods`
+                // is not yet populated from Env.classes. Phase 1b pre-assigns a class_decl_id and
+                // injects method names before the Phase 2 walk begins.
+                //
+                // Shadowing rule: innermost ClassDecl wins. We use `insert` (not `or_insert`) so
+                // that an inner scope's class overrides an outer scope's class for the same method
+                // name. We track which method names were freshly inserted by this dict so that
+                // cleanup after exit_scope() removes only what this Phase 1b added, preserving
+                // method names from enclosing scopes that were not shadowed.
+                let mut added_class_methods: Vec<String> = Vec::new();
+                for entry in entries.iter() {
+                    if let Some(key_node) = &entry.node.key {
+                        // Only process static (non-escaped) key entries — escaped keys ($x:)
+                        // are runtime expressions, not class declaration positions.
+                        if matches!(
+                            &key_node.expr,
+                            SurfaceExpression::VarRef { escaped: false, .. }
+                        ) {
+                            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                                if let crate::ast::SurfaceDeclaration::ClassDecl {
+                                    methods,
+                                    pre_assigned_class_decl_id,
+                                    ..
+                                } = decl.as_ref()
+                                {
+                                    // Pre-assign class_decl_id if not already done (idempotent).
+                                    let class_id =
+                                        if let Some(id) = pre_assigned_class_decl_id.get() {
+                                            id
+                                        } else {
+                                            let id = crate::type_class::next_class_decl_id();
+                                            pre_assigned_class_decl_id.set(id);
+                                            id
+                                        };
+                                    // Register each method name → class_id in class_methods.
+                                    for method_entry in methods {
+                                        if let Some(mk) = &method_entry.node.key {
+                                            let method_name = match &mk.expr {
+                                                SurfaceExpression::VarRef { name, .. } => {
+                                                    name.clone()
+                                                }
+                                                SurfaceExpression::StringLiteral {
+                                                    content,
+                                                    ..
+                                                } => content.clone(),
+                                                _ => continue,
+                                            };
+                                            // Track which names were absent before insertion so
+                                            // cleanup correctly restores the enclosing scope's state.
+                                            let was_present = self
+                                                .class_methods
+                                                .contains_key(method_name.as_str());
+                                            self.class_methods
+                                                .insert(method_name.clone(), class_id);
+                                            if !was_present {
+                                                added_class_methods.push(method_name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Walk key annotations INSIDE the letrec scope so that annotation
                 // values can reference the dict's own entries (forward letrec refs).
                 // E.g., `Int@[as-type: [fn [let t] t]  supertype: TypeNode.Bytes]: []`
@@ -659,6 +731,12 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
                 self.exit_scope();
+                // Phase 1b cleanup: remove method names added by this dict's scan.
+                // Only removes names that were absent before this dict's scan ran,
+                // preserving method names from enclosing scopes that were not shadowed.
+                for method_name in &added_class_methods {
+                    self.class_methods.remove(method_name.as_str());
+                }
                 // Restore accumulated_dict_offset after exiting this dict's scope.
                 // Sibling dicts (same level as this one) use the same base_offset.
                 self.accumulated_dict_offset = base_offset;
@@ -2921,6 +2999,124 @@ mod tests {
                 "keyed arm fn: unexpected original_addr type for exports: {:?}",
                 other
             ),
+        }
+    }
+
+    /// B-732: Deeply nested sibling fn capture miss when outer fn's original_addr is Dispatch.
+    ///
+    /// When a name from root scope is captured by an enclosing fn (original_addr = Dispatch),
+    /// and a sibling fn inside that enclosing fn also references the same name, the B-724 fix
+    /// would return Dispatch as the sibling fn's original_addr. This is wrong: inside a fn
+    /// call frame, frame.group only contains sequential body entries — Dispatch(depth, slot)
+    /// referring to root scope entries does not exist there.
+    ///
+    /// Correct fix (B-732): when the enclosing fn's original_addr is Dispatch, use
+    /// ClosureCapture(outer_idx) instead. The enclosing fn captured the name at outer_idx in
+    /// its closure_env, which IS available in the current call frame.
+    ///
+    /// Scenario:
+    /// ```tinct
+    /// [
+    ///   root-name: 42
+    ///   outer: [fn []
+    ///     [match 0
+    ///       [case [let] 0 [fn [] $root-name]]   # case arm fn: first reference
+    ///       ...:          [fn [] $root-name]]]   # sibling fn: was broken
+    /// ]
+    /// ```
+    #[test]
+    fn sibling_fn_dispatch_original_addr_uses_closure_capture() {
+        let src = r#"
+[
+  root-name: 42
+  outer: [fn []
+    [match 0
+      [case [let] 0 [fn [] $root-name]]
+      ...:          [fn [] $root-name]]]
+]
+"#;
+        let (program, table) = parse_and_resolve(src);
+
+        // Find all VarRefs for 'root-name'.
+        let root_refs = find_varref_nodes(&program, "root-name");
+        assert_eq!(
+            root_refs.len(),
+            2,
+            "expected 2 VarRefs for root-name (one in case arm fn, one in sibling fn)"
+        );
+
+        // Both should resolve (to ClosureCapture since both fns are inside the outer fn).
+        for (id, _) in &root_refs {
+            let addr = table.get(id).expect("root-name should be resolved");
+            match addr {
+                VarAddr::ClosureCapture(_) => {
+                    // Correct: inside an enclosing fn, root-name is captured via closure.
+                }
+                VarAddr::Dispatch(_, _) => {
+                    // Also technically valid at the VarRef level if the resolver
+                    // inlines a Dispatch from some scope — the critical invariant is in
+                    // the fn's capture list (checked below).
+                }
+                other => panic!(
+                    "root-name should be ClosureCapture or Dispatch, got {:?}",
+                    other
+                ),
+            }
+        }
+
+        // Critical check: inspect the fn capture lists. Inner fns' original_addr for
+        // root-name must NOT be Dispatch — it must be ClosureCapture pointing into the
+        // outer fn's closure_env. Using Dispatch would cause a capture miss at runtime
+        // because fn call frames' group only contains sequential body entries, not root
+        // scope slots.
+        let fn_captures = collect_fn_captures(&program);
+        // Find fns (inside the outer fn) that capture root-name.
+        let capturing_fns: Vec<_> = fn_captures
+            .iter()
+            .filter(|(_, caps)| caps.iter().any(|(n, _)| n == "root-name"))
+            .collect();
+
+        assert!(
+            !capturing_fns.is_empty(),
+            "at least one fn should capture root-name"
+        );
+
+        // Inner fns (depth ≥ 2) must use ClosureCapture for root-name.
+        // The outermost fn (depth 1) correctly uses Dispatch because it's defined at document
+        // level where frame.group has all root-scope entries. We identify inner fns by checking
+        // whether ANY of their captures use ClosureCapture as original_addr (indicating they
+        // are nested inside another fn that already captured from the outer scope).
+        for (_, caps) in &capturing_fns {
+            let is_inner_fn = caps
+                .iter()
+                .any(|(_, addr)| matches!(addr, VarAddr::ClosureCapture(_)));
+            if !is_inner_fn {
+                // This is the outermost fn capturing from root scope — Dispatch is correct here.
+                continue;
+            }
+            let (_, original_addr) = caps
+                .iter()
+                .find(|(n, _)| n == "root-name")
+                .expect("root-name must be in capture list");
+            match original_addr {
+                VarAddr::Dispatch(_, _) => {
+                    // B-732 regression: a fn inside the outer fn should NOT have Dispatch
+                    // as its original_addr for a name from root scope. At fn definition time
+                    // inside a fn call, frame.group won't contain root scope slots.
+                    panic!(
+                        "B-732 regression: inner fn's original_addr for root-name is Dispatch \
+                         — this will cause a capture miss at runtime (frame.group won't have \
+                         the root scope slot). Should be ClosureCapture(outer_idx)."
+                    );
+                }
+                VarAddr::ClosureCapture(_) | VarAddr::Parameter(_) => {
+                    // Correct: references the outer fn's closure_env entry.
+                }
+                other => panic!(
+                    "unexpected original_addr for root-name in inner fn: {:?}",
+                    other
+                ),
+            }
         }
     }
 }

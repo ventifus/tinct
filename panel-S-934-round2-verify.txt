@@ -1,0 +1,223 @@
+Panel Round 1 Fix Verification — S-934 (backlog-catchall-3)
+Generated: 2026-07-21
+
+Source findings: C-513 (## Review Findings — Panel Round 1)
+Fix results: C-514 (## Fix Review Results — Panel Round 1)
+
+===========================================================================
+VERIFICATION RESULTS
+===========================================================================
+
+F-01 — arena.rs: drop_range_and_truncate leaves stale free_list entries
+Status: VERIFIED
+Evidence: src/arena.rs lines 242-243. `self.free_list.retain(|id| id.0 < start_env_id)` at
+line 242 precedes `self.scopes.truncate(start_env_id as usize)` at line 243. The doc
+comment at lines 219-224 explicitly describes the retain step. A regression test at
+lines 1501-1535 (test_drop_range_and_truncate_no_free_list_corruption) verifies the
+free_list is empty after the call and that subsequent alloc does not panic.
+
+F-02 — eval_dict.rs: lower_inner called with discarded diagnostics
+Status: VERIFIED
+Evidence: src/eval_dict.rs lines 144-153. `let mut lower_diags = Vec::new()` at line 144;
+`&mut lower_diags` passed to `lower_inner` at line 147; `lower_errors_to_eval_error(lower_diags)`
+checked at lines 150-153, returning Err if any diagnostic was emitted. Diagnostics are
+no longer silently discarded.
+
+F-03 — typecheck_narrow.rs: try_eq_literal true/false -> Type::Unknown
+Status: VERIFIED
+Evidence: src/typecheck_narrow.rs lines 156-158. The arm:
+  `SurfaceExpression::VarRef { name: ref n, .. } if n == "true" || n == "false" => None`
+returns None for true/false VarRef arms. The comment explains the Axiom 4 / Unknown policy
+rationale. No `Type::Unknown` emission path remains for these arms.
+
+F-04 — typecheck_narrow.rs: try_type_of "Bool"/"Seq" -> Type::Unknown
+Status: VERIFIED
+Evidence: src/typecheck_narrow.rs lines 191-196.
+  `"Bool" | "Seq" => None`
+returns None instead of `Some(Type::Unknown)`. Comment at lines 191-194 references
+B-547 / B-545 and explains why Rust must not hardcode these TyCon names.
+
+F-05 — parser.rs: `///` on Display impl block
+Status: VERIFIED INVALID (already correct, no change needed)
+Evidence: src/parser.rs line 848 reads `// Map a StackFrame to a human-readable context
+string for diagnostic notes.` — already a `//` line comment, not `///` doc comment.
+Finding described stale state.
+
+F-06 — builtins_meta.rs: arity_mismatch gives wrong range for builtin-typecheck-doc
+Status: VERIFIED
+Evidence: src/builtins_meta.rs lines 2683-2688.
+  `EvalError::arity_mismatch_bound(ArityBound::Range(2, 3), args.len(), call_span)`
+correctly encodes 2-or-3 argument range. ArityBound is imported.
+
+F-07 — surface_fields.rs/surface_convert.rs: backwards-compat "inner" field
+Status: VERIFIED (partially)
+The specific backward-compat code added in Round 2 has been removed:
+- src/surface_fields.rs lines 643-649: `annotation_inner_to_value` for Annotation::Annotated
+  now emits ONLY `"inner-ann"` (structured recursive Annotation value). No `"inner"` string
+  field is emitted. Comment at line 644 confirms "This is the only serialization form".
+- src/surface_convert.rs lines 775-780: `dict_to_annotation` for "Annotated" constructor
+  uses `get_field(d, "inner-ann", ...)` only — no "inner" fallback.
+
+NOTE: Other code paths in these files still use "inner" by name, but they are not the
+paths cited by F-07 and are not the backward-compat code added in Round 2:
+- surface_fields.rs lines 511-520: the annotated VarRef arm in `annotation_parts_to_value`
+  (a separate function, handling `Fn@a` form, not Annotation::Annotated serialization).
+- surface_convert.rs lines 808-812: the "annotated" (lowercase kind) wire format path
+  (a different serialization form using kind:"annotated" not ctor:"Annotated").
+- surface_convert.rs lines 2067-2094: `annotation_to_thunk_id`, a different serializer
+  used for a different protocol.
+These are distinct code paths, not the Round 2 backwards-compat code. F-07's specific
+target (the Round 2 additions) is correctly removed.
+
+F-08 — doc/15-ast.md: stale Annotation enum
+Status: VERIFIED INVALID (already correct, no change needed)
+Evidence: doc/15-ast.md lines 246-247.
+  `Annotated(Box<Annotation>, Box<Annotation>),  // Seq@Integer — chained annotation`
+  `Quote,                        // @Expr — quoting sentinel`
+Both changes were already in place before this round.
+
+F-09 — doc/internals/parse.md: stale annotation forms + T-1617 reference
+Status: VERIFIED INVALID (already correct, no change needed)
+Evidence: doc/internals/parse.md lines 351-364. `@Expr -> Annotation::Quote` present at
+line 351. Correct Box<Annotation> form at line 354. parse_annotation_direct described as
+routing through expression_to_annotation at lines 360-363. T-1778 referenced. All accurate.
+
+F-10 — doc/05-type-annotations.md: false claim about user predicates
+Status: VERIFIED INVALID (already correct, no change needed)
+Evidence: doc/05-type-annotations.md lines 993-998. Annotation-based narrowing mechanism
+(@[narrows: T] and @[is: T]) is documented. The old false claim "User-defined predicates
+produce no narrowing" is absent. Text says "Any function — not just prelude predicates —
+can participate in narrowing."
+
+F-11 — doc/feature/narrowing.md: missing annotation-based narrowing section
+Status: VERIFIED INVALID (already correct, no change needed)
+Evidence: doc/feature/narrowing.md lines 175-202. Full section "Annotation-Based Narrowing
+(T-1761)" present with both mechanisms, mechanism description, and B-545 limitation note.
+
+F-12 — typecheck_narrow.rs module doc: inaccurate "entirely annotation-driven" claim
+Status: VERIFIED INVALID (already correct after Round 2 fix)
+Evidence: src/typecheck_narrow.rs lines 25-30. Module doc says: "Predicate narrowing
+(@[is: T], @[narrows: T]) is entirely annotation-driven — no predicate names are hardcoded
+in Rust." This is accurate because all 7 hardcoded arms (including fn? and seq?) were
+deleted in Round 2. The doc also correctly notes that structural pattern narrowing (=,
+and, has?, type-of) still uses hardcoded names (B-545).
+
+F-13 — cli/in/stream.llt: stale comment
+Status: VERIFIED
+Evidence: stdlib/cli/in/stream.llt lines 1-4. Comment reads:
+  "Stream input formatter — reads stdin as a lazy Seq of evaluated tinct values."
+  "Each SCN record ... is parsed, resolved, and evaluated."
+  "Returns a Seq of evaluated tinct values (not AST nodes)."
+No longer says "Expression node" or "macro-expanded".
+
+F-14 — New corpus tests use `_:` wildcard instead of `...:`
+Status: VERIFIED
+Evidence:
+- tests/corpus/eval/typecheck/annotation_based_narrowing.llt-eval line 8:
+  `[@Integer _]: Boolean.True ...: Boolean.False` — uses `...:` wildcard.
+- tests/corpus/eval/typecheck/key_annotation_narrows.llt-eval line 7:
+  `[@Integer _]: Boolean.True ...: Boolean.False` — uses `...:` wildcard.
+Neither file uses `_:` as a wildcard.
+
+F-15 — No corpus test for UnevaluatedState::AnnotatedWrap (T-1621)
+Status: VERIFIED
+Evidence: tests/corpus/eval/annotation-system/annotated_fn_property_dict.llt-eval exists.
+File tests an annotated function with non-literal annotation values, calls `annotation-of`,
+verifies the PropertyDict fields. Expected output: `Dict({..., "ann": Dict({...}), ...})`.
+Well-formed.
+
+F-16 — No corpus test for Annotation::Annotated inner-ann round-trip (T-1618)
+Status: VERIFIED
+Evidence: tests/corpus/eval/annotation-system/chained_property_dict_annotation.llt-eval
+exists. Tests `x@[doc: "help"]@Inner: 42` chained annotation. Verifies value is accessible
+and equals 42. Expected output: `Dict({"x": Int(42), "result": Variant(Boolean.True, Null)})`.
+Well-formed. (Note per fix report: does not test annotation-of behavior for the outer chain.)
+
+F-17 — No corpus test for set_floating_annotation error (B-519)
+Status: VERIFIED
+Evidence: tests/corpus/invalid/syntax_errors/floating_annotation_in_call.llt-eval exists.
+Content: `[fn [let x] [@Int x]]`, expected error: "floating annotation not valid in this context".
+Well-formed error test.
+
+F-18 — No corpus tests for stream.llt codec
+Status: VERIFIED
+Evidence:
+- tests/corpus/eval/stdlib/stream_balanced_exprs.llt-eval exists. Tests balanced-exprs
+  groups 3 single-line expressions, expects Int(3). Uses `[include %libdir "codecs/stream.llt"]`.
+- tests/corpus/eval/stdlib/stream_bracket_count.llt-eval exists. Tests bracket-count for
+  balanced, two-opens, and no-bracket strings. Expects Dict({r1: Int(0), r2: Int(2), r3: Int(0)}).
+Both tests are well-formed.
+
+F-19 — No corpus test for @Expr -> Annotation::Quote parse output
+Status: VERIFIED
+Evidence: tests/corpus/eval/annotation-system/expr_annotation_of.llt-eval exists.
+Tests function with `[let x@Expr]` parameter and `@[doc: "accepts expr"]` key annotation.
+Verifies annotation-of returns the doc field. Expected output includes `"result": Variant(Boolean.True, Null)`.
+Well-formed.
+
+F-20 — typecheck_annot.rs references D-6 but the item is now D-7
+Status: VERIFIED
+Evidence: src/typecheck_annot.rs. Multiple occurrences of D-7 in the as_type_dispatch doc
+comment (lines 4877, 4908, 4915). No D-6 reference present in the as_type_dispatch context.
+The comment says "protocol contract (D-7)" and "Tracked as decision D-7."
+
+===========================================================================
+DEFERRED ITEMS — VERIFY NOT IMPLEMENTED
+===========================================================================
+
+B-546 (fn?/seq? narrowing — prelude annotation not yet added):
+Status: CORRECTLY NOT IMPLEMENTED
+Evidence: grep for `"fn?"` in src/typecheck_narrow.rs returns no matches. The fn? arm
+was deleted in Round 2 and has not been re-added. The module doc at lines 25-26 says
+predicate narrowing is "entirely annotation-driven — no predicate names are hardcoded in Rust."
+
+B-547 (ANNOTATION_EVAL_EXCLUDED_KEYS — complex architectural change):
+Status: CORRECTLY NOT IMPLEMENTED
+Evidence: src/ast.rs lines 27-28:
+  `pub(crate) const ANNOTATION_EVAL_EXCLUDED_KEYS: &[&str] = &["return", "constraint", "bind", "kinds"];`
+The list remains present. eval_dict.rs lines 138-143 use it to skip type-level VarRefs
+during annotation evaluation. The architectural change was deferred.
+
+B-548 (stream.llt raw builtins — blocked by T-1753):
+Status: CORRECTLY NOT IMPLEMENTED
+Evidence: stdlib/codecs/stream.llt lines 73-80. parse-expr still calls:
+  `builtin-parse`, `builtin-desugar`, `builtin-program-docs`, `builtin-resolve`, `builtin-eval`
+These are raw builtins. B-548 (removing direct raw builtin calls in stream.llt) was not
+implemented, as intended.
+
+===========================================================================
+SUMMARY
+===========================================================================
+
+F-01: VERIFIED (retain before truncate, regression test present)
+F-02: VERIFIED (lower_diags collected and propagated via lower_errors_to_eval_error)
+F-03: VERIFIED (try_eq_literal true/false returns None)
+F-04: VERIFIED ("Bool"/"Seq" in try_type_of returns None)
+F-05: VERIFIED INVALID (/// was already // before the round)
+F-06: VERIFIED (arity_mismatch_bound Range(2,3) in place)
+F-07: VERIFIED (backward-compat "inner" removed from the specific Round 2 paths cited)
+F-08: VERIFIED INVALID (doc already had Box<Annotation> and Quote)
+F-09: VERIFIED INVALID (parse.md already updated)
+F-10: VERIFIED INVALID (05-type-annotations.md already updated)
+F-11: VERIFIED INVALID (narrowing.md section already present)
+F-12: VERIFIED INVALID (module doc accurate after Round 2 arm deletions)
+F-13: VERIFIED (cli/in/stream.llt comment updated)
+F-14: VERIFIED (both corpus tests use ...: not _:)
+F-15: VERIFIED (annotated_fn_property_dict.llt-eval exists, well-formed)
+F-16: VERIFIED (chained_property_dict_annotation.llt-eval exists, well-formed)
+F-17: VERIFIED (floating_annotation_in_call.llt-eval exists, well-formed)
+F-18: VERIFIED (stream_balanced_exprs.llt-eval and stream_bracket_count.llt-eval exist, well-formed)
+F-19: VERIFIED (expr_annotation_of.llt-eval exists, well-formed)
+F-20: VERIFIED (D-6 changed to D-7 in as_type_dispatch doc comment)
+
+B-546: NOT IMPLEMENTED (correct — deferred)
+B-547: NOT IMPLEMENTED (correct — deferred)
+B-548: NOT IMPLEMENTED (correct — deferred)
+
+All 20 findings verified. No PARTIAL or DISPROVEN findings.
+All 3 deferred items correctly left unimplemented.
+
+One observation (non-blocking): F-07 notes that the "inner" field name appears in other
+code paths (annotation_parts_to_value VarRef arm, the "annotated" lowercase-kind wire format
+in surface_convert.rs, and annotation_to_thunk_id). These are separate from the Round 2
+backward-compat code that was removed and are not part of F-07's scope.
