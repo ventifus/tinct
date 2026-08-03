@@ -23,7 +23,8 @@ An ordinary function is a single wildcard clause (no pattern, no guard). A match
 The `try_clause` function in `src/eval_call.rs` implements the common dispatch logic for all clauses. Evaluation proceeds in strict order:
 
 1. **Arity check** — verify positional argument count matches required params
-2. **Type guards** — if params have type annotations (`@Integer`, `@String`), materialize arguments and check runtime types via `value_matches_type`
+2. **Type guards** — if params have type annotations (`@Integer`, `@String`), materialize positional arguments and check runtime types via `value_matches_type`
+2b. **Named arg type guards** — for each typed param covered by a named arg (not already checked positionally in Step 2), materialize the named argument and type-check it via `value_matches_type`. Returns `None` on mismatch. Without this step, named arguments would bypass type dispatch entirely.
 3. **Structural pattern** — if `lowered_pattern` is present, test whether the scrutinee matches the pattern structure (dict keys, variant tags, nested patterns)
 4. **Guard expression** — if `guard` is present, evaluate it in the clause's environment and test for truthiness
 5. **Bind and evaluate body** — if all checks pass, bind parameters to arguments, bind pattern variables, and evaluate the body

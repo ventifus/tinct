@@ -1835,3 +1835,23 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         errors
     );
 }
+
+// ============================================================================
+// B-725: Unannotated param infers type from usage via TypeVar unification
+// ============================================================================
+
+/// B-725: With TypeVar-based inference, an unannotated parameter `x` in
+/// `[fn [let x] x]` gets a fresh TypeVar instead of Unknown. The identity
+/// function should infer as polymorphic (a -> a) rather than (Unknown -> Unknown).
+/// The call `[f 42]` produces no type errors because TypeVar unifies with Integer.
+#[tokio::test]
+async fn test_b725_unannotated_param_infers_from_usage() {
+    let src = "[f: [fn [let x] x]  r: [f 42]]";
+    let diags = typecheck_collect_diags(src).await;
+    let type_errors: Vec<_> = diags.iter().filter(|d| d.kind == "type-error").collect();
+    assert!(
+        type_errors.is_empty(),
+        "Expected no type errors for identity fn with TypeVar inference; got: {:?}",
+        type_errors
+    );
+}

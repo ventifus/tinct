@@ -698,35 +698,26 @@ fn lower_expr(
                                                 return_ann,
                                             },
                                             // Non-Fn body (e.g., a VarRef to an existing function):
-                                            // wrap in a zero-param Fn so instance_of is stamped.
-                                            // VarAddr::EffectPerform scans for Value::Function with
-                                            // instance_of=Some((class_id, method)) — the stamp must
-                                            // always be present regardless of the body expression type.
+                                            // Cannot stamp instance_of without wrapping in a Fn,
+                                            // but a zero-param wrapper is arity-incompatible —
+                                            // when the method is called with args, the arity
+                                            // check rejects. We cannot copy the target's params
+                                            // because the VarRef is not yet resolved to a
+                                            // concrete function at lowering time. Emit a
+                                            // diagnostic warning so the author knows the
+                                            // instance method body must be an explicit [fn ...].
                                             other => {
-                                                let body_expr = Arc::new(Spanned::new(
-                                                    other,
+                                                diagnostics.push(Diagnostic::warn(
+                                                    "lower-warning",
+                                                    format!(
+                                                        "instance method '{}': non-fn body cannot \
+                                                         carry instance_of stamp — use an explicit \
+                                                         [fn ...] wrapper",
+                                                        method_name
+                                                    ),
                                                     lowered_value.span.clone(),
                                                 ));
-                                                let wrapper_clause = CoreClause {
-                                                    params: vec![],
-                                                    lowered_pattern: None,
-                                                    guard: None,
-                                                    body: body_expr,
-                                                    guard_matchable_binding:
-                                                        crate::ast::MatchableBinding::new(),
-                                                    captures: Arc::new(vec![]),
-                                                };
-                                                CoreExpr::Fn {
-                                                    clauses: vec![wrapper_clause],
-                                                    captures: Arc::new(vec![]),
-                                                    instance_of: Some((
-                                                        class_decl_id,
-                                                        method_name.clone(),
-                                                    )),
-                                                    resolved_fn_type: None,
-                                                    desugared: false,
-                                                    return_ann: None,
-                                                }
+                                                other
                                             }
                                         };
                                         let value = Arc::new(lowered_value);
@@ -1310,29 +1301,24 @@ fn lower_expr(
                                 return_ann,
                             },
                             // Non-Fn body (e.g., a VarRef to an existing function):
-                            // wrap in a zero-param Fn so instance_of is stamped.
-                            // VarAddr::EffectPerform scans for Value::Function with
-                            // instance_of=Some((class_id, method)) — the stamp must
-                            // always be present regardless of the body expression type.
+                            // Cannot stamp instance_of without wrapping in a Fn, but
+                            // a zero-param wrapper is arity-incompatible — when the
+                            // method is called with args, the arity check rejects.
+                            // We cannot copy the target's params because the VarRef
+                            // is not yet resolved to a concrete function at lowering
+                            // time. Emit a diagnostic warning so the author knows
+                            // the instance method body must be an explicit [fn ...].
                             other => {
-                                let body_expr =
-                                    Arc::new(Spanned::new(other, lowered_value.span.clone()));
-                                let wrapper_clause = CoreClause {
-                                    params: vec![],
-                                    lowered_pattern: None,
-                                    guard: None,
-                                    body: body_expr,
-                                    guard_matchable_binding: crate::ast::MatchableBinding::new(),
-                                    captures: Arc::new(vec![]),
-                                };
-                                CoreExpr::Fn {
-                                    clauses: vec![wrapper_clause],
-                                    captures: Arc::new(vec![]),
-                                    instance_of: Some((class_decl_id, method_name.clone())),
-                                    resolved_fn_type: None,
-                                    desugared: false,
-                                    return_ann: None,
-                                }
+                                diagnostics.push(Diagnostic::warn(
+                                    "lower-warning",
+                                    format!(
+                                        "instance method '{}': non-fn body cannot carry \
+                                         instance_of stamp — use an explicit [fn ...] wrapper",
+                                        method_name
+                                    ),
+                                    lowered_value.span.clone(),
+                                ));
+                                other
                             }
                         };
                         let value = Arc::new(lowered_value);

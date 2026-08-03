@@ -1,0 +1,8 @@
+# Test that named args are type-checked by try_clause Step 2b.
+# A typed param called with wrong-type named arg should produce an error.
+[
+  greet: [fn@String [let name@String] [str "Hello, " name]]
+  result: [greet name: 42]
+]
+=== error
+no matching clause
