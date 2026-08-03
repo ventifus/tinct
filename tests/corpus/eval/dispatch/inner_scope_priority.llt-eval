@@ -1,0 +1,32 @@
+# Inner scope instance takes priority over outer scope instance for the same type.
+#
+# VarAddr::EffectPerform scans the accumulated instance group from innermost to outermost.
+# The first candidate whose type guards match wins. An inner-scope instance for TypeA
+# must shadow the outer-scope instance for TypeA even when the outer was registered first.
+#
+# This verifies the "innermost-first" scan order of the EffectPerform group scan.
+[
+  TypeA: [type TypeA]
+
+  # Outer instance: [+ TypeA TypeA] → 10
+  [instance Addable
+    [let a@TypeA b@TypeA c]: [+: [fn [let x y] 10]]]
+
+  r-outer-pre: [+ TypeA.TypeA TypeA.TypeA]
+
+  inner: [
+    # Inner instance: [+ TypeA TypeA] → 20 (shadows outer for this scope)
+    [instance Addable
+      [let a@TypeA b@TypeA c]: [+: [fn [let x y] 20]]]
+
+    r-inner: [+ TypeA.TypeA TypeA.TypeA]
+
+    # Prelude Int dispatch still works inside inner scope
+    r-int: [+ 1 2]
+  ]
+
+  # Outer scope sees its own instance (inner is not in scope here)
+  r-outer-post: [+ TypeA.TypeA TypeA.TypeA]
+]
+=== out
+Dict({"TypeA": Dict({"TypeA": Variant(TypeA.TypeA, Null)}), "r-outer-pre": Int(10), "inner": Dict({"r-inner": Int(20), "r-int": Int(3)}), "r-outer-post": Int(10)})

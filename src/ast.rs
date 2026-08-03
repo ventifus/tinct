@@ -452,7 +452,9 @@ impl fmt::Display for SurfaceDeclaration {
                 }
                 write!(f, "]")
             }
-            SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+            SurfaceDeclaration::InstanceDecl {
+                class_name, arms, ..
+            } => {
                 write!(f, "[instance {}", class_decl_name(class_name))?;
                 for (pattern, methods) in arms {
                     write!(f, " {}", pattern)?;
@@ -944,6 +946,10 @@ pub enum SurfaceDeclaration {
     InstanceDecl {
         class_name: Arc<SurfaceNode>,
         arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)>,
+        /// Resolved class declaration ID, written by the type checker after it resolves the class.
+        /// Used by the lowerer to populate `CoreExpr::Fn.instance_of` on each mangled method slot.
+        /// Returns `None` if the type checker did not run or the class was not found.
+        resolved_class_decl_id: ClassDeclIdCell,
     },
     SyntaxClass {
         name: String,
@@ -1121,9 +1127,9 @@ pub type ResolutionTable = std::collections::HashMap<NodeId, VarAddr>;
 /// Capture list for a function node — the ordered list of (name, original_addr) pairs
 /// captured from outer scopes, in first-occurrence order as seen during resolver traversal.
 /// `original_addr` is the VarAddr the captured variable held in the enclosing frame
-/// (LetrecGroupMember, ClosureCapture, or Parameter), BEFORE the resolver converts it to
+/// (Dispatch, ClosureCapture, or Parameter), BEFORE the resolver converts it to
 /// ClosureCapture for references inside the function body.
-/// LGM(slot) original_addrs are resolved at fn-definition time by indexing frame.group[slot],
+/// Dispatch(depth, slot) original_addrs are resolved at fn-definition time by indexing frame.group[slot],
 /// which is the accumulated_group containing root-scope entries at low slots.
 /// Written once by the resolver after processing each Fn body; read by the lowerer.
 /// Clone resets to empty — cloned Fn nodes are in new scopes and must be re-resolved.
@@ -1156,6 +1162,59 @@ impl PartialEq for CapturesCell {
 impl Default for CapturesCell {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A write-once cell holding the resolved `class_decl_id` for an `[instance ...]` declaration.
+///
+/// Written by the type checker (via `typecheck_cek.rs`) after the class is resolved;
+/// read by the lowerer to populate `CoreExpr::Fn.instance_of`. Follows the same pattern as
+/// `CapturesCell` — `Clone` returns empty (phase reset), `PartialEq` is always true (the ID
+/// is a post-phase annotation, not part of node identity).
+pub struct ClassDeclIdCell(std::sync::OnceLock<u64>);
+
+impl ClassDeclIdCell {
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+
+    /// Returns the resolved class_decl_id if the type checker has set it.
+    pub fn get(&self) -> Option<u64> {
+        self.0.get().copied()
+    }
+
+    /// Set the class_decl_id. First write wins (idempotent on repeated calls with the same value).
+    pub fn set(&self, id: u64) {
+        self.0.get_or_init(|| id);
+    }
+}
+
+impl Clone for ClassDeclIdCell {
+    /// Clone resets to empty — cloned nodes are in new compilation phases and must be re-resolved.
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for ClassDeclIdCell {
+    /// Class decl ID is a phase annotation, not part of node identity — always equal.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Default for ClassDeclIdCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for ClassDeclIdCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.get() {
+            Some(id) => write!(f, "ClassDeclIdCell({})", id),
+            None => write!(f, "ClassDeclIdCell(unresolved)"),
+        }
     }
 }
 impl std::fmt::Debug for CapturesCell {
@@ -1216,13 +1275,16 @@ impl std::fmt::Debug for MatchableBinding {
 /// Variable addressing after closure conversion.
 /// Replaces (level, slot) de Bruijn coordinates.
 ///
-/// All variable references use exactly three variants — no runtime frame traversal:
-/// - `LetrecGroupMember { depth, slot }` — same letrec group (current dict/doc accumulated group).
+/// All variable references use exactly four variants — no runtime frame traversal:
+/// - `Dispatch(depth, slot)` — same letrec group (current dict/doc accumulated group).
 ///   Root-scope entries occupy slots 0..N-1; document dict entries at cumulative slots.
 ///   `depth` is the scope-stack traversal distance from the referencing scope to the defining
 ///   scope (0 = same frame, 1 = one level up). Used by the type-checker via `get_scheme_at`.
+///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
 /// - `ClosureCapture(slot)` — fn capture, resolved at fn creation time.
 /// - `Parameter(slot)` — fn argument.
+/// - `EffectPerform { class_id, method }` — typeclass method call; resolved by scanning
+///   the accumulated group for an instance that matches the runtime argument types.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VarAddr {
     /// Index into EvalFrame.group (current letrec group thunks).
@@ -1231,7 +1293,8 @@ pub enum VarAddr {
     /// `depth` is the resolver scope-stack traversal distance (0 = same frame, 1 = one
     /// level up). The evaluator ignores `depth` and uses `slot` directly; the type-checker
     /// uses `depth` to call `get_scheme_at(depth, slot)` for cross-scope references.
-    LetrecGroupMember { depth: u32, slot: u32 },
+    /// Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
+    Dispatch(u32, u32),
     /// Index into EvalFrame.closure_env (fn-captured outer scope thunks).
     /// Emitted exclusively for fn captures: a VarRef inside a fn body that refers to a
     /// name outside the fn boundary. `i` is the index into the fn's capture list
@@ -1240,6 +1303,10 @@ pub enum VarAddr {
     ClosureCapture(u32),
     /// Index into EvalFrame.params (function call arguments)
     Parameter(u32),
+    /// Typeclass method call — resolved at runtime by scanning the accumulated group
+    /// for an instance whose primary dispatch type matches the first argument's runtime type.
+    /// `class_id` identifies the class declaration; `method` is the method name.
+    EffectPerform { class_id: u64, method: String },
 }
 
 /// Specifies how the TypeAssert node obtains its expected type.
@@ -1310,20 +1377,19 @@ pub enum CoreExpr {
         implied: bool,
     },
     Fn {
-        return_ann: Option<Spanned<Annotation>>,
-        params: Vec<Spanned<CoreParam>>,
-        body: Arc<Spanned<CoreExpr>>,
-        desugared: bool,
-        /// Ordered list of (name, original_addr) pairs for variables captured from outer scopes.
-        /// `original_addr` is the VarAddr the binding held in the enclosing EvalFrame
-        /// (LetrecGroupMember(i), ClosureCapture(i), or Parameter(i)) — i.e. the address BEFORE
-        /// the resolver converted it to ClosureCapture for references inside this function.
-        /// At function-definition time the evaluator uses these original addresses to look up
-        /// each captured thunk in the accumulated_group (frame.group) and build `closure_env`.
-        /// LGM(slot) directly indexes frame.group[slot], which contains root-scope entries at
-        /// low slot indices and document dict entries at cumulative slot offsets above them.
-        /// Written by the lowerer from `SurfaceExpression::Fn::resolved_captures`.
+        /// Clauses of this function. For single-clause functions (the common case),
+        /// `clauses.len() == 1`. Multi-clause functions (from multi-arm instance methods)
+        /// have `clauses.len() > 1`. Each clause carries its own params, optional pattern
+        /// filter, guard, body, and capture list.
+        clauses: Vec<CoreClause>,
+        /// Captures for the whole Fn node — mirrors the first clause's captures in the
+        /// common single-clause case. Used by the evaluator to build `closure_env` at
+        /// function-definition time (before dispatch to a specific clause).
         captures: std::sync::Arc<Vec<(String, VarAddr)>>,
+        /// Some((class_decl_id, method_name)) for instance method functions — identifies
+        /// which typeclass method this function implements. Used by the evaluator for
+        /// typeclass dispatch. None for ordinary functions.
+        instance_of: Option<(u64, String)>,
         /// Resolved TypeValue.Fn for this function — set by the lowerer from the type checker's
         /// `resolved_return_annotation` and per-param `resolved_annotation_type` fields.
         /// Stored in `Value::Function.type_val` at runtime so `ground_typevalue_of` can use it
@@ -1331,6 +1397,12 @@ pub enum CoreExpr {
         /// falling back to the opaque `Repr("Value::Function")` sentinel.
         /// `None` when the function was not type-checked (gradual: accepts all at runtime).
         resolved_fn_type: Option<std::sync::Arc<crate::value::Value>>,
+        desugared: bool,
+        /// Return type annotation from `fn@[...]` syntax. Lowered from
+        /// `SurfaceExpression::Fn.return_ann` so the evaluator can populate
+        /// `FnAnnotation.extra` at function-definition time (enabling `trace:` and other
+        /// annotation-driven runtime behavior). `None` for unannotated functions.
+        return_ann: Option<Spanned<Annotation>>,
     },
     // Statically type-checked TypeAssert — check carries either the source annotation (for
     // user-written `[@T x]` forms) or a pre-resolved TypeValue (for lowerer-emitted nodes).
@@ -1348,7 +1420,7 @@ pub enum CoreExpr {
     Rest(Option<String>),
     Match {
         scrutinee: Arc<Spanned<CoreExpr>>,
-        arms: Vec<CoreMatchArm>,
+        arms: Vec<CoreClause>,
     },
     Quote(Arc<Spanned<CoreExpr>>),
     Unquote(Arc<Spanned<CoreExpr>>),
@@ -1437,23 +1509,45 @@ pub struct CoreParam {
     pub resolved_type: Option<Arc<crate::value::Value>>,
 }
 
-/// A match arm in a CoreExpr::Match.
+/// A unified clause: one arm of a function, match arm, or instance method.
+///
+/// - **fn clauses**: `params` holds the function's `CoreParam` list; `lowered_pattern` is `None`.
+/// - **match arm clauses**:
+///   - *case arms* (`[case [let bindings] pattern body]`): `params` holds binding names;
+///     `lowered_pattern` holds the structural filter expression.
+///   - *keyed arms* (`key: body`): `params` is empty; `lowered_pattern` holds the lowered key
+///     expression (the pattern key, e.g. `CoreExpr::Int(42)`, `CoreExpr::Placeholder` for `...`).
+///     Used by MatchDispatch to check equality against the scrutinee.
+/// - **instance method clauses**: `params` holds typed `CoreParam` entries;
+///   `instance_of` is set on the parent `Fn`.
+///
+/// The former `CoreClause.pattern` (Arc<SurfaceNode>) and `CoreClause.let_bindings`
+/// fields have been removed. Keyed-arm `lowered_pattern` is the key expression lowered
+/// from `SurfaceMatchArm.pattern`; MatchDispatch evaluates it and uses `match_keyed_arm_pattern`
+/// (value equality + D-1 constructor tag rule) to determine if the arm matches.
 #[derive(Debug, Clone)]
-pub struct CoreMatchArm {
-    pub pattern: Arc<SurfaceNode>,
-    /// The lowered `[let ...]` node from `[case [let bindings] pattern body]`. `None` for keyed arms.
-    pub let_bindings: Option<Arc<Spanned<CoreExpr>>>,
-    /// The lowered pattern (structural match expression) from case arms. `None` for keyed arms.
+pub struct CoreClause {
+    /// For fn clauses: the function's declared parameters.
+    /// For match arm clauses: the `[let bindings]` names as CoreParam entries.
+    pub params: Vec<Spanned<CoreParam>>,
+    /// Pattern expression for match arms.
+    /// `None` for fn clauses (no pattern to match).
+    /// `Some(expr)` for all match arms:
+    ///   - case arms: the lowered pattern CoreExpr for structural/guard/variable-binding matching.
+    ///     Evaluated by `eval_case_arm_structural_pattern` in a fresh arm scope.
+    ///   - keyed arms: the lowered key expression evaluated to a value and compared to the
+    ///     scrutinee via `match_keyed_arm_pattern` (value equality + D-1 constructor tag rule).
     pub lowered_pattern: Option<Arc<Spanned<CoreExpr>>>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
     /// Pre-resolved Matchable instance binding name for the guard's return type.
     /// Set by the type checker on the SurfaceMatchArm and carried through lowering.
     pub guard_matchable_binding: MatchableBinding,
-    /// Closure capture list for case arms (`let_bindings.is_some()`).
-    /// Populated by the lowerer from `SurfaceMatchArm.case_captures`.
-    /// `None` for keyed arms. `Some(empty)` for case arms with no free outer variables.
-    pub captures: Option<Arc<Vec<(String, VarAddr)>>>,
+    /// Closure capture list — always present (was `Option` in `CoreClause`).
+    /// Empty for keyed arms and fn clauses with no free outer variables.
+    /// Populated by the lowerer from `SurfaceMatchArm.case_captures` (for match arm clauses)
+    /// or from `SurfaceExpression::Fn::resolved_captures` (for fn clauses).
+    pub captures: Arc<Vec<(String, VarAddr)>>,
 }
 
 #[cfg(test)]

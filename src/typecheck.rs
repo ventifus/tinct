@@ -3,6 +3,7 @@
 //! unification for polymorphic function calls.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::type_tags::*;
@@ -37,6 +38,18 @@ pub(crate) mod typecheck_cek;
 use typecheck_narrow::{
     extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify,
 };
+
+/// Global counter for unique class declaration IDs.
+/// Each `[class ...]` declaration gets a unique ID at type-check time via `next_class_decl_id()`.
+/// This ID enables stable class identity across scopes instead of relying on string name matching.
+/// Same mechanism as `TYPE_DECL_ID_COUNTER` in lower.rs for nominal types.
+static CLASS_DECL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Returns the next globally unique class declaration ID.
+/// ID 0 is reserved as a placeholder for ClassDecl objects created before ID assignment.
+fn next_class_decl_id() -> u64 {
+    CLASS_DECL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Map from source span `(start_line, start_col, end_line, end_col)` to inferred TypeValue.
 /// Populated during type checking so LSP hover/diagnostics can look up types without
@@ -129,7 +142,11 @@ pub async fn typecheck_program_bootstrap(
     // The root_frame contains the full accumulated group including TypeNode and other
     // type-stage entries at their absolute LGM slot positions.
     let root_frame_for_ts = root_frame.clone();
-    let (resolve_table, frames) = crate::resolve::resolve_surface_program(program, &[root_frame]);
+    let (resolve_table, frames) = crate::resolve::resolve_surface_program_with_classes(
+        program,
+        &[root_frame],
+        std::collections::HashMap::new(),
+    );
     state.resolution_table = Arc::new(resolve_table);
     state.resolver_frames = frames;
 
@@ -468,6 +485,7 @@ fn make_typevalue_record(
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(Thunk::value(payload_dict, crate::rust_span!()))),
     })
@@ -812,6 +830,7 @@ pub(crate) fn infer_class_decl_from_surface(
     };
 
     let class_decl = ClassDecl {
+        class_decl_id: next_class_decl_id(),
         name: name.to_string(),
         params: params
             .iter()

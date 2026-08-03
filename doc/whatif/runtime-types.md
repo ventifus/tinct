@@ -2,6 +2,8 @@
 
 **State:** Accepted — 2026-07-28
 
+**Note**: The MethodDispatcher approach described here was implemented and subsequently replaced by `VarAddr::EffectPerform` clause-scanning dispatch in S-1024 (unified-clause-dispatch). This document is retained as historical context.
+
 Static type checking and runtime type checking are two sides of the same coin. The same type representation — a tinct `Value` — flows through every phase: inference, lowering, evaluation, and pattern matching. The `Type::*` Rust enum is eliminated.
 
 ## The Central Principle

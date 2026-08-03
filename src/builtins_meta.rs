@@ -675,15 +675,13 @@ pub(crate) fn builtin_apply_impl(
 
         match func_val {
             Value::Function {
-                params,
-                body,
+                clauses,
                 closure_env,
                 ..
             } => {
                 let named_ids: IndexMap<String, Arc<Thunk>> = named_args; // already Arc<Thunk>
                 invoke_function(&CallContext {
-                    params: &params,
-                    body: &body,
+                    clauses: &clauses,
                     closure_env,
                     positional: &positional_ids,
                     named: if named_ids.is_empty() {
@@ -1294,7 +1292,9 @@ pub(crate) fn builtin_ast_of(
         // Propagate with ? anyway — an impossible error must not be silently discarded.
         let val = thunk.require_value()?.clone();
         if let crate::value::Value::Function {
-            params, annotation, ..
+            clauses,
+            annotation,
+            ..
         } = &val
         {
             let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -1338,18 +1338,25 @@ pub(crate) fn builtin_ast_of(
             dict.insert(HashableValue::Str("return-ann".into()), return_ann_thunk);
 
             // params: integer-keyed dict of param entry dicts [{name: "x", annotation: ...}, ...]
-            let param_arcs: Vec<Arc<Thunk>> = params
+            // Extract params from the first clause (single-clause common case).
+            // Multi-clause functions expose the first clause's params here; T-2133 may extend
+            // this to expose all clauses if the protocol requires it.
+            let first_clause_params = clauses
+                .first()
+                .map(|c| c.params.as_slice())
+                .unwrap_or_default();
+            let param_arcs: Vec<Arc<Thunk>> = first_clause_params
                 .iter()
                 .map(|p| {
                     let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     param_dict.insert(
                         HashableValue::Str("name".into()),
                         Arc::new(crate::value::Thunk::value(
-                            string_val(&p.name),
+                            string_val(&p.node.name),
                             call_span.clone(),
                         )),
                     );
-                    if let Some(ann) = &p.annotation {
+                    if let Some(ann) = &p.node.annotation {
                         // ann: &Spanned<Annotation>
                         let ann_thunk = crate::surface_convert::alloc_annotation(ann, &ctx);
                         param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
@@ -1872,10 +1879,14 @@ pub(crate) fn builtin_var_resolution(
                 // Return the VarAddr index as a flat dict {addr-type, index}.
                 use crate::ast::VarAddr;
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                let (addr_type, index) = match addr {
-                    VarAddr::LetrecGroupMember { slot, .. } => ("letrec", slot),
-                    VarAddr::ClosureCapture(i) => ("closure", i),
-                    VarAddr::Parameter(i) => ("param", i),
+                let (addr_type, index_val): (&str, i64) = match addr {
+                    VarAddr::Dispatch(_, slot) => ("letrec", slot as i64),
+                    VarAddr::ClosureCapture(i) => ("closure", i as i64),
+                    VarAddr::Parameter(i) => ("param", i as i64),
+                    VarAddr::EffectPerform { .. } => {
+                        // EffectPerform is not a simple index — return special type with sentinel
+                        ("effect-perform", 0)
+                    }
                 };
                 result.insert(
                     HashableValue::Str("addr-type".into()),
@@ -1884,7 +1895,7 @@ pub(crate) fn builtin_var_resolution(
                 result.insert(
                     HashableValue::Str("index".into()),
                     mk(Value::Int {
-                        n: index as i64,
+                        n: index_val,
                         type_val: crate::value::unknown_type_val(),
                     }),
                 );
@@ -2366,8 +2377,8 @@ fn compute_doc_span(
 /// **Arguments:**
 /// - arg0: `Value::Document` (only Document, not Program — error if Program)
 /// - arg1: Dict — name-set: `{name-a: 1, name-b: 1, ...}` (keys are in-scope names; values ignored)
-///   Names are extracted in insertion order and seeded as `LetrecGroupMember(i)` (i = 0..n-1)
-///   so that at runtime, `CoreExpr::Var { addr: LetrecGroupMember(i) }` resolves to
+///   Names are extracted in insertion order and seeded as `Dispatch(0, i)` (i = 0..n-1)
+///   so that at runtime, `CoreExpr::Var { addr: Dispatch(0, i) }` resolves to
 ///   `frame.group[i]` = the i-th env-dict thunk in `eval_core_document_exprs`.
 ///
 /// **Returns** `{doc: Document, diagnostics: Dict<Int, DiagnosticDict>}`.
@@ -2406,7 +2417,7 @@ pub(crate) fn builtin_resolve(
         };
 
         // arg1: Dict<String, Any> — name-set: keys are the in-scope names; values are ignored.
-        // Extract names in insertion order — the i-th name gets LetrecGroupMember(i) from the
+        // Extract names in insertion order — the i-th name gets Dispatch(0, root_group_len + i) from the
         // resolver, matching the position of that env-dict thunk in the initial_group passed to
         // eval_core_document_exprs.
         let name_set_val = args[1].require_value()?.clone();
@@ -2422,7 +2433,7 @@ pub(crate) fn builtin_resolve(
         };
 
         // Build the ordered name list from the name-set's string keys (insertion order).
-        // The i-th env-dict name gets LetrecGroupMember(root_group_len + i) in the resolver.
+        // The i-th env-dict name gets Dispatch(0, root_group_len + i) in the resolver.
         let mut env_names: Vec<String> = Vec::with_capacity(name_set_dict.len());
         for (k, _v_thunk) in &name_set_dict {
             let name = match k {
@@ -2446,12 +2457,41 @@ pub(crate) fn builtin_resolve(
         let root_map = ctx.root_group_resolver_map();
         let root_group_len = ctx.root_group.len() as u32;
 
+        // Use the classes-aware resolver so that any typeclass method names (e.g., `+`, `<`)
+        // in the resolved document emit VarAddr::EffectPerform instead of plain Dispatch.
+        // The class_methods map is built from the EvalContext's type_context when available.
+        // An empty map is safe — it disables EffectPerform emission for methods not listed.
+        let class_methods: std::collections::HashMap<String, u64> = {
+            let tc = ctx
+                .type_context
+                .lock()
+                .expect("type_context mutex poisoned");
+            if let Some(tc_data) = tc.as_ref() {
+                let env = tc_data
+                    .inference_env
+                    .read()
+                    .expect("inference_env lock poisoned");
+                env.all_classes()
+                    .into_iter()
+                    .flat_map(|class_decl| {
+                        let class_id = class_decl.class_decl_id;
+                        class_decl
+                            .method_signatures
+                            .into_iter()
+                            .map(move |(method_name, _sig)| (method_name, class_id))
+                    })
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            }
+        };
         let (_resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
-            crate::resolve::resolve_surface_document_with_seed_frames(
+            crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
                 &doc_arc,
                 &[root_map],
                 &env_names,
                 root_group_len,
+                class_methods,
             );
 
         // unified_frames already contains all scope frames from the resolver in natural
@@ -3729,7 +3769,7 @@ pub(crate) fn builtin_builtin_module(
 ///   Passing `Value::Document` is a type error: call `builtin-lower` first.
 /// - arg1: `Value::Dict` — env-dict: accumulated environment mapping names to thunks (in
 ///   insertion order). Values become the initial accumulated group for
-///   `eval_core_document_exprs`, enabling `LetrecGroupMember(i)` references into the env.
+///   `eval_core_document_exprs`, enabling `Dispatch(_, i)` references into the env.
 ///   The insertion order of the env-dict must match the name-set order passed to `builtin-resolve`
 ///   (i.e., the slot assignments from the resolver frame).
 ///
@@ -4999,16 +5039,16 @@ pub(crate) fn builtin_cap_env_has(
 ///
 /// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve`)
 /// contain all scope frames (env_frame first, then Dict letrec and BlockBody frames in
-/// natural nesting order) and are passed as `scope_frames` to `make_method_dispatcher_fn`.
-/// This enables:
+/// natural nesting order) and are passed as `scope_frames` to the lowering functions in
+/// `lower.rs`. This enables:
 ///
 /// 1. `resolve_name_in_frames` (for builtin-raise and mangled instance names): searches all
 ///    frames innermost-first to find each name's absolute LGM slot.
 ///
-/// 2. `resolve_name_in_parent_frames` (for cross-dict method chaining): searches ancestor
-///    frames for the method name, skipping the current dict's own frame.
-///    `slot` is the absolute LGM slot — the only value used at runtime (depth is ignored
-///    by the evaluator and type checker resolves ClosureCapture by name).
+/// 2. Cross-dict method chaining: searches ancestor frames for the method name, skipping
+///    the current dict's own frame. `slot` is the absolute LGM slot — the only value used
+///    at runtime (depth is ignored by the evaluator and type checker resolves
+///    ClosureCapture by name).
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -5361,6 +5401,7 @@ mod tests {
     async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -5384,6 +5425,7 @@ mod tests {
     async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("SimpleType.Leaf"),
             payload: None,
         };
@@ -5415,6 +5457,7 @@ mod tests {
     async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
         };

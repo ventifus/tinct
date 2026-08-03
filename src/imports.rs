@@ -168,8 +168,11 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // require a working outer-frame lookup chain.
     let eval_ctx_with_frames: std::sync::Arc<crate::eval::EvalContext> = {
         let root_frame = type_stage_eval_ctx.root_group_resolver_map();
-        let (_table, new_frames_with_kind) =
-            crate::resolve::resolve_surface_program(&program, std::slice::from_ref(&root_frame));
+        let (_table, new_frames_with_kind) = crate::resolve::resolve_surface_program_with_classes(
+            &program,
+            std::slice::from_ref(&root_frame),
+            std::collections::HashMap::new(),
+        );
         // Extract just the frames, discarding FrameKind metadata
         let new_frames: Vec<indexmap::IndexMap<String, u32>> = new_frames_with_kind
             .into_iter()

@@ -29,6 +29,7 @@ pub fn make_typevar_value(name: &str) -> TypeValue {
     let payload = make_dict_typevalue(&[(FIELD_NAME, make_string_typevalue(name))]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_VAR),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -41,6 +42,7 @@ pub fn make_typevar_value(name: &str) -> TypeValue {
 pub fn make_typevalue_unknown() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_UNKNOWN),
         payload: None,
     })
@@ -50,6 +52,7 @@ pub fn make_typevalue_unknown() -> TypeValue {
 pub fn make_typevalue_never() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_NEVER),
         payload: None,
     })
@@ -59,48 +62,10 @@ pub fn make_typevalue_never() -> TypeValue {
 pub fn make_typevalue_top() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_TOP),
         payload: None,
     })
-}
-
-/// Map a TypeNode bare constructor name to its canonical TypeValue.
-///
-/// This is the **third authorized translator** listed in `doc/16b-rust-tinct-protocol.md §3`.
-/// It covers the unit (no-payload) TypeNode constructors that have a direct primitive TypeValue
-/// equivalent — `Int`, `Float`, `String`, `Bytes`, `Proxy`, and `Callable`. These are the
-/// constructors that can appear as a *pin value* in a match pattern without any payload.
-///
-/// `bare_ctor` is the unqualified constructor name — the part after `"TypeNode."`. For example,
-/// given the fully-qualified ctor `"TypeNode.Int"`, pass `"Int"`.
-///
-/// Returns `None` for unknown or payload-carrying constructors (those require async
-/// `typenode_value_to_type` which reads payload fields). Returns `None` for `Dict` because the
-/// runtime type check for `@Dict` is a structural record check, not a `Repr` check, and the
-/// payload-free `TypeNode.Dict` variant in a pin position has no field information to inspect.
-///
-/// This function is **pure and synchronous** — no evaluation context or async required.
-/// Its sole job is the constant table mapping bare names to `make_typevalue_*` calls.
-pub fn typenode_ctor_to_typevalue(bare_ctor: &str) -> Option<TypeValue> {
-    match bare_ctor {
-        TN_BARE_INT => Some(make_typevalue_repr(REPR_INT)),
-        TN_BARE_FLOAT => Some(make_typevalue_repr(REPR_FLOAT)),
-        TN_BARE_STRING => Some(make_typevalue_repr(REPR_STRING)),
-        TN_BARE_BYTES => Some(make_typevalue_repr(REPR_BYTES)),
-        TN_BARE_PROXY => Some(make_typevalue_repr(REPR_PROXY)),
-        TN_BARE_CALLABLE => Some(make_typevalue_fn_with_flags(
-            vec![],
-            make_typevalue_top(),
-            Some(0), // required_count — no fixed params
-            true,    // variadic — accepts any number of arguments
-            Vec::new(),
-        )),
-        // All other TypeNode constructors either have payloads (Dict, Union, Intersect, Arrow,
-        // Recursive, …) or are abstract lattice types (Top, Unknown, Never, Absent) that cannot
-        // usefully appear as no-payload pin patterns in match. None signals that the caller
-        // should fall through to value equality.
-        _ => None,
-    }
 }
 
 /// Create a TypeValue.Repr Arc<Value> for a primitive type.
@@ -115,6 +80,7 @@ pub fn make_typevalue_repr(repr: &str) -> TypeValue {
     ]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_REPR),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -134,6 +100,7 @@ pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
     )]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_INT_LIT),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -147,6 +114,7 @@ pub fn make_typevalue_str_lit(s: &str) -> TypeValue {
     let payload = make_dict_typevalue(&[(FIELD_VALUE, make_string_typevalue(s))]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_STR_LIT),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -166,6 +134,7 @@ pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
     )]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_FLOAT_LIT),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -179,6 +148,7 @@ pub fn make_typevalue_op(name: &str) -> TypeValue {
     let payload = make_dict_typevalue(&[(FIELD_NAME, make_string_typevalue(name))]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_OP),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -292,6 +262,7 @@ pub fn make_typevalue_fn_with_flags(
         // Store "variadic: true" as a unit Variant with ctor BOOL_TRUE ("true").
         let true_variant = crate::value::Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(BOOL_TRUE),
             payload: None,
         };
@@ -339,6 +310,7 @@ pub fn make_typevalue_fn_with_flags(
     };
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_FN),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload_dict,
@@ -351,6 +323,7 @@ pub fn make_typevalue_fn_with_flags(
 pub fn make_rowtail_closed() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(RT_CLOSED),
         payload: None,
     })
@@ -368,6 +341,7 @@ pub fn make_rowtail_var(name: &str) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_NAME, make_string_typevalue(name))]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(RT_VAR),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -428,6 +402,7 @@ pub fn make_rowtail_uniform_with_key_type(
     let payload = make_dict_typevalue_from_value(&fields);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(RT_UNIFORM),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -498,6 +473,7 @@ pub fn make_typevalue_record(
     };
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload_dict,
@@ -528,6 +504,7 @@ pub fn make_typevalue_union(members: Vec<TypeValue>) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -556,6 +533,7 @@ pub fn make_typevalue_intersection(members: Vec<TypeValue>) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_INTER),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -569,6 +547,7 @@ pub fn make_typevalue_negation(inner: TypeValue) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_OF, inner.as_ref().clone())]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_NEG),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -585,6 +564,7 @@ pub fn make_typevalue_app(op: TypeValue, arg: TypeValue) -> TypeValue {
     ]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_APP),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -606,6 +586,7 @@ pub fn make_typevalue_nominal_variant(tycon: &str, ctor: &str, fields: TypeValue
     ]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_NOMINAL_VARIANT),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -635,6 +616,7 @@ pub fn make_typevalue_recursive(body: TypeValue) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_BODY, body.as_ref().clone())]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_RECURSIVE),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -665,6 +647,7 @@ pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
     };
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_RECURSIVE_REF),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -1909,6 +1892,7 @@ impl InferenceContext {
 
         Arc::new(crate::value::Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 payload_dict,

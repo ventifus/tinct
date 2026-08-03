@@ -398,17 +398,18 @@ struct Environment {
 
 ### VarAddr — Variable Address Variants
 
-The `VarAddr` enum (in `src/ast.rs`) specifies how a variable reference is resolved at runtime. Complete closure conversion: exactly three variants, no runtime frame traversal.
+The `VarAddr` enum (in `src/ast.rs`) specifies how a variable reference is resolved at runtime. Complete closure conversion: exactly four variants, no runtime frame traversal.
 
-1. **`LetrecGroupMember(slot)`** — reference to any binding in the flat accumulated group for this document evaluation. `slot` is an absolute cumulative index: root-scope entries occupy slots 0..N-1, then each document dict's entries follow in declaration order. Runtime: index `frame.group[slot]`.
-2. **`ClosureCapture(slot)`** — fn closure capture. Runtime: index `fn.closure_env[slot]`. All cross-fn-boundary references (including cross-document and cross-dict references from inside fn bodies) become `ClosureCapture` — resolved at fn creation time from the accumulated group via `LGM(slot)`.
+1. **`Dispatch(depth, slot)`** — reference to any binding in the flat accumulated group for this document evaluation. `slot` is an absolute cumulative index: root-scope entries occupy slots 0..N-1, then each document dict's entries follow in declaration order. Runtime: index `frame.group[slot]`. `depth` is the resolver scope-stack traversal distance (0 = same frame), used by the type checker; the evaluator uses `slot` directly. Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
+2. **`ClosureCapture(slot)`** — fn closure capture. Runtime: index `fn.closure_env[slot]`. All cross-fn-boundary references (including cross-document and cross-dict references from inside fn bodies) become `ClosureCapture` — resolved at fn creation time from the accumulated group via `Dispatch(_, slot)`.
 3. **`Parameter(slot)`** — fn parameter. Runtime: index `frame.params[slot]`.
+4. **`EffectPerform { class_id, method }`** — typeclass method call. Resolved by scanning the accumulated group for an instance that matches the first argument's runtime type. `class_id` identifies the class declaration; `method` is the method name. (Future work — T-2126.)
 
-**Single flat LGM namespace per document evaluation:**
+**Single flat Dispatch namespace per document evaluation:**
 - `ctx.root_group` contains all builtin and capability thunks at their assigned slots.
 - `accumulated_group` in `eval_document_exprs_with_env` starts as a copy of `root_group`, then extends with each document dict's entries as they are evaluated.
-- The resolver assigns cumulative absolute LGM slots: root entries at 0..N-1, then each dict's entries starting at the next available slot.
-- Cross-dict references within a document resolve directly to `LGM(absolute_slot)` — no runtime traversal, no hop counting.
+- The resolver assigns cumulative absolute Dispatch slots: root entries at 0..N-1, then each dict's entries starting at the next available slot.
+- Cross-dict references within a document resolve directly to `Dispatch(depth, absolute_slot)` — no runtime traversal, no hop counting.
 - All fn captures use `ClosureCapture(slot)` into `closure_env`, which is populated from the accumulated group at fn creation time.
 
 ### Compiler Notes: Strictness Analysis

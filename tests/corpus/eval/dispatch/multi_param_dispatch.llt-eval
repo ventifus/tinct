@@ -1,0 +1,44 @@
+# Multi-param dispatch — typeclass instance method with type guards on multiple params.
+# The EffectPerform scan and try_clause type guard evaluation both check all typed params.
+# Only the clause whose guards ALL pass is selected. Two instances for different type
+# combinations must not cross-dispatch.
+#
+# Also verifies that a user-defined instance with two typed params (a@TypeA b@TypeB)
+# correctly rejects calls where only one param matches.
+[
+  Vec2: [type Vec2: [x: Float y: Float]]
+
+  # User Addable: Vec2 + Vec2 → Vec2
+  [instance Addable
+    [let a@Vec2 b@Vec2 c]:
+      [+: [fn [let u v]
+        [Vec2.Vec2 x: [+ u.x v.x]  y: [+ u.y v.y]]]]]
+
+  v1: [Vec2.Vec2 x: 1.0  y: 2.0]
+  v2: [Vec2.Vec2 x: 3.0  y: 4.0]
+
+  # Vec2 + Vec2: dispatches to user instance
+  r-vec:   [+ v1 v2]
+  rx:      r-vec.x
+  ry:      r-vec.y
+
+  # Int + Int: dispatches to prelude Int instance (user Vec2 instance guards reject)
+  r-int:   [+ 10 32]
+
+  # Float + Float: dispatches to prelude Float instance
+  r-flt:   [+ 1.5 2.5]
+
+  # Two distinct user instances distinguished by second param type
+  TagA: [type TagA]
+  TagB: [type TagB]
+
+  [instance Addable
+    [let a@TagA b@TagA c]: [+: [fn [let x y] "aa"]]]
+  [instance Addable
+    [let a@TagB b@TagB c]: [+: [fn [let x y] "bb"]]]
+
+  r-aa: [+ TagA.TagA TagA.TagA]
+  r-bb: [+ TagB.TagB TagB.TagB]
+]
+=== out
+Dict({"Vec2": Dict({"Vec2": Function(x)}), "v1": Variant(Vec2.Vec2, Dict({"x": Float(1.0), "y": Float(2.0)})), "v2": Variant(Vec2.Vec2, Dict({"x": Float(3.0), "y": Float(4.0)})), "r-vec": Variant(Vec2.Vec2, Dict({"x": Float(4.0), "y": Float(6.0)})), "rx": Float(4.0), "ry": Float(6.0), "r-int": Int(42), "r-flt": Float(4), "TagA": Dict({"TagA": Variant(TagA.TagA, Null)}), "TagB": Dict({"TagB": Variant(TagB.TagB, Null)}), "r-aa": String("aa"), "r-bb": String("bb")})

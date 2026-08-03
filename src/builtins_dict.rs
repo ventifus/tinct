@@ -134,6 +134,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
             });
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: tag.clone(),
                 payload: payload_thunk,
             }

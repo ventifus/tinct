@@ -1,0 +1,29 @@
+# Typed param clause dispatch — functions with @T annotations on params.
+# The unified try_clause checks runtime type guards before binding arguments.
+# A typed param creates a type guard: the clause only matches when the argument's
+# runtime type matches the annotation (compared via value.type_id()).
+# Wildcard params (no annotation) always pass.
+[
+  # Integer annotation — passes when arg is Int
+  inc-int:  [fn [let x@Integer] [+ x 1]]
+  r-int:    [inc-int 42]
+
+  # String annotation — passes when arg is String
+  greet:    [fn [let name@String] [str "Hello, " name "!"]]
+  r-greet:  [greet "world"]
+
+  # Float annotation — passes when arg is Float
+  double-f: [fn [let x@Float] [* x 2.0]]
+  r-float:  [double-f 3.5]
+
+  # Multiple typed params — both must match for the clause to fire
+  add-int:  [fn [let x@Integer y@Integer] [+ x y]]
+  r-add:    [add-int 10 32]
+
+  # Mixed typed + wildcard params — wildcard slot matches any type, typed slot guards
+  tag:      [fn [let label@String x] [str label ": " [str x]]]
+  r-tag-i:  [tag "count" 7]
+  r-tag-s:  [tag "name" "alice"]
+]
+=== out
+Dict({"inc-int": Function(x), "r-int": Int(43), "greet": Function(name), "r-greet": String("Hello, world!"), "double-f": Function(x), "r-float": Float(7.0), "add-int": Function(x, y), "r-add": Int(42), "tag": Function(label, x), "r-tag-i": String("count: 7"), "r-tag-s": String("name: alice")})

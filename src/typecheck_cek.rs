@@ -949,16 +949,29 @@ async fn infer_step(
                         state,
                     )
                 }
-                SurfaceDeclaration::InstanceDecl { class_name, arms } => {
-                    Box::pin(super::infer_instance_decl_from_surface(
-                        &class_decl_name(class_name),
+                SurfaceDeclaration::InstanceDecl {
+                    class_name,
+                    arms,
+                    resolved_class_decl_id,
+                    ..
+                } => {
+                    let class_name_str = class_decl_name(class_name);
+                    let r = Box::pin(super::infer_instance_decl_from_surface(
+                        &class_name_str,
                         arms,
                         node.span.clone(),
                         env,
                         state,
                         type_map,
                     ))
-                    .await
+                    .await;
+                    // Write resolved_class_decl_id so the lowerer can populate instance_of.
+                    if r.is_ok() {
+                        if let Some(cd) = state.env.read().unwrap().get_class(&class_name_str) {
+                            resolved_class_decl_id.set(cd.class_decl_id);
+                        }
+                    }
+                    r
                 }
                 SurfaceDeclaration::TypeAlias { .. } => {
                     // Type alias declarations in expression position have no runtime type.
@@ -1777,11 +1790,7 @@ async fn infer_var_ref(
                 env.read().unwrap().get_scheme(name)
             }
             _ => {
-                let crate::ast::VarAddr::LetrecGroupMember {
-                    depth: resolver_level,
-                    slot,
-                } = addr
-                else {
+                let crate::ast::VarAddr::Dispatch(resolver_level, slot) = addr else {
                     unreachable!()
                 };
                 let (resolver_level, slot) = (*resolver_level, *slot);
@@ -4463,7 +4472,10 @@ pub(crate) async fn run_typecheck_dict(
         // (b) Anonymous InstanceDecl entry: insert ɪ-prefixed placeholders at this source position.
         if entry.node.key.is_none() {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                if let SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref() {
+                if let SurfaceDeclaration::InstanceDecl {
+                    class_name, arms, ..
+                } = decl.as_ref()
+                {
                     for (pattern, method_entries) in arms {
                         let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
                         let type_args: Vec<&str> =
@@ -4766,16 +4778,29 @@ pub(crate) async fn run_typecheck_dict(
                             state,
                         )
                     }
-                    SurfaceDeclaration::InstanceDecl { class_name, arms } => {
-                        Box::pin(super::infer_instance_decl_from_surface(
-                            &class_decl_name(class_name),
+                    SurfaceDeclaration::InstanceDecl {
+                        class_name,
+                        arms,
+                        resolved_class_decl_id,
+                        ..
+                    } => {
+                        let class_name_str = class_decl_name(class_name);
+                        let r = Box::pin(super::infer_instance_decl_from_surface(
+                            &class_name_str,
                             arms,
                             entry.node.value.span.clone(),
                             &dict_env,
                             state,
                             type_map,
                         ))
-                        .await
+                        .await;
+                        // Write resolved_class_decl_id so the lowerer can populate instance_of.
+                        if r.is_ok() {
+                            if let Some(cd) = dict_env.read().unwrap().get_class(&class_name_str) {
+                                resolved_class_decl_id.set(cd.class_decl_id);
+                            }
+                        }
+                        r
                     }
                     _ => Ok(make_typevalue_top()),
                 };

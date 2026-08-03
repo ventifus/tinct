@@ -181,25 +181,27 @@ pub(crate) fn builtin_task(
             // Evaluate the function call
             match func_value {
                 Value::Function {
-                    params,
-                    body,
+                    clauses,
                     closure_env,
-                    annotation: _,
                     ..
                 } => {
+                    // Extract clause 0 (single-clause common case; T-2133 will add multi-clause).
+                    let clause = clauses
+                        .first()
+                        .expect("Value::Function must have at least one clause");
                     // Check for zero-arg function
-                    if !params.is_empty() {
+                    if !clause.params.is_empty() {
                         return Err(EvalError::user_error(
                             format!(
                                 "task expects a zero-arg function, got {} parameter(s)",
-                                params.len()
+                                clause.params.len()
                             ),
                             call_span_clone,
                         )
                         .into());
                     }
                     let thunk = eval_core_expr(
-                        &body,
+                        &clause.body,
                         &crate::value::EvalFrame::for_function_call(
                             Arc::clone(&closure_env),
                             vec![],
@@ -549,6 +551,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_val: crate::value::unknown_type_val(),
+                                type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -590,6 +593,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_val: crate::value::unknown_type_val(),
+                                type_decl_id: 0,
                                 ctor: Arc::from("Lagged.Lagged"),
                                 payload: Some(count_thunk),
                             },
@@ -601,6 +605,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_val: crate::value::unknown_type_val(),
+                                type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -645,6 +650,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_val: crate::value::unknown_type_val(),
+                                type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -845,6 +851,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Variant {
                                 type_val: crate::value::unknown_type_val(),
+                                type_decl_id: 0,
                                 ctor: Arc::from("Full.Full"),
                                 payload: None,
                             },
@@ -856,6 +863,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Variant {
                                 type_val: crate::value::unknown_type_val(),
+                                type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -1153,6 +1161,7 @@ pub(crate) fn builtin_select_once(
                                 return ok_val(
                                     Value::Variant {
                                         type_val: crate::value::unknown_type_val(),
+                                        type_decl_id: 0,
                                         ctor: Arc::from("Closed.Closed"),
                                         payload: None,
                                     },
@@ -1217,19 +1226,16 @@ pub(crate) fn builtin_select_once(
                     // Call the handler with the received value.
                     let result_thunk = match handler_val {
                         Value::Function {
-                            params,
-                            body,
+                            clauses,
                             closure_env,
-                            annotation: _,
                             ..
                         } => {
                             // Invoke the handler function with the received value as its single
-                            // argument, using the standard call path (bind_args_thunks) so that
-                            // pattern variables are bound in a proper call frame.
+                            // argument, using the standard call path (invoke_function) so that
+                            // multi-clause dispatch and pattern variables are handled correctly.
                             let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
                             invoke_function(&CallContext {
-                                params: &params,
-                                body: &body,
+                                clauses: &clauses,
                                 closure_env,
                                 positional: &[arg_thunk],
                                 named: None,
@@ -1422,6 +1428,7 @@ pub(crate) fn builtin_signal_channel(
                                 }
                                 match tx_clone.try_send(Value::Variant {
                                     type_val: crate::value::unknown_type_val(),
+                                    type_decl_id: 0,
                                     ctor: Arc::from(sig_name.as_str()),
                                     payload: None,
                                 }) {
@@ -1940,6 +1947,7 @@ pub(crate) fn builtin_with_cancel(
         ok_val(
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from("CancelHandle.CancelHandle"),
                 payload: Some(payload_thunk),
             },

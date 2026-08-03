@@ -185,6 +185,7 @@ pub fn apply_typevalue_renaming(
             ctor,
             payload,
             type_val,
+            ..
         } => {
             match ctor.as_ref() {
                 TV_VAR => {
@@ -244,6 +245,7 @@ pub fn apply_typevalue_renaming(
                             };
                             Arc::new(Value::Variant {
                                 type_val: Arc::clone(type_val),
+                                type_decl_id: 0,
                                 ctor: Arc::clone(ctor),
                                 payload: Some(Arc::new(crate::value::Thunk::value(
                                     new_payload_dict,
@@ -352,6 +354,7 @@ pub fn generalize_tv_with_meta(
             };
             let var_decl = Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from(TV_VAR_DECL),
                 payload: Some(Arc::new(crate::value::Thunk::value(
                     var_decl_payload,
@@ -450,6 +453,7 @@ pub fn generalize_tv_with_meta(
 
     Arc::new(Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_SCHEME),
         payload: Some(Arc::new(crate::value::Thunk::value(
             scheme_payload,
@@ -580,6 +584,7 @@ mod typevalue_scheme_tests {
         };
         let var_decl = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_VAR_DECL),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 var_decl_payload,
@@ -632,6 +637,7 @@ mod typevalue_scheme_tests {
 
         let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_SCHEME),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 scheme_payload,

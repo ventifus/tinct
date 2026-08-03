@@ -3295,6 +3295,7 @@ mod tests {
         let variant = alloc(
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from("Color.Red"),
                 payload: None,
             },
@@ -7366,6 +7367,7 @@ mod tests {
         let xs = alloc(
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from("Color.Red"),
                 payload: None,
             },

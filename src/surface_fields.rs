@@ -240,6 +240,7 @@ fn surface_entries_to_list_dict(
         );
         let entry_variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: "Expr.Entry".into(),
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
@@ -281,6 +282,7 @@ fn named_args_to_list_dict(
         );
         let na_variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: "Expr.NamedArg".into(),
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
@@ -332,6 +334,7 @@ fn params_to_list_dict(
         );
         let p_variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: "Expr.Parameter".into(),
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
@@ -419,6 +422,7 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
             );
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: "DotKey.Ident".into(),
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
@@ -443,6 +447,7 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
             );
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: "DotKey.Index".into(),
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
@@ -542,6 +547,7 @@ fn annotation_inner_to_value(
                         );
                         Value::Variant {
                             type_val: crate::value::unknown_type_val(),
+                            type_decl_id: 0,
                             ctor: "Annotation.Annotated".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
@@ -570,6 +576,7 @@ fn annotation_inner_to_value(
                         );
                         Value::Variant {
                             type_val: crate::value::unknown_type_val(),
+                            type_decl_id: 0,
                             ctor: "Annotation.Simple".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
@@ -592,6 +599,7 @@ fn annotation_inner_to_value(
                         );
                         Value::Variant {
                             type_val: crate::value::unknown_type_val(),
+                            type_decl_id: 0,
                             ctor: "Annotation.Unknown".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
@@ -683,6 +691,7 @@ fn annotation_inner_to_value(
 
     Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: format!("{}.{}", tycon, ctor).into(),
         payload: Some(Arc::new(Thunk::value(
             Value::Dict {

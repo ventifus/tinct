@@ -106,6 +106,7 @@ fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
         ctor: Arc::from(ctor),
         payload: payload.map(|p| settled_thunk(p)),
         type_val: unknown_type_val(),
+        type_decl_id: 0,
     }
 }
 
@@ -183,6 +184,10 @@ pub fn make_type_app(op: TypeValue, arg: TypeValue) -> TypeValue {
 /// Example: `[class [Equatable a] eq: [Fn@Bool [a a]]]`
 #[derive(Debug, Clone)]
 pub struct ClassDecl {
+    /// Unique ID assigned by the lowerer when processing each `[class ...]` declaration.
+    /// Same mechanism as `type_decl_id` for nominal types. Enables stable class identity
+    /// across scopes instead of relying on string name matching.
+    pub class_decl_id: u64,
     /// Class name (e.g., "Equatable")
     pub name: String,
     /// Type parameters with their kind TypeValues.
@@ -840,6 +845,7 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
                 ctor: Arc::from(tn_ctor),
                 payload: None,
                 type_val: unknown_type_val(),
+                type_decl_id: 0,
             }))
         }
         Some(TV_VAR) => {
@@ -851,16 +857,19 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
             ctor: Arc::from(TN_UNKNOWN),
             payload: None,
             type_val: unknown_type_val(),
+            type_decl_id: 0,
         })),
         Some(TV_TOP) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_TOP),
             payload: None,
             type_val: unknown_type_val(),
+            type_decl_id: 0,
         })),
         Some(TV_NEVER) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_NEVER),
             payload: None,
             type_val: unknown_type_val(),
+            type_decl_id: 0,
         })),
         _ => None, // Compound types not yet converted — extend as needed.
     }

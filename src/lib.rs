@@ -196,8 +196,11 @@ pub async fn run_loader_pipeline(
         // Each name gets LGM(slot) from enter_scope_from_frame; at runtime accumulated_group
         // starts with root_group so LGM(slot) indexes directly into the right thunk.
         let root_frame = eval_ctx.root_group_resolver_map();
-        let (_table, new_frames) =
-            resolve::resolve_surface_program(&loader_program, std::slice::from_ref(&root_frame));
+        let (_table, new_frames) = resolve::resolve_surface_program_with_classes(
+            &loader_program,
+            std::slice::from_ref(&root_frame),
+            std::collections::HashMap::new(),
+        );
         // Combine: root_frame (outermost) followed by frames introduced by the program.
         // Strip FrameKind for EvalContext.scope_frames — lower.rs only needs the name→slot maps.
         let all_frames: Vec<indexmap::IndexMap<String, u32>> = std::iter::once(root_frame)
@@ -658,7 +661,24 @@ where
                 }
                 Ok(visitor.visit_dict(entries))
             }
-            value::Value::Function { params, .. } => visitor.visit_function(params, span),
+            value::Value::Function { clauses, .. } => {
+                // Extract params from clause 0 (single-clause common case; T-2133 for multi-clause).
+                let clause = clauses
+                    .first()
+                    .expect("Value::Function must have at least one clause");
+                let params: Vec<ast::Param> = clause
+                    .params
+                    .iter()
+                    .map(|p| ast::Param {
+                        name: p.node.name.clone(),
+                        annotation: p.node.annotation.clone(),
+                        variadic: p.node.variadic,
+                        slot: p.node.slot,
+                        resolved_type: p.node.resolved_type.clone(),
+                    })
+                    .collect();
+                visitor.visit_function(&params, span)
+            }
             value::Value::Builtin { def, .. } => visitor.visit_builtin(def.name, span),
             value::Value::Proxy { .. } => visitor.visit_proxy(span),
             value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
@@ -1223,6 +1243,7 @@ mod tests {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -1241,11 +1262,13 @@ mod tests {
 
         let red_val = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
         let green_val = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Green"),
             payload: None,
         };
@@ -1270,6 +1293,7 @@ mod tests {
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("MyBool.Yes"),
             payload: None,
         };

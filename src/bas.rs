@@ -297,6 +297,7 @@ fn make_payload_typevalue(ctor: &str, payload_thunk: Arc<Thunk>) -> Arc<Value> {
         ctor: Arc::from(ctor),
         payload: Some(payload_thunk),
         type_val: unknown_type_val(),
+        type_decl_id: 0,
     })
 }
 
@@ -2311,6 +2312,7 @@ mod tests {
             ctor: Arc::from(TV_TOP),
             payload: None,
             type_val: unknown_type_val(),
+            type_decl_id: 0,
         })
     }
 
@@ -2319,6 +2321,7 @@ mod tests {
             ctor: Arc::from(TV_NEVER),
             payload: None,
             type_val: unknown_type_val(),
+            type_decl_id: 0,
         })
     }
 
@@ -2327,6 +2330,7 @@ mod tests {
             ctor: Arc::from(TV_UNKNOWN),
             payload: None,
             type_val: unknown_type_val(),
+            type_decl_id: 0,
         })
     }
 

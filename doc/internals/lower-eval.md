@@ -45,7 +45,7 @@ Pure function of the `SurfaceNode` — no external tables are consulted. All cro
 - `TypeAnnotation` (on `SurfaceNode.type_guard`) → wraps the output in `CoreExpr::TypeAssert`
 - `SlotAnnotation` (on `Field.field_slot`) → O(1) slot access vs key-based lookup
 
-`scope_frames` — when `Some`, provides the unified resolver scope frames from the init program. Used by `make_method_dispatcher_fn` to synthesize MethodDispatcher `CoreExpr::Fn` nodes: resolves mangled instance binding names and chains parent dispatchers via `resolve_name_in_parent_frames`. Pass `None` in test contexts and bootstrap paths.
+`scope_frames` — when `Some`, provides the unified resolver scope frames from the init program. Used to resolve scope-frame-dependent names (e.g., `builtin-dict-merge` for spread dicts) to correct de Bruijn coordinates. Typeclass method dispatch does not use `scope_frames` — it is handled entirely at runtime by `VarAddr::EffectPerform` clause-scanning in `eval_core.rs`. Pass `None` in test contexts and bootstrap paths.
 
 ```rust
 pub(crate) fn lower_inner(
@@ -114,7 +114,7 @@ Extracts concrete uppercase type annotation names from an instance arm pattern (
 | `VarRef` with `resolution = Some(Some((l, s)))` | `Var { level: l, slot: s, name, annotation }` | Resolved |
 | `VarRef` with `resolution = Some(None)` | `Placeholder` + diagnostic | Explicitly unresolvable |
 | `VarRef` with `resolution = None`, other name | `Placeholder` + diagnostic | Undefined variable |
-| `VarRef` (typeclass method name, unresolved) | `Var` using mangled name coords from scope_frames | Typeclass instance dispatch via MethodDispatcher synthesis |
+| `VarRef` (typeclass method name, unresolved) | `Var` with `VarAddr::EffectPerform { class_id, method }` | Typeclass instance dispatch via runtime clause-scanning in eval_core.rs |
 | `Field { expr: Some, field_slot: Some(s) }` | `Call(slot-get, [Int(s), target])` | O(1) typed field access; slot-get is always field-get-slot + 1 |
 | `Field { expr: Some, field_slot: None }` | `Call(field-get, [Str/Int(key), target])` | Key-based lookup |
 | `Field { expr: None, name }` | `Var { level, slot }` from `resolution` | Leading-dot parent-scope access |
@@ -127,7 +127,7 @@ Extracts concrete uppercase type annotation names from an instance arm pattern (
 | `Dict` with anonymous `InstanceDecl` (multi-arm) | `Dict` with mangled-name entries | `instance_binding_name` keying for each method |
 | `Dict` with `TypeAlias` | `Dict` with constructor entries | `lower_type_alias_to_constructor_dict` |
 | `Dict` with `ClassDecl` (named) | `Dict([])` empty placeholder | Occupies a slot; no runtime methods |
-| `Call` (typeclass method call) | `Call(MethodDispatcher, args, named_args)` | Dispatch handled by synthesized MethodDispatcher Fn |
+| `Call` (typeclass method call) | `Call(Var with EffectPerform, args, named_args)` | Dispatch handled by `VarAddr::EffectPerform` clause-scanning at runtime |
 | `Call` (plain) | `Call(lowered_func, args, named_args)` | Recurses into func, args, named_args |
 | `Fn` | `Fn` | Params → `CoreParam` with slot index; body lowered recursively |
 | `TypeAssert` | `CoreExpr::TypeAssert { check: TypeAssertCheck }` — either `TypeAssertCheck::Resolved(TypeValue)` (type checker ran and resolved a non-Unknown type) or `TypeAssertCheck::Source { annotation }` (type checker skipped or produced `TypeValue.Unknown` — TV_UNKNOWN tag) |
@@ -216,7 +216,7 @@ The merge Var is generated as `builtin-dict-merge` — the constant `DICT_MERGE_
 | `profiling` | `Option<Arc<Mutex<ProfilingCollector>>>` | Per-span timing; None when disabled |
 | `tycon_env` | `OnceLock<Arc<TyConEnv>>` | Type constructor environment from inference; set once after typecheck |
 | `type_context` | `Arc<Mutex<Option<TypeContextData>>>` | Unified type environment; None until `builtin-make-type-ctx` |
-| `scope_frames` | `Option<Arc<Vec<IndexMap<String, u32>>>>` | Unified resolver scope frames; used by `make_method_dispatcher_fn` in `lower()` to synthesize MethodDispatcher `CoreExpr::Fn` nodes |
+| `scope_frames` | `Option<Arc<Vec<IndexMap<String, u32>>>>` | Unified resolver scope frames; used by `lower()` to resolve scope-frame-dependent names (e.g., `builtin-dict-merge` for spread dicts). Typeclass dispatch uses `VarAddr::EffectPerform` at runtime instead. |
 
 `EvalContext` is `Arc`-shared across all thunks and tasks in a session. Child contexts (created by `with_base_dir`, `with_cancel_token`, etc.) clone `Arc<EvalConfig>` but share the same `scope_arena` via `Rc::clone`. All child contexts share the same `type_context` and `tycon_env`.
 

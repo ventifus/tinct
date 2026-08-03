@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
-use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode};
+use crate::ast::{CoreExpr, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::{EvalError, EvalResult};
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
@@ -189,12 +189,12 @@ impl GroupSpine {
 /// Replaces ScopeArena-based scope chain traversal.
 ///
 /// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references (fn captures only)
-/// - `group[i]`: thunk for `VarAddr::LetrecGroupMember(i)` references.
+/// - `group[i]`: thunk for `VarAddr::Dispatch(_, i)` references (slot = i).
 ///   At document level, `group` is the accumulated_group: root-scope entries at slots 0..N-1,
 ///   followed by each dict's entries at cumulative slot offsets. No outer-frame traversal needed.
 /// - `params[i]`: thunk for `VarAddr::Parameter(i)` references
 ///
-/// All three VarAddr variants index directly into this frame's vectors.
+/// All four VarAddr variants index directly into this frame's vectors (EffectPerform is future work).
 /// No outer-frame chain traversal — cross-scope references are resolved at the resolver level
 /// (captures become ClosureCapture; document cross-dict refs become LGM with cumulative slots).
 #[derive(Debug, Clone)]
@@ -800,6 +800,55 @@ pub fn tycon_name_from_ctor(ctor: &str) -> &str {
     ctor.split('.').next().unwrap_or(ctor)
 }
 
+// ─── Primitive Type ID Constants ──────────────────────────────────────────────
+
+/// Reserved type ID range for primitive Value variants (1..=99).
+/// User-defined variant types get IDs starting at `TYPE_ID_RESERVED_MAX + 1` (100).
+/// These constants enable O(1) type identity checks without string comparisons.
+
+pub const TYPE_ID_INT: u64 = 1;
+pub const TYPE_ID_U64: u64 = 2;
+pub const TYPE_ID_FLOAT: u64 = 3;
+pub const TYPE_ID_STRING: u64 = 4;
+pub const TYPE_ID_DICT: u64 = 5;
+pub const TYPE_ID_BUILDER: u64 = 6;
+pub const TYPE_ID_FUNCTION: u64 = 7;
+pub const TYPE_ID_BUILTIN: u64 = 8;
+pub const TYPE_ID_PROXY: u64 = 9;
+pub const TYPE_ID_DIRCAP: u64 = 10;
+pub const TYPE_ID_NETCAP: u64 = 11;
+pub const TYPE_ID_FILE: u64 = 12;
+pub const TYPE_ID_REVOCABLE_DIRCAP: u64 = 13;
+pub const TYPE_ID_DECIMAL: u64 = 14;
+pub const TYPE_ID_BIGINT: u64 = 15;
+pub const TYPE_ID_BYTES: u64 = 16;
+pub const TYPE_ID_URI: u64 = 17;
+pub const TYPE_ID_TIMESTAMP: u64 = 18;
+pub const TYPE_ID_DURATION: u64 = 19;
+pub const TYPE_ID_CLOCKCAP: u64 = 20;
+pub const TYPE_ID_TIMEZONE: u64 = 21;
+pub const TYPE_ID_QUIC_SESSION: u64 = 22;
+pub const TYPE_ID_HTTP2_SESSION: u64 = 23;
+pub const TYPE_ID_HTTP3_SESSION: u64 = 24;
+pub const TYPE_ID_QUIC_DATAGRAM_HANDLE: u64 = 25;
+pub const TYPE_ID_PROGRAM: u64 = 26;
+pub const TYPE_ID_DOCUMENT: u64 = 27;
+pub const TYPE_ID_EXPRESSION: u64 = 28;
+pub const TYPE_ID_TASK: u64 = 29;
+pub const TYPE_ID_CHANNEL: u64 = 30;
+pub const TYPE_ID_BROADCAST_CHANNEL: u64 = 31;
+pub const TYPE_ID_ONESHOT_SENDER: u64 = 32;
+pub const TYPE_ID_ONESHOT_RECEIVER: u64 = 33;
+pub const TYPE_ID_CONTEXT: u64 = 34;
+pub const TYPE_ID_REACTIVE_CELL: u64 = 35;
+pub const TYPE_ID_ARENA: u64 = 36;
+pub const TYPE_ID_TYPE_CONTEXT: u64 = 37;
+pub const TYPE_ID_CORE_DOCUMENT: u64 = 38;
+
+/// Maximum reserved type ID for primitive types.
+/// User-defined variant `type_decl_id` values start at `TYPE_ID_RESERVED_MAX + 1` (100).
+pub const TYPE_ID_RESERVED_MAX: u64 = 99;
+
 /// A materialized runtime value.
 pub enum Value {
     /// 64-bit signed integer
@@ -830,14 +879,26 @@ pub enum Value {
     /// breaks the circularity that would arise from requiring a `type_val` to construct any Value.
     Builder(Arc<Builder>),
     /// User-defined function (closure capturing its defining environment).
-    /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
-    /// `closure_env` is the captured variable vector for closure-converted lookup.
-    /// All cross-scope captures are resolved at fn-creation time into `closure_env`;
-    /// no outer-frame pointer is needed at call time.
+    ///
+    /// `clauses` holds the full clause list from the lowered `CoreExpr::Fn` node.
+    /// For single-clause functions (the common case) `clauses.len() == 1`; multi-clause
+    /// functions (from multi-arm instance methods) have `clauses.len() > 1`.
+    ///
+    /// `closure_env` is the captured variable vector built at fn-definition time by the
+    /// evaluator walking the first clause's `captures` list against the enclosing EvalFrame.
+    /// All cross-scope captures are resolved at definition time; no outer-frame pointer is
+    /// needed at call time.
+    ///
+    /// `instance_of` identifies the typeclass method this function implements, if any.
+    /// `None` for ordinary functions; `Some((class_decl_id, method_name))` for instance methods.
+    ///
+    /// T-2133 will implement full multi-clause dispatch via `invoke_function`. Until then,
+    /// call sites that need `params`/`body` must extract them from `clauses[0]` using the
+    /// helpers defined for the single-clause common case.
     Function {
-        params: Arc<Vec<Param>>,
-        body: Arc<Spanned<CoreExpr>>,
+        clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+        instance_of: Option<(u64, String)>,
         annotation: Option<Box<FnAnnotation>>,
         type_val: Arc<Value>,
     },
@@ -881,6 +942,11 @@ pub enum Value {
         /// Set to `unknown_type_val()` at construction sites that do not yet have
         /// a resolved TypeValue; wired up by the repr: protocol when it runs.
         type_val: Arc<Value>,
+        /// Stable numeric type declaration ID from the lowerer (T-2135).
+        /// Same as `lower::next_type_decl_id()` assigned to the enclosing `[type ...]` declaration.
+        /// 0 means "unknown" (construction sites without type_decl_id wiring, e.g. identity sentinel).
+        /// Enables O(1) type identity checks in `type_id()` without traversing `type_val`.
+        type_decl_id: u64,
         ctor: Arc<str>,
         payload: Option<std::sync::Arc<Thunk>>,
     },
@@ -969,7 +1035,7 @@ pub enum Value {
         /// Contains all scope frames collected during resolution — both Dict letrec frames
         /// and BlockBody sequential injection frames, in injection order. Used by the type
         /// checker (typecheck_cek.rs) for slot base lookup and by `builtin-lower`
-        /// (make_method_dispatcher_fn) for mangled instance binding name resolution.
+        /// (`builtin-lower`) for mangled instance binding name resolution.
         ///
         /// Set by builtin-resolve. Empty if the document was not resolved.
         resolver_frames: Arc<Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>>,
@@ -1101,15 +1167,15 @@ impl Clone for Value {
             },
             Value::Builder(b) => Value::Builder(Arc::clone(b)),
             Value::Function {
-                params,
-                body,
+                clauses,
                 closure_env,
+                instance_of,
                 annotation,
                 type_val,
             } => Value::Function {
-                params: Arc::clone(params),
-                body: Arc::clone(body),
+                clauses: std::sync::Arc::clone(clauses),
                 closure_env: std::sync::Arc::clone(closure_env),
+                instance_of: instance_of.clone(),
                 annotation: annotation.clone(),
                 type_val: Arc::clone(type_val),
             },
@@ -1157,10 +1223,12 @@ impl Clone for Value {
             },
             Value::Variant {
                 type_val,
+                type_decl_id,
                 ctor,
                 payload,
             } => Value::Variant {
                 type_val: Arc::clone(type_val),
+                type_decl_id: *type_decl_id,
                 ctor: Arc::clone(ctor),
                 payload: payload.as_ref().map(std::sync::Arc::clone),
             },
@@ -1371,6 +1439,59 @@ pub fn bytes_val(data: &[u8]) -> Value {
 }
 
 impl Value {
+    /// Returns a stable numeric type ID for this value.
+    ///
+    /// Primitive Value variants (Int, String, Dict, etc.) return a constant ID from the
+    /// reserved range (1..=99). User-defined variant types return their `type_decl_id`
+    /// from the lowerer (starting at 100). `Annotated` delegates to the inner value.
+    ///
+    /// This enables O(1) type identity checks without string comparisons or TypeValue
+    /// materialization.
+    pub fn type_id(&self) -> u64 {
+        match self {
+            Value::Int { .. } => TYPE_ID_INT,
+            Value::U64 { .. } => TYPE_ID_U64,
+            Value::Float { .. } => TYPE_ID_FLOAT,
+            Value::String { .. } => TYPE_ID_STRING,
+            Value::Dict { .. } => TYPE_ID_DICT,
+            Value::Builder(_) => TYPE_ID_BUILDER,
+            Value::Function { .. } => TYPE_ID_FUNCTION,
+            Value::Builtin { .. } => TYPE_ID_BUILTIN,
+            Value::Proxy { .. } => TYPE_ID_PROXY,
+            Value::DirCap { .. } => TYPE_ID_DIRCAP,
+            Value::NetCap { .. } => TYPE_ID_NETCAP,
+            Value::File { .. } => TYPE_ID_FILE,
+            Value::RevocableDirCap { .. } => TYPE_ID_REVOCABLE_DIRCAP,
+            Value::Decimal { .. } => TYPE_ID_DECIMAL,
+            Value::BigInt { .. } => TYPE_ID_BIGINT,
+            Value::Bytes { .. } => TYPE_ID_BYTES,
+            Value::Uri { .. } => TYPE_ID_URI,
+            Value::Timestamp { .. } => TYPE_ID_TIMESTAMP,
+            Value::Duration { .. } => TYPE_ID_DURATION,
+            Value::ClockCap { .. } => TYPE_ID_CLOCKCAP,
+            Value::Timezone { .. } => TYPE_ID_TIMEZONE,
+            Value::QuicSession { .. } => TYPE_ID_QUIC_SESSION,
+            Value::Http2Session { .. } => TYPE_ID_HTTP2_SESSION,
+            Value::Http3Session { .. } => TYPE_ID_HTTP3_SESSION,
+            Value::QuicDatagramHandle { .. } => TYPE_ID_QUIC_DATAGRAM_HANDLE,
+            Value::Program { .. } => TYPE_ID_PROGRAM,
+            Value::Document { .. } => TYPE_ID_DOCUMENT,
+            Value::Expression { .. } => TYPE_ID_EXPRESSION,
+            Value::Task { .. } => TYPE_ID_TASK,
+            Value::Channel { .. } => TYPE_ID_CHANNEL,
+            Value::BroadcastChannel { .. } => TYPE_ID_BROADCAST_CHANNEL,
+            Value::OneshotSender { .. } => TYPE_ID_ONESHOT_SENDER,
+            Value::OneshotReceiver { .. } => TYPE_ID_ONESHOT_RECEIVER,
+            Value::Context { .. } => TYPE_ID_CONTEXT,
+            Value::ReactiveCell { .. } => TYPE_ID_REACTIVE_CELL,
+            Value::Arena { .. } => TYPE_ID_ARENA,
+            Value::TypeContext { .. } => TYPE_ID_TYPE_CONTEXT,
+            Value::CoreDocument { .. } => TYPE_ID_CORE_DOCUMENT,
+            Value::Variant { type_decl_id, .. } => *type_decl_id,
+            Value::Annotated { inner, .. } => inner.type_id(),
+        }
+    }
+
     /// Returns a human-readable type name for error messages and diagnostics.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -1548,9 +1669,14 @@ impl fmt::Debug for Value {
                     write!(f, "Builder")
                 }
             }
-            Value::Function { params, .. } => {
-                let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                write!(f, "Function({})", names.join(", "))
+            Value::Function { clauses, .. } => {
+                // Display shows params from the first clause (common single-clause case).
+                // T-2133 will extend this for multi-clause functions.
+                let param_names: Vec<&str> = clauses
+                    .first()
+                    .map(|c| c.params.iter().map(|p| p.node.name.as_str()).collect())
+                    .unwrap_or_default();
+                write!(f, "Function({})", param_names.join(", "))
             }
             Value::Builtin { def, .. } => write!(f, "Builtin({})", def.name),
             Value::Proxy { .. } => write!(f, "Proxy"),
@@ -1646,10 +1772,14 @@ impl fmt::Display for Value {
                     write!(f, "<Builder>")
                 }
             }
-            Value::Function { params, .. } => {
+            Value::Function { clauses, .. } => {
+                // Tinct-surface representation shows params from the first clause.
+                // T-2133 will extend this for multi-clause functions.
                 write!(f, "[fn [let")?;
-                for p in params.iter() {
-                    write!(f, " {}", p.name)?;
+                if let Some(clause) = clauses.first() {
+                    for p in &clause.params {
+                        write!(f, " {}", p.node.name)?;
+                    }
                 }
                 write!(f, "] ...]")
             }

@@ -1436,6 +1436,7 @@ mod tests {
         };
         Arc::new(Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 payload,
@@ -1491,6 +1492,7 @@ mod tests {
         // from_union must return None rather than a partial (unsound) signature.
         let fn_tv = Arc::new(Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_FN),
             payload: None,
         });
@@ -1594,10 +1596,7 @@ mod tests {
     /// Build a VarRef expression with a resolved Resolution.
     fn varref_resolved(name: &str, _level: u32, slot: u32) -> SurfaceExpression {
         let r = crate::ast::Resolution::new();
-        r.set(Some(crate::ast::VarAddr::LetrecGroupMember {
-            depth: 0,
-            slot,
-        }));
+        r.set(Some(crate::ast::VarAddr::Dispatch(0, slot)));
         SurfaceExpression::VarRef {
             name: name.to_string(),
             escaped: false,

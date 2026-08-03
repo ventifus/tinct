@@ -3,11 +3,12 @@
 //! This is Phase 1 of the closure-conversion strategy. The resolver walks the AST and
 //! assigns VarAddr values to static variable references before evaluation begins:
 //!
-//! - `LetrecGroupMember(slot)` — reference to `accumulated_group[slot]`. Slot is an
+//! - `Dispatch(depth, slot)` — reference to `accumulated_group[slot]`. Slot is an
 //!   ABSOLUTE cumulative index: root-scope entries occupy slots 0..N-1 (from
 //!   `enter_scope_from_frame`), and each document dict's entries follow at cumulative
 //!   offsets assigned by `walk_surface_document_with_offset`. Cross-dict references
-//!   within a document use LGM with the absolute slot — no runtime frame traversal needed.
+//!   within a document use Dispatch with the absolute slot — no runtime frame traversal needed.
+//!   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
 //! - `Parameter(i)` — reference to the i-th parameter of the enclosing function.
 //! - `ClosureCapture(i)` — fn capture: a free variable referenced inside a fn body from
 //!   an outer scope. `i` is the index into the function's capture list (`resolved_captures`).
@@ -134,10 +135,21 @@ struct SurfaceResolver {
     /// Includes all scope frames pushed by `enter_scope_with_offset` — both Dict letrec
     /// frames and BlockBody sequential injection frames. Returned by
     /// `resolve_surface_document_with_seed_frames` as a single list for downstream use
-    /// by both the type checker and `make_method_dispatcher_fn`.
+    /// by the type checker and the `builtin-lower` lowering pipeline.
     /// Each entry is `(name→slot map, FrameKind)` so callers can distinguish
     /// document-level sequential frames from fn-body/dict letrec frames.
     unified_frames: Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
+    /// Index of class method names → `class_decl_id`.
+    ///
+    /// Populated by callers via `resolve_surface_document_with_class_methods` (or similar)
+    /// from the type checker's `Env.classes` map after class declarations have been processed.
+    /// When the VarRef arm resolves a name to a `Dispatch(depth, slot)` address and the name
+    /// appears in this index, the resolver emits `VarAddr::EffectPerform { class_id, method }`
+    /// instead — signalling to the evaluator that this is a typeclass method dispatch site.
+    ///
+    /// Empty (no typeclass emission) when the resolver runs without class information (the
+    /// common case for standalone expression evaluation and tests).
+    class_methods: std::collections::HashMap<String, u64>,
 }
 
 impl SurfaceResolver {
@@ -154,12 +166,23 @@ impl SurfaceResolver {
             accumulated_dict_offset: 0,
             field_getter_name: Arc::from("builtin-dict-get"),
             unified_frames: Vec::new(),
+            class_methods: std::collections::HashMap::new(),
         }
     }
 
+    /// Seed the resolver with class method information so that typeclass method VarRefs
+    /// emit `VarAddr::EffectPerform { class_id, method }` instead of `Dispatch`.
+    ///
+    /// `methods` maps each method name to its class's `class_decl_id`. Callers derive
+    /// this map from `Env.classes` after the type checker has processed `ClassDecl` entries.
+    fn with_class_methods(mut self, methods: std::collections::HashMap<String, u64>) -> Self {
+        self.class_methods = methods;
+        self
+    }
+
     /// Enter a letrec dict scope with a slot offset.
-    /// Each key gets `LetrecGroupMember(offset + i)` as its VarAddr.
-    /// Used by walk_surface_document to assign cumulative LGM indices to sequential
+    /// Each key gets `Dispatch(0, offset + i)` as its VarAddr.
+    /// Used by walk_surface_document to assign cumulative Dispatch indices to sequential
     /// dict scopes so that cross-document references don't collide with prior dicts.
     ///
     /// `frame_kind` classifies the origin of this scope frame so the type checker
@@ -170,19 +193,13 @@ impl SurfaceResolver {
         for (i, key) in keys.iter().enumerate() {
             // depth=0 is a placeholder; resolve_name overwrites depth with the actual
             // scope-stack traversal distance when the name is looked up.
-            scope.insert(
-                key.clone(),
-                VarAddr::LetrecGroupMember {
-                    depth: 0,
-                    slot: offset + i as u32,
-                },
-            );
+            scope.insert(key.clone(), VarAddr::Dispatch(0, offset + i as u32));
         }
         // Collect frame as name→slot map for unified_frames output.
         let frame: indexmap::IndexMap<String, u32> = scope
             .iter()
             .filter_map(|(k, addr)| {
-                if let VarAddr::LetrecGroupMember { slot, .. } = addr {
+                if let VarAddr::Dispatch(_, slot) = addr {
                     Some((k.clone(), *slot))
                 } else {
                     None
@@ -206,7 +223,7 @@ impl SurfaceResolver {
     /// Seed scope from an external frame (initial_frames from the loader).
     ///
     /// External frames carry u32 slot indices into the root group (accumulated_group).
-    /// Root-scope names (builtins and capabilities) are assigned `LetrecGroupMember(slot)` —
+    /// Root-scope names (builtins and capabilities) are assigned `Dispatch(0, slot)` —
     /// they occupy the first slots of the accumulated_group at runtime. Document dict entries
     /// follow at cumulative slot offsets above the root-scope slots.
     ///
@@ -216,7 +233,7 @@ impl SurfaceResolver {
         let converted: indexmap::IndexMap<String, VarAddr> = frame
             .iter()
             // depth=0 placeholder; resolve_name overwrites depth with traversal offset at lookup.
-            .map(|(k, &slot)| (k.clone(), VarAddr::LetrecGroupMember { depth: 0, slot }))
+            .map(|(k, &slot)| (k.clone(), VarAddr::Dispatch(0, slot)))
             .collect();
         self.scopes.push(converted);
     }
@@ -227,16 +244,18 @@ impl SurfaceResolver {
 
     /// Resolve `name` in the current scope stack, returning its `VarAddr`.
     ///
-    /// All variable addressing uses exactly three variants (no OuterGroupRef):
-    /// - `LetrecGroupMember(slot)` — absolute cumulative slot in the accumulated_group.
+    /// All variable addressing uses exactly four variants (no OuterGroupRef):
+    /// - `Dispatch(depth, slot)` — absolute cumulative slot in the accumulated_group.
     ///   Root-scope entries occupy slots 0..N-1; document dict entries follow at cumulative
     ///   offsets. Cross-dict references (a name from dict_i referenced in dict_j where j>i)
-    ///   resolve directly to LGM(slot) because walk_surface_document assigns cumulative slots
-    ///   via enter_scope_with_offset, making each slot unique across the document.
+    ///   resolve directly to Dispatch(depth, slot) because walk_surface_document assigns cumulative
+    ///   slots via enter_scope_with_offset, making each slot unique across the document.
+    ///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
     /// - `ClosureCapture(i)` — fn capture: a free variable in a fn body. The evaluator
     ///   builds closure_env at fn-creation time by looking up each capture's original_addr
-    ///   in the enclosing EvalFrame (frame.group[slot] for LGM captures).
+    ///   in the enclosing EvalFrame (frame.group[slot] for Dispatch captures).
     /// - `Parameter(i)` — fn argument.
+    /// - `EffectPerform { class_id, method }` — typeclass method call (future work, T-2126).
     ///
     /// If we are inside one or more functions (fn_scope_boundaries is non-empty) and the
     /// name is found in a scope frame that belongs to an outer function or document scope
@@ -245,7 +264,7 @@ impl SurfaceResolver {
     /// and assigned `ClosureCapture(i)`.
     ///
     /// If the name is found in a local scope (within the current function), the stored
-    /// VarAddr (Parameter(i) or LetrecGroupMember(i)) is returned directly.
+    /// VarAddr (Parameter(i) or Dispatch(depth, slot)) is returned directly.
     fn resolve_name(&mut self, name: &str) -> Option<VarAddr> {
         // Search from innermost scope outward.
         let scopes_len = self.scopes.len();
@@ -262,14 +281,11 @@ impl SurfaceResolver {
             });
 
         let (match_depth, traversal_offset, addr) = found?;
-        // Inject the correct depth into LetrecGroupMember entries. The stored depth=0 is a
+        // Inject the correct depth into Dispatch entries. The stored depth=0 is a
         // placeholder written at scope-construction time; the actual traversal offset is only
         // known at lookup time (here). The evaluator ignores depth and uses slot directly.
         let addr = match addr {
-            VarAddr::LetrecGroupMember { slot, .. } => VarAddr::LetrecGroupMember {
-                depth: traversal_offset,
-                slot,
-            },
+            VarAddr::Dispatch(_, slot) => VarAddr::Dispatch(traversal_offset, slot),
             other => other,
         };
 
@@ -390,6 +406,19 @@ impl SurfaceResolver {
                         last_addr
                     }
                 };
+                // Typeclass method inside a fn body: emit EffectPerform instead of
+                // ClosureCapture so the evaluator performs open dispatch at call time.
+                // The name must NOT be added to the capture list — EffectPerform looks up
+                // instances by scanning the accumulated group at call time, not via the
+                // closure_env captured at definition time. This is the inside-fn-body
+                // counterpart to the Dispatch→EffectPerform conversion in walk_surface_expr.
+                if let Some(&class_id) = self.class_methods.get(name) {
+                    return Some(VarAddr::EffectPerform {
+                        class_id,
+                        method: name.to_string(),
+                    });
+                }
+
                 let capture_list = self
                     .fn_capture_lists
                     .last_mut()
@@ -456,12 +485,9 @@ impl SurfaceResolver {
             });
 
         let (match_depth, traversal_offset, addr) = found?;
-        // Inject the correct depth into LetrecGroupMember entries (same as resolve_name).
+        // Inject the correct depth into Dispatch entries (same as resolve_name).
         let addr = match addr {
-            VarAddr::LetrecGroupMember { slot, .. } => VarAddr::LetrecGroupMember {
-                depth: traversal_offset,
-                slot,
-            },
+            VarAddr::Dispatch(_, slot) => VarAddr::Dispatch(traversal_offset, slot),
             other => other,
         };
 
@@ -504,6 +530,27 @@ impl SurfaceResolver {
                 name, resolution, ..
             } => {
                 if let Some(addr) = self.resolve_name(name) {
+                    // If this name resolves to a Dispatch address AND it is a registered
+                    // typeclass method, emit EffectPerform instead so the evaluator can
+                    // perform instance-based runtime dispatch (T-2130).
+                    //
+                    // EffectPerform is emitted here for the non-capture path (Dispatch from
+                    // resolve_name at document scope or inside a fn with local scope).
+                    // Inside fn bodies where the method name crosses the fn boundary,
+                    // resolve_name emits EffectPerform directly (before closure capture) —
+                    // see the class_methods check in resolve_name's capture-conversion block.
+                    let addr = if let VarAddr::Dispatch(_, _) = &addr {
+                        if let Some(&class_id) = self.class_methods.get(name.as_str()) {
+                            VarAddr::EffectPerform {
+                                class_id,
+                                method: name.clone(),
+                            }
+                        } else {
+                            addr
+                        }
+                    } else {
+                        addr
+                    };
                     resolution.set(Some(addr.clone()));
                     self.table.insert(node_id(arc), addr);
                 } else {
@@ -667,9 +714,9 @@ impl SurfaceResolver {
                                 }
                             }
 
-                            // Use the full surface_dict_static_keys (including ClassDecl method
-                            // injection) for scope entry — same as the Dict arm — so that
-                            // the scope frame matches what the evaluator sees.
+                            // Use surface_dict_static_keys for scope entry — same as the Dict arm —
+                            // so that the scope frame matches what the evaluator sees (only
+                            // mangled binding slots for InstanceDecl, no plain method slots).
                             let all_keys = surface_dict_static_keys(entries);
                             if all_keys.is_empty() {
                                 // No static keys: no scope injection needed. Walk values normally.
@@ -1331,16 +1378,16 @@ pub fn resolve_surface_document_inplace(
 /// Resolve a SurfaceDocument seeded with an env-dict name list.
 ///
 /// This is the resolver entry point for the env-dict protocol (`builtin-eval` / T-1775).
-/// Both this function and `resolve_surface_document_inplace` use `LetrecGroupMember(i)`
-/// for all names. Env-dict names occupy the first `env_names.len()` LGM slots; document
+/// Both this function and `resolve_surface_document_inplace` use `Dispatch(depth, slot)`
+/// for all names. Env-dict names occupy the first `env_names.len()` Dispatch slots; document
 /// dict entries follow at cumulative slots starting at `env_names.len()`.
 ///
 /// At runtime, `eval_core_document_exprs` starts accumulated_group with the env-dict thunks
 /// (slots 0..env_names.len()-1), then extends with each dict's entries at cumulative slots.
-/// `LetrecGroupMember(i)` resolves to `group[i]` directly — no frame traversal.
+/// `Dispatch(depth, slot)` resolves to `group[slot]` directly — no frame traversal.
 ///
 /// `env_names`: ordered list of in-scope names from the env-dict (insertion order from
-/// the name-set passed to `builtin-resolve`).  The i-th name gets `LetrecGroupMember(i)`.
+/// the name-set passed to `builtin-resolve`).  The i-th name gets `Dispatch(0, root_group_len + i)`.
 ///
 /// Returns `(ResolutionTable, diagnostics, unreferenced)`.  New frames (produced by the
 /// document's own declarations) are discarded — callers accumulate bindings via the exports
@@ -1352,7 +1399,7 @@ pub fn resolve_surface_document_inplace(
 ///
 /// `root_group_len`: the number of root-scope entries (builtins + capabilities) in
 /// the runtime accumulated_group. Env-dict entries start at this offset so their
-/// LGM(root_group_len + i) slots match the runtime group ordering.
+/// Dispatch(0, root_group_len + i) slots match the runtime group ordering.
 pub fn resolve_surface_document_with_env_dict(
     doc: &crate::ast::SurfaceDocument,
     env_names: &[String],
@@ -1360,7 +1407,7 @@ pub fn resolve_surface_document_with_env_dict(
 ) -> (ResolutionTable, Vec<Diagnostic>, Vec<String>) {
     let mut resolver = SurfaceResolver::new();
 
-    // Seed with LetrecGroupMember(root_group_len + i) for the i-th env-dict name.
+    // Seed with Dispatch(0, root_group_len + i) for the i-th env-dict name.
     // This matches the runtime ordering: accumulated_group = [root_group, env_dict_thunks, ...]
     // so env-dict name i is at position root_group_len + i.
     //
@@ -1454,6 +1501,59 @@ pub fn resolve_surface_document_with_seed_frames(
     (table, diagnostics, unreferenced, unified_frames)
 }
 
+/// Variant of `resolve_surface_document_with_seed_frames` that additionally emits
+/// `VarAddr::EffectPerform` for typeclass method references (T-2130).
+///
+/// `class_methods` maps `method_name → class_decl_id` — derived from `Env.classes` after the
+/// type checker has processed all `ClassDecl` entries in scope. VarRefs that resolve to a
+/// `Dispatch` address and whose name appears in this map are re-emitted as
+/// `VarAddr::EffectPerform { class_id, method }` so the evaluator performs typeclass instance
+/// dispatch at runtime rather than a plain letrec group lookup.
+///
+/// Callers that do not have class information should use
+/// `resolve_surface_document_with_seed_frames` instead.
+pub fn resolve_surface_document_with_seed_frames_and_classes(
+    doc: &crate::ast::SurfaceDocument,
+    seed_frames: &[indexmap::IndexMap<String, u32>],
+    env_names: &[String],
+    root_group_len: u32,
+    class_methods: std::collections::HashMap<String, u64>,
+) -> (
+    ResolutionTable,
+    Vec<crate::error::Diagnostic>,
+    Vec<String>,
+    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
+) {
+    // Mirror resolve_surface_document_with_seed_frames exactly — only difference is the
+    // `with_class_methods` call on the SurfaceResolver constructor.
+    let mut resolver = SurfaceResolver::new().with_class_methods(class_methods);
+
+    for frame in seed_frames {
+        resolver.enter_scope_from_frame(frame);
+    }
+
+    resolver.enter_scope_with_offset(env_names, root_group_len, FrameKind::DocSequential);
+    resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
+
+    let initial_offset = root_group_len + env_names.len() as u32;
+    resolver.walk_surface_document_with_offset(doc, initial_offset);
+
+    let unreferenced: Vec<String> = env_names
+        .iter()
+        .filter(|n| !resolver.referenced_env_names.contains(*n))
+        .cloned()
+        .collect();
+
+    for _ in seed_frames {
+        resolver.exit_scope();
+    }
+    resolver.exit_scope();
+
+    let unified_frames = std::mem::take(&mut resolver.unified_frames);
+    let (table, diagnostics) = resolver.finish_with_errors();
+    (table, diagnostics, unreferenced, unified_frames)
+}
+
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
 ///
 /// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
@@ -1497,6 +1597,53 @@ pub fn resolve_surface_program(
     }
 
     // All scope frames were collected during the walk.
+    let unified_frames = std::mem::take(&mut resolver.unified_frames);
+    let table = resolver.finish();
+    (table, unified_frames)
+}
+
+/// Variant of `resolve_surface_program` that additionally emits `VarAddr::EffectPerform`
+/// for typeclass method references (T-2130).
+///
+/// `class_methods` maps `method_name → class_decl_id` — derived from `Env.classes` after
+/// the type checker has processed all `ClassDecl` entries in scope. VarRefs that resolve to
+/// a `Dispatch` address and whose name appears in this map are re-emitted as
+/// `VarAddr::EffectPerform { class_id, method }` so the evaluator performs typeclass instance
+/// dispatch at runtime rather than a plain letrec group lookup.
+///
+/// Callers that do not have class information should use `resolve_surface_program` instead
+/// (passes an empty map internally, which is equivalent).
+pub fn resolve_surface_program_with_classes(
+    program: &SurfaceProgram,
+    initial_frames: &[indexmap::IndexMap<String, u32>],
+    class_methods: std::collections::HashMap<String, u64>,
+) -> (
+    ResolutionTable,
+    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
+) {
+    let mut resolver = SurfaceResolver::new().with_class_methods(class_methods);
+
+    let initial_offset: u32 = initial_frames
+        .iter()
+        .flat_map(|f| f.values())
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+
+    for frame in initial_frames {
+        resolver.enter_scope_from_frame(frame);
+    }
+
+    for doc_spanned in &program.documents {
+        let doc = &doc_spanned.node;
+        resolver.walk_surface_document_with_offset(doc, initial_offset);
+    }
+
+    for _ in initial_frames {
+        resolver.exit_scope();
+    }
+
     let unified_frames = std::mem::take(&mut resolver.unified_frames);
     let table = resolver.finish();
     (table, unified_frames)
@@ -1703,43 +1850,12 @@ fn collect_var_accesses_node(
 ///    We register those same names so the resolver can find instance methods directly
 ///    when they are referenced from within the same letrec scope.
 pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
-    // Pass 1: Collect all explicitly-named keys from non-ClassDecl entries.
-    // This lets us avoid injecting a class method name that shadows an explicit
-    // user binding (e.g. `=: [fn [let x y] false]` in the same dict).
-    let explicit_keys: std::collections::HashSet<String> = entries
-        .iter()
-        .filter_map(|entry| {
-            let key_node = entry.node.key.as_ref()?;
-            // Skip ClassDecl entries — their outer key is not an "explicit" binding
-            // that should block method name injection.
-            let is_class_decl = matches!(
-                &entry.node.value.expr,
-                SurfaceExpression::Decl(d) if matches!(d.as_ref(), crate::ast::SurfaceDeclaration::ClassDecl { .. })
-            );
-            if is_class_decl {
-                return None;
-            }
-            match &key_node.expr {
-                SurfaceExpression::VarRef {
-                    name,
-                    escaped: false,
-                    ..
-                } => Some(name.clone()),
-                SurfaceExpression::StringLiteral { content, .. } => Some(content.clone()),
-                _ => None,
-            }
-        })
-        .collect();
-
-    // Pass 2: Build the key list.
+    // Build the key list.
     // ClassDecl is type-level only — push the outer class name, no method injection.
-    // InstanceDecl (named or anonymous) injects both plain method names (for call-site
-    // resolution) and mangled binding names (for dispatch), regardless of whether
-    // the instance has an outer key. Plain method names come first so the lowerer's
-    // slot layout matches.
+    // InstanceDecl (named or anonymous) injects only mangled binding names (for dispatch).
+    // Plain method slots are no longer emitted — VarAddr::EffectPerform scans the group at
+    // call time instead. The lowerer's slot layout matches: only outer key + mangled slots.
     let mut keys = Vec::new();
-    let mut injected_method_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
     for entry in entries {
         // Push outer key name if present (for all keyed entries including named instances).
         if let Some(key_node) = &entry.node.key {
@@ -1753,9 +1869,11 @@ pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec
                 _ => {}
             }
         }
-        // For any InstanceDecl (named or anonymous), also inject method names.
+        // For any InstanceDecl (named or anonymous), inject only mangled binding names.
         if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-            if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref()
+            if let crate::ast::SurfaceDeclaration::InstanceDecl {
+                class_name, arms, ..
+            } = decl.as_ref()
             {
                 for (pattern, method_entries) in arms {
                     let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
@@ -1770,13 +1888,7 @@ pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec
                             },
                             None => continue,
                         };
-                        // Inject plain method name for call-site resolution (de-duplicated).
-                        if !explicit_keys.contains(&method_name)
-                            && injected_method_names.insert(method_name.clone())
-                        {
-                            keys.push(method_name.clone());
-                        }
-                        // Inject mangled binding name for dispatch.
+                        // Inject only the mangled binding name for dispatch.
                         keys.push(crate::type_def::instance_binding_name(
                             &class_decl_name(class_name),
                             &method_name,
@@ -1933,21 +2045,21 @@ mod tests {
     }
 
     /// A Dict's values can see sibling keys: `[x: 1  y: $x]` — the VarRef `$x` in `y`'s
-    /// value should resolve to LetrecGroupMember(0) since `x` is the first key in scope.
+    /// value should resolve to Dispatch(0, 0) since `x` is the first key in scope.
     #[test]
     fn dict_sibling_key_scoping() {
         let (program, table) = parse_and_resolve("[x: 1  y: $x]");
         let refs = find_varref_nodes(&program, "x");
         assert!(!refs.is_empty(), "expected at least one VarRef for $x");
-        // $x inside the dict value for y resolves to LetrecGroupMember(0) — first key
+        // $x inside the dict value for y resolves to Dispatch(0, 0) — first key
         let (id, _) = &refs[0];
         let addr = table
             .get(id)
             .expect("$x should be resolved (it's a sibling key)");
         assert_eq!(
             addr,
-            &VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
-            "x should be LetrecGroupMember {{ depth: 0, slot: 0 }} (first key in same dict scope)"
+            &VarAddr::Dispatch(0, 0),
+            "x should be Dispatch(0, 0) (first key in same dict scope)"
         );
     }
 
@@ -2011,8 +2123,8 @@ mod tests {
     /// and $n in the body resolves to the case arm's scope as Parameter(0).
     ///
     /// Case arm bindings use enter_param_scope so they resolve to Parameter(i),
-    /// not LetrecGroupMember(i). This avoids collision with root_group builtin slots
-    /// (which also start at LGM(0)). At runtime, arm_frame.params[i] holds the bound thunk.
+    /// not Dispatch(depth, i). This avoids collision with root_group builtin slots
+    /// (which also start at Dispatch(0, 0)). At runtime, arm_frame.params[i] holds the bound thunk.
     #[test]
     fn match_arm_pattern_binding() {
         // Bare lowercase names in match arm patterns are now Pin (not Variable).
@@ -2081,13 +2193,13 @@ mod tests {
             "expected at least 2 VarRefs for $x, got {}",
             x_refs.len()
         );
-        // All $x refs should resolve to the dict-level binding LetrecGroupMember(0)
+        // All $x refs should resolve to the dict-level binding Dispatch(0, 0)
         for (id, _) in &x_refs {
             let addr = table.get(id).expect("$x should be resolved (dict binding)");
             assert_eq!(
                 addr,
-                &VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
-                "$x is first binding, LetrecGroupMember {{ depth: 0, slot: 0 }}"
+                &VarAddr::Dispatch(0, 0),
+                "$x is first binding, Dispatch(0, 0)"
             );
         }
     }
@@ -2130,11 +2242,11 @@ mod tests {
         let addr = table
             .get(id)
             .expect("$a should be resolved (key from prior expr in document)");
-        // The first dict creates a scope with `a` as LetrecGroupMember(0)
+        // The first dict creates a scope with `a` as Dispatch(0, 0)
         assert_eq!(
             addr,
-            &VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
-            "a is first key from prior expr, LetrecGroupMember {{ depth: 0, slot: 0 }}"
+            &VarAddr::Dispatch(0, 0),
+            "a is first key from prior expr, Dispatch(0, 0)"
         );
     }
 
@@ -2323,20 +2435,20 @@ mod tests {
         // With no initial frames, base offset = 0.
         let (program, table) = parse_and_resolve("[x: 1  inner: [ref: $x]]");
 
-        // `x` resolves as sibling in outer dict: LGM(0)
+        // `x` resolves as sibling in outer dict: Dispatch(1, 0)
         let x_refs = find_varref_nodes(&program, "x");
         assert!(!x_refs.is_empty(), "expected VarRef for $x");
         let (x_id, _) = &x_refs[0];
         let x_addr = table.get(x_id).expect("$x should be resolved");
         assert_eq!(
             x_addr,
-            &VarAddr::LetrecGroupMember { depth: 1, slot: 0 },
-            "$x should be LGM {{ depth: 1, slot: 0 }} — first entry of outer dict, seen from inner dict"
+            &VarAddr::Dispatch(1, 0),
+            "$x should be Dispatch(1, 0) — first entry of outer dict, seen from inner dict"
         );
 
         // Find the VarRef that is the VALUE of `ref` in the inner dict.
         // There is exactly one $x VarRef (in the inner dict's value).
-        // It must resolve to LGM(0), not LGM(2) or something else.
+        // It must resolve to Dispatch(_, 0), not something else.
         // (Already verified above — the same VarRef node is found.)
     }
 
@@ -2344,11 +2456,11 @@ mod tests {
     ///
     /// Simulates the case where R root entries exist (e.g., builtins) before the document
     /// dict. With initial frame [{builtin-dict-get: 0}] (R=1): outer dict has offset 1.
-    ///   Outer dict: x→LGM(1), inner→LGM(2). accumulated_dict_offset advances to 3.
-    ///   Inner dict: ref→LGM(3). $x → LGM(1).
+    ///   Outer dict: x→Dispatch(0,1), inner→Dispatch(0,2). accumulated_dict_offset advances to 3.
+    ///   Inner dict: ref→Dispatch(0,3). $x → Dispatch(1, 1).
     ///
     /// Before the fix, the Dict arm used enter_scope(&keys, Dict) with offset=0, giving
-    ///   x→LGM(0), inner→LGM(1), ref→LGM(0). LGM(0) → group[0] = builtin-dict-get (wrong!).
+    ///   x→Dispatch(0,0), inner→Dispatch(0,1), ref→Dispatch(0,0). Dispatch(0,0) → group[0] = builtin-dict-get (wrong!).
     #[test]
     fn nested_dict_lgm_offset_nonzero_base() {
         // Seed with one initial frame entry to simulate R=1 root entries.
@@ -2362,23 +2474,23 @@ mod tests {
         root_frame.insert("builtin-dict-get".to_string(), 0u32);
         let (table, _diags, _frames) = resolve_surface_document_inplace(doc, &[root_frame]);
 
-        // Outer dict: x at LGM(1), inner at LGM(2) (offset=1 from root frame).
+        // Outer dict: x at Dispatch(_, 1), inner at Dispatch(_, 2) (offset=1 from root frame).
         let x_refs = find_varref_nodes(&program, "x");
         assert!(!x_refs.is_empty(), "expected VarRef for $x");
         let (x_id, _) = &x_refs[0];
         let x_addr = table.get(x_id).expect("$x should be resolved");
         assert_eq!(
             x_addr,
-            &VarAddr::LetrecGroupMember { depth: 1, slot: 1 },
-            "$x must be LGM(depth=1, slot=1) — x is in the outer dict (one scope up from the reference site)"
+            &VarAddr::Dispatch(1, 1),
+            "$x must be Dispatch(1, 1) — x is in the outer dict (one scope up from the reference site)"
         );
     }
 
     /// Nested dict inside a fn body intermediate dict value.
     ///
     /// `[fn [let x] [a: $x  nested: [c: $x]] ...]`
-    /// Fn resets accumulated_dict_offset to 0. Body dict: a→LGM(0), nested→LGM(1),
-    /// offset advances to 2. Inner dict: c→LGM(2). $x in c's value → Parameter(0).
+    /// Fn resets accumulated_dict_offset to 0. Body dict: a→Dispatch(0,0), nested→Dispatch(0,1),
+    /// offset advances to 2. Inner dict: c→Dispatch(0,2). $x in c's value → Parameter(0).
     #[test]
     fn nested_dict_inside_fn_body_dict() {
         // fn with body dict containing a nested dict value.

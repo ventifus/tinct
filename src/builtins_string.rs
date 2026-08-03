@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::eval_call::CallContext;
+use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
 /// `replace`: Replace all occurrences of a pattern in a string.
@@ -960,15 +960,13 @@ pub(crate) fn builtin_str_map_chars(
             // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
             let call_result_thunk = match &func_val {
                 Value::Function {
-                    params,
-                    body,
+                    clauses,
                     closure_env,
                     ..
                 } => {
                     let pos_args = vec![Arc::clone(&char_thunk)];
-                    crate::eval_call::invoke_function(&CallContext {
-                        params,
-                        body,
+                    invoke_function(&CallContext {
+                        clauses,
                         closure_env: Arc::clone(closure_env),
                         positional: &pos_args,
                         named: None,

@@ -406,13 +406,15 @@ fn collect_free_vars(
             }
         }
 
-        CoreExpr::Fn { params, body, .. } => {
-            // Extend param scope with this lambda's params before recursing into body.
-            let mut inner_scope = param_scope.clone();
-            for p in params {
-                inner_scope.insert(p.node.name.clone());
+        CoreExpr::Fn { clauses, .. } => {
+            // Extend param scope with each clause's params before recursing into body.
+            for clause in clauses {
+                let mut inner_scope = param_scope.clone();
+                for p in &clause.params {
+                    inner_scope.insert(p.node.name.clone());
+                }
+                collect_free_vars(&clause.body.node, &inner_scope, stdlib_env, out);
             }
-            collect_free_vars(&body.node, &inner_scope, stdlib_env, out);
         }
 
         CoreExpr::TypeAssert { expr, .. } => {
@@ -507,8 +509,10 @@ fn collect_free_vars_in_quote(
                 );
             }
         }
-        CoreExpr::Fn { body, .. } => {
-            collect_free_vars_in_quote(&body.node, depth, param_scope, stdlib_env, out);
+        CoreExpr::Fn { clauses, .. } => {
+            for clause in clauses {
+                collect_free_vars_in_quote(&clause.body.node, depth, param_scope, stdlib_env, out);
+            }
         }
         CoreExpr::Dict(entries) => {
             for entry in entries {
@@ -755,7 +759,21 @@ fn core_expr_to_tinct(
 
         // Nested Fn: `[fn [let params] body]`
         // Extend param scope, check for capture conflicts, recurse.
-        CoreExpr::Fn { params, body, .. } => {
+        // Single-clause fns are the only form that can round-trip via core_expr_to_tinct.
+        // Multi-clause fns are synthesized by the lowerer for method dispatchers and are
+        // not user-writable surface syntax — a multi-clause fn here is a lowerer bug.
+        CoreExpr::Fn { clauses, .. } => {
+            assert!(
+                clauses.len() == 1,
+                "core_expr_to_tinct: multi-clause CoreExpr::Fn encountered — \
+                 only single-clause fns can be round-tripped through surface notation \
+                 (multi-clause fns are synthesized by the lowerer for method dispatchers \
+                 and should not appear in macro/SCN contexts): {} clauses",
+                clauses.len()
+            );
+            let clause = clauses.first().expect("Fn must have at least one clause");
+            let params = &clause.params;
+            let body = &clause.body;
             let mut inner_scope = param_scope.clone();
             for p in params {
                 inner_scope.insert(p.node.name.clone());
@@ -805,35 +823,56 @@ fn core_expr_to_tinct(
             core_expr_to_tinct(&expr.node, param_scope, substitutions, rename_map, ctx)
         }
 
-        // Match: `[match scrutinee [pattern: body] ...]`
+        // Match: `[match scrutinee arm ...]`
         CoreExpr::Match { scrutinee, arms } => {
             let scrutinee_str =
                 core_expr_to_tinct(&scrutinee.node, param_scope, substitutions, rename_map, ctx)?;
-            let mut arm_parts = Vec::with_capacity(arms.len());
+            let mut arm_parts: Vec<String> = Vec::with_capacity(arms.len());
             for arm in arms {
-                let pattern_str = format!("{}", arm.pattern.expr);
-                let body_str = core_expr_to_tinct(
-                    &arm.body.node,
-                    param_scope,
-                    substitutions,
-                    rename_map,
-                    ctx,
-                )?;
-
-                if let Some(guard) = &arm.guard {
-                    let guard_str = core_expr_to_tinct(
-                        &guard.node,
+                let is_case_arm = !arm.params.is_empty();
+                if is_case_arm {
+                    // Case arm: `[case [let bindings] pattern body]`
+                    let params_str: Vec<String> =
+                        arm.params.iter().map(|p| p.node.name.clone()).collect();
+                    let let_str = format!("[let {}]", params_str.join(" "));
+                    let pattern_str = match &arm.lowered_pattern {
+                        Some(pat) => core_expr_to_tinct(
+                            &pat.node,
+                            param_scope,
+                            substitutions,
+                            rename_map,
+                            ctx,
+                        )?,
+                        None => "_".to_string(),
+                    };
+                    let body_str = core_expr_to_tinct(
+                        &arm.body.node,
                         param_scope,
                         substitutions,
                         rename_map,
                         ctx,
                     )?;
-                    arm_parts.push(format!(
-                        "[{}: [if {} {} []]]",
-                        pattern_str, guard_str, body_str
-                    ));
+                    arm_parts.push(format!("[case {} {} {}]", let_str, pattern_str, body_str));
                 } else {
-                    arm_parts.push(format!("[{}: {}]", pattern_str, body_str));
+                    // Keyed arm: `pattern: body`
+                    let key_str = match &arm.lowered_pattern {
+                        Some(pat) => core_expr_to_tinct(
+                            &pat.node,
+                            param_scope,
+                            substitutions,
+                            rename_map,
+                            ctx,
+                        )?,
+                        None => "...".to_string(),
+                    };
+                    let body_str = core_expr_to_tinct(
+                        &arm.body.node,
+                        param_scope,
+                        substitutions,
+                        rename_map,
+                        ctx,
+                    )?;
+                    arm_parts.push(format!("{}: {}", key_str, body_str));
                 }
             }
             Ok(format!(
@@ -1100,16 +1139,28 @@ fn core_expr_to_tinct_raw(
             }
             Ok(format!("[{}]", parts.join(" ")))
         }
-        CoreExpr::Fn { params, body, .. } => {
+        CoreExpr::Fn { clauses, .. } => {
+            // Single-clause fns are the only form that can round-trip via core_expr_to_tinct_in_quote.
+            // Multi-clause fns are synthesized by the lowerer for method dispatchers and are
+            // not user-writable surface syntax — a multi-clause fn here is a lowerer bug.
+            assert!(
+                clauses.len() == 1,
+                "core_expr_to_tinct_in_quote: multi-clause CoreExpr::Fn encountered — \
+                 only single-clause fns can be round-tripped through surface notation \
+                 (multi-clause fns are synthesized by the lowerer for method dispatchers \
+                 and should not appear in quote contexts): {} clauses",
+                clauses.len()
+            );
+            let clause = clauses.first().expect("Fn must have at least one clause");
             let bs = core_expr_to_tinct_in_quote(
-                &body.node,
+                &clause.body.node,
                 depth,
                 param_scope,
                 substitutions,
                 rename_map,
                 ctx,
             )?;
-            let ps: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
+            let ps: Vec<String> = clause.params.iter().map(|p| p.node.name.clone()).collect();
             Ok(format!("[fn [let {}] {}]", ps.join(" "), bs))
         }
         CoreExpr::TypeAssert { expr, .. } => core_expr_to_tinct_in_quote(
@@ -1129,18 +1180,57 @@ fn core_expr_to_tinct_raw(
                 rename_map,
                 ctx,
             )?;
-            let mut arm_parts = Vec::new();
+            let mut arm_parts: Vec<String> = Vec::new();
             for arm in arms {
-                let ps = format!("{}", arm.pattern.expr);
-                let bs = core_expr_to_tinct_in_quote(
-                    &arm.body.node,
-                    depth,
-                    param_scope,
-                    substitutions,
-                    rename_map,
-                    ctx,
-                )?;
-                arm_parts.push(format!("[{}: {}]", ps, bs));
+                let is_case_arm = !arm.params.is_empty();
+                if is_case_arm {
+                    // Case arm: `[case [let bindings] pattern body]`
+                    let params_str: Vec<String> =
+                        arm.params.iter().map(|p| p.node.name.clone()).collect();
+                    let let_str = format!("[let {}]", params_str.join(" "));
+                    let pattern_str = match &arm.lowered_pattern {
+                        Some(pat) => core_expr_to_tinct_in_quote(
+                            &pat.node,
+                            depth,
+                            param_scope,
+                            substitutions,
+                            rename_map,
+                            ctx,
+                        )?,
+                        None => "_".to_string(),
+                    };
+                    let body_str = core_expr_to_tinct_in_quote(
+                        &arm.body.node,
+                        depth,
+                        param_scope,
+                        substitutions,
+                        rename_map,
+                        ctx,
+                    )?;
+                    arm_parts.push(format!("[case {} {} {}]", let_str, pattern_str, body_str));
+                } else {
+                    // Keyed arm: `pattern: body`
+                    let key_str = match &arm.lowered_pattern {
+                        Some(pat) => core_expr_to_tinct_in_quote(
+                            &pat.node,
+                            depth,
+                            param_scope,
+                            substitutions,
+                            rename_map,
+                            ctx,
+                        )?,
+                        None => "...".to_string(),
+                    };
+                    let body_str = core_expr_to_tinct_in_quote(
+                        &arm.body.node,
+                        depth,
+                        param_scope,
+                        substitutions,
+                        rename_map,
+                        ctx,
+                    )?;
+                    arm_parts.push(format!("{}: {}", key_str, body_str));
+                }
             }
             Ok(format!("[match {}  {}]", ss, arm_parts.join("  ")))
         }
@@ -1321,14 +1411,35 @@ impl Value {
                 fmt_variant(ctor.as_ref(), payload.clone(), ctx)
             }
             Value::Builtin { def: b, .. } => Ok(b.name.to_string()),
-            Value::Function {
-                params,
-                body,
-                closure_env: _,
-                annotation: _,
-                type_val: _,
-            } => match ctx {
-                Some(ctx) => fmt_fn(params, body, ctx),
+            Value::Function { clauses, .. } => match ctx {
+                Some(ctx) => {
+                    // Format all clauses. Each clause is serialized as a separate `[fn [let ...] body]`
+                    // form. Single-clause functions produce the standard `[fn [let p] body]`.
+                    // Multi-clause functions (synthesized method dispatchers) produce multiple
+                    // concatenated clause strings: `[fn [let p1] body1]  [fn [let p2] body2]`.
+                    assert!(
+                        !clauses.is_empty(),
+                        "Value::Function must have at least one clause"
+                    );
+                    let clause_strs: Result<Vec<String>, String> = clauses
+                        .iter()
+                        .map(|clause| {
+                            let params: Vec<Param> = clause
+                                .params
+                                .iter()
+                                .map(|p| Param {
+                                    name: p.node.name.clone(),
+                                    annotation: p.node.annotation.clone(),
+                                    variadic: p.node.variadic,
+                                    slot: p.node.slot,
+                                    resolved_type: p.node.resolved_type.clone(),
+                                })
+                                .collect();
+                            fmt_fn(&params, &clause.body, ctx)
+                        })
+                        .collect();
+                    Ok(clause_strs?.join("  "))
+                }
                 None => Err("Function serialization requires EvalContext".to_string()),
             },
             Value::Decimal { n: d, .. } => Ok(crate::lexer::fmt_decimal(d)),

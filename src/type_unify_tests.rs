@@ -78,6 +78,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_FN),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -121,6 +122,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -161,6 +163,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -194,6 +197,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -3167,6 +3171,7 @@ async fn test_rowvar_occurs_check() {
         };
         Arc::new(Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),
         })
@@ -3449,6 +3454,7 @@ fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Ar
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(RT_UNIFORM),
         payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
     })

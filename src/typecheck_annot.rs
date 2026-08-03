@@ -3774,17 +3774,19 @@ pub(crate) async fn as_type_dispatch(
 
     let result_thunk = match fn_val {
         Value::Function {
-            ref params,
-            ref body,
+            ref clauses,
             ref closure_env,
             ..
         } => {
-            if params.len() != 1 {
-                return Ok(None); // AS_TYPENODE_PROTOCOL_NAME must be a single-parameter function
+            // Arity check: AS_TYPENODE_PROTOCOL_NAME must be a single-parameter function.
+            // All clauses must have exactly one parameter — multi-clause as-typenode functions
+            // with different arities are malformed.
+            let all_single_param = clauses.iter().all(|c| c.params.len() == 1);
+            if !all_single_param || clauses.is_empty() {
+                return Ok(None);
             }
             let call_ctx = crate::eval_call::CallContext {
-                params,
-                body,
+                clauses,
                 closure_env: Arc::clone(closure_env),
                 positional: &[arg_thunk],
                 named: None,

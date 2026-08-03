@@ -2718,6 +2718,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
 
                             let decl = SurfaceDeclaration::InstanceDecl {
                                 class_name: class_name_node,
+                                resolved_class_decl_id: crate::ast::ClassDeclIdCell::new(),
                                 arms: arms
                                     .into_iter()
                                     .map(|(pattern, methods)| {

@@ -26,14 +26,12 @@ pub(crate) async fn invoke_proxy_handler(
     let key_arg_id = Arc::new(Thunk::value(key_val, access_span.clone()));
     match handler_val {
         Value::Function {
-            params,
-            body,
+            clauses,
             closure_env,
             ..
         } => {
             invoke_function(&CallContext {
-                params: &params,
-                body: &body,
+                clauses: &clauses,
                 closure_env,
                 positional: &[key_arg_id],
                 named: None,

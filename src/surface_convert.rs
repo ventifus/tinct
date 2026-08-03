@@ -115,6 +115,7 @@ fn inject_span_into_expr_variant(
     match val {
         Value::Variant {
             type_val,
+            type_decl_id,
             ctor,
             payload: Some(payload_thunk),
         } => {
@@ -138,12 +139,14 @@ fn inject_span_into_expr_variant(
                 ));
                 Value::Variant {
                     type_val,
+                    type_decl_id,
                     ctor,
                     payload: Some(new_payload),
                 }
             } else {
                 Value::Variant {
                     type_val,
+                    type_decl_id: 0,
                     ctor,
                     payload: Some(payload_thunk),
                 }
@@ -456,12 +459,11 @@ pub fn core_expr_to_expr_value(
         }
 
         // ── Fn ───────────────────────────────────────────────────────────────────
-        CoreExpr::Fn {
-            params,
-            body,
-            return_ann,
-            ..
-        } => {
+        // T-2128: multi-clause Fn serialization deferred. Serialize first clause only.
+        CoreExpr::Fn { clauses, .. } => {
+            let clause = clauses.first().expect("Fn must have at least one clause");
+            let params = &clause.params;
+            let body = &clause.body;
             let mut params_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (i, param) in params.iter().enumerate() {
                 let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -494,7 +496,7 @@ pub fn core_expr_to_expr_value(
             payload.insert(HashableValue::Str("body".into()), recurse(body));
             payload.insert(
                 HashableValue::Str("return-ann".into()),
-                alloc_annotation_opt(return_ann.as_ref(), ctx),
+                alloc_annotation_opt(None, ctx),
             );
             make_variant("Fn", payload)
         }
@@ -510,14 +512,15 @@ pub fn core_expr_to_expr_value(
         CoreExpr::Match { scrutinee, arms } => {
             let mut arms_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             for (i, arm) in arms.iter().enumerate() {
-                // CoreMatchArm has pattern, guard, body — serialize as opaque Dict
+                // T-2128: CoreClause no longer has .pattern field.
+                // Serialize lowered_pattern (CoreExpr) instead.
                 let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 arm_dict.insert(
-                    HashableValue::Str("pattern".into()),
-                    Arc::new(Thunk::value(
-                        surface_node_to_expr_variant(&arm.pattern, ctx),
-                        arm.pattern.span.clone(),
-                    )),
+                    HashableValue::Str("lowered-pattern".into()),
+                    match &arm.lowered_pattern {
+                        Some(p) => recurse(p),
+                        None => null_thunk(),
+                    },
                 );
                 arm_dict.insert(
                     HashableValue::Str("guard".into()),
@@ -1192,6 +1195,7 @@ pub(crate) fn alloc_entry_list(
         // Expr.Entry variant
         let entry_variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
         };
@@ -1235,6 +1239,7 @@ pub(crate) fn alloc_named_arg_list(
         let na_thunk = Arc::new(Thunk::value(
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from("Expr.NamedArg"),
                 payload: Some(payload_thunk),
             },
@@ -1288,6 +1293,7 @@ pub(crate) fn alloc_param_list(
         let p_thunk = Arc::new(Thunk::value(
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from("Expr.Param"),
                 payload: Some(param_payload_thunk),
             },
@@ -1372,6 +1378,7 @@ pub(crate) fn make_variant_with_payload(
     let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
     Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(tag),
         payload: Some(payload_thunk),
     }
@@ -1380,6 +1387,7 @@ pub(crate) fn make_variant_with_payload(
 pub(crate) fn make_unit_variant(tag: &str) -> Value {
     Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(tag),
         payload: None,
     }
@@ -2368,7 +2376,9 @@ fn surface_decl_to_thunk_id(
             }
         }
 
-        SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+        SurfaceDeclaration::InstanceDecl {
+            class_name, arms, ..
+        } => {
             variant_tag = "InstanceDecl";
             dict.insert(
                 HashableValue::Str("class".into()),
@@ -2513,6 +2523,7 @@ fn surface_decl_to_thunk_id(
     Ok(Arc::new(Thunk::value(
         Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(variant_tag),
             payload: Some(payload),
         },
@@ -2539,6 +2550,7 @@ fn override_bare_in_literal_variant(
         ref type_val,
         ref ctor,
         payload: Some(ref payload_thunk),
+        ..
     } = val
     {
         if ctor.as_ref() == "Expr.Literal" {
@@ -2567,6 +2579,7 @@ fn override_bare_in_literal_variant(
                 ));
                 return Value::Variant {
                     type_val: Arc::clone(type_val),
+                    type_decl_id: 0,
                     ctor: ctor.clone(),
                     payload: Some(new_payload),
                 };
@@ -2683,6 +2696,7 @@ fn alloc_entry_list_with_opts(
         // Expr.Entry variant
         let entry_variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
         };
@@ -2724,6 +2738,7 @@ fn surface_node_to_thunk_id(
         inject_span_into_expr_variant(
             Value::Variant {
                 type_val: crate::value::unknown_type_val(),
+                type_decl_id: 0,
                 ctor: Arc::from("Expr.Dict"),
                 payload: Some(payload_thunk),
             },

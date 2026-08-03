@@ -129,6 +129,7 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_val: unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -724,6 +725,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         };
         Arc::new(Value::Variant {
             type_val: unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_INTER),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
         })
@@ -776,6 +778,7 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
         };
         Arc::new(Value::Variant {
             type_val: unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_RECURSIVE),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
         })
@@ -1311,6 +1314,7 @@ async fn test_typenode_float_literal_arm_conversion() {
             crate::rust_span!(),
         ))),
         type_val: unknown_type_val(),
+        type_decl_id: 0,
     };
 
     let ctx = crate::eval::EvalContext::new();

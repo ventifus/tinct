@@ -1997,6 +1997,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         });
                         Value::Variant {
                             type_val: unknown_type_val(),
+                            type_decl_id: 0,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
                         }
@@ -2032,6 +2033,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         });
                         Value::Variant {
                             type_val: unknown_type_val(),
+                            type_decl_id: 0,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
                         }
@@ -2050,6 +2052,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     });
                     Value::Variant {
                         type_val: unknown_type_val(),
+                        type_decl_id: 0,
                         ctor: Arc::from("ProgramItem.Expr"),
                         payload: Some(payload_id),
                     }

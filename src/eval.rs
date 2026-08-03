@@ -69,7 +69,7 @@ thread_local! {
 ///
 /// `initial_group`: when `Some`, seeds the accumulated group with the given thunks before
 /// processing any expression node. Used by `builtin-eval` to inject env-dict thunks as the
-/// initial accumulated group so that LetrecGroupMember references resolve into the
+/// initial accumulated group so that Dispatch(_, slot) references resolve into the
 /// caller-supplied environment.
 ///
 /// Returns the thunk for the last expression in the sequence.
@@ -372,10 +372,6 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 /// Matches value.rs GuardDefault: (Arc<Spanned<CoreExpr>>, u32).
 /// The u32 is a bridge placeholder (was EnvId in the arena model; now unused in EvalFrame model).
 type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, u32);
-
-/// Type alias for the return type of `match_pattern` — an async fn returning whether the pattern matched.
-type MatchPatternFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + Send + 'a>>;
 
 // ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
 
@@ -1949,13 +1945,12 @@ async fn call_to_match_by_name(
     // Step 4: materialize the thunk to get the to-match function value.
     let fn_val = materialize(&fn_thunk, Some(span), ctx).await?;
     // Step 5: destructure as a user-defined function.
-    let (params, body, closure_env) = match fn_val {
+    let (clauses, closure_env) = match fn_val {
         Value::Function {
-            params,
-            body,
+            clauses,
             closure_env,
             ..
-        } => (params, body, closure_env),
+        } => (clauses, closure_env),
         other => {
             return Err(EvalError::type_mismatch_ctx(
                 format!("call_to_match_by_name({name})"),
@@ -1970,8 +1965,7 @@ async fn call_to_match_by_name(
     let val_thunk = Arc::new(Thunk::value(val.clone(), span.clone()));
     // Step 7: invoke the function with val as the sole positional argument.
     let call_ctx = CallContext {
-        params: params.as_slice(),
-        body: &body,
+        clauses: &clauses,
         closure_env,
         positional: std::slice::from_ref(&val_thunk),
         named: None,
@@ -2193,499 +2187,6 @@ pub fn materialize<'a>(
 
 /// Match a pattern against a value, returning true if the pattern matches.
 ///
-/// Returns Ok(true) if the pattern matches.
-/// Returns Ok(false) if the pattern does not match.
-/// Returns Err if there's an evaluation error (e.g., undefined pin variable).
-pub(crate) fn match_pattern<'a>(
-    pattern: &'a Arc<SurfaceNode>,
-    value: &'a Value,
-    value_span: &'a Span,
-    frame: &'a Arc<EvalFrame>,
-    ctx: &'a Arc<EvalContext>,
-) -> MatchPatternFuture<'a> {
-    Box::pin(async move {
-        use crate::ast::{SurfaceExpression, VarAddr};
-
-        // Peel Value::Annotated wrappers once at the top — annotations are transparent for
-        // pattern matching. This covers all arms: literals, pins, constructors, dicts.
-        let value = peel_annotated(value.clone());
-
-        match &pattern.expr {
-            // Wildcard: all Placeholder forms (bare `...`, `...name`, `...name@Type`) match
-            // unconditionally. The name/annotation are declaration-layer concerns; in pattern
-            // position every Placeholder is a wildcard.
-            SurfaceExpression::Placeholder(..) => Ok(true),
-
-            // VarRef: pin comparison — look up the variable in the current EvalFrame,
-            // materialize it, and compare to the scrutinee for equality.
-            // A resolved address (Some(Some(addr))) is a pin pattern: `$val` in pattern position.
-            // Some(None) means the resolver could not find the name — arm does not match.
-            SurfaceExpression::VarRef { resolution, .. } => {
-                match resolution.get() {
-                    Some(Some(addr)) => {
-                        // Look up the pinned thunk using the resolver-assigned VarAddr.
-                        let pinned_thunk = match addr {
-                            VarAddr::LetrecGroupMember { slot, .. } => {
-                                let slot = *slot as usize;
-                                if slot >= frame.group.len() {
-                                    return Err(EvalError::internal(
-                                        format!(
-                                            "pin pattern LGM slot {slot} out of range (group len {})",
-                                            frame.group.len()
-                                        ),
-                                        value_span.clone(),
-                                    )
-                                    .into());
-                                }
-                                frame.group.get(slot).expect("bounds check passed above")
-                            }
-                            VarAddr::ClosureCapture(slot) => {
-                                let slot = *slot as usize;
-                                if slot >= frame.closure_env.len() {
-                                    return Err(EvalError::internal(
-                                        format!(
-                                            "pin pattern ClosureCapture slot {slot} out of range (closure_env len {})",
-                                            frame.closure_env.len()
-                                        ),
-                                        value_span.clone(),
-                                    )
-                                    .into());
-                                }
-                                frame
-                                    .closure_env
-                                    .get(slot)
-                                    .expect("bounds check passed above")
-                            }
-                            VarAddr::Parameter(slot) => {
-                                let slot = *slot as usize;
-                                if slot >= frame.params.len() {
-                                    return Err(EvalError::internal(
-                                        format!(
-                                            "pin pattern Parameter slot {slot} out of range (params len {})",
-                                            frame.params.len()
-                                        ),
-                                        value_span.clone(),
-                                    )
-                                    .into());
-                                }
-                                Arc::clone(&frame.params[slot])
-                            }
-                        };
-                        // Materialize the pinned value and compare for equality.
-                        let pinned_val = materialize(&pinned_thunk, Some(value_span), ctx).await?;
-
-                        // TypeNode type-pattern: if the pin resolves to a unit TypeNode variant
-                        // (e.g. Integer evaluates to Variant("TypeNode.Int", None)), treat it as
-                        // a runtime type check rather than a value equality check.
-                        //
-                        // Route through the authorized translator `typenode_ctor_to_typevalue`
-                        // (doc/16b-rust-tinct-protocol.md §3) rather than a local hardcoded table.
-                        // `value_matches_type` then checks the scrutinee against the TypeValue.
-                        if let Value::Variant {
-                            ctor,
-                            payload: None,
-                            ..
-                        } = &pinned_val
-                        {
-                            if let Some((prefix, bare)) = ctor.as_ref().split_once('.') {
-                                if prefix == crate::type_tags::TYCON_TYPENODE {
-                                    if let Some(typevalue) =
-                                        crate::type_infer::typenode_ctor_to_typevalue(bare)
-                                    {
-                                        return Ok(value_matches_type(&value, &typevalue, ctx));
-                                    }
-                                }
-                            }
-                        }
-
-                        // User-defined nominal type matching via Arc-level type identity (T-2111).
-                        //
-                        // When the pinned value is a type-constructor Dict (produced by a
-                        // `[type Name ...]` declaration), its `type_val` field carries a
-                        // stable `Arc<Value>` identity created by the `CoreExpr::TypeDecl`
-                        // evaluator — one unique allocation per type per evaluation context.
-                        //
-                        // Every `Value::Variant` produced by that type's constructors also
-                        // carries the same `Arc` in its `type_val` field (set by the
-                        // `CoreExpr::UnitVariant` and `CoreExpr::Variant` arms when they
-                        // look up `ctx.type_identity_registry[tycon]`).
-                        //
-                        // `Arc::ptr_eq` on the two `type_val` fields is therefore a correct,
-                        // zero-string-comparison check for type membership. This correctly
-                        // handles:
-                        //
-                        //   - Shadowing: `[Color: [r:255 g:0 b:0]  [match v  Color: "wrong"]]`
-                        //     The plain dict's `type_val` is `unknown_type_val()` (bootstrap
-                        //     singleton), and `unknown_type_val()` is excluded from matching
-                        //     (guard below) → falls through to primitive_eq (no match).
-                        //
-                        //   - Aliases: `mycolor = Color` binds the same dict value (same Arc).
-                        //     dict.type_val is the same Arc as variant.type_val → ptr_eq succeeds.
-                        //
-                        // Guard: we must NOT match when dict_type_val is the unknown_type_val()
-                        // singleton, because `unknown_type_val()` is used both by plain dicts
-                        // (non-type-constructor) AND by variants created outside a TypeDecl
-                        // context (e.g., Variant { ctor: "true" } from builtins). If both had
-                        // unknown_type_val(), ptr_eq would be true but the match would be wrong.
-                        // The guard ensures ptr_eq is only checked for REAL type identities
-                        // (unique Arcs created by CoreExpr::TypeDecl, not the shared singleton).
-                        if let Value::Dict {
-                            type_val: dict_type_val,
-                            ..
-                        } = &pinned_val
-                        {
-                            // Only proceed if the dict carries a real type identity (not the
-                            // bootstrap unknown sentinel — which all plain dicts also carry).
-                            if !Arc::ptr_eq(dict_type_val, crate::value::unknown_type_val_ref()) {
-                                if let Value::Variant {
-                                    type_val: variant_type_val,
-                                    ..
-                                } = &value
-                                {
-                                    if Arc::ptr_eq(variant_type_val, dict_type_val) {
-                                        return Ok(true);
-                                    }
-                                }
-                            }
-                        }
-
-                        if primitive_eq(value, pinned_val) {
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    }
-                    Some(None) => {
-                        // Name not found in scope (resolver may have suppressed the diagnostic
-                        // in pattern position via suppress_depth); arm does not match.
-                        Ok(false)
-                    }
-                    None => Err(EvalError::internal(
-                        "resolver did not run on pattern VarRef".to_string(),
-                        value_span.clone(),
-                    )
-                    .into()),
-                }
-            }
-
-            // Literal patterns: Int, U64, Float, StringLiteral
-            SurfaceExpression::Int(n) => {
-                let matches = matches!(value, Value::Int { n: v, .. } if v == *n);
-                if matches {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-
-            SurfaceExpression::U64(n) => {
-                let matches = matches!(value, Value::U64 { n: v, .. } if v == *n);
-                if matches {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-
-            SurfaceExpression::Float(f) => {
-                let matches = matches!(value, Value::Float { n: v, .. } if v == *f);
-                if matches {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-
-            SurfaceExpression::StringLiteral { content, .. } => {
-                let matches = match &value {
-                    Value::String {
-                        ref source,
-                        start,
-                        end,
-                        ..
-                    } => content == &source[*start..*end],
-                    _ => false,
-                };
-                if matches {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-
-            // Field (dot-access like Color.Red): constructor tag match
-            SurfaceExpression::Field { .. } => {
-                // Flatten the full dot-access chain to get the constructor tag
-                if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&pattern.expr) {
-                    // Check if scrutinee is a Variant with matching tag
-                    match &value {
-                        Value::Variant { ctor, .. } => {
-                            if tag == ctor.as_ref() {
-                                Ok(true)
-                            } else {
-                                Ok(false)
-                            }
-                        }
-                        _ => Ok(false),
-                    }
-                } else {
-                    Err(EvalError::user_error(
-                        "unsupported pattern form: dot-access must resolve to a constructor tag"
-                            .to_string(),
-                        pattern.span.clone(),
-                    )
-                    .into())
-                }
-            }
-
-            // Call pattern: [Tag payload] — constructor match with optional payload sub-pattern
-            SurfaceExpression::Call {
-                func,
-                args,
-                named_args,
-                ..
-            } if named_args.is_empty() => {
-                match crate::ast::flatten_dot_access_to_tag(&func.expr) {
-                    Some(tag) => {
-                        match &value {
-                            Value::Variant { ctor, payload, .. } => {
-                                if tag != ctor.as_ref() {
-                                    return Ok(false);
-                                }
-                                if args.is_empty() {
-                                    // [Tag] — no payload sub-pattern: tag match only
-                                    return Ok(true);
-                                }
-                                if args.len() > 1 {
-                                    return Err(EvalError::user_error(
-                                        "Call pattern may have at most one payload sub-pattern"
-                                            .to_string(),
-                                        pattern.span.clone(),
-                                    )
-                                    .into());
-                                }
-                                let sub_pat = &args[0];
-                                match &sub_pat.expr {
-                                    SurfaceExpression::Placeholder(..) => {
-                                        // [Tag ...] — wildcard payload: tag matched, ignore payload
-                                        Ok(true)
-                                    }
-                                    SurfaceExpression::VarRef { resolution, .. } => {
-                                        match resolution.get() {
-                                            Some(Some(_)) => {
-                                                // Resolved pin — compare against payload value
-                                                match payload {
-                                                    Some(payload_id) => {
-                                                        let payload_thunk = Arc::clone(payload_id);
-                                                        let payload_val = materialize(
-                                                            &payload_thunk,
-                                                            Some(value_span),
-                                                            ctx,
-                                                        )
-                                                        .await?;
-                                                        match_pattern(
-                                                            sub_pat,
-                                                            &payload_val,
-                                                            &sub_pat.span,
-                                                            frame,
-                                                            ctx,
-                                                        )
-                                                        .await
-                                                    }
-                                                    None => Ok(false),
-                                                }
-                                            }
-                                            Some(None) => {
-                                                // Not in scope — resolver warned; arm does not match
-                                                Ok(false)
-                                            }
-                                            None => Err(EvalError::internal(
-                                                "resolver did not run on Call pattern VarRef"
-                                                    .to_string(),
-                                                value_span.clone(),
-                                            )
-                                            .into()),
-                                        }
-                                    }
-                                    _ => {
-                                        // Recurse: match sub-pattern against payload value
-                                        match payload {
-                                            Some(payload_id) => {
-                                                let payload_thunk = Arc::clone(payload_id);
-                                                let payload_val = materialize(
-                                                    &payload_thunk,
-                                                    Some(value_span),
-                                                    ctx,
-                                                )
-                                                .await?;
-                                                match_pattern(
-                                                    sub_pat,
-                                                    &payload_val,
-                                                    &sub_pat.span,
-                                                    frame,
-                                                    ctx,
-                                                )
-                                                .await
-                                            }
-                                            None => Ok(false),
-                                        }
-                                    }
-                                }
-                            }
-                            _ => Ok(false),
-                        }
-                    }
-                    None => Err(EvalError::user_error(
-                        "not a valid pattern: Call head must resolve to a constructor tag"
-                            .to_string(),
-                        pattern.span.clone(),
-                    )
-                    .into()),
-                }
-            }
-
-            // Call pattern with named args: [Tag field: sub-pat ...] — named-field constructor match
-            SurfaceExpression::Call {
-                func, named_args, ..
-            } if !named_args.is_empty() => {
-                match crate::ast::flatten_dot_access_to_tag(&func.expr) {
-                    Some(tag) => {
-                        // Check if scrutinee is a Variant with the right tag
-                        let Value::Variant { ctor, payload, .. } = &value else {
-                            return Ok(false);
-                        };
-                        if tag != ctor.as_ref() {
-                            return Ok(false);
-                        }
-                        let Some(payload_id) = payload else {
-                            return Ok(false);
-                        };
-                        let payload_thunk = Arc::clone(payload_id);
-                        let payload_val =
-                            materialize(&payload_thunk, Some(value_span), ctx).await?;
-                        let Value::Dict {
-                            entries: payload_map,
-                            ..
-                        } = &payload_val
-                        else {
-                            return Ok(false);
-                        };
-                        // For each named arg, extract the field from the payload dict and
-                        // recursively match the sub-pattern.
-                        for na in named_args.iter() {
-                            let field_key = HashableValue::Str(Arc::from(na.node.name.as_str()));
-                            let Some(field_thunk) = payload_map.get(&field_key) else {
-                                return Ok(false);
-                            };
-                            let field_val = materialize(field_thunk, Some(value_span), ctx).await?;
-                            if !match_pattern(
-                                &na.node.value,
-                                &field_val,
-                                &na.node.value.span,
-                                frame,
-                                ctx,
-                            )
-                            .await?
-                            {
-                                return Ok(false);
-                            }
-                        }
-                        Ok(true)
-                    }
-                    None => Err(EvalError::user_error(
-                        "not a valid pattern: Call head must resolve to a constructor tag"
-                            .to_string(),
-                        pattern.span.clone(),
-                    )
-                    .into()),
-                }
-            }
-
-            // Dict pattern: match dict structure
-            SurfaceExpression::Dict(entries) => {
-                match &value {
-                    Value::Dict {
-                        entries: dict_thunk_ids,
-                        ..
-                    } => {
-                        // Check each pattern field
-                        for entry in entries {
-                            // Extract the key — should be a string key
-                            let key_str = if let Some(key_node) = &entry.node.key {
-                                match &key_node.expr {
-                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                    SurfaceExpression::StringLiteral { content, .. } => {
-                                        content.clone()
-                                    }
-                                    _ => {
-                                        return Err(EvalError::user_error(
-                                            "dict pattern keys must be identifiers or string literals".to_string(),
-                                            key_node.span.clone(),
-                                        ).into());
-                                    }
-                                }
-                            } else {
-                                // Auto-indexed entry — not supported in patterns
-                                return Err(EvalError::user_error(
-                                    "dict patterns do not support auto-indexed entries".to_string(),
-                                    entry.span.clone(),
-                                )
-                                .into());
-                            };
-
-                            // Look up the field in the dict
-                            if let Some(field_thunk) =
-                                dict_thunk_ids.get(&HashableValue::Str(Arc::from(key_str.as_str())))
-                            {
-                                let field_value =
-                                    materialize(field_thunk, Some(value_span), ctx).await?;
-
-                                // Recursively match the field pattern
-                                if !match_pattern(
-                                    &entry.node.value,
-                                    &field_value,
-                                    &entry.node.value.span,
-                                    frame,
-                                    ctx,
-                                )
-                                .await?
-                                {
-                                    return Ok(false);
-                                }
-                            } else {
-                                // Required field not present
-                                return Ok(false);
-                            }
-                        }
-
-                        Ok(true)
-                    }
-                    Value::Variant {
-                        payload: Some(payload_id),
-                        ..
-                    } => {
-                        // Auto-unpack variant payload for dict pattern matching
-                        let payload_thunk = Arc::clone(payload_id);
-                        let payload_val =
-                            materialize(&payload_thunk, Some(value_span), ctx).await?;
-                        match_pattern(pattern, &payload_val, value_span, frame, ctx).await
-                    }
-                    _ => Ok(false),
-                }
-            }
-
-            _ => Err(EvalError::user_error(
-                format!(
-                    "not a valid pattern: {}",
-                    crate::surface_fields::surface_expr_tag(&pattern.expr)
-                ),
-                pattern.span.clone(),
-            )
-            .into()),
-        }
-    })
-}
-
 /// Check if two values are equal.
 ///
 /// This is the canonical equality comparison used by pin patterns (`varname:` — bare word in pattern position),
@@ -2966,8 +2467,8 @@ mod tests {
         assert_eq!(val, string_val("hello"));
     }
 
-    // VarRef dispatch — covers the three VarAddr paths in eval_core.rs CoreExpr::Var.
-    // LGM (LetrecGroupMember) path: covered by test_dict_letrec_sibling_reference and
+    // VarRef dispatch — covers the four VarAddr paths in eval_core.rs CoreExpr::Var.
+    // Dispatch(_, slot) path: covered by test_dict_letrec_sibling_reference and
     // test_dict_letrec_forward_reference below.
     // Parameter and ClosureCapture paths: covered by corpus tests
     // tests/corpus/eval/varref_parameter_dispatch.llt-eval and
@@ -3276,9 +2777,10 @@ mod tests {
         let thunk = eval_str("[fn [let x] $x]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
-            Value::Function { params, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].name, "x");
+            Value::Function { clauses, .. } => {
+                let clause = clauses.first().expect("must have clause");
+                assert_eq!(clause.params.len(), 1);
+                assert_eq!(clause.params[0].node.name, "x");
             }
             other => panic!("expected Function, got {other:?}"),
         }
@@ -3338,9 +2840,10 @@ mod tests {
         let thunk = eval_for_test_resolved(node, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match val {
-            Value::Function { params, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].name, "_");
+            Value::Function { clauses, .. } => {
+                let clause = clauses.first().expect("must have clause");
+                assert_eq!(clause.params.len(), 1);
+                assert_eq!(clause.params[0].node.name, "_");
             }
             other => panic!("expected Function, got {other:?}"),
         }
@@ -3891,7 +3394,7 @@ mod tests {
         use crate::eval_call::func_label_core;
         let label = func_label_core(&CoreExpr::Var {
             name: "f".to_string(),
-            addr: crate::ast::VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
+            addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
         });
         assert_eq!(label.as_deref(), Some("f"));
@@ -4062,19 +3565,29 @@ mod tests {
         // Create a function that would fail if called twice
         // (we'll verify it's only called once by checking the state)
         let identity_fn = Value::Function {
-            params: Arc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-                slot: 0,
-                resolved_type: None,
+            clauses: Arc::new(vec![crate::ast::CoreClause {
+                params: vec![crate::ast::Spanned::new(
+                    crate::ast::CoreParam {
+                        name: "x".into(),
+                        annotation: None,
+                        variadic: false,
+                        slot: 0,
+                        resolved_type: None,
+                    },
+                    test_span(1, 1, 1, 1),
+                )],
+                lowered_pattern: None,
+                guard: None,
+                body: Arc::new(sp(CoreExpr::Var {
+                    name: "x".to_string(),
+                    addr: crate::ast::VarAddr::Parameter(0),
+                    annotation: None,
+                })),
+                guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                captures: Arc::new(vec![]),
             }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                addr: crate::ast::VarAddr::Parameter(0),
-                annotation: None,
-            })),
             closure_env: Arc::new(vec![]),
+            instance_of: None,
             annotation: None,
             type_val: unknown_type_val(),
         };
@@ -4155,19 +3668,29 @@ mod tests {
         // PendingCall should work with unevaluated argument thunks (lazy evaluation)
 
         let identity_fn = Value::Function {
-            params: Arc::new(vec![Param {
-                name: "x".into(),
-                annotation: None,
-                variadic: false,
-                slot: 0,
-                resolved_type: None,
+            clauses: Arc::new(vec![crate::ast::CoreClause {
+                params: vec![crate::ast::Spanned::new(
+                    crate::ast::CoreParam {
+                        name: "x".into(),
+                        annotation: None,
+                        variadic: false,
+                        slot: 0,
+                        resolved_type: None,
+                    },
+                    test_span(1, 1, 1, 1),
+                )],
+                lowered_pattern: None,
+                guard: None,
+                body: Arc::new(sp(CoreExpr::Var {
+                    name: "x".to_string(),
+                    addr: crate::ast::VarAddr::Parameter(0),
+                    annotation: None,
+                })),
+                guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                captures: Arc::new(vec![]),
             }]),
-            body: Arc::new(sp(CoreExpr::Var {
-                name: "x".to_string(),
-                addr: crate::ast::VarAddr::Parameter(0),
-                annotation: None,
-            })),
             closure_env: Arc::new(vec![]),
+            instance_of: None,
             annotation: None,
             type_val: unknown_type_val(),
         };
@@ -5233,6 +4756,7 @@ mod tests {
         // Variant with matching tycon matches
         let red = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -5240,6 +4764,7 @@ mod tests {
         // Variant with different tycon does not match
         let wrong = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
         };
@@ -5327,6 +4852,7 @@ mod tests {
 
         let color_red = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -5337,6 +4863,7 @@ mod tests {
 
         let color_green = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Green"),
             payload: None,
         };
@@ -5347,6 +4874,7 @@ mod tests {
 
         let other = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
         };
@@ -5388,6 +4916,7 @@ mod tests {
         );
         let color_variant = Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -6199,18 +5728,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_pm3_match_expr_pin_pattern_does_not_bind() {
-        // `[a: x  b: x  ...]: x` — `x` is undefined in both pattern and body.
-        // Pattern: each dict entry value `x` has resolution=Some(None) → arm doesn't match.
+        // `[a: x  b: x]: "body"` — `x` is undefined in the dict pattern values.
+        // Each `x` has resolution=Some(None) →
+        //   lowerer emits CoreExpr::Var { addr: ClosureCapture(u32::MAX) } (sentinel) →
+        //   bind_or_pin_name returns Ok(false) → arm doesn't match.
         // No wildcard fallback → MatchExhaustion when forced.
-        // (Resolver emits "undefined variable: x" warnings, but lowerer silently
-        // produces CoreExpr::Placeholder for Some(None) — errors are resolver's responsibility.)
-        let thunk = eval_str("[match [a: 1  b: 2]  [a: x  b: x  ...]: x]", &test_ctx())
+        // (Note: `...` inside a dict pattern requires scope_frames for spread desugaring;
+        //  this test uses a plain dict pattern to avoid that complexity.)
+        let thunk = eval_str("[match [a: 1  b: 2]  [a: x  b: x]: \"body\"]", &test_ctx())
             .await
             .expect("eval_str must succeed (arm simply doesn't match, body never reached)");
         let result = materialize(&thunk, None, &test_ctx()).await;
         assert!(
             result.is_err(),
-            "undefined-pin arm must produce MatchExhaustion when forced; got: {:?}",
+            "undefined-pin dict-pattern arm must produce MatchExhaustion when forced; got: {:?}",
             result
         );
         assert!(
@@ -6218,7 +5749,7 @@ mod tests {
                 result.unwrap_err().kind,
                 crate::error::ErrorKind::MatchExhaustion { .. }
             ),
-            "expected MatchExhaustion from undefined pin pattern"
+            "expected MatchExhaustion from undefined pin in dict pattern"
         );
     }
 
@@ -6244,7 +5775,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_pm3_undefined_vrefs_in_arms_produce_match_exhaustion() {
-        // Undefined VarRefs in pattern position resolve to Some(None) → arm never matches.
+        // Undefined VarRefs in pattern (key) position resolve to Some(None) →
+        // lowerer emits sentinel Var → bind_or_pin_name returns Ok(false) → arm never matches.
         // `[match 42  x: 1  x: 2]` with x undefined → MatchExhaustion.
         let thunk = eval_str("[match 42  x: 1  x: 2]", &test_ctx())
             .await

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode, ANNOTATION_KEY_DEFAULT,
+    CoreClause, CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode, ANNOTATION_KEY_DEFAULT,
 };
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::type_tags::*;
@@ -15,7 +15,7 @@ use indexmap::IndexMap;
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::{materialize, value_matches_type, EvalContext};
+use crate::eval::{call_to_match, materialize, value_matches_type, EvalContext};
 use crate::eval_core::eval_core_expr;
 
 /// Return `true` if `tv` is a TypeValue.Unknown — either the bootstrap sentinel (empty dict)
@@ -71,7 +71,7 @@ pub(crate) async fn eval_call_core(
     let func_thunk = eval_core_expr(func_expr, caller_frame, ctx).await?;
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks (Arc<Thunk> directly).
-    // Use the caller's EvalFrame so that LetrecGroupMember/ClosureCapture variable
+    // Use the caller's EvalFrame so that Dispatch/ClosureCapture variable
     // references inside argument expressions resolve against the call site's scope.
     let pos_args: Vec<Arc<Thunk>> = args
         .iter()
@@ -125,12 +125,11 @@ pub(crate) async fn eval_call_core(
 
 /// Arguments for invoking a user-defined function.
 ///
-/// `default_env` is the environment used to evaluate default expressions for
-/// optional params. For normal calls this is the caller's environment; for
-/// `apply` it is the closure environment.
+/// `clauses` is the full clause list from `Value::Function.clauses`.
+/// `invoke_function` iterates clauses via `try_clause` to find the first matching one.
+/// `closure_env` is the captured environment built at function-definition time.
 pub struct CallContext<'a> {
-    pub params: &'a [Param],
-    pub body: &'a Arc<Spanned<CoreExpr>>,
+    pub clauses: &'a Arc<Vec<CoreClause>>,
     /// Captured closure environment (replaces closure_env_id u32 + scope_arena lookup).
     pub closure_env: Arc<Vec<Arc<Thunk>>>,
     pub positional: &'a [Arc<Thunk>],
@@ -140,33 +139,307 @@ pub struct CallContext<'a> {
     pub ctx: &'a Arc<EvalContext>,
 }
 
+/// Try to match a single function clause against the provided arguments.
+///
+/// Returns `Ok(Some(frame))` when the clause matches — the frame is ready for the body.
+/// Returns `Ok(None)` when the clause does not match (wrong arity, type guard, pattern, or guard fails).
+/// Returns `Err(...)` on a hard evaluation error during type guard or pattern materialization.
+///
+/// Matching rules (in order):
+/// 1. **Arity**: count non-variadic params; if `args.len()` does not match → `Ok(None)`.
+/// 2. **Type guards**: for each param whose `resolved_type` is `Some(tv)` and not Unknown,
+///    materialize the corresponding arg and check `value_matches_type`. Mismatch → `Ok(None)`.
+///    Params with `resolved_type = None` or Unknown are wildcards that always pass.
+/// 3. **Lowered pattern**: if `clause.lowered_pattern.is_some()`, evaluate the structural
+///    pattern against `args[0]`. Pattern mismatch → `Ok(None)`. The current lowerer never
+///    produces `CoreExpr::Fn` clauses with `lowered_pattern = Some(...)`, so this path is
+///    unreachable in practice, but is implemented correctly.
+/// 4. **Guard expression**: if `clause.guard.is_some()`, bind args and evaluate the guard in
+///    the bound frame. Falsy guard → `Ok(None)`. Returns the bound frame directly when the
+///    guard passes, skipping the redundant bind in step 5.
+/// 5. **All checks pass**: call `bind_args_thunks` and return the resulting frame.
+pub(crate) async fn try_clause(
+    clause: &CoreClause,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    closure_env: Arc<Vec<Arc<Thunk>>>,
+    ctx: &Arc<EvalContext>,
+    call_span: &Span,
+) -> EvalResult<Option<Arc<EvalFrame>>> {
+    // Convert CoreParam → Param for use with bind_args_thunks.
+    // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
+    let params: Vec<Param> = clause
+        .params
+        .iter()
+        .map(|p| Param {
+            name: p.node.name.clone(),
+            annotation: p.node.annotation.clone(),
+            variadic: p.node.variadic,
+            slot: p.node.slot,
+            resolved_type: p.node.resolved_type.clone(),
+        })
+        .collect();
+
+    // Step 1 — Arity check: determine whether the arg count is compatible with this clause.
+    //
+    // For clause matching (vs. single-clause error reporting) we return Ok(None) for any
+    // incompatible arity so the caller can try the next clause. The rules mirror bind_args_thunks
+    // classification but are applied as a filter rather than a hard error:
+    //
+    // - required_count: non-variadic params with no default expression.
+    // - max_positional: total non-variadic params (required + optional-with-default).
+    // - has_variadic: true when any param is variadic (absorbs excess positionals).
+    //
+    // Incompatible cases:
+    //   some required param is not covered positionally or by a named arg
+    //   args.len() > max_positional AND !has_variadic — too many positional args
+    //
+    // Named args must be considered when checking required-param coverage: a named arg
+    // `kind: "Operator"` covers the required param `kind` even when args is empty.
+    // This matches the Kotlin-model coverage check in bind_args_thunks (BIND-ARITY).
+    let max_positional = params.iter().filter(|p| !p.variadic).count();
+    let has_variadic = params.iter().any(|p| p.variadic);
+
+    // Check that every required non-variadic param is covered positionally or by a named arg.
+    for (i, param) in params.iter().filter(|p| !p.variadic).enumerate() {
+        if get_default(param).is_none() {
+            // Required param: must be reachable positionally or by name.
+            let covered_positionally = i < args.len();
+            let covered_by_name = named.map(|n| n.contains_key(&param.name)).unwrap_or(false);
+            if !covered_positionally && !covered_by_name {
+                return Ok(None);
+            }
+        }
+    }
+
+    if !has_variadic && args.len() > max_positional {
+        return Ok(None);
+    }
+
+    // Step 2 — Type guard params: materialize and check type for annotated params.
+    // Materialization here is a necessary strictness point: type dispatch requires
+    // knowing the runtime type, analogous to the typed-variadic bucket routing in
+    // bind_args_thunks. Only params with a concrete resolved_type (not Unknown/None) are checked.
+    for (i, param) in params.iter().enumerate() {
+        let Some(tv) = &param.resolved_type else {
+            continue; // No annotation → wildcard, always matches.
+        };
+        if is_typevalue_unknown(tv) {
+            continue; // TypeValue.Unknown → wildcard, always matches.
+        }
+        let Some(arg) = args.get(i) else {
+            continue; // Arg absent — arity check above handles this case.
+        };
+        let value = materialize(arg, Some(call_span), ctx).await?;
+        if !value_matches_type(&value, tv, ctx) {
+            return Ok(None); // Type mismatch — this clause does not apply.
+        }
+    }
+
+    // Step 3 — Lowered pattern: structural match against the first positional argument.
+    // The current lowerer never produces CoreExpr::Fn clauses with lowered_pattern = Some(...)
+    // (fn clauses have lowered_pattern = None; only match arm clauses set it). If a fn clause
+    // ever carries a lowered_pattern, evaluate it as a structural pattern against args[0].
+    if let Some(lowered_pattern) = &clause.lowered_pattern {
+        // Build a pre-arm frame with the closure_env so ClosureCapture pin addresses resolve.
+        let pre_frame = Arc::new(EvalFrame::for_function_call(
+            Arc::clone(&closure_env),
+            vec![],
+        ));
+        // Build the binding_map from clause.params (name → slot).
+        let binding_map: IndexMap<String, u32> = clause
+            .params
+            .iter()
+            .map(|p| (p.node.name.clone(), p.node.slot))
+            .collect();
+        // Materialize the first positional arg as the pattern scrutinee.
+        let scrutinee = match args.first() {
+            Some(arg) => materialize(arg, Some(call_span), ctx).await?,
+            None => {
+                // No first arg — pattern cannot match (arity would have caught zero-arg).
+                return Ok(None);
+            }
+        };
+        // Capture the structural pattern bindings for use in the arm frame.
+        let pattern_bindings: Option<Vec<(u32, Arc<Thunk>)>> =
+            match crate::eval_materialize::eval_case_arm_structural_pattern(
+                lowered_pattern,
+                &binding_map,
+                &scrutinee,
+                call_span.clone(),
+                &pre_frame,
+                ctx,
+            )
+            .await?
+            {
+                Some(bindings) => Some(bindings),
+                None => {
+                    // Pattern did not match — this clause does not apply.
+                    return Ok(None);
+                }
+            };
+
+        // If the structural pattern produced bindings, build the frame directly from them
+        // (matching the `eval_materialize.rs` MatchDispatch path for case arms).
+        // This ensures pattern-bound variables (e.g. `h`, `p` from [case [let h p] ...])
+        // are correctly populated in the call frame rather than discarded.
+        if let Some(bindings) = pattern_bindings {
+            // Sort bindings by slot so params_vec is indexed contiguously.
+            let mut sorted = bindings;
+            sorted.sort_unstable_by_key(|(slot, _)| *slot);
+            let slot_count = params
+                .len()
+                .max(sorted.last().map(|(s, _)| (*s as usize) + 1).unwrap_or(0));
+            let mut params_vec: Vec<Option<Arc<Thunk>>> = vec![None; slot_count];
+            for (slot, thunk) in sorted {
+                let s = slot as usize;
+                if s < params_vec.len() {
+                    params_vec[s] = Some(thunk);
+                }
+            }
+            // Fill any remaining gaps with a sentinel (should not happen for well-formed arms).
+            let params_final: Vec<Arc<Thunk>> = params_vec
+                .into_iter()
+                .enumerate()
+                .map(|(i, opt)| {
+                    opt.unwrap_or_else(|| {
+                        panic!(
+                            "try_clause structural pattern: unfilled param slot {} \
+                             — lowerer invariant violated",
+                            i
+                        )
+                    })
+                })
+                .collect();
+            let bound_frame = EvalFrame::for_function_call(Arc::clone(&closure_env), params_final);
+
+            // Step 4 (guard) with pattern-bound frame.
+            if let Some(guard_expr) = &clause.guard {
+                let guard_thunk = eval_core_expr(guard_expr, &bound_frame, ctx).await?;
+                let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
+                if !Box::pin(call_to_match(&guard_value, ctx, call_span)).await? {
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(bound_frame));
+        }
+    }
+
+    // Step 4 — Guard expression: evaluate in the fully bound frame.
+    // Bind args first so the guard can reference bound parameter names.
+    // If the guard is falsy, this clause does not match.
+    if let Some(guard_expr) = &clause.guard {
+        let bound_frame = bind_args_thunks(
+            &params,
+            args,
+            named,
+            Arc::clone(&closure_env),
+            ctx,
+            call_span,
+        )
+        .await
+        .map_err(|mut e| {
+            e.set_arity_callee(call_span.name.clone());
+            e
+        })?;
+        let guard_thunk = eval_core_expr(guard_expr, &bound_frame, ctx).await?;
+        let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
+        if !Box::pin(call_to_match(&guard_value, ctx, call_span)).await? {
+            return Ok(None);
+        }
+        // Guard passed — return the already-bound frame.
+        return Ok(Some(bound_frame));
+    }
+
+    // Step 5 — All checks pass: bind args and return the call frame.
+    let frame = bind_args_thunks(&params, args, named, closure_env, ctx, call_span)
+        .await
+        .map_err(|mut e| {
+            e.set_arity_callee(call_span.name.clone());
+            e
+        })?;
+    Ok(Some(frame))
+}
+
 /// Invoke a user-defined function with pre-evaluated thunks.
 ///
-/// Binds positional and named args to function params (respecting defaults and
-/// variadics), then wraps the body as an unevaluated thunk. This is the shared
-/// call path for both `eval_call` and `builtin_apply`.
+/// Iterates over the function's clauses via `try_clause`, selecting the first
+/// matching clause. Wraps the matching clause's body as an unevaluated thunk.
+/// This is the shared call path for both `PendingCallDispatch` and `builtin_apply`.
+///
+/// Error reporting: when no clause matches, single-clause functions fall through to
+/// `bind_args_thunks` directly to produce a specific arity/coverage error (e.g.
+/// "missing argument for required parameter"). Multi-clause functions report
+/// "no matching clause" — they may have rejected due to type dispatch rather than arity,
+/// and `bind_args_thunks` on an arbitrary clause would give a misleading error.
 pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
-    // bind_args builds an EvalFrame for the call frame from the bound params.
-    let frame = bind_args_thunks(
-        ctx.params,
-        ctx.positional,
-        ctx.named,
-        Arc::clone(&ctx.closure_env),
-        ctx.ctx,
-        &ctx.call_span,
-    )
-    .await
-    .map_err(|mut e| {
-        e.set_arity_callee(ctx.call_span.name.clone());
-        e
-    })?;
-    let thunk = Thunk::core_expr(
-        Arc::clone(ctx.body),
-        frame,
-        Arc::clone(ctx.ctx),
+    for clause in ctx.clauses.iter() {
+        let result = try_clause(
+            clause,
+            ctx.positional,
+            ctx.named,
+            Arc::clone(&ctx.closure_env),
+            ctx.ctx,
+            &ctx.call_span,
+        )
+        .await?;
+        if let Some(frame) = result {
+            let thunk = Thunk::core_expr(
+                Arc::clone(&clause.body),
+                frame,
+                Arc::clone(ctx.ctx),
+                ctx.call_span.clone(),
+            );
+            return Ok(Arc::new(thunk));
+        }
+    }
+    // No clause matched.
+    // For single-clause functions, fall through to bind_args_thunks to produce a specific
+    // arity error (e.g. "missing argument for required parameter"). For multi-clause
+    // functions, clauses may have rejected due to type dispatch; use "no matching clause".
+    //
+    // Single-clause: try_clause may have rejected due to type guard (Step 2) rather than
+    // arity (Step 1). If bind_args_thunks also rejects, it produces the specific arity error.
+    // If bind_args_thunks succeeds (type was the only reason try_clause rejected), fall through
+    // to "no matching clause".
+    if ctx.clauses.len() == 1 {
+        let clause = &ctx.clauses[0];
+        let params: Vec<Param> = clause
+            .params
+            .iter()
+            .map(|p| Param {
+                name: p.node.name.clone(),
+                annotation: p.node.annotation.clone(),
+                variadic: p.node.variadic,
+                slot: p.node.slot,
+                resolved_type: p.node.resolved_type.clone(),
+            })
+            .collect();
+        match bind_args_thunks(
+            &params,
+            ctx.positional,
+            ctx.named,
+            Arc::clone(&ctx.closure_env),
+            ctx.ctx,
+            &ctx.call_span,
+        )
+        .await
+        {
+            Err(mut e) => {
+                e.set_arity_callee(ctx.call_span.name.clone());
+                return Err(e);
+            }
+            Ok(_) => {
+                // bind_args_thunks succeeded: try_clause rejected for type reasons only.
+                // Fall through to "no matching clause".
+            }
+        }
+    }
+    Err(EvalError::user_error(
+        "no matching clause for the given arguments".to_string(),
         ctx.call_span.clone(),
-    );
-    Ok(Arc::new(thunk))
+    )
+    .into())
 }
 
 /// TCO variant of `invoke_function` that returns the body expression and call EvalFrame
@@ -177,22 +450,59 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
 ) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<EvalFrame>)> {
-    // bind_args_thunks builds an EvalFrame for the call frame from the bound params.
-    let frame = bind_args_thunks(
-        ctx.params,
-        ctx.positional,
-        ctx.named,
-        Arc::clone(&ctx.closure_env),
-        ctx.ctx,
-        &ctx.call_span,
+    for clause in ctx.clauses.iter() {
+        let result = try_clause(
+            clause,
+            ctx.positional,
+            ctx.named,
+            Arc::clone(&ctx.closure_env),
+            ctx.ctx,
+            &ctx.call_span,
+        )
+        .await?;
+        if let Some(frame) = result {
+            return Ok((Arc::clone(&clause.body), frame));
+        }
+    }
+    // No clause matched — same fallback logic as invoke_function.
+    // Single-clause: try bind_args_thunks for the specific arity error.
+    if ctx.clauses.len() == 1 {
+        let clause = &ctx.clauses[0];
+        let params: Vec<Param> = clause
+            .params
+            .iter()
+            .map(|p| Param {
+                name: p.node.name.clone(),
+                annotation: p.node.annotation.clone(),
+                variadic: p.node.variadic,
+                slot: p.node.slot,
+                resolved_type: p.node.resolved_type.clone(),
+            })
+            .collect();
+        match bind_args_thunks(
+            &params,
+            ctx.positional,
+            ctx.named,
+            Arc::clone(&ctx.closure_env),
+            ctx.ctx,
+            &ctx.call_span,
+        )
+        .await
+        {
+            Err(mut e) => {
+                e.set_arity_callee(ctx.call_span.name.clone());
+                return Err(e);
+            }
+            Ok(_) => {
+                // bind_args_thunks succeeded: try_clause rejected for type reasons only.
+            }
+        }
+    }
+    Err(EvalError::user_error(
+        "no matching clause for the given arguments".to_string(),
+        ctx.call_span.clone(),
     )
-    .await
-    .map_err(|mut e| {
-        e.set_arity_callee(ctx.call_span.name.clone());
-        e
-    })?;
-
-    Ok((Arc::clone(ctx.body), frame))
+    .into())
 }
 
 /// Validate function arguments, build a call-frame EvalFrame, and return it.
@@ -559,23 +869,34 @@ mod tests {
         // Test func_label_core with a Var expression
         let expr = CoreExpr::Var {
             name: "my_func".to_string(),
-            addr: crate::ast::VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
+            addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
         };
         let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("my_func"));
     }
 
+    fn make_test_clause(body: crate::ast::Spanned<CoreExpr>) -> crate::ast::CoreClause {
+        crate::ast::CoreClause {
+            params: vec![],
+            lowered_pattern: None,
+            guard: None,
+            body: Arc::new(body),
+            guard_matchable_binding: crate::ast::MatchableBinding::new(),
+            captures: std::sync::Arc::new(vec![]),
+        }
+    }
+
     #[test]
     fn test_func_label_desugared_lambda() {
         // Test func_label_core with a desugared lambda
         let expr = CoreExpr::Fn {
-            return_ann: None,
-            params: vec![],
-            body: Arc::new(sp(CoreExpr::Int(42))),
+            clauses: vec![make_test_clause(sp(CoreExpr::Int(42)))],
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
+            instance_of: None,
             resolved_fn_type: None,
+            return_ann: None,
         };
         let label = func_label_core(&expr);
         assert!(label
@@ -588,12 +909,12 @@ mod tests {
     fn test_func_label_regular_lambda() {
         // Test func_label_core with a regular (non-desugared) lambda — anonymous, returns None
         let expr = CoreExpr::Fn {
-            return_ann: None,
-            params: vec![],
-            body: Arc::new(sp(CoreExpr::Int(42))),
+            clauses: vec![make_test_clause(sp(CoreExpr::Int(42)))],
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
+            instance_of: None,
             resolved_fn_type: None,
+            return_ann: None,
         };
         let label = func_label_core(&expr);
         assert_eq!(label, None);
@@ -629,6 +950,7 @@ mod tests {
         );
         Arc::new(Value::Variant {
             type_val: crate::value::unknown_type_val(),
+            type_decl_id: 0,
             ctor: Arc::from(TV_REPR),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 Value::Dict {

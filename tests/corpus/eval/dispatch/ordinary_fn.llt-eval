@@ -1,0 +1,26 @@
+# Ordinary functions (wildcard clauses) — no type guards, behavior identical to pre-dispatch-unification.
+# These must continue to work unchanged: the unified path treats a plain fn as a single wildcard clause
+# with no type guards, no structural pattern, and no guard expression.
+[
+  double:  [fn [let x] [* x 2]]
+  add:     [fn [let x y] [+ x y]]
+  compose: [fn [let f g] [fn [let x] [f [g x]]]]
+
+  # Ordinary calls
+  r-double: [double 21]
+  r-add:    [add 10 32]
+
+  # Higher-order — wildcard clauses work as first-class values
+  add-then-double: [compose double add]
+  r-composed: [add-then-double 3 4]
+
+  # Multi-body fn (intermediate binding dict)
+  normalize: [fn [let n lo hi] [range: [- hi lo]] [/ [- n lo] range]]
+  r-norm:    [normalize 5 0 10]
+
+  # Zero-arg fn
+  constant: [fn [] 99]
+  r-const:  [constant]
+]
+=== out
+Dict({"double": Function(x), "add": Function(x, y), "compose": Function(f, g), "r-double": Int(42), "r-add": Int(42), "add-then-double": Function(x), "r-composed": Int(14), "normalize": Function(n, lo, hi), "r-norm": Float(0.5), "constant": Function(), "r-const": Int(99)})

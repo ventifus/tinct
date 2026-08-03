@@ -213,7 +213,7 @@ Escaped dict keys (`$x:`) and annotation PropertyDict values (in constructor bod
 
 When `resolve_name` fails for a name that looks like a class method (e.g., `+`, `=`), the resolver falls back to scanning all scopes for an instance binding whose method component matches. Instance binding names have the format `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽` or `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽`. The resolver resolves to the first match.
 
-The resolver's best-effort fallback ensures the OnceLock is set and the lowerer doesn't emit "undefined variable" for method names. At lowering time, `make_method_dispatcher_fn` uses `scope_frames` to synthesize a MethodDispatcher `CoreExpr::Fn` that routes calls by argument type across the scope chain.
+The resolver's best-effort fallback ensures the OnceLock is set and the lowerer doesn't emit "undefined variable" for method names. At lowering time, the lowerer emits `VarAddr::EffectPerform { class_id, method }` for typeclass method references. At call time, the evaluator scans the accumulated group (innermost-first) for `Value::Function` entries with matching `instance_of: Some((class_id, method))`, concatenates their clauses, and tries each clause in order.
 
 ### Leading-dot Field (`.name`)
 
@@ -305,7 +305,7 @@ all_frames = [root_frame] + new_frames
 eval_ctx_with_frames = eval_ctx.with_scope_frames(Arc::new(all_frames))
 ```
 
-The combined `all_frames` is attached to the `EvalContext` via `with_scope_frames()`. This makes the frames available to `lower()` at thunk-forcing time (via `thunk_ctx.scope_frames` / `ctx.scope_frames`), which uses them to synthesize MethodDispatcher `CoreExpr::Fn` nodes that resolve mangled instance binding names to de Bruijn coordinates.
+The combined `all_frames` is attached to the `EvalContext` via `with_scope_frames()`. This makes the frames available to `lower()` at thunk-forcing time (via `thunk_ctx.scope_frames` / `ctx.scope_frames`), which uses them to resolve scope-frame-dependent names (e.g., `builtin-dict-merge` for spread dicts) to correct de Bruijn coordinates.
 
 The root frame is the **one legitimate exception** to purely AST-based scope construction: capabilities injected by `main.rs` (`%cwd`, `%libdir`, `%programs`, etc.) have no AST source, so their names must be read from `ScopeArena.scopes[0]`. After this single read, the resolver operates purely from AST structure.
 
@@ -317,7 +317,7 @@ pub scope_frames: Option<Arc<Vec<IndexMap<String, u32>>>>,
 
 Set by `with_scope_frames()` after resolving the init program. `None` in bootstrap contexts and unit tests. Propagated unchanged to all child contexts (`with_base_dir`, `with_cancel_token`, timeout contexts, etc.).
 
-`scope_frames` is read by `lower()` in `eval_materialize.rs` when forcing an unevaluated thunk that holds a `SurfaceNode`. The frames are passed to `lower()` so it can synthesize MethodDispatcher `CoreExpr::Fn` nodes that resolve mangled instance binding names and chain parent dispatchers.
+`scope_frames` is read by `lower()` in `eval_materialize.rs` when forcing an unevaluated thunk that holds a `SurfaceNode`. The frames are passed to `lower()` so it can resolve scope-frame-dependent names (e.g., `builtin-dict-merge` for spread dicts) to correct de Bruijn coordinates. Typeclass method dispatch no longer uses `scope_frames` -- it is handled entirely by `VarAddr::EffectPerform` at runtime.
 
 ### Lowering (`src/lower.rs`)
 
@@ -327,7 +327,7 @@ Set by `with_scope_frames()` after resolving the init program. `None` in bootstr
 
 The lowerer reads `VarRef.resolution` (set by the resolver) to emit `CoreExpr::Var { level, slot }`. If the OnceLock is unset (`None`), it emits `LowerDiagnostic::Error` — "resolver did not run".
 
-For typeclass method calls, the lowerer uses `scope_frames` to synthesize a MethodDispatcher: `make_method_dispatcher_fn` looks up mangled instance binding names via `resolve_name_in_frames` and builds a `CoreExpr::Fn` that dispatches by argument type across the scope chain. Parent dispatchers are found via `resolve_name_in_parent_frames` (second-occurrence algorithm). If `scope_frames` is `None`, the dispatcher is synthesized without parent chaining.
+For typeclass method calls, the lowerer emits `VarAddr::EffectPerform { class_id, method }` on the method's `CoreExpr::Var` node. No synthetic dispatcher function is generated at lowering time. At runtime, the evaluator's `EffectPerform` handler scans the accumulated group (innermost slot first) for `Value::Function` entries with matching `instance_of: Some((class_id, method))`, concatenates their clauses, and dispatches by trying each clause in order. This eliminates the need for `scope_frames` in typeclass dispatch entirely.
 
 ### Interaction with Typechecking (`src/typecheck.rs`)
 
@@ -336,7 +336,7 @@ The type checker calls `resolve_surface_program` internally to build its own `Re
 - **With `eval_ctx`** (`typecheck_surface_program_annotation_table_with_env`): seeds the resolver from `ScopeArena.scopes[0]` to match the production loader path, so instance binding names resolve correctly.
 - **Bootstrap** (`typecheck_surface_program_annotation_table` called from `typecheck_source`): passes empty `initial_frames` (`&[]`).
 
-The type checker emits `TypeAssert` annotations on function boundaries to enforce type constraints at runtime. Typeclass method dispatch is handled entirely by MethodDispatcher `CoreExpr::Fn` nodes synthesized by the lowerer from instance declarations — no per-call-site dispatch resolution is written by the type checker.
+The type checker emits `TypeAssert` annotations on function boundaries to enforce type constraints at runtime. Typeclass method dispatch is handled entirely at runtime by `VarAddr::EffectPerform` clause-scanning dispatch in `eval_core.rs` — no per-call-site dispatch resolution is written by the type checker, and no synthetic dispatcher functions are generated by the lowerer.
 
 ### The `builtin-resolve` meta API (`src/builtins_meta.rs`)
 

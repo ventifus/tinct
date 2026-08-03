@@ -1,0 +1,8 @@
+# Typed param guard failure: fn [let x@Integer] called with String.
+# The clause has a type guard on x: the clause only fires if arg.type_id() == TYPE_ID_INT.
+# Passing a String fails the guard. With a single-clause fn, no clause matches →
+# the evaluator raises a no-match error that includes the actual argument type.
+[f: [fn [let x@Integer] [+ x 1]]]
+[f "hello"]
+=== error
+no matching clause for the given arguments

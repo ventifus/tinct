@@ -313,7 +313,7 @@ pub(crate) async fn eval_dict_core(
     let mut auto_index: i64 = 0;
 
     // EvalFrame-based letrec: static-key entry thunks are collected into group vector
-    // for LetrecGroupMember variable lookup. The frame is built once after the loop and
+    // for Dispatch(_, slot) variable lookup. The frame is built once after the loop and
     // patched into each non-literal CoreExpr thunk via try_claim/reset.
     //
     // ALL non-literal thunks (both static-key and computed-key) are patched with the
@@ -323,7 +323,7 @@ pub(crate) async fn eval_dict_core(
     // group but still carries params and closure_env from the outer frame.
     //
     // Collect the outer thunk (what goes in the dict map / letrec group) for each static key.
-    // Position in this Vec corresponds to the LetrecGroupMember slot index assigned by the
+    // Position in this Vec corresponds to the Dispatch slot index assigned by the
     // resolver — the i-th static-key entry goes at index i.
     let mut letrec_slots: Vec<Arc<Thunk>> = Vec::new();
     // Collect the inner CoreExpr thunk for each non-literal entry (both static and computed key),

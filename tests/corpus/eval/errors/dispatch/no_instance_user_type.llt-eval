@@ -1,0 +1,12 @@
+# No instance for a user type where no Comparable instance is registered.
+# Calling [< a b] on a user-defined type with no Comparable instance triggers the
+# EffectPerform no-match path: the group scan finds no candidate matching (class_id, method)
+# for the actual argument type. Error must include the class name and actual arg types.
+[
+  Tag: [type Active Inactive]
+  a: Tag.Active
+  b: Tag.Inactive
+]
+[< a b]
+=== error
+no instance found for typeclass method

@@ -54,17 +54,22 @@ pub(crate) async fn call_strict_resolver(
     }
 
     // Must be a parameterized type constructor (Function).
-    let (params, body, closure_env) = match resolver_val {
+    let (clause, closure_env) = match resolver_val {
         Value::Function {
-            params,
-            body,
+            clauses,
             closure_env,
             ..
-        } => (params, body, closure_env),
+        } => {
+            let clause = clauses
+                .first()
+                .expect("Value::Function must have at least one clause")
+                .clone();
+            (clause, closure_env)
+        }
         _ => return Ok(None),
     };
 
-    if params.len() != args.len() {
+    if clause.params.len() != args.len() {
         return Ok(None);
     }
 
@@ -72,9 +77,10 @@ pub(crate) async fn call_strict_resolver(
     // Each arg is already an Arc<Value> TypeValue — use it directly as the param thunk value.
     let param_thunks: Vec<Arc<crate::value::Thunk>> = args
         .iter()
-        .zip(params.iter())
+        .zip(clause.params.iter())
         .map(|(tv, param)| {
-            let span = crate::rust_span!().with_name(std::sync::Arc::from(param.name.as_str()));
+            let span =
+                crate::rust_span!().with_name(std::sync::Arc::from(param.node.name.as_str()));
             // TypeValue IS the TypeNode — pass it directly.
             Arc::new(crate::value::Thunk::value(Value::clone(tv.as_ref()), span))
         })
@@ -83,7 +89,7 @@ pub(crate) async fn call_strict_resolver(
 
     // Evaluate the function body in the call frame and force the result.
     let body_thunk = Arc::new(crate::value::Thunk::core_expr(
-        Arc::clone(&body),
+        Arc::clone(&clause.body),
         call_frame,
         Arc::clone(eval_ctx),
         crate::rust_span!(),
@@ -130,6 +136,7 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
     };
     Arc::new(Value::Variant {
         type_val: crate::value::unknown_type_val(),
+        type_decl_id: 0,
         ctor: Arc::from(TV_APP),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,

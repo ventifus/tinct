@@ -1,0 +1,36 @@
+# Instance method dispatch via VarAddr::EffectPerform — prelude instances for Int, Float, String.
+# Each typeclass method call scans the accumulated instance group for the matching (class_id, method)
+# entry whose type guards match the argument's runtime type. Inner scope instances shadow outer ones.
+#
+# This is the regression test for the EffectPerform path: the synthetic MethodDispatcher
+# (make_method_dispatcher_fn) was removed in S-1024. These calls must route through the
+# native instance group scan instead.
+[
+  # Comparable: < > <= >= dispatch on runtime type
+  lt-int:   [< 1 2]
+  gt-int:   [> 5 3]
+  le-int:   [<= 4 4]
+  ge-int:   [>= 5 4]
+
+  lt-float: [< 1.5 2.5]
+  gt-float: [> 3.0 1.0]
+
+  lt-str:   [< "apple" "banana"]
+  gt-str:   [> "zebra" "ant"]
+
+  # Equatable: = dispatch on runtime type
+  eq-int-t: [= 42 42]
+  eq-int-f: [= 42 43]
+  eq-str-t: [= "hello" "hello"]
+  eq-str-f: [= "hello" "world"]
+  eq-flt-t: [= 1.5 1.5]
+
+  # Addable: + - * dispatch on runtime type
+  add-int:  [+ 10 32]
+  add-flt:  [+ 1.5 2.5]
+  sub-int:  [- 100 58]
+  mul-int:  [* 6 7]
+  div-flt:  [/ 7.0 2.0]
+]
+=== out
+Dict({"lt-int": Variant(Boolean.True, Null), "gt-int": Variant(Boolean.True, Null), "le-int": Variant(Boolean.True, Null), "ge-int": Variant(Boolean.True, Null), "lt-float": Variant(Boolean.True, Null), "gt-float": Variant(Boolean.True, Null), "lt-str": Variant(Boolean.True, Null), "gt-str": Variant(Boolean.True, Null), "eq-int-t": Variant(Boolean.True, Null), "eq-int-f": Variant(Boolean.False, Null), "eq-str-t": Variant(Boolean.True, Null), "eq-str-f": Variant(Boolean.False, Null), "eq-flt-t": Variant(Boolean.True, Null), "add-int": Int(42), "add-flt": Float(4), "sub-int": Int(42), "mul-int": Int(42), "div-flt": Float(3.5)})

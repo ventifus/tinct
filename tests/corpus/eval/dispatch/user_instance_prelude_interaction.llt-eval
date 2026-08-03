@@ -1,0 +1,42 @@
+# User-defined instance + prelude method interaction.
+#
+# The critical regression test for unified clause dispatch: when a user defines an
+# instance of Comparable for a custom type, prelude functions that call [< a b]
+# internally (e.g. min, max) must dispatch to the user's instance, not the
+# prelude's Int/Float/String clauses.
+#
+# This was broken by the synthetic MethodDispatcher (S-1024 motivation): the synthesized
+# dispatcher was built at the prelude's lexical scope, so it only saw prelude instances.
+# User instances defined in inner scopes were invisible to the dispatcher captured by prelude fns.
+#
+# With VarAddr::EffectPerform, [<] always scans the accumulated instance group from
+# innermost-first, so user instances in scope at the call site ARE visible.
+[
+  # Score: a nominal type wrapping an integer level
+  Score: [type Score: [level: Integer]]
+
+  # Comparable instance for Score: compare by level field
+  [instance Comparable
+    [let a@Score b@Score c]:
+      [<:  [fn [let x y] [< x.level y.level]]
+       >:  [fn [let x y] [> x.level y.level]]
+       <=: [fn [let x y] [<= x.level y.level]]
+       >=: [fn [let x y] [>= x.level y.level]]]]
+
+  s1: [Score.Score level: 3]
+  s2: [Score.Score level: 1]
+  s3: [Score.Score level: 2]
+
+  # Direct dispatch: [< s1 s2] must find the Score instance
+  cmp-direct: [< s1 s2]
+
+  # Prelude min/max use [<] internally — must dispatch to user instance
+  min-s: [min s2 s3]
+  max-s: [max s1 s3]
+
+  # Prelude Int dispatch is unaffected by the user instance
+  int-cmp: [< 1 2]
+  int-add: [+ 100 200]
+]
+=== out
+Dict({"Score": Dict({"Score": Function(level)}), "s1": Variant(Score.Score, Dict({"level": Int(3)})), "s2": Variant(Score.Score, Dict({"level": Int(1)})), "s3": Variant(Score.Score, Dict({"level": Int(2)})), "cmp-direct": Variant(Boolean.False, Null), "min-s": Variant(Score.Score, Dict({"level": Int(1)})), "max-s": Variant(Score.Score, Dict({"level": Int(3)})), "int-cmp": Variant(Boolean.True, Null), "int-add": Int(300)})

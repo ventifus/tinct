@@ -14,8 +14,8 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    as_record_typevalue_merged, format_field_path, format_type_for_assert, match_pattern,
-    materialize, primitive_eq, validate_and_wrap_record, value_matches_type, EvalContext,
+    as_record_typevalue_merged, format_field_path, format_type_for_assert, materialize,
+    primitive_eq, validate_and_wrap_record, value_matches_type, EvalContext,
     DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
@@ -1327,12 +1327,16 @@ pub(crate) async fn apply_cont(
                 Ok(func_value) => {
                     match func_value {
                         Value::Function {
-                            params,
-                            body,
+                            clauses,
                             closure_env,
                             annotation,
                             ..
                         } => {
+                            // `invoke_function` / `invoke_function_tco` iterate clauses internally
+                            // (T-2131 multi-clause dispatch). Metadata access for @Expr detection
+                            // and trace logging uses the first clause's params — the dispatch path
+                            // itself is fully delegated to invoke_function/invoke_function_tco.
+
                             // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
                             //
                             // Profiling span note: the non-TCO path pushes a Memoize continuation that
@@ -1361,11 +1365,17 @@ pub(crate) async fn apply_cont(
                             // macro function signatures do not need to declare __call-env__ /
                             // __call-span__ params.  Instead, builtin-eval-macro-ast reads them
                             // directly from the environment chain via the gensym-safe names below.
+                            //
+                            // @Expr detection uses the first clause's params. Functions with @Expr
+                            // params are always single-clause (macros), so clauses[0] is correct.
                             const MACRO_CALL_ENV_NAME: &str = "ᴍᴀᴄʀᴏ∷env";
                             const MACRO_CALL_SPAN_NAME: &str = "ᴍᴀᴄʀᴏ∷span";
 
-                            let has_expr_params = params.iter().any(|p| {
-                                p.annotation
+                            let first_clause_params =
+                                clauses.first().map(|c| c.params.as_slice()).unwrap_or(&[]);
+                            let has_expr_params = first_clause_params.iter().any(|p| {
+                                p.node
+                                    .annotation
                                     .as_ref()
                                     .is_some_and(|a| is_expr_annotation(&a.node))
                             });
@@ -1381,8 +1391,9 @@ pub(crate) async fn apply_cont(
                                     // Replace each @Expr-annotated positional arg with the quoted AST
                                     // of the corresponding call-site CoreExpr.  Args at positions
                                     // beyond core_args (e.g. a variadic rest) are left as thunks.
-                                    for (i, param) in params.iter().enumerate() {
+                                    for (i, param) in first_clause_params.iter().enumerate() {
                                         if param
+                                            .node
                                             .annotation
                                             .as_ref()
                                             .is_some_and(|a| is_expr_annotation(&a.node))
@@ -1452,8 +1463,10 @@ pub(crate) async fn apply_cont(
                                             Some(Err(_)) => "<error>".to_string(),
                                             None => "<thunk>".to_string(),
                                         };
-                                        let name =
-                                            params.get(i).map(|p| p.name.as_str()).unwrap_or("_");
+                                        let name = first_clause_params
+                                            .get(i)
+                                            .map(|p| p.node.name.as_str())
+                                            .unwrap_or("_");
                                         format!("{name}: {val_str}")
                                     })
                                     .collect::<Vec<_>>()
@@ -1472,8 +1485,7 @@ pub(crate) async fn apply_cont(
                             if tail_hint {
                                 let invoke_result = {
                                     let call_ctx = CallContext {
-                                        params: &params,
-                                        body: &body,
+                                        clauses: &clauses,
                                         closure_env: Arc::clone(&closure_env),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
@@ -1510,8 +1522,7 @@ pub(crate) async fn apply_cont(
                                 // Non-TCO path: create thunk and push Memoize continuation.
                                 let invoke_result = {
                                     let call_ctx = CallContext {
-                                        params: &params,
-                                        body: &body,
+                                        clauses: &clauses,
                                         closure_env: Arc::clone(&closure_env),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
@@ -1664,6 +1675,7 @@ pub(crate) async fn apply_cont(
                         // arg and no named args, treat it as constructing Variant(type_val, ctor, payload).
                         Value::Variant {
                             type_val,
+                            type_decl_id,
                             ctor,
                             payload: None,
                         } if args.as_ref().is_some_and(|v| v.len() == 1)
@@ -1676,6 +1688,7 @@ pub(crate) async fn apply_cont(
                                 Arc::clone(&args.as_ref().expect("args set above")[0]);
                             let result_val = Value::Variant {
                                 type_val,
+                                type_decl_id,
                                 ctor,
                                 payload: Some(payload_thunk),
                             };
@@ -2464,8 +2477,8 @@ pub(crate) async fn apply_cont(
 
                         // Propagate the intermediate body's string-key thunks into the
                         // frame's group so subsequent expressions can resolve
-                        // LetrecGroupMember(i) references to this body's bindings.
-                        // The resolver assigns LGM slots to sequential intermediate bodies'
+                        // Dispatch(depth, slot) references to this body's bindings.
+                        // The resolver assigns Dispatch slots to sequential intermediate bodies'
                         // entries in insertion order (step 7 of the Sequential handler in
                         // resolve.rs). Appending the dict's string-key thunks (in insertion
                         // order) to the accumulated group preserves that slot alignment.
@@ -2625,93 +2638,128 @@ pub(crate) async fn apply_cont(
                 Ok(scrutinee_value) => {
                     // Try each arm starting from arm_idx
                     for (i, arm) in arms.iter().enumerate().skip(arm_idx) {
-                        // Case arms ([case [let bindings] pattern body]) skip the keyed pattern
-                        // matching step. The pattern expression (second arg of case) is evaluated
-                        // as either a structural pattern or guard expression after binding the
-                        // [let ...] names.
+                        // Case arms ([case [let bindings] pattern body]) unconditionally match
+                        // (matched = true) so the case arm body dispatch below can set up the
+                        // arm frame and evaluate the case arm's structural/guard pattern.
                         //
-                        // Keyed arms (pattern: body) use match_pattern to check if the pattern
-                        // matches the scrutinee. For case arms, the pattern is resolved in the
-                        // arm's own scope (where bindings are Parameters), so we can't evaluate
-                        // it in the parent frame.
-                        let matched = if arm.let_bindings.is_some() {
-                            // Case arm: skip keyed pattern check, proceed to 3-arg handling.
+                        // Keyed arms (pattern: body) use eval_case_arm_structural_pattern to
+                        // check if the lowered key expression matches the scrutinee.
+                        //
+                        // T-2126: CoreClause no longer has .let_bindings or .pattern fields.
+                        // Case arm detection: params.is_empty() == false means case arm (has bindings).
+                        // Keyed arms always have lowered_pattern = Some (the lowered key expression).
+                        let is_case_arm = !arm.params.is_empty();
+                        let matched = if is_case_arm {
+                            // Case arm: skip keyed pattern check, proceed to clause handling.
                             true
-                        } else {
-                            // Keyed arm: evaluate the pattern against the scrutinee.
-                            // Since apply_cont is async, we can .await directly here without
-                            // block_on_anywhere — this keeps async state on the heap rather than
-                            // the Rust stack, preventing stack overflow on deeply nested patterns.
-                            match match_pattern(
-                                &arm.pattern,
+                        } else if let Some(lowered_pat) = &arm.lowered_pattern {
+                            // Keyed arm: evaluate the lowered pattern via structural pattern
+                            // matching to check if the arm matches the scrutinee.
+                            //
+                            // The lowered pattern is the key expression from the SurfaceMatchArm,
+                            // lowered to CoreExpr. Dispatch is handled by eval_case_arm_structural_pattern
+                            // with an empty binding_map (no variables to bind for keyed arms):
+                            //
+                            // - CoreExpr::Placeholder → wildcard `...` always matches.
+                            // - Literal patterns (Int, Str, Float) → exact value equality.
+                            // - VarRef patterns (e.g. `Integer:`, `True:`, `False:`) → pin check
+                            //   (compare scrutinee with the named value via primitive_eq).
+                            // - Call patterns with a constructor func (e.g. `[Shape.Square n]:`) →
+                            //   constructor tag match with payload binding.
+                            // - Dot-access patterns (e.g. `Color.Red:`) → lowered as
+                            //   `Call(VarRef("builtin-dict-get"), [Str("Red"), VarRef("Color")])`.
+                            //   The func is the field-getter builtin; the pattern func evaluates to
+                            //   a Builtin value. The guard path in eval_structural_pattern_inner
+                            //   then evaluates the full call expression using pctx.frame (the parent
+                            //   frame passed here) so that `Color` is in scope. The result is a
+                            //   Variant or constructor Function, which is matched via ctor_tag_opt.
+                            let empty_binding_map: IndexMap<String, u32> = IndexMap::new();
+                            match eval_case_arm_structural_pattern(
+                                lowered_pat,
+                                &empty_binding_map,
                                 &scrutinee_value,
-                                &arm.pattern.span,
+                                match_span.clone(),
                                 &frame,
                                 &ctx,
                             )
                             .await
                             {
-                                Ok(opt) => opt,
+                                Ok(Some(_)) => true,
+                                Ok(None) => false,
                                 Err(e) => return Action::Continue(Err(e)),
                             }
+                        } else {
+                            // Unreachable: the lowerer always populates lowered_pattern
+                            // for keyed match arms (see lower.rs SurfaceExpression::Match).
+                            // An absent lowered_pattern on a non-case-arm is a lowerer bug.
+                            unreachable!(
+                                "keyed match arm has no lowered_pattern — lowerer invariant violated"
+                            )
                         };
 
                         if matched {
-                            // Keyed arm pattern matched, or this is a case arm.
-                            // For case arms, check let_bindings and evaluate the pattern using
-                            // lowered_pattern. Case arms store binding data in
-                            // CoreMatchArm.let_bindings and .lowered_pattern fields.
-                            // Determine the arm body expression and the EvalFrame to use
-                            // when evaluating the body (and guard).
-                            let (eval_body, arm_frame) = if let Some(let_bindings) =
-                                &arm.let_bindings
-                            {
+                            // Arm matched: either a case arm (with binding/guard dispatch) or
+                            // a keyed arm (matched via value equality). For case arms, use params
+                            // and lowered_pattern from CoreClause to set up the arm frame and
+                            // evaluate body. For keyed arms, body evaluates in the parent frame.
+                            let (eval_body, arm_frame) = if is_case_arm {
                                 // 3-arg form: [case [let bindings] pattern body]
-                                // Pattern dispatch: uppercase/dot-access head → structural;
-                                // lowercase/operator head → guard expression.
-                                let binding_map = extract_let_binding_names(&let_bindings.node);
+                                // CoreClause.params replaces let_bindings extraction (T-2126).
+                                // CoreClause.lowered_pattern replaces arm.pattern-based dispatch.
                                 let lowered_pattern = arm.lowered_pattern.as_ref().expect(
-                                    "case arm must have lowered_pattern when let_bindings is set",
+                                    "case arm CoreClause must have lowered_pattern when params is non-empty",
                                 );
 
-                                // Check pattern head to determine dispatch.
-                                // Use the surface pattern (arm.pattern) rather than the
-                                // lowered CoreExpr — dot-access constructors like Result.Ok
-                                // lower from SurfaceExpression::Field to
-                                // CoreExpr::Call(Var("builtin-dict-get"), ...) whose head is
-                                // lowercase, which would be misclassified as a guard expression.
-                                let is_structural = is_structural_pattern_head(&arm.pattern.expr);
-
-                                // Build closure_env from arm.captures (outer scope references).
-                                // Done BEFORE pattern evaluation because the pattern may reference
-                                // external names (pins) as ClosureCapture addresses — the
-                                // pre_arm_frame below provides those thunks for pin lookups.
-                                let closure_env_vec: Vec<Arc<Thunk>> = match arm.captures.as_ref() {
-                                    Some(caps) => caps
-                                        .iter()
-                                        .map(|(name, original_addr)| {
-                                            use crate::ast::VarAddr;
-                                            match original_addr {
-                                                VarAddr::LetrecGroupMember { slot, .. } => {
-                                                    frame.group.get(*slot as usize)
-                                                }
-                                                VarAddr::ClosureCapture(i) => {
-                                                    frame.closure_env.get(*i as usize)
-                                                }
-                                                VarAddr::Parameter(i) => {
-                                                    frame.params.get(*i as usize).cloned()
-                                                }
-                                            }
-                                            .unwrap_or_else(|| {
-                                                panic!(
-                                                    "case arm capture miss for '{}': {:?}",
-                                                    name, original_addr
-                                                )
-                                            })
-                                        })
-                                        .collect(),
-                                    None => vec![], // No captures for this case arm — empty closure environment.
+                                // T-2128: Determine is_structural from lowered_pattern (not surface pattern).
+                                // The lowered_pattern head determines dispatch type:
+                                // - CoreExpr::Var with pre-resolved TypeNode binding → structural
+                                // - CoreExpr::Placeholder → wildcard (structural)
+                                // - Other (CoreExpr::Call etc.) → guard expression
+                                let is_structural = match &lowered_pattern.node {
+                                    CoreExpr::Var { .. } => true,
+                                    CoreExpr::Placeholder => true,
+                                    _ => false,
                                 };
+
+                                // Build closure_env from arm.captures (always Arc, never Option).
+                                let mut closure_env_vec: Vec<Arc<Thunk>> =
+                                    Vec::with_capacity(arm.captures.len());
+                                {
+                                    use crate::ast::VarAddr;
+                                    for (name, original_addr) in arm.captures.iter() {
+                                        let found = match original_addr {
+                                            VarAddr::Dispatch(_, slot) => {
+                                                frame.group.get(*slot as usize)
+                                            }
+                                            VarAddr::ClosureCapture(i) => {
+                                                frame.closure_env.get(*i as usize)
+                                            }
+                                            VarAddr::Parameter(i) => {
+                                                frame.params.get(*i as usize).cloned()
+                                            }
+                                            VarAddr::EffectPerform { .. } => {
+                                                return Action::Continue(Err(EvalError::internal(
+                                                    format!(
+                                                        "EffectPerform address in case arm closure \
+                                                         capture for '{}' — resolver invariant \
+                                                         violated: EffectPerform addresses cannot \
+                                                         appear in case arm capture lists",
+                                                        name
+                                                    ),
+                                                    match_span.clone(),
+                                                )
+                                                .into()));
+                                            }
+                                        };
+                                        let thunk = found.unwrap_or_else(|| {
+                                            panic!(
+                                                "case arm capture miss for '{}': {:?}",
+                                                name, original_addr
+                                            )
+                                        });
+                                        closure_env_vec.push(thunk);
+                                    }
+                                }
 
                                 // pre_arm_frame: closure_env populated, params empty.
                                 // Used as pctx.frame in structural pattern matching so that
@@ -2722,6 +2770,16 @@ pub(crate) async fn apply_cont(
                                         std::sync::Arc::new(closure_env_vec.clone()),
                                         vec![],
                                     ));
+
+                                // T-2128: Build binding_map from CoreClause.params instead of
+                                // extract_let_binding_names(&let_bindings.node).
+                                // CoreClause.params provides name→slot directly.
+                                // IndexMap preserves declaration order for deterministic slot assignment.
+                                let binding_map: IndexMap<String, u32> = arm
+                                    .params
+                                    .iter()
+                                    .map(|p| (p.node.name.clone(), p.node.slot))
+                                    .collect();
 
                                 let arm_bindings = if is_structural {
                                     // Structural pattern: walk pattern, bind [let ...] names at
@@ -2837,7 +2895,7 @@ pub(crate) async fn apply_cont(
 
                                 (Arc::clone(&arm.body), arm_frame)
                             } else {
-                                // Keyed arm (no let_bindings) — use the parent frame unchanged.
+                                // Keyed arm (no params, no let_bindings) — use the parent frame unchanged.
                                 (Arc::clone(&arm.body), Arc::clone(&frame))
                             };
 
@@ -3034,99 +3092,6 @@ pub(crate) async fn apply_cont(
     }
 }
 
-/// Extract the binding-target names from a `[let ...]` expression for a 3-arg
-/// `[case [let bindings] pattern body]` arm, returning a name→slot map.
-///
-/// The `[let ...]` node is the first argument of the 3-arg CaseArm. It declares which
-/// names in the pattern are binding targets (as opposed to pin-comparisons). Any name
-/// that appears in the `[let ...]` list is a binding target; any other name used in the
-/// pattern expression will be evaluated from the current environment and compared for
-/// equality (pin semantics).
-///
-/// Returns an `IndexMap<String, u32>` mapping each binding name to its Parameter index.
-/// The index is the declaration-order position (first name → 0, second → 1, …), which
-/// matches the resolver's `enter_param_scope(&bound_names)` insertion-order assignment.
-/// The resolver emits `Parameter(i)` for uses of the i-th declared binding in the arm
-/// body and pattern. The map is threaded into `eval_case_arm_structural_pattern` to
-/// distinguish bind vs. pin at each name position, and to record the correct Parameter
-/// index when building the arm EvalFrame's params vec.
-fn extract_let_binding_names(let_decl: &CoreExpr) -> IndexMap<String, u32> {
-    let mut map: IndexMap<String, u32> = IndexMap::new();
-    if let CoreExpr::LetDecl { bindings } = let_decl {
-        for binding in bindings {
-            match &binding.node {
-                // lower_let_decl_binding converts declaration-position names to CoreExpr::Str.
-                // The "_" wildcard is excluded — it binds nothing.
-                CoreExpr::Str(name) if name != "_" => {
-                    let slot = map.len() as u32;
-                    map.insert(name.clone(), slot);
-                }
-                // Both plain and annotated Var (Var { annotation: Some(_) }) use the name field.
-                CoreExpr::Var { name, .. } if name != "_" => {
-                    let slot = map.len() as u32;
-                    map.insert(name.clone(), slot);
-                }
-                _ => {}
-            }
-        }
-    }
-    map
-}
-
-/// Determine if a pattern has a structural head (uppercase/dot-access) or guard head
-/// (lowercase/operator).
-///
-/// Pattern dispatch per the S-869 case-let-unified design:
-/// - Uppercase VarRef or dot-access Field (expr: Some) → structural match (constructor pattern)
-/// - Call whose function head is structural (e.g., `[Result.Ok p]`) → structural
-/// - Dict → structural
-/// - Literals (Int, Float, StringLiteral) → exact-value (treated as structural)
-/// - Placeholder → wildcard (treated as structural)
-/// - Lowercase VarRef or any other head → guard expression (boolean predicate)
-///
-/// This function operates on the **surface** pattern (SurfaceExpression) rather than the
-/// lowered CoreExpr. The critical reason: dot-access constructor patterns like `Result.Ok`
-/// are represented at the surface level as `SurfaceExpression::Field { expr: Some(_), field: "Ok" }`,
-/// which correctly signals a structural constructor match. In CoreExpr, the same pattern
-/// is lowered to `CoreExpr::Call(Var("builtin-dict-get"), ...)` — the `builtin-dict-get`
-/// head starts with lowercase and would be misclassified as a guard expression if we
-/// inspected the CoreExpr.
-///
-/// Rule: use the surface AST's structural intent, not the lowered implementation detail.
-fn is_structural_pattern_head(pattern: &SurfaceExpression) -> bool {
-    match pattern {
-        // Dot-access constructor pattern: Result.Ok, Color.Red, Option.None, etc.
-        // The `expr: Some(_)` guard ensures this is a qualified name (a.b), not a
-        // leading-dot form (.field), which has no qualifier and is not a constructor pattern.
-        SurfaceExpression::Field { expr: Some(_), .. } => true,
-
-        // Call whose function head is a structural pattern: [Result.Ok p], [Shape.Circle r: 5]
-        // Recurse on the function position to apply the same structural head rule.
-        SurfaceExpression::Call { func, .. } => is_structural_pattern_head(&func.expr),
-
-        // Uppercase VarRef: bare uppercase name is a constructor reference or type name.
-        // Lowercase VarRef: a binding variable name or guard function name → not structural.
-        SurfaceExpression::VarRef { name, .. } => {
-            name.chars().next().map_or(false, |c| c.is_uppercase())
-        }
-
-        // Dict pattern is structural (matches a dict by field presence/value).
-        SurfaceExpression::Dict(_) => true,
-
-        // Literals are structural (exact-value match, not a guard predicate).
-        SurfaceExpression::Int(_)
-        | SurfaceExpression::U64(_)
-        | SurfaceExpression::Float(_)
-        | SurfaceExpression::StringLiteral { .. } => true,
-
-        // Placeholder (...) is the wildcard — treated as structural (no guard evaluation).
-        SurfaceExpression::Placeholder(_, _) => true,
-
-        // Everything else (operators, sequential, leading-dot Field, pipe, etc.) → guard.
-        _ => false,
-    }
-}
-
 /// Evaluate the structural pattern of a 3-arg `[case [let bindings] pattern body]` arm.
 ///
 /// Returns `Ok(Some(bindings))` if the pattern matches, where `bindings` is a vec of
@@ -3141,7 +3106,7 @@ fn is_structural_pattern_head(pattern: &SurfaceExpression) -> bool {
 /// pattern itself produces an error (e.g., unresolvable pin reference, failed field-get
 /// for constructor tag). Errors must not be silently converted to no-match — that
 /// produces misleading diagnostics.
-async fn eval_case_arm_structural_pattern(
+pub(crate) async fn eval_case_arm_structural_pattern(
     pattern: &Arc<Spanned<CoreExpr>>,
     binding_map: &IndexMap<String, u32>,
     scrutinee_value: &Value,
@@ -3201,9 +3166,10 @@ fn eval_structural_pattern_inner<'a>(
         } = pctx;
         match pattern {
             // Wildcard: always succeeds, no binding.
-            // In the new pattern design, `_` in pattern position is an undefined variable
-            // (resolver sets Some(None)), which the lowerer converts to CoreExpr::Placeholder.
-            // `...` in pattern position also becomes CoreExpr::Placeholder.
+            // `...` in pattern position becomes CoreExpr::Placeholder.
+            // `_` in pattern position also becomes CoreExpr::Placeholder (conventional wildcard).
+            // Other undefined VarRefs become CoreExpr::Var with a sentinel addr and are
+            // handled below in the Var arm (bind_or_pin_name returns Ok(false) for the sentinel).
             CoreExpr::Placeholder => Ok(true),
 
             // Plain name: bind or pin based on binding_map.
@@ -3455,10 +3421,97 @@ fn eval_structural_pattern_inner<'a>(
                     Ok(true)
                 } else {
                     match func_val {
-                        Value::Function { .. } | Value::Builtin { .. } => {
-                            // Guard/predicate: bind all declared names to scrutinee, evaluate
-                            // the full call expression (func + args), check if result is truthy.
+                        Value::Builtin { .. } => {
+                            // The call func is a Builtin (e.g. `builtin-dict-get` for a
+                            // dot-access pattern like `Color.Red`). Evaluate the ENTIRE call
+                            // expression using `pctx.frame` so that outer names (like `Color`)
+                            // are in scope, then re-dispatch on the result.
+                            //
+                            // This is the keyed-arm path for `Color.Red:` patterns:
+                            //   `Color.Red` lowers to `Call(builtin-dict-get, ["Red", Color])`
+                            //   The func is `builtin-dict-get` (Builtin), NOT the constructor.
+                            //   Evaluating `[builtin-dict-get "Red" Color]` with `frame` yields
+                            //   the actual constructor value (`Color.Red` variant or function).
+                            //   We then re-dispatch:
+                            //   - Variant (unit ctor) → tag-only match (D-1 rule)
+                            //   - Function with return_ann → tag-only match (D-1 rule)
+                            //   - Other → treat as guard/predicate, check via call_to_match
+                            let call_expr_spanned = Arc::new(crate::ast::Spanned::new(
+                                CoreExpr::Call {
+                                    func: Arc::clone(func),
+                                    args: args.to_vec(),
+                                    named_args: named_args.to_vec(),
+                                    implied: *implied,
+                                },
+                                match_span.clone(),
+                            ));
+                            let call_thunk = Arc::new(Thunk::core_expr(
+                                call_expr_spanned,
+                                Arc::clone(frame),
+                                Arc::clone(ctx),
+                                match_span.clone(),
+                            ));
+                            let call_result =
+                                materialize(&call_thunk, Some(match_span), ctx).await?;
 
+                            // Re-dispatch on the call result: check if it's a constructor
+                            // value (tag-only match) or something else (guard semantics).
+                            let result_ctor_tag: Option<String> = match &call_result {
+                                Value::Variant {
+                                    ctor,
+                                    payload: None,
+                                    ..
+                                } => {
+                                    // Unit constructor: `Color.Red` → tag-only match.
+                                    Some(ctor.as_ref().to_string())
+                                }
+                                Value::Variant {
+                                    ctor,
+                                    payload: Some(_),
+                                    ..
+                                } => {
+                                    // Payload variant used directly as a pattern value →
+                                    // treat as tag-only match per D-1 rule.
+                                    Some(ctor.as_ref().to_string())
+                                }
+                                Value::Function { annotation, .. } => {
+                                    // Payload constructor function: extract tag from return_ann.
+                                    annotation.as_deref().and_then(|ann| {
+                                        ann.return_ann.as_ref().and_then(|ret| {
+                                            if let crate::ast::Annotation::Simple(tag) = ret {
+                                                Some(tag.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    })
+                                }
+                                _ => None,
+                            };
+
+                            if let Some(ctor_tag) = result_ctor_tag {
+                                // Constructor tag match: scrutinee must be a Variant with same tag.
+                                // args is empty for bare keyed patterns like `Color.Red:` (no payload
+                                // binding in the keyed arm context).
+                                if let Value::Variant {
+                                    ctor: scrutinee_ctor,
+                                    ..
+                                } = scrutinee_value
+                                {
+                                    Ok(scrutinee_ctor.as_ref() == ctor_tag)
+                                } else {
+                                    Ok(false)
+                                }
+                            } else {
+                                // Not a constructor — treat as guard/predicate.
+                                crate::eval::call_to_match(&call_result, ctx, match_span).await
+                            }
+                        }
+
+                        Value::Function { .. } => {
+                            // Guard/predicate: the func is a user-defined function — evaluate
+                            // the full call expression as a guard, check if result is truthy.
+                            // Use pctx.frame so captured variables are in scope.
                             let guard_expr_spanned = Arc::new(crate::ast::Spanned::new(
                                 CoreExpr::Call {
                                     func: Arc::clone(func),
@@ -3470,7 +3523,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_thunk = Arc::new(Thunk::core_expr(
                                 guard_expr_spanned,
-                                EvalFrame::empty(),
+                                Arc::clone(frame),
                                 Arc::clone(ctx),
                                 match_span.clone(),
                             ));
@@ -3529,7 +3582,9 @@ fn eval_structural_pattern_inner<'a>(
                 Ok(true)
             }
 
-            // Fallback: evaluate the pattern expression and compare with scrutinee.
+            // Fallback: evaluate the pattern expression in the parent frame and compare
+            // with the scrutinee using value equality.
+            // Uses pctx.frame (not EvalFrame::empty()) so outer names are in scope.
             _ => {
                 let spanned = Arc::new(crate::ast::Spanned::new(
                     pattern.clone(),
@@ -3537,7 +3592,7 @@ fn eval_structural_pattern_inner<'a>(
                 ));
                 let pat_expr_thunk = Arc::new(Thunk::core_expr(
                     spanned,
-                    EvalFrame::empty(),
+                    Arc::clone(frame),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3580,12 +3635,12 @@ async fn bind_or_pin_name(
         // Pin: look up the name's value in the parent frame via its resolver-assigned addr.
         // `addr` is the VarAddr the resolver assigned to this name in the enclosing scope.
         let pinned_thunk = match addr {
-            VarAddr::LetrecGroupMember { slot, .. } => {
+            VarAddr::Dispatch(_, slot) => {
                 let i = *slot as usize;
                 if i >= frame.group.len() {
                     return Err(EvalError::internal(
                         format!(
-                            "pattern pin '{name}': LGM slot {i} out of range (group len {})",
+                            "pattern pin '{name}': Dispatch slot {i} out of range (group len {})",
                             frame.group.len()
                         ),
                         match_span.clone(),
@@ -3596,6 +3651,14 @@ async fn bind_or_pin_name(
             }
             VarAddr::ClosureCapture(i) => {
                 let i = *i as usize;
+                // Sentinel: lower.rs emits ClosureCapture(u32::MAX) for VarRefs with
+                // Some(None) resolution (name not in scope). In pattern position this
+                // should be a non-matching pin (not a wildcard) — return Ok(false) so
+                // the arm is skipped and evaluation falls through to the next arm.
+                // u32::MAX is never assigned to a real capture; indices are 0..N-1.
+                if i == u32::MAX as usize {
+                    return Ok(false);
+                }
                 if i >= frame.closure_env.len() {
                     return Err(EvalError::internal(
                         format!(
@@ -3622,8 +3685,41 @@ async fn bind_or_pin_name(
                 }
                 Arc::clone(&frame.params[i])
             }
+            VarAddr::EffectPerform { .. } => {
+                return Err(EvalError::internal(
+                    format!("pattern pin '{name}': EffectPerform not supported in pattern pins (T-2126)"),
+                    match_span.clone(),
+                ).into());
+            }
         };
         let pinned_val = materialize(&pinned_thunk, Some(match_span), ctx).await?;
+
+        // B-712: Arc::ptr_eq type dispatch for type-constructor dicts.
+        // When a VarRef pin resolves to a type-constructor Dict (from a [type ...] declaration),
+        // the Dict carries `type_val` = the same Arc as every Variant of that type (both
+        // are stamped by CoreExpr::TypeDecl via ctx.type_identity_registry). Arc::ptr_eq on
+        // the two type_val fields therefore correctly identifies "scrutinee is a member of
+        // this type" — match if true, fall through to primitive_eq otherwise.
+        //
+        // Plain dicts (no TypeDecl) carry unknown_type_val() — a different Arc from any
+        // Variant's type_val — so ptr_eq correctly returns false and they do not false-match.
+        if let (
+            Value::Dict {
+                type_val: pin_type_val,
+                ..
+            },
+            Value::Variant {
+                type_val: scrutinee_type_val,
+                ..
+            },
+        ) = (&pinned_val, scrutinee_value)
+        {
+            if Arc::ptr_eq(pin_type_val, scrutinee_type_val) {
+                return Ok(true);
+            }
+            // Different type_val: fall through to primitive_eq (will return false for Variant vs Dict)
+        }
+
         Ok(primitive_eq(scrutinee_value.clone(), pinned_val))
     }
 }
@@ -4836,6 +4932,7 @@ fn force_dict_tree_impl<'a>(
             }
             Value::Variant {
                 type_val,
+                type_decl_id,
                 ctor,
                 payload,
             } => {
@@ -4853,6 +4950,7 @@ fn force_dict_tree_impl<'a>(
                         Arc::new(Thunk::value(deep_payload, payload_thunk.span.clone()));
                     Ok(Value::Variant {
                         type_val: Arc::clone(type_val),
+                        type_decl_id: *type_decl_id,
                         ctor: ctor.clone(),
                         payload: Some(deep_thunk),
                     })

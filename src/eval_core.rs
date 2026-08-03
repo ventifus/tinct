@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{CoreExpr, Param, Span, Spanned, VarAddr};
+use crate::ast::{CoreExpr, Span, Spanned, SurfaceMatchArm, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
 use crate::type_tags::*;
@@ -170,8 +170,7 @@ fn eval_quote_preprocess<'a>(
     Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + Send + 'a>,
 > {
     use crate::ast::{
-        SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg,
-        SurfaceNode,
+        SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNamedArg, SurfaceNode,
     };
     Box::pin(async move {
         let span = node.span.clone();
@@ -500,13 +499,16 @@ fn eval_quote_preprocess<'a>(
                     } else {
                         None
                     };
+                    let processed_pattern =
+                        eval_quote_preprocess(Arc::clone(&arm.pattern), Arc::clone(&frame), ctx)
+                            .await?;
                     processed_arms.push(SurfaceMatchArm {
-                        pattern: arm.pattern.clone(),
+                        pattern: processed_pattern,
                         let_bindings: arm.let_bindings.clone(),
                         guard: processed_guard,
                         body: processed_body,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
-                        case_captures: crate::ast::CapturesCell::new(),
+                        case_captures: arm.case_captures.clone(),
                     });
                 }
                 Ok(make_node(SurfaceExpression::Match {
@@ -710,9 +712,95 @@ pub(crate) fn eval_core_expr<'a>(
             // cumulative offsets above them. No outer-frame traversal needed.
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
-                    VarAddr::LetrecGroupMember { slot, .. } => frame.group.get(*slot as usize),
+                    VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize),
                     VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
+                    VarAddr::EffectPerform { class_id, method } => {
+                        // T-2137: Scan the accumulated group from innermost (highest slot) to
+                        // outermost (slot 0) for instance method implementations.
+                        //
+                        // An instance method is a `Value::Function` with
+                        // `instance_of == Some((class_id, method))`. The scan uses
+                        // `peek_result()` to avoid forcing unevaluated thunks — only
+                        // already-materialized functions are considered. Instance methods are
+                        // defined at document level and are always materialized before any
+                        // reference to them via EffectPerform can be evaluated (letrec ordering
+                        // within the same dict guarantees definitions precede references within
+                        // the same scope; cross-scope references go through accumulated_group
+                        // which is populated before evaluation of the referencing expression).
+                        //
+                        // Candidates are collected in innermost-first order (highest slot first).
+                        // All candidates' clauses are concatenated to form a synthesized dispatch
+                        // function whose `invoke_function` call tries the first matching clause.
+                        let group = &frame.group;
+                        let group_len = group.len();
+                        let mut all_clauses: Vec<crate::ast::CoreClause> = Vec::new();
+
+                        // Iterate from innermost (highest slot index) to outermost (slot 0).
+                        for i in (0..group_len).rev() {
+                            let Some(slot_thunk) = group.get(i) else {
+                                continue;
+                            };
+                            if let Some(Ok(Value::Function {
+                                clauses,
+                                instance_of: Some((cid, m)),
+                                ..
+                            })) = slot_thunk.peek_result()
+                            {
+                                if cid == class_id && m == method {
+                                    // Found a matching instance — add its clauses in order.
+                                    all_clauses.extend(clauses.iter().cloned());
+                                }
+                            }
+                        }
+
+                        if all_clauses.is_empty() {
+                            // No instance found — propagate as an evaluation error.
+                            // Returning Err here causes the evaluating task to settle
+                            // its thunk with this error; all dependents see the error
+                            // when they force the thunk. This is the correct path for
+                            // "no instance found" — it is a hard error, not a no-match
+                            // that falls through to something else.
+                            return Err(EvalError::user_error(
+                                format!(
+                                    "no instance found for typeclass method '{}' (class_id={}): \
+                                     no Value::Function with instance_of=Some({}, {:?}) \
+                                     in accumulated group ({} entries)",
+                                    method, class_id, class_id, method, group_len
+                                ),
+                                span.clone(),
+                            )
+                            .into());
+                        }
+
+                        // Return a synthesized Value::Function with the concatenated clauses.
+                        // `instance_of = None` — this is a resolved dispatch function, not itself
+                        // a discoverable instance method. `closure_env = empty` — each candidate
+                        // function's closure_env was already materialized at fn-creation time;
+                        // the clauses carry their VarAddr-resolved bodies that reference their own
+                        // closure frames. However, since we're concatenating clauses from different
+                        // functions with different closure_envs, and CallContext only carries a
+                        // single closure_env shared across all clauses, we must use the
+                        // candidates' own closure_envs at dispatch time.
+                        //
+                        // INVARIANT: Each candidate's clauses reference VarAddr::ClosureCapture(i)
+                        // to access captured variables. The synthesized function's shared closure_env
+                        // is empty (vec![]), which means ClosureCapture(i) would fail for any i > 0.
+                        // This is correct for the current sprint because instance methods lowered by
+                        // lower.rs do not capture outer variables — they are top-level definitions
+                        // whose free variables are all in the accumulated_group (Dispatch addrs).
+                        //
+                        // T-2141 will address multi-instance synthesis with non-empty closure_envs
+                        // by carrying per-clause closure environments.
+                        let synthesized = Value::Function {
+                            clauses: std::sync::Arc::new(all_clauses),
+                            instance_of: None,
+                            closure_env: std::sync::Arc::new(vec![]),
+                            annotation: None,
+                            type_val: crate::value::unknown_type_val(),
+                        };
+                        return Ok(Arc::new(Thunk::value(synthesized, span.clone())));
+                    }
                 };
                 match thunk {
                     Some(t) => Ok(t),
@@ -772,6 +860,7 @@ pub(crate) fn eval_core_expr<'a>(
                     None => Ok(Arc::new(Thunk::value(
                         Value::Variant {
                             type_val,
+                            type_decl_id: *type_decl_id,
                             ctor: Arc::from(tag.as_str()),
                             payload: None,
                         },
@@ -783,6 +872,7 @@ pub(crate) fn eval_core_expr<'a>(
                         Ok(Arc::new(Thunk::value(
                             Value::Variant {
                                 type_val,
+                                type_decl_id: *type_decl_id,
                                 ctor: Arc::from(tag.as_str()),
                                 payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
                             },
@@ -819,6 +909,7 @@ pub(crate) fn eval_core_expr<'a>(
                 Ok(Arc::new(Thunk::value(
                     Value::Variant {
                         type_val,
+                        type_decl_id: *type_decl_id,
                         ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
                         payload: None,
                     },
@@ -844,7 +935,7 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Dict(entries) => eval_dict_core(entries, frame, ctx, &span).await,
 
             // Call: use eval_call_core with the current EvalFrame so argument expressions
-            // resolve LetrecGroupMember/ClosureCapture variables against the call site's scope.
+            // resolve Dispatch/ClosureCapture variables against the call site's scope.
             CoreExpr::Call {
                 func,
                 args,
@@ -864,30 +955,27 @@ pub(crate) fn eval_core_expr<'a>(
                 .await
             }
 
-            // Fn: store body as Arc<Spanned<CoreExpr>> directly — no round-trip to Expr.
+            // Fn: build Value::Function carrying the full clause list (T-2131).
+            // `invoke_function` (eval_call.rs) iterates clauses via `try_clause` for dispatch.
+            // T-2133 completes full multi-clause dispatch; single-clause functions work today.
             CoreExpr::Fn {
-                return_ann,
-                params,
-                body,
+                clauses,
                 captures,
+                instance_of,
                 resolved_fn_type,
+                return_ann,
                 ..
             } => {
-                let fn_params: Vec<Param> = params
-                    .iter()
-                    .map(|p| Param {
-                        name: p.node.name.clone(),
-                        annotation: p.node.annotation.clone(),
-                        variadic: p.node.variadic,
-                        slot: p.node.slot,
-                        resolved_type: p.node.resolved_type.clone(),
-                    })
-                    .collect();
+                // All clauses are stored in Value::Function.clauses for multi-clause dispatch.
+                // T-2133 implements full multi-clause dispatch in invoke_function.
+                assert!(!clauses.is_empty(), "Fn must have at least one clause");
 
                 // Populate extra from annotation fields (literals + expressions).
                 // `doc` is now included in extra: triple-quoted strings desugar to
                 // `[unindent "..."]` (a Call), which is evaluated here at definition time.
                 // Expression-valued fields are evaluated at function-definition time.
+                // return_ann is now carried from SurfaceExpression::Fn through CoreExpr::Fn
+                // so that trace: and other annotation-driven runtime behaviors work correctly.
                 let extra = extract_fn_annotation_extra(return_ann.as_ref(), frame, ctx).await?;
 
                 // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
@@ -895,70 +983,88 @@ pub(crate) fn eval_core_expr<'a>(
                 let doc: Option<String> = extra
                     .get("doc")
                     .and_then(|v| v.as_str().map(|s| s.to_string()));
-                let return_ann_clone: Option<crate::ast::Annotation> =
-                    return_ann.as_ref().map(|a| a.node.clone());
 
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.
                 let annotation = Some(Box::new(crate::value::FnAnnotation {
                     doc,
-                    return_ann: return_ann_clone,
+                    return_ann: return_ann.as_ref().map(|a| a.node.clone()),
                     source_file: ctx.config.source_file.clone(),
                     source_span: span.clone(),
                     extra,
                 }));
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
-                // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
+                // CoreExpr::Fn.clauses[0].body is Arc<Spanned<CoreExpr>> — no conversion needed.
                 //
                 // Build closure_env by looking up each captured variable in the current frame.
                 // frame.group is the accumulated_group, which contains root entries at slots
                 // 0..N-1 and all prior dict entries at cumulative slots above them.
-                // LGM(absolute_slot) looks up frame.group[slot] directly.
+                // Dispatch(depth, slot) absolute_slot looks up frame.group[slot] directly.
                 // using its ORIGINAL VarAddr (from before the resolver converted it to
                 // ClosureCapture for references inside this function).
                 //
                 // Each entry in `captures` is (name, original_addr) where original_addr is the
                 // VarAddr the binding holds in the ENCLOSING EvalFrame:
-                //   - LetrecGroupMember(i) → frame.group[i]   (absolute cumulative slot in
+                //   - Dispatch(_, i) → frame.group[i]   (absolute cumulative slot in
                 //     accumulated_group: root entries at 0..N-1, dict entries at cumulative
-                //     offsets. Builtins, capabilities, and prior-dict entries all use LGM.)
+                //     offsets. Builtins, capabilities, and prior-dict entries all use Dispatch.)
                 //   - ClosureCapture(i)    → frame.closure_env[i] (outer fn closure capture)
                 //   - Parameter(i)         → frame.params[i]  (outer function argument)
                 //
                 // Build closure_env in capture-index order. Use map (not filter_map) so that
                 // each ClosureCapture(i) in the body resolves to closure_env[i] — skipping
                 // entries would shift all subsequent indices.
-                let closure_env_vec: Vec<Arc<Thunk>> = captures
-                    .iter()
-                    .map(|(name, original_addr)| {
-                        let found = match original_addr {
-                            VarAddr::LetrecGroupMember { slot, .. } => {
-                                frame.group.get(*slot as usize)
-                            }
-                            VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
-                            VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
-                        };
-                        let thunk = found.unwrap_or_else(|| {
-                            panic!(
-                                "capture miss for '{}': {:?} resolved to None \
-                                 (closure_env.len()={}, group.len()={}, \
-                                 params.len()={})",
-                                name,
-                                original_addr,
-                                frame.closure_env.len(),
-                                frame.group.len(),
-                                frame.params.len(),
+                let mut closure_env_vec: Vec<Arc<Thunk>> = Vec::with_capacity(captures.len());
+                for (name, original_addr) in captures.iter() {
+                    let found = match original_addr {
+                        VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize),
+                        VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
+                        VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
+                        VarAddr::EffectPerform { .. } => {
+                            return Err(EvalError::internal(
+                                format!(
+                                    "EffectPerform address in closure capture for '{}' — \
+                                     resolver invariant violated: EffectPerform addresses \
+                                     cannot appear in fn capture lists",
+                                    name
+                                ),
+                                span.clone(),
                             )
-                        });
-                        thunk
-                    })
-                    .collect();
+                            .into());
+                        }
+                    };
+                    let thunk = found.unwrap_or_else(|| {
+                        // Improve error message with capture list details
+                        let cap_list_str = captures
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, (n, addr))| format!("  [{idx}] {n}: {addr:?}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        panic!(
+                            "capture miss for '{}': {:?} resolved to None\n\
+                             Frame state:\n\
+                             - closure_env.len()={}\n\
+                             - group.len()={}\n\
+                             - params.len()={}\n\
+                             Full capture list ({} entries):\n{}",
+                            name,
+                            original_addr,
+                            frame.closure_env.len(),
+                            frame.group.len(),
+                            frame.params.len(),
+                            captures.len(),
+                            cap_list_str,
+                        )
+                    });
+                    closure_env_vec.push(thunk);
+                }
                 Ok(Arc::new(Thunk::value(
                     Value::Function {
-                        params: Arc::new(fn_params),
-                        body: Arc::clone(body),
+                        clauses: Arc::new(clauses.clone()),
                         closure_env: Arc::new(closure_env_vec),
+                        instance_of: instance_of.clone(),
                         annotation,
                         type_val: resolved_fn_type
                             .as_ref()
@@ -1111,6 +1217,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // the identity is not itself typed (it is the identity, not a user value).
                 let type_id: Arc<Value> = Arc::new(Value::Variant {
                     type_val: crate::value::unknown_type_val(),
+                    type_decl_id: 0, // Identity sentinel — not a user-constructed variant.
                     ctor: Arc::from(type_name.as_str()),
                     payload: None,
                 });
@@ -1344,7 +1451,7 @@ mod tests {
     /// `CoreExpr::Var` resolves a thunk from the EvalFrame via VarAddr.
     ///
     /// We construct an EvalFrame with a known thunk in the group slot and then
-    /// evaluate a Var node with VarAddr::LetrecGroupMember(0). The returned
+    /// evaluate a Var node with VarAddr::Dispatch(0, 0). The returned
     /// value must match the injected value.
     #[tokio::test]
     async fn test_eval_varref() {
@@ -1366,11 +1473,11 @@ mod tests {
             params: Arc::new(vec![]),
         });
 
-        // Build a Var node: addr = LetrecGroupMember { depth: 0, slot: 0 }.
+        // Build a Var node: addr = Dispatch(0, 0).
         let var_expr = Spanned::new(
             CoreExpr::Var {
                 name: "test-binding".to_string(),
-                addr: VarAddr::LetrecGroupMember { depth: 0, slot: 0 },
+                addr: VarAddr::Dispatch(0, 0),
                 annotation: None,
             },
             span.clone(),
@@ -1390,7 +1497,7 @@ mod tests {
                 n: 77,
                 type_val: crate::value::unknown_type_val()
             },
-            "CoreExpr::Var with VarAddr::LetrecGroupMember(0) must resolve to the injected Int(77)"
+            "CoreExpr::Var with VarAddr::Dispatch(0, 0) must resolve to the injected Int(77)"
         );
     }
 
