@@ -1220,6 +1220,19 @@ async fn dispatch_state(
                 mat_span: None,
             }
         }
+
+        // EffectPerform dispatcher — materialize to Value::EffectPerformDispatcher.
+        // T-2146: Candidates are already-materialized Value::Function values collected
+        // from the accumulated group. When this dispatcher is called, PendingCallDispatch
+        // will try each candidate in order using invoke_function.
+        UnevaluatedState::EffectPerform { candidates } => {
+            let dispatcher = crate::value::Value::EffectPerformDispatcher {
+                candidates: std::sync::Arc::new(candidates),
+                type_val: crate::value::unknown_type_val(),
+            };
+            thunk.settle(Ok(dispatcher.clone()));
+            Action::Continue(Ok(dispatcher))
+        }
     }
 }
 
@@ -1697,6 +1710,75 @@ pub(crate) async fn apply_cont(
                                 thunk.settle(Ok(result_val.clone()));
                             }
                             Action::Continue(Ok(result_val))
+                        }
+                        Value::EffectPerformDispatcher { candidates, .. } => {
+                            // T-2146: Try each candidate function in order until one matches.
+                            // Each candidate is a complete Value::Function with its own closure_env,
+                            // clauses, and annotation. We iterate through candidates and use
+                            // invoke_function on each until we get a match (Some(frame)).
+                            use crate::eval_call::{invoke_function, CallContext};
+
+                            let args_ref = args.as_deref().expect("args set above");
+                            let named_ref = named.as_ref().expect("named set above").as_deref();
+
+                            // Try each candidate in order (innermost-first, as collected in eval_core.rs).
+                            let mut last_error: Option<Box<crate::error::EvalError>> = None;
+                            for candidate_value in candidates.iter() {
+                                if let Value::Function {
+                                    clauses,
+                                    closure_env,
+                                    ..
+                                } = candidate_value.as_ref()
+                                {
+                                    let call_ctx = CallContext {
+                                        clauses,
+                                        closure_env: Arc::clone(closure_env),
+                                        positional: args_ref,
+                                        named: named_ref,
+                                        call_span: call_span.clone(),
+                                        ctx: &thunk_ctx,
+                                    };
+                                    match invoke_function(&call_ctx).await {
+                                        Ok(result_thunk) => {
+                                            // Found a matching clause — memoize and return.
+                                            if !tail_hint {
+                                                stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                                    thunk: Arc::clone(&thunk),
+                                                    origin,
+                                                    thunk_span: thunk_span.clone(),
+                                                    mat_span: mat_span.clone(),
+                                                })));
+                                                eval_stack_guard.disarm();
+                                            }
+                                            return Action::Materialize {
+                                                thunk: result_thunk,
+                                                mat_span,
+                                            };
+                                        }
+                                        Err(e) => {
+                                            // This candidate didn't match — try the next one.
+                                            // Keep the last error for diagnostics if all fail.
+                                            last_error = Some(e);
+                                        }
+                                    }
+                                }
+                            }
+                            // No candidate matched — return the last error or a generic no-match error.
+                            let err = if let Some(e) = last_error {
+                                e
+                            } else {
+                                Box::new(EvalError::user_error(
+                                    "no matching instance for EffectPerform dispatch".to_string(),
+                                    call_span.clone(),
+                                ))
+                            };
+                            let mut decorated = decorate(err);
+                            decorated.push_frame(
+                                origin.as_deref().unwrap_or("call").to_string(),
+                                call_span.clone(),
+                            );
+                            thunk.settle(Err(Arc::new((*decorated).clone())));
+                            Action::Continue(Err(decorated))
                         }
                         other => {
                             // Extract the name of what was called (from original_call or call_span).
@@ -2961,7 +3043,10 @@ pub(crate) async fn apply_cont(
                     // PM1: If the guard is callable and we haven't yet invoked it, do so
                     // iteratively via the CEK machine rather than block_on_anywhere.
                     if !callable_invoked {
-                        if let Value::Function { .. } | Value::Builtin { .. } = &guard_value {
+                        if let Value::Function { .. }
+                        | Value::Builtin { .. }
+                        | Value::EffectPerformDispatcher { .. } = &guard_value
+                        {
                             // Create Arc<Thunk> for scrutinee and predicate directly.
                             let scrutinee_thunk =
                                 Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));

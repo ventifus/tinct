@@ -319,7 +319,7 @@ impl SurfaceResolver {
                 // Multi-level cascade: for nested fns, walk from outermost to innermost fn,
                 // cascading via ClosureCapture at each level so every intermediate fn gets the
                 // name in its capture list (required for closure_env building at each level).
-                let outer_capture_idx = self
+                let outer_capture_entry = self
                     .fn_capture_lists
                     .iter()
                     .rev()
@@ -328,13 +328,17 @@ impl SurfaceResolver {
                     .and_then(|captures| {
                         captures
                             .iter()
-                            .position(|(n, _)| n == name)
-                            .map(|pos| pos as u32)
+                            .find(|(n, _)| n == name)
+                            .map(|(_, addr)| addr.clone())
                     });
 
-                let original_addr = if let Some(outer_idx) = outer_capture_idx {
-                    // Immediately enclosing fn already captured this name → inherit via closure_env.
-                    VarAddr::ClosureCapture(outer_idx)
+                let original_addr = if let Some(outer_addr) = outer_capture_entry {
+                    // Immediately enclosing fn already captured this name → use its original_addr
+                    // directly, not ClosureCapture(idx). This bypasses the enclosing fn's closure_env
+                    // and goes to the source. Critical for correctness when the enclosing fn's
+                    // closure_env was built before nested fns (e.g., inside case arms) cascaded
+                    // additional captures up to the enclosing fn's capture list.
+                    outer_addr
                 } else {
                     // Not yet in any enclosing fn's capture list.
                     //
@@ -501,6 +505,31 @@ impl SurfaceResolver {
         // enclosing EvalFrame at function-definition time.
         if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
             if match_depth < fn_boundary {
+                // Check if an enclosing fn already captured this name — if so, use its
+                // original_addr directly instead of creating a new ClosureCapture entry.
+                // This prevents capture cascade bugs where the enclosing fn's closure_env
+                // was built before nested fns added more captures to its capture list.
+                let outer_capture_entry = self
+                    .fn_capture_lists
+                    .iter()
+                    .rev()
+                    .skip(1) // skip current fn
+                    .next()
+                    .and_then(|captures| {
+                        captures
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, addr)| addr.clone())
+                    });
+
+                let original_addr = if let Some(outer_addr) = outer_capture_entry {
+                    // Enclosing fn already captured this name — use its original_addr.
+                    outer_addr
+                } else {
+                    // Not in any enclosing fn's capture list — use the raw addr.
+                    addr.clone()
+                };
+
                 let capture_list = self
                     .fn_capture_lists
                     .last_mut()
@@ -510,7 +539,7 @@ impl SurfaceResolver {
                         pos as u32
                     } else {
                         let idx = capture_list.len() as u32;
-                        capture_list.push((name.to_string(), addr.clone()));
+                        capture_list.push((name.to_string(), original_addr));
                         idx
                     };
                 return Some(VarAddr::ClosureCapture(capture_idx));
@@ -2756,5 +2785,141 @@ mod tests {
         assert_eq!(&*span.file, "test-file.llt");
         assert_eq!(span.start_line, 10);
         assert_eq!(span.start_col, 5);
+    }
+
+    /// B-724: Case arm capture cascade bug.
+    ///
+    /// When a match has both a [case [let bindings] ...] arm and a keyed arm (...:),
+    /// and both arms contain nested functions that reference the same outer name,
+    /// the capture cascade must NOT let the keyed arm's fn inherit a ClosureCapture
+    /// from the case arm's fn — the case arm's fn boundary is popped before the
+    /// keyed arm is processed, so the ClosureCapture indices won't match at runtime.
+    ///
+    /// Simplified repro from loader.llt line 392-398:
+    /// ```tinct
+    /// [
+    ///   exports: value
+    ///   result: [match condition
+    ///     [case [let] pattern-0 [make-entry name $exports]]  # fn in case arm
+    ///     ...:                  []]                          # keyed arm (no fn here, but could have)
+    /// ]
+    /// ```
+    ///
+    /// The bug: when the case arm fn is popped, it adds ('exports', original_addr) to
+    /// the ENCLOSING fn's capture list (the implicit fn wrapping the whole dict).
+    /// When a sibling keyed arm's fn tries to reference 'exports', the outer_capture_idx
+    /// check (lines 322-333) finds 'exports' in the enclosing fn's capture list and
+    /// returns ClosureCapture(pos). But the original_addr for that entry was set during
+    /// the case arm's cascade — it references ClosureCapture indices in the case arm's
+    /// closure_env, which no longer exists at runtime.
+    #[test]
+    fn case_arm_capture_sibling_keyed_arm_fn() {
+        let src = r#"
+[
+  exports: 42
+  result: [match 0
+    [case [let] 0 [fn [] $exports]]
+    ...:          [fn [] $exports]]
+]
+"#;
+        let (program, table) = parse_and_resolve(src);
+
+        // Find all VarRefs for 'exports'.
+        let exports_refs = find_varref_nodes(&program, "exports");
+        assert_eq!(
+            exports_refs.len(),
+            2,
+            "expected 2 VarRefs for exports (one in case arm fn, one in keyed arm fn)"
+        );
+
+        // Both should resolve to the same address — Dispatch to the outer dict entry.
+        // The bug would manifest as ClosureCapture with mismatched indices.
+        for (id, _) in &exports_refs {
+            let addr = table.get(id).expect("exports should be resolved");
+            match addr {
+                VarAddr::Dispatch(_, _) => {
+                    // Correct: direct reference to outer dict entry
+                }
+                VarAddr::ClosureCapture(_) => {
+                    // Also acceptable IF the original_addr is correct.
+                    // The bug is when original_addr is ClosureCapture from a
+                    // now-defunct case arm boundary. We can't easily test that
+                    // here without inspecting the fn's capture list.
+                }
+                _ => panic!(
+                    "exports should be Dispatch or ClosureCapture, got {:?}",
+                    addr
+                ),
+            }
+        }
+
+        // Stronger check: inspect the resolved_captures of each fn to ensure
+        // they're consistent. The two fns have different capture paths because
+        // the case arm fn is inside a case-arm fn boundary (multi-level cascade),
+        // while the keyed arm fn is inside only its own fn boundary.
+        let fn_captures = collect_fn_captures(&program);
+        assert_eq!(
+            fn_captures.len(),
+            2,
+            "expected 2 fns (one in case arm, one in keyed arm)"
+        );
+
+        // Extract original_addr for 'exports' from each fn.
+        let case_arm_fn_captures = &fn_captures[0].1;
+        let keyed_arm_fn_captures = &fn_captures[1].1;
+
+        let case_exports_addr = case_arm_fn_captures
+            .iter()
+            .find(|(n, _)| n == "exports")
+            .map(|(_, addr)| addr);
+        let keyed_exports_addr = keyed_arm_fn_captures
+            .iter()
+            .find(|(n, _)| n == "exports")
+            .map(|(_, addr)| addr);
+
+        assert!(
+            case_exports_addr.is_some(),
+            "case arm fn should capture exports"
+        );
+        assert!(
+            keyed_exports_addr.is_some(),
+            "keyed arm fn should capture exports"
+        );
+
+        // The case arm fn is inside TWO fn boundaries (case arm boundary + its own fn),
+        // so its original_addr is ClosureCapture(pos) pointing into the case arm's
+        // closure_env — this is correct multi-level cascade behavior.
+        match case_exports_addr.unwrap() {
+            VarAddr::ClosureCapture(_) | VarAddr::Dispatch(_, _) => {
+                // Both are valid: ClosureCapture if multi-level cascade through the
+                // case arm boundary, Dispatch if the resolver bypassed it.
+            }
+            other => panic!(
+                "case arm fn: expected ClosureCapture or Dispatch for exports, got {:?}",
+                other
+            ),
+        }
+
+        // The keyed arm fn has NO case arm boundary — only its own fn boundary.
+        // Its original_addr should be Dispatch to the outer dict entry, NOT a
+        // ClosureCapture inherited from the case arm's defunct closure_env.
+        // This is the core B-724 invariant: the keyed arm fn must NOT inherit
+        // stale ClosureCapture addresses from sibling case arm boundaries.
+        match keyed_exports_addr.unwrap() {
+            VarAddr::Dispatch(_, _) => {
+                // Correct: direct reference to outer dict entry.
+            }
+            VarAddr::ClosureCapture(_) => {
+                panic!(
+                    "B-724 regression: keyed arm fn's original_addr for exports is \
+                     ClosureCapture — it should be Dispatch, not a stale reference \
+                     from a sibling case arm's closure_env"
+                );
+            }
+            other => panic!(
+                "keyed arm fn: unexpected original_addr type for exports: {:?}",
+                other
+            ),
+        }
     }
 }

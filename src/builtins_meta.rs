@@ -2103,6 +2103,7 @@ fn type_name(val: &Value) -> String {
         Value::Expression { .. } => "Expression",
         Value::Arena { .. } => "Arena",
         Value::CoreDocument { .. } => "CoreDocument",
+        Value::EffectPerformDispatcher { .. } => "EffectPerformDispatcher",
     }
     .to_string()
 }

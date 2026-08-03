@@ -716,45 +716,49 @@ pub(crate) fn eval_core_expr<'a>(
                     VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                     VarAddr::EffectPerform { class_id, method } => {
-                        // T-2137: Scan the accumulated group from innermost (highest slot) to
+                        // T-2146: Scan the accumulated group from innermost (highest slot) to
                         // outermost (slot 0) for instance method implementations.
                         //
                         // An instance method is a `Value::Function` with
                         // `instance_of == Some((class_id, method))`. The scan uses
                         // `peek_result()` to avoid forcing unevaluated thunks — only
                         // already-materialized functions are considered. Instance methods are
-                        // defined at document level and are always materialized before any
-                        // reference to them via EffectPerform can be evaluated (letrec ordering
-                        // within the same dict guarantees definitions precede references within
-                        // the same scope; cross-scope references go through accumulated_group
-                        // which is populated before evaluation of the referencing expression).
+                        // CoreExpr::Fn nodes (lambda abstractions), which are syntactic values
+                        // — evaluation of a Fn immediately produces a settled
+                        // Thunk::value(Value::Function{...}) because lambda abstraction is
+                        // already in WHNF (Launchbury 1993). So peek_result() always succeeds
+                        // for instance method thunks regardless of evaluation order. (Letrec
+                        // bindings are mutually recursive and lazily evaluated; there is no
+                        // ordering guarantee among siblings in the same scope.)
                         //
                         // Candidates are collected in innermost-first order (highest slot first).
-                        // All candidates' clauses are concatenated to form a synthesized dispatch
-                        // function whose `invoke_function` call tries the first matching clause.
+                        // Each candidate is a complete Value::Function with its own closure_env,
+                        // clauses, and annotation. We collect them and return a PendingEffectPerform
+                        // thunk that will try each candidate in order until one matches.
                         let group = &frame.group;
                         let group_len = group.len();
-                        let mut all_clauses: Vec<crate::ast::CoreClause> = Vec::new();
+                        let mut candidates: Vec<Arc<Value>> = Vec::new();
 
                         // Iterate from innermost (highest slot index) to outermost (slot 0).
                         for i in (0..group_len).rev() {
                             let Some(slot_thunk) = group.get(i) else {
                                 continue;
                             };
-                            if let Some(Ok(Value::Function {
-                                clauses,
-                                instance_of: Some((cid, m)),
-                                ..
-                            })) = slot_thunk.peek_result()
+                            if let Some(Ok(
+                                func_value @ Value::Function {
+                                    instance_of: Some((cid, m)),
+                                    ..
+                                },
+                            )) = slot_thunk.peek_result()
                             {
                                 if cid == class_id && m == method {
-                                    // Found a matching instance — add its clauses in order.
-                                    all_clauses.extend(clauses.iter().cloned());
+                                    // Found a matching instance — collect the complete function.
+                                    candidates.push(Arc::new(func_value.clone()));
                                 }
                             }
                         }
 
-                        if all_clauses.is_empty() {
+                        if candidates.is_empty() {
                             // No instance found — propagate as an evaluation error.
                             // Returning Err here causes the evaluating task to settle
                             // its thunk with this error; all dependents see the error
@@ -773,33 +777,13 @@ pub(crate) fn eval_core_expr<'a>(
                             .into());
                         }
 
-                        // Return a synthesized Value::Function with the concatenated clauses.
-                        // `instance_of = None` — this is a resolved dispatch function, not itself
-                        // a discoverable instance method. `closure_env = empty` — each candidate
-                        // function's closure_env was already materialized at fn-creation time;
-                        // the clauses carry their VarAddr-resolved bodies that reference their own
-                        // closure frames. However, since we're concatenating clauses from different
-                        // functions with different closure_envs, and CallContext only carries a
-                        // single closure_env shared across all clauses, we must use the
-                        // candidates' own closure_envs at dispatch time.
-                        //
-                        // INVARIANT: Each candidate's clauses reference VarAddr::ClosureCapture(i)
-                        // to access captured variables. The synthesized function's shared closure_env
-                        // is empty (vec![]), which means ClosureCapture(i) would fail for any i > 0.
-                        // This is correct for the current sprint because instance methods lowered by
-                        // lower.rs do not capture outer variables — they are top-level definitions
-                        // whose free variables are all in the accumulated_group (Dispatch addrs).
-                        //
-                        // T-2141 will address multi-instance synthesis with non-empty closure_envs
-                        // by carrying per-clause closure environments.
-                        let synthesized = Value::Function {
-                            clauses: std::sync::Arc::new(all_clauses),
-                            instance_of: None,
-                            closure_env: std::sync::Arc::new(vec![]),
-                            annotation: None,
-                            type_val: crate::value::unknown_type_val(),
-                        };
-                        return Ok(Arc::new(Thunk::value(synthesized, span.clone())));
+                        // Return a PendingEffectPerform thunk that will try each candidate in order.
+                        // Each candidate preserves its own closure_env, so ClosureCapture lookups
+                        // will resolve correctly when the candidate's clauses are evaluated.
+                        return Ok(Arc::new(Thunk::pending_effect_perform(
+                            candidates,
+                            span.clone(),
+                        )));
                     }
                 };
                 match thunk {

@@ -1425,6 +1425,15 @@ async fn typecheck_collect_diags(input: &str) -> Vec<crate::error::Diagnostic> {
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
+    // Populate type_stage_scope so that type names (Integer, String, etc.) resolve
+    // correctly during class method signature processing and instance validation.
+    // Without this, resolve_type_head fails on all uppercase type names because
+    // type_stage_scope is empty — method_signatures never get populated, and the
+    // T-2145 instance method param validation is silently skipped.
+    let ts_data = crate::imports::get_builtin_core_type_stage_scope().await;
+    state.type_stage_scope = ts_data.scope;
+    state.type_stage_fns = ts_data.fns;
+    state.type_stage_type_vars = ts_data.type_vars;
     let (_result_env, _ty, mut diags) =
         process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
     // trace-fn-type diagnostics are pushed to state.diagnostics during CEK processing,
@@ -1608,5 +1617,103 @@ async fn test_no_trace_annotation_no_runtime_trace_diagnostics() {
         trace_diags.is_empty(),
         "Expected no trace-call/trace-return diagnostics without @[trace: 1]; got: {:?}",
         trace_diags
+    );
+}
+
+// ============================================================================
+// T-2145: Advanced typecheck features for typeclass dispatch validation
+// ============================================================================
+
+/// T-2145 Feature 1: Instance method param validation against class signature.
+/// When an instance method's parameter types don't match the class declaration's method
+/// signature, emit a warning diagnostic.
+#[tokio::test]
+async fn test_t2145_instance_method_param_mismatch_warns() {
+    // Class declares `process: [Fn@Integer [Integer]]` (function taking Integer → Integer).
+    // Instance provides `process: [fn [let x@String] 42]` (function taking String → Integer).
+    // This should emit a type-warning about parameter 0 being incompatible.
+    let src = r#"
+[
+    Processor: [class [let a] process: [Fn@Integer [a]]]
+
+    [instance Processor [let a@Integer]
+        process: [fn [let x@String] 42]]
+]
+    "#;
+
+    let diags = typecheck_collect_diags(src).await;
+    let param_warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            d.kind == "type-warning"
+                && d.message.contains("parameter")
+                && d.message.contains("incompatible")
+        })
+        .collect();
+
+    assert!(
+        !param_warnings.is_empty(),
+        "Expected at least one type-warning about parameter incompatibility; got: {:?}",
+        diags
+    );
+}
+
+/// T-2145 Feature 1: Instance method arity mismatch emits warning.
+#[tokio::test]
+async fn test_t2145_instance_method_arity_mismatch_warns() {
+    // Class declares `combine: [Fn@Integer [Integer Integer]]` (2 params).
+    // Instance provides `combine: [fn [let x] 42]` (1 param).
+    // This should emit a type-warning about arity mismatch.
+    let src = r#"
+[
+    Combiner: [class [let a] combine: [Fn@Integer [a a]]]
+
+    [instance Combiner [let a@Integer]
+        combine: [fn [let x] 42]]
+]
+    "#;
+
+    let diags = typecheck_collect_diags(src).await;
+    let arity_warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            d.kind == "type-warning"
+                && d.message.contains("parameters")
+                && d.message.contains("expects")
+        })
+        .collect();
+
+    assert!(
+        !arity_warnings.is_empty(),
+        "Expected at least one type-warning about arity mismatch; got: {:?}",
+        diags
+    );
+}
+
+/// T-2145 Feature 1: Well-formed instance method emits no warnings.
+#[tokio::test]
+async fn test_t2145_instance_method_well_formed_no_warnings() {
+    // Class declares `process: [Fn@Integer [Integer]]`.
+    // Instance provides `process: [fn [let x@Integer] [+ x 1]]` — correct signature.
+    // This should emit no type-warning diagnostics.
+    let src = r#"
+[
+    Processor: [class [let a] process: [Fn@Integer [a]]]
+
+    [instance Processor [let a@Integer]
+        process: [fn [let x@Integer] [+ x 1]]]
+]
+    "#;
+
+    let diags = typecheck_collect_diags(src).await;
+    let instance_warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.kind == "type-warning" && d.message.contains("instance method"))
+        .collect();
+
+    assert!(
+        instance_warnings.is_empty(),
+        "Expected zero type-warnings for well-formed instance method; got: {:?}",
+        instance_warnings
     );
 }

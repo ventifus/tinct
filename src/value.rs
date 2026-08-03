@@ -907,6 +907,15 @@ pub enum Value {
         def: BuiltinDef,
         type_val: Arc<Value>,
     },
+    /// EffectPerform dispatcher — tries each candidate function in order (T-2146).
+    ///
+    /// When called, iterates through candidates and tries invoke_function on each
+    /// until one matches. Each candidate is a complete Value::Function with its own
+    /// closure_env, so ClosureCapture lookups resolve correctly.
+    EffectPerformDispatcher {
+        candidates: Arc<Vec<Arc<Value>>>,
+        type_val: Arc<Value>,
+    },
     /// Proxy object — field access calls the handler function with the field name
     Proxy {
         handler: std::sync::Arc<Thunk>,
@@ -1183,6 +1192,13 @@ impl Clone for Value {
                 def: *def,
                 type_val: Arc::clone(type_val),
             },
+            Value::EffectPerformDispatcher {
+                candidates,
+                type_val,
+            } => Value::EffectPerformDispatcher {
+                candidates: Arc::clone(candidates),
+                type_val: Arc::clone(type_val),
+            },
             Value::Proxy { handler, type_val } => Value::Proxy {
                 handler: std::sync::Arc::clone(handler),
                 type_val: Arc::clone(type_val),
@@ -1457,6 +1473,7 @@ impl Value {
             Value::Builder(_) => TYPE_ID_BUILDER,
             Value::Function { .. } => TYPE_ID_FUNCTION,
             Value::Builtin { .. } => TYPE_ID_BUILTIN,
+            Value::EffectPerformDispatcher { .. } => TYPE_ID_FUNCTION,
             Value::Proxy { .. } => TYPE_ID_PROXY,
             Value::DirCap { .. } => TYPE_ID_DIRCAP,
             Value::NetCap { .. } => TYPE_ID_NETCAP,
@@ -1503,6 +1520,7 @@ impl Value {
             Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
             Value::Builtin { .. } => "Builtin",
+            Value::EffectPerformDispatcher { .. } => "Function",
             Value::Proxy { .. } => "Proxy",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap { .. } => "NetCap",
@@ -1609,6 +1627,7 @@ impl Value {
             Value::Dict { type_val, .. } => type_val,
             Value::Function { type_val, .. } => type_val,
             Value::Builtin { type_val, .. } => type_val,
+            Value::EffectPerformDispatcher { type_val, .. } => type_val,
             Value::Proxy { type_val, .. } => type_val,
             Value::Variant { type_val, .. } => type_val,
             Value::Decimal { type_val, .. } => type_val,
@@ -1679,6 +1698,13 @@ impl fmt::Debug for Value {
                 write!(f, "Function({})", param_names.join(", "))
             }
             Value::Builtin { def, .. } => write!(f, "Builtin({})", def.name),
+            Value::EffectPerformDispatcher { candidates, .. } => {
+                write!(
+                    f,
+                    "EffectPerformDispatcher({} candidates)",
+                    candidates.len()
+                )
+            }
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap { entries, .. } => write!(f, "NetCap({} entries)", entries.len()),
@@ -1784,6 +1810,7 @@ impl fmt::Display for Value {
                 write!(f, "] ...]")
             }
             Value::Builtin { def, .. } => write!(f, "<builtin {}>", def.name),
+            Value::EffectPerformDispatcher { .. } => write!(f, "[fn [let ...] ...]"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap { .. } => write!(f, "<NetCap>"),
@@ -1980,6 +2007,16 @@ pub enum UnevaluatedState {
         annotation: Box<Value>,
         ctx: Arc<crate::eval::EvalContext>,
     },
+    /// Deferred EffectPerform dispatch — tries each candidate function in order.
+    ///
+    /// T-2146: When evaluating VarAddr::EffectPerform, collect all matching instance
+    /// methods from the accumulated group and try each in order. Each candidate is a
+    /// complete Value::Function with its own closure_env, so ClosureCapture lookups
+    /// resolve correctly. This replaces the broken synthesized-function approach that
+    /// concatenated clauses with an empty closure_env.
+    EffectPerform {
+        candidates: Vec<std::sync::Arc<Value>>,
+    },
 }
 
 impl UnevaluatedState {
@@ -1991,6 +2028,7 @@ impl UnevaluatedState {
             UnevaluatedState::AstField { .. } => 0,
             UnevaluatedState::Guarded { .. } => 0,
             UnevaluatedState::AnnotatedWrap { .. } => 0,
+            UnevaluatedState::EffectPerform { .. } => 0,
         }
     }
 }
@@ -2239,6 +2277,24 @@ impl Thunk {
         }
     }
 
+    /// Create a pending EffectPerform thunk (T-2146).
+    ///
+    /// When forced, tries each candidate function in order until one matches.
+    /// Each candidate is a complete Value::Function with its own closure_env.
+    pub fn pending_effect_perform(candidates: Vec<std::sync::Arc<Value>>, span: Span) -> Self {
+        Self {
+            inner: ThunkInner {
+                unevaluated: Mutex::new((
+                    Some(UnevaluatedState::EffectPerform { candidates }),
+                    None,
+                )),
+                result: tokio::sync::OnceCell::new(),
+                notify: std::sync::OnceLock::new(),
+            },
+            span,
+        }
+    }
+
     /// Return the source span where this thunk was created.
     pub fn definition_span(&self) -> Span {
         self.span.clone()
@@ -2402,6 +2458,9 @@ impl Thunk {
                 annotation,
                 ctx: new_ctx,
             },
+            UnevaluatedState::EffectPerform { candidates } => {
+                UnevaluatedState::EffectPerform { candidates }
+            }
         };
         Some(Arc::new(Thunk {
             inner: ThunkInner {

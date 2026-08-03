@@ -3630,7 +3630,9 @@ pub(crate) async fn typenode_value_to_type(
                                     }
                                 }
                                 // Function entries (payload constructors) — still count as the same ADT
-                                Value::Function { .. } | Value::Builtin { .. } => {}
+                                Value::Function { .. }
+                                | Value::Builtin { .. }
+                                | Value::EffectPerformDispatcher { .. } => {}
                                 _ => {
                                     all_match = false;
                                     break;

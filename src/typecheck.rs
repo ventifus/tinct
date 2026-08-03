@@ -13,6 +13,7 @@ use crate::ast::{
 };
 use crate::env::Env;
 use crate::error::Diagnostic;
+use crate::type_infer::InferenceContext;
 use crate::types::{generalize_tv, InferState};
 use crate::value::{unknown_type_val, Value};
 
@@ -1182,6 +1183,143 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 }
                 return Err(method_errors);
             }
+
+            // T-2145 Feature 1: Validate instance method params against class declaration signature.
+            //
+            // For each instance method, check that its parameter types are compatible with
+            // the class method signature (after substituting class type parameters with the
+            // instance's concrete pattern types). Emit a warning if they don't unify.
+            //
+            // This is a TYPECHECK-TIME validation — the runtime dispatch handles correctness,
+            // but catching param mismatches here improves the developer experience.
+            {
+                // Look up the class method signature.
+                let class_method_sig_opt = state
+                    .env
+                    .read()
+                    .unwrap()
+                    .get_class(class_name)
+                    .and_then(|cd| {
+                        cd.method_signatures
+                            .iter()
+                            .find(|(n, _)| n == &method_name)
+                            .map(|(_, tv)| Arc::clone(tv))
+                    });
+
+                if let Some(poly_sig) = class_method_sig_opt {
+                    // Substitute class params with the concrete instance pattern types.
+                    let type_subst: HashMap<String, Arc<Value>> = param_type_frame
+                        .iter()
+                        .map(|(name, tv)| (name.clone(), Arc::clone(tv)))
+                        .collect();
+                    let concrete_class_sig =
+                        crate::types::apply_typevalue_renaming(&poly_sig, &type_subst);
+
+                    // Extract param types from both the class signature and the instance method.
+                    let class_params_opt =
+                        crate::type_infer::typevalue_fn_params_and_ret(&concrete_class_sig);
+                    let method_params_opt =
+                        crate::type_infer::typevalue_fn_params_and_ret(&method_impl_type);
+
+                    match (class_params_opt, method_params_opt) {
+                        (Some((class_params, _class_ret)), Some((method_params, _method_ret))) => {
+                            // Check that the instance method has the same arity as the class signature.
+                            if class_params.len() != method_params.len() {
+                                state.diagnostics.push(Diagnostic::warn(
+                                    "type-warning",
+                                    format!(
+                                        "instance method '{}' for class '{}' has {} parameters, but class signature expects {}",
+                                        method_name,
+                                        class_name,
+                                        method_params.len(),
+                                        class_params.len()
+                                    ),
+                                    method.span.clone(),
+                                ));
+                            } else {
+                                // Check that each param type unifies with the class signature's param type.
+                                // Use a fresh InferenceContext snapshot to avoid polluting the global state.
+                                let mut validation_ctx = InferenceContext::from_snapshot(
+                                    state.ctx.subst.clone(),
+                                    state.ctx.levels.clone(),
+                                    state.ctx.current_level,
+                                    state.ctx.tycon_env.clone(),
+                                );
+                                let mut validation_constraints = Vec::new();
+
+                                for (i, (class_param, method_param)) in
+                                    class_params.iter().zip(method_params.iter()).enumerate()
+                                {
+                                    let unify_result = Box::pin(crate::types::unify(
+                                        class_param,
+                                        method_param,
+                                        &mut validation_ctx,
+                                        &mut validation_constraints,
+                                        method.span.clone(),
+                                        0,
+                                    ))
+                                    .await;
+
+                                    if let Err(err) = unify_result {
+                                        state.diagnostics.push(
+                                            Diagnostic::warn(
+                                                "type-warning",
+                                                format!(
+                                                    "instance method '{}' parameter {} has type incompatible with class signature",
+                                                    method_name, i
+                                                ),
+                                                method.span.clone(),
+                                            )
+                                            .with_note(format!(
+                                                "class signature expects: {}",
+                                                crate::eval::format_type_for_assert(
+                                                    class_param
+                                                )
+                                            ))
+                                            .with_note(format!(
+                                                "instance method has: {}",
+                                                crate::eval::format_type_for_assert(
+                                                    method_param
+                                                )
+                                            ))
+                                            .with_note(format!("unification failed: {}", err.message)),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        (None, Some(_)) => {
+                            // Instance method is a function, but class signature is not.
+                            state.diagnostics.push(Diagnostic::warn(
+                                "type-warning",
+                                format!(
+                                    "instance method '{}' for class '{}' is a function, but class signature is not",
+                                    method_name, class_name
+                                ),
+                                method.span.clone(),
+                            ));
+                        }
+                        (Some(_), None) => {
+                            // Class signature is a function, but instance method is not.
+                            state.diagnostics.push(Diagnostic::warn(
+                                "type-warning",
+                                format!(
+                                    "instance method '{}' for class '{}' is not a function, but class signature expects one",
+                                    method_name, class_name
+                                ),
+                                method.span.clone(),
+                            ));
+                        }
+                        (None, None) => {
+                            // Neither is a function — this is OK (methods can be non-function values).
+                            // No validation needed.
+                        }
+                    }
+                }
+                // If class_method_sig is None, the class has no signature for this method —
+                // this is OK (the method might be added dynamically). No validation needed.
+            }
+
             method_types.insert(method_name.clone(), method_impl_type.clone());
 
             // Insert TypeValue for the ɪ-prefixed binding name so that VarRef resolution

@@ -1517,6 +1517,9 @@ impl Value {
             Value::CoreDocument { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
+            Value::EffectPerformDispatcher { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
         }
     }
 }

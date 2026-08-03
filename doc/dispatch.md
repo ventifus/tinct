@@ -49,12 +49,11 @@ This is the common case. The resolver determines the binding site at resolution 
 
 ### VarAddr::EffectPerform { class_id, method }
 
-Open dispatch via accumulated instance group scan. The name is a typeclass method (e.g., `+`, `=`, `<`). At call time, the evaluator:
+Open dispatch via accumulated instance group scan. The name is a typeclass method (e.g., `+`, `=`, `<`). At call time, the evaluator uses a two-phase **collect-then-select** strategy:
 
-1. Materializes the first positional argument to determine its runtime type
-2. Scans the accumulated instance group (built during letrec evaluation) for entries matching `(class_id, method, arg_type)`
-3. Invokes the first matching instance method's clause
-4. If no match is found, raises a "no instance" error
+**Phase 1 — Collect:** Scan the accumulated instance group (built during letrec evaluation) from innermost slot to outermost for all `Value::Function` entries whose `instance_of` matches `(class_id, method)`, regardless of argument type. Concatenate their clauses (innermost-first) into a synthesized dispatch function. If no candidates are found, raise a "no instance" error.
+
+**Phase 2 — Select:** Invoke the synthesized function via `invoke_function`, which calls `try_clause` on each concatenated clause in order. Type discrimination happens here — Step 2 of `try_clause` materializes arguments and checks runtime types via `value_matches_type` against each clause's parameter annotations. The first clause whose type guards, pattern, and guard all pass is executed.
 
 Used for:
 
@@ -83,7 +82,7 @@ Calling an ordinary function materializes the function value, checks arity, bind
 
 A match expression is a `CoreExpr::Match` with a scrutinee and a list of `CoreMatchArm` entries. Each arm is a clause with:
 
-- `params`: empty (the scrutinee is not a parameter)
+- `params`: for **case arms** (`[case [let bindings] pattern body]`), populated with binding names as `CoreParam` entries (one per `[let ...]` name, slot-indexed); for **keyed arms** (literal, variable, or wildcard patterns without `[let ...]`), empty
 - `lowered_pattern`: the structural pattern (dict keys, variant tags, nested patterns)
 - `guard`: optional guard expression
 - `body`: the arm body

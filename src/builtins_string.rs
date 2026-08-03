@@ -957,7 +957,7 @@ pub(crate) fn builtin_str_map_chars(
             // Wrap each char as a materialized thunk, then register it in the arena.
             let char_thunk = Arc::new(Thunk::value(string_val(&ch_str), call_span.clone()));
 
-            // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
+            // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin vs EffectPerformDispatcher.
             let call_result_thunk = match &func_val {
                 Value::Function {
                     clauses,
@@ -984,6 +984,52 @@ pub(crate) fn builtin_str_map_chars(
                         ctx: Arc::clone(&ctx),
                     };
                     (def.func)(builtin_args).await?
+                }
+                Value::EffectPerformDispatcher { candidates, .. } => {
+                    // Try each candidate in order until one matches.
+                    let pos_args = vec![Arc::clone(&char_thunk)];
+                    let mut last_error: Option<Box<crate::error::EvalError>> = None;
+                    let mut matched = false;
+                    let mut result_thunk = None;
+                    for candidate_value in candidates.iter() {
+                        if let Value::Function {
+                            clauses,
+                            closure_env,
+                            ..
+                        } = candidate_value.as_ref()
+                        {
+                            let call_ctx = CallContext {
+                                clauses,
+                                closure_env: Arc::clone(closure_env),
+                                positional: &pos_args,
+                                named: None,
+                                call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
+                                ctx: &ctx,
+                            };
+                            match invoke_function(&call_ctx).await {
+                                Ok(thunk) => {
+                                    result_thunk = Some(thunk);
+                                    matched = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    if matched {
+                        result_thunk.expect("matched but no result_thunk")
+                    } else if let Some(e) = last_error {
+                        return Err(e);
+                    } else {
+                        return Err(EvalError::user_error(
+                            "no matching instance for EffectPerform dispatch in str-map-chars"
+                                .to_string(),
+                            call_span.clone(),
+                        )
+                        .into());
+                    }
                 }
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
