@@ -138,7 +138,10 @@ pub(crate) async fn eval_document_exprs_with_env(
             group: Arc::clone(&spine),
             closure_env: crate::value::GroupSpine::empty(),
             params: Arc::new(vec![]),
-            effect_chain: None,
+            effect_chain: Arc::new(crate::value::EffectChainNode {
+                group: crate::value::GroupSpine::empty(),
+                tail: None,
+            }),
         });
 
         if i == last_idx {
@@ -245,7 +248,10 @@ pub(crate) async fn eval_core_document_exprs(
             group: Arc::clone(&spine),
             closure_env: crate::value::GroupSpine::empty(),
             params: Arc::new(vec![]),
-            effect_chain: None,
+            effect_chain: Arc::new(crate::value::EffectChainNode {
+                group: crate::value::GroupSpine::empty(),
+                tail: None,
+            }),
         });
 
         if i == last_idx {
@@ -680,15 +686,6 @@ pub struct EvalContext {
     /// are accumulated in a single unified collection. Printed at the end of the pipeline
     /// by `run_loader_pipeline` in lib.rs.
     pub runtime_diagnostics: std::sync::Arc<std::sync::Mutex<Vec<crate::error::Diagnostic>>>,
-    /// Global instance method registry for EffectPerform dispatch.
-    ///
-    /// Populated by `eval_core_expr` when a `CoreExpr::Fn` with `instance_of: Some(...)` is
-    /// evaluated: the settled `Thunk::value(Value::Function { instance_of, ... })` is appended.
-    /// Instance method thunks in dict letrec groups are pre-forced at dict construction time
-    /// (eval_dict.rs) so they register here before any EffectPerform scan runs.
-    ///
-    /// Shared across all child contexts via `Arc` — instances are globally coherent.
-    pub instance_registry: Arc<Mutex<Vec<Arc<Thunk>>>>,
 }
 
 impl EvalContext {
@@ -779,7 +776,6 @@ impl EvalContext {
             is_predicates,
             type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
             runtime_diagnostics: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            instance_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -825,7 +821,6 @@ impl EvalContext {
             is_predicates,
             type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
             runtime_diagnostics: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            instance_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -868,7 +863,6 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
-            instance_registry: Arc::clone(&self.instance_registry),
         });
         (child_ctx, child_token)
     }
@@ -915,7 +909,6 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
-            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -965,7 +958,6 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
-            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -1010,7 +1002,6 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
-            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -1069,7 +1060,6 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
-            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -1949,6 +1939,7 @@ async fn call_to_match_by_name(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> EvalResult<bool> {
     // Step 1: get the init accumulated group snapshot.
     let Some(acc_group) = ctx.get_init_accumulated_group() else {
@@ -1997,7 +1988,7 @@ async fn call_to_match_by_name(
         named: None,
         call_span: span.clone(),
         ctx,
-        caller_effect_chain: None,
+        caller_effect_chain,
     };
     let result_thunk = invoke_function(&call_ctx).await?;
     // Step 8: materialize the call result and check if it is a nonzero Int.
@@ -2040,11 +2031,13 @@ async fn call_to_match_by_name(
 ///
 /// Returns `Ok(false)` in bootstrap/pre-prelude contexts (before `"to-match"` is in scope).
 /// Returns `Err` if dispatch infrastructure is present but the call fails.
-pub async fn call_to_match(val: &Value, ctx: &Arc<EvalContext>, span: &Span) -> EvalResult<bool> {
-    // Look up the "to-match" dispatch function by name in scope_frames and call it with val.
-    // Returns Ok(false) in bootstrap/pre-prelude contexts where init_accumulated_group is
-    // not set or "to-match" is not in scope_frames.
-    call_to_match_by_name("to-match", val, ctx, span).await
+pub async fn call_to_match(
+    val: &Value,
+    ctx: &Arc<EvalContext>,
+    span: &Span,
+    caller_effect_chain: crate::value::EffectChain,
+) -> EvalResult<bool> {
+    call_to_match_by_name("to-match", val, ctx, span, caller_effect_chain).await
 }
 
 /// Convert a tinct value to a match signal using a pre-resolved Matchable instance binding name.
@@ -2065,9 +2058,9 @@ pub async fn call_to_match_resolved(
     binding_name: &str,
     ctx: &Arc<EvalContext>,
     span: &Span,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> EvalResult<bool> {
-    // Direct-dispatch variant: call the pre-resolved Matchable instance binding by name.
-    call_to_match_by_name(binding_name, val, ctx, span).await
+    call_to_match_by_name(binding_name, val, ctx, span, caller_effect_chain).await
 }
 
 /// Pre-resolve the match-signal class instance binding name from a predicate function's
@@ -2088,62 +2081,6 @@ pub async fn call_to_match_resolved(
 /// key ends with `∷to-match⟨type_name⟩⧽` — the Rust-level protocol name `"to-match"` is
 /// fixed, and the class name is whatever class declared that method in the prelude.
 ///
-/// Returns `None` if the predicate has no return annotation, the annotation is not a simple
-/// type name, or no matching instance binding exists in the environment. In that case,
-/// callers should fall back to `call_to_match` for the standard two-hop dispatch.
-///
-/// This does NOT call the binding — it only resolves the name. The name is later passed
-/// to `call_to_match_resolved` which uses `ctx.init_accumulated_group` + `ctx.scope_frames`
-/// to look up and invoke the function at each call site.
-pub fn resolve_matchable_binding_from_fn(pred: &Value, ctx: &Arc<EvalContext>) -> Option<String> {
-    let return_ann = match pred {
-        Value::Function { annotation, .. } => annotation
-            .as_deref()
-            .and_then(|ann| ann.return_ann.as_ref())?,
-        // Builtins don't carry return annotations -- fall back to dynamic dispatch.
-        _ => return None,
-    };
-    // Extract a simple type name from the annotation.
-    // `fn@SomeType` -> Annotation::Simple("SomeType") -> "SomeType"
-    let type_name = match return_ann {
-        crate::ast::Annotation::Simple(name) => name.clone(),
-        _ => return None,
-    };
-    // Scan scope_frames for the instance binding name whose key ends with
-    // `∷to-match⟨{type_name}⟩⧽`. The Rust-level protocol method name is "to-match" (fixed);
-    // the class name (typically "Matchable") is whatever class declared it in the prelude.
-    // Instance binding names have the form: ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷to-match⟨{type_name}⟩⧽
-    let suffix = format!("\u{2237}to-match\u{27e8}{type_name}\u{27e9}\u{29fd}");
-    let scope_frames = ctx.scope_frames.as_ref()?;
-    for frame in scope_frames.iter() {
-        if let Some(name) = frame.keys().find(|k| k.ends_with(&suffix)) {
-            return Some(name.clone());
-        }
-    }
-    None
-}
-
-/// Call `call_to_match_resolved` if a pre-resolved binding name is available, otherwise
-/// fall back to `call_to_match` (standard `to-match` dispatch).
-///
-/// HOF builtins use this inside their predicate-calling loops. The binding name is
-/// pre-resolved once before the loop via `resolve_matchable_binding_from_fn`
-/// (extracted from the predicate function's return annotation) and reused on every
-/// iteration. When the predicate has no annotation, `binding_name` is `None` and this
-/// falls back to `call_to_match`.
-pub async fn call_to_match_opt_resolved(
-    val: &Value,
-    binding_name: Option<&str>,
-    ctx: &Arc<EvalContext>,
-    span: &Span,
-) -> EvalResult<bool> {
-    if let Some(name) = binding_name {
-        call_to_match_resolved(val, name, ctx, span).await
-    } else {
-        call_to_match(val, ctx, span).await
-    }
-}
-
 /// Concurrent evaluation protocol: forces a thunk to a terminal state.
 ///
 /// Uses the state machine protocol (doc/internals/thunk.md):
@@ -2402,31 +2339,6 @@ mod tests {
     /// Convenience for surface-based eval_for_test calls.
     fn surf(expr: SurfaceExpression) -> Arc<SurfaceNode> {
         Arc::new(SurfaceNode::new(expr, rust_span!()))
-    }
-
-    /// Test helper: create a PendingCall thunk using Arc<Thunk> directly.
-    fn make_pending_call(
-        ctx: &Arc<EvalContext>,
-        func_arc: Arc<Thunk>,
-        arg_arcs: Vec<Arc<Thunk>>,
-        call_span: Span,
-    ) -> Arc<Thunk> {
-        Arc::new(Thunk::fn_call(
-            func_arc,
-            arg_arcs,
-            IndexMap::new(),
-            call_span.clone(),
-            crate::value::FnCallSpec {
-                call_span: call_span.clone(),
-                caller_env_id: 0, // root scope (bridge placeholder)
-                ctx: Arc::clone(ctx),
-                original_call: Arc::new(crate::ast::Spanned {
-                    node: crate::ast::CoreExpr::Int(0),
-                    span: rust_span!(),
-                }),
-                caller_effect_chain: None,
-            },
-        ))
     }
 
     /// Async shadow of `materialize()` for test contexts.
@@ -3519,253 +3431,6 @@ mod tests {
         assert!(display.contains("in [inner ...] at src/test_util.rs:5:1-5:20"));
         assert!(display.contains("in [outer ...] at src/test_util.rs:8:1-8:25"));
     }
-
-    // ── PendingCall thunk state tests ──────────────────────────────────
-
-    // test_pending_call_llt_function deleted. The function body referenced $+ via
-    // (level: 1, slot: 0) from closure_env_id=0 (test_ctx root scope), but test_ctx() does
-    // not install + at slot 0 in its root scope. The add_builtin was also defined but never
-    // inserted (insert_value removed in T-1557). The test was a broken stub.
-
-    #[tokio::test]
-    async fn test_pending_call_builtin_function() {
-        // Create a PendingCall thunk where the function is a Builtin
-        fn multiply_builtin(
-            ctx: crate::value::BuiltinArgs,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>>
-        {
-            Box::pin(async move {
-                let a = materialize(&ctx.args[0], None, &ctx.ctx).await?;
-                let b = materialize(&ctx.args[1], None, &ctx.ctx).await?;
-                match (a, b) {
-                    (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => {
-                        Ok(Arc::new(Thunk::value(
-                            Value::Int {
-                                n: x * y,
-                                type_val: crate::value::unknown_type_val(),
-                            },
-                            test_span(1, 1, 1, 1),
-                        )))
-                    }
-                    _ => panic!("test expects Int args"),
-                }
-            })
-        }
-
-        let func_thunk = Arc::new(Thunk::value(
-            Value::Builtin {
-                def: crate::value::BuiltinDef {
-                    func: multiply_builtin,
-                    name: "*",
-                    pos_strictness: &[],
-                    force_count: 0,
-                    needs_caller_env: false,
-                },
-                type_val: crate::value::unknown_type_val(),
-            },
-            test_span(1, 1, 1, 5),
-        ));
-        let arg1 = Arc::new(Thunk::value(
-            Value::Int {
-                n: 5,
-                type_val: unknown_type_val(),
-            },
-            test_span(1, 6, 1, 7),
-        ));
-        let arg2 = Arc::new(Thunk::value(
-            Value::Int {
-                n: 6,
-                type_val: unknown_type_val(),
-            },
-            test_span(1, 8, 1, 9),
-        ));
-        let call_span = test_span(2, 1, 2, 10);
-        let ctx_builtin = test_ctx();
-        let pending = make_pending_call(&ctx_builtin, func_thunk, vec![arg1, arg2], call_span);
-
-        // Materialize should call the builtin directly and return the result
-        let result = materialize(&pending, None, &ctx_builtin).await.unwrap();
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 30,
-                type_val: unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn test_pending_call_memoizes() {
-        // PendingCall should memoize: second materialization returns cached value
-
-        // Create a function that would fail if called twice
-        // (we'll verify it's only called once by checking the state)
-        let identity_fn = Value::Function {
-            clauses: Arc::new(vec![crate::ast::CoreClause {
-                params: vec![crate::ast::Spanned::new(
-                    crate::ast::CoreParam {
-                        name: "x".into(),
-                        annotation: None,
-                        variadic: false,
-                        slot: 0,
-                        resolved_type: None,
-                        dispatch_guard: false,
-                    },
-                    test_span(1, 1, 1, 1),
-                )],
-                lowered_pattern: None,
-                guard: None,
-                body: Arc::new(sp(CoreExpr::Var {
-                    name: "x".to_string(),
-                    addr: crate::ast::VarAddr::Parameter(0),
-                    annotation: None,
-                })),
-                guard_matchable_binding: crate::ast::MatchableBinding::new(),
-                captures: Arc::new(vec![]),
-            }]),
-            closure_env: Arc::new(vec![]),
-            instance_of: None,
-            annotation: None,
-            type_val: unknown_type_val(),
-        };
-
-        let func_thunk = Arc::new(Thunk::value(identity_fn, test_span(1, 1, 1, 10)));
-        let arg = Arc::new(Thunk::value(
-            Value::Int {
-                n: 42,
-                type_val: unknown_type_val(),
-            },
-            test_span(1, 11, 1, 13),
-        ));
-        let call_span = test_span(2, 1, 2, 10);
-        let ctx_memo = test_ctx();
-        let pending = make_pending_call(&ctx_memo, func_thunk, vec![arg], call_span);
-
-        // First materialization
-        let result1 = materialize(&pending, None, &ctx_memo).await.unwrap();
-        assert_eq!(
-            result1,
-            Value::Int {
-                n: 42,
-                type_val: unknown_type_val()
-            }
-        );
-
-        // Check that the thunk is now in Materialized state
-        assert_eq!(
-            match pending.peek_result() {
-                Some(Ok(v)) => Some(v),
-                Some(Err(e)) => panic!("thunk in error state: {e:?}"),
-                None => None,
-            },
-            Some(&Value::Int {
-                n: 42,
-                type_val: unknown_type_val()
-            }),
-            "expected Materialized after first call"
-        );
-
-        // Second materialization should return cached value
-        let result2 = materialize(&pending, None, &ctx_memo).await.unwrap();
-        assert_eq!(
-            result2,
-            Value::Int {
-                n: 42,
-                type_val: unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn test_pending_call_non_function_error() {
-        // PendingCall with a non-Function/Builtin value should error
-        let not_a_function = Arc::new(Thunk::value(
-            Value::Int {
-                n: 123,
-                type_val: unknown_type_val(),
-            },
-            test_span(1, 1, 1, 4),
-        ));
-        let call_span = test_span(2, 1, 2, 10);
-
-        let ctx_nonfn = test_ctx();
-        let pending = make_pending_call(&ctx_nonfn, not_a_function, vec![], call_span);
-
-        let err = materialize(&pending, None, &ctx_nonfn).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("expected Function or Builtin, got Int"),
-            "got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_pending_call_with_unevaluated_args() {
-        // PendingCall should work with unevaluated argument thunks (lazy evaluation)
-
-        let identity_fn = Value::Function {
-            clauses: Arc::new(vec![crate::ast::CoreClause {
-                params: vec![crate::ast::Spanned::new(
-                    crate::ast::CoreParam {
-                        name: "x".into(),
-                        annotation: None,
-                        variadic: false,
-                        slot: 0,
-                        resolved_type: None,
-                        dispatch_guard: false,
-                    },
-                    test_span(1, 1, 1, 1),
-                )],
-                lowered_pattern: None,
-                guard: None,
-                body: Arc::new(sp(CoreExpr::Var {
-                    name: "x".to_string(),
-                    addr: crate::ast::VarAddr::Parameter(0),
-                    annotation: None,
-                })),
-                guard_matchable_binding: crate::ast::MatchableBinding::new(),
-                captures: Arc::new(vec![]),
-            }]),
-            closure_env: Arc::new(vec![]),
-            instance_of: None,
-            annotation: None,
-            type_val: unknown_type_val(),
-        };
-
-        let ctx_unevarg = test_ctx();
-        let func_thunk = Arc::new(Thunk::value(identity_fn, test_span(1, 1, 1, 10)));
-
-        // Create an unevaluated arg
-        let arg_expr = Arc::new(sp(CoreExpr::Int(99)));
-        let arg = Arc::new(Thunk::core_expr(
-            arg_expr,
-            EvalFrame::empty(),
-            Arc::clone(&ctx_unevarg),
-            test_span(1, 11, 1, 13),
-        ));
-
-        let call_span = test_span(2, 1, 2, 10);
-        let pending = make_pending_call(&ctx_unevarg, func_thunk, vec![arg], call_span);
-
-        // Materialize should evaluate the arg thunk and return the result
-        let result = materialize(&pending, None, &ctx_unevarg).await.unwrap();
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 99,
-                type_val: unknown_type_val()
-            }
-        );
-    }
-
-    // test_pending_call_with_named_args deleted. The function body called $+ via
-    // (level: 1, slot: 0) from closure_env_id=0, but test_ctx() does not install + at that
-    // slot. The add_builtin was defined but never inserted (insert_value removed in T-1557).
-
-    // test_pending_call_with_default_named_args deleted. Same issue as
-    // test_pending_call_llt_function: body calls $+ at (level: 1, slot: 0) from
-    // closure_env_id=0, but test_ctx() does not have + there. add_builtin was dead code.
 
     // ── Failed thunk state tests ───────────────────────────────────────
 
@@ -5673,6 +5338,10 @@ mod tests {
             span,
             0, // caller_env_id bridge placeholder
             Arc::clone(&ctx),
+            Arc::new(crate::value::EffectChainNode {
+                group: crate::value::GroupSpine::empty(),
+                tail: None,
+            }),
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is
@@ -5681,75 +5350,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "PendingBuiltin bypass path must pre-materialize force_count args; got: {:?}",
-            result.unwrap_err()
-        );
-
-        // The result should be an empty dict (keys of empty dict = empty dict).
-        let val = result.unwrap();
-        assert!(
-            matches!(val, Value::Dict { entries: ref m, .. } if m.is_empty()),
-            "expected empty dict from builtin_keys on empty dict, got {:?}",
-            val
-        );
-    }
-
-    /// Bypass path test: PendingCall→Builtin materialization pre-materializes strict args.
-    ///
-    /// This tests the recursive bypass path in `eval.rs::materialize` for PendingCall
-    /// thunks (line ~2059) when the callee resolves to a `Value::Builtin`. When a
-    /// PendingCall thunk with a Builtin callee is materialized recursively, the path
-    /// must still apply force_count pre-materialization before calling the builtin.
-    ///
-    /// Setup: create a PendingCall thunk where the func thunk resolves to `Value::Builtin(keys_def)`
-    /// and args[0] is an unevaluated dict thunk. If force_count pre-materialization is
-    /// missing in the PendingCall→Builtin path, `builtin_keys` panics at
-    /// `require_value()`.
-    #[tokio::test]
-    async fn pending_call_builtin_bypass_path_pre_materializes_args() {
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 5);
-
-        // Build an unevaluated thunk that evaluates to an empty dict.
-        let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
-        let unevaluated_arg = Arc::new(Thunk::core_expr(
-            dict_expr,
-            EvalFrame::empty(),
-            Arc::clone(&ctx),
-            span.clone(),
-        ));
-
-        // Verify the arg is NOT yet materialized.
-        assert!(
-            !unevaluated_arg.is_materialized(),
-            "arg must be unevaluated before the PendingCall is forced"
-        );
-
-        // Create a materialized func thunk wrapping Value::Builtin(keys_def).
-        const KEYS_STRICTNESS: &[Strictness] = &[];
-        let keys_def = BuiltinDef {
-            func: crate::builtins_dict::builtin_keys as BuiltinFn,
-            name: "keys",
-            pos_strictness: KEYS_STRICTNESS,
-            force_count: 1,
-            needs_caller_env: false,
-        };
-        let func_thunk = Arc::new(Thunk::value(
-            Value::Builtin {
-                def: keys_def,
-                type_val: crate::value::unknown_type_val(),
-            },
-            span.clone(),
-        ));
-
-        // Create a PendingCall thunk using Arc<Thunk> directly.
-        let outer = make_pending_call(&ctx, func_thunk, vec![unevaluated_arg], span);
-
-        // Materialize via the recursive path. If force_count pre-materialization is
-        // missing for the PendingCall→Builtin case, this panics inside `builtin_keys`.
-        let result = materialize(&outer, None, &ctx).await;
-        assert!(
-            result.is_ok(),
-            "PendingCall→Builtin bypass path must pre-materialize force_count args; got: {:?}",
             result.unwrap_err()
         );
 

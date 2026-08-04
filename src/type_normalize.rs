@@ -85,7 +85,14 @@ pub(crate) async fn call_strict_resolver(
             Arc::new(crate::value::Thunk::value(Value::clone(tv.as_ref()), span))
         })
         .collect();
-    let call_frame = crate::value::EvalFrame::for_function_call(closure_env, param_thunks, None);
+    let call_frame = crate::value::EvalFrame::for_function_call(
+        closure_env,
+        param_thunks,
+        std::sync::Arc::new(crate::value::EffectChainNode {
+            group: crate::value::GroupSpine::empty(),
+            tail: None,
+        }),
+    );
 
     // Evaluate the function body in the call frame and force the result.
     let body_thunk = Arc::new(crate::value::Thunk::core_expr(

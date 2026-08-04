@@ -18,6 +18,7 @@ pub(crate) async fn invoke_proxy_handler(
     caller_env_id: u32,
     ctx: &Arc<EvalContext>,
     access_span: &Span,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> EvalResult<Arc<Thunk>> {
     // Performance: handler thunk is memoized by Launchbury sharing, but each
     // access clones the materialized Value. Consider eager materialization in
@@ -39,7 +40,7 @@ pub(crate) async fn invoke_proxy_handler(
                     .clone()
                     .with_name(Arc::from("proxy field access")),
                 ctx,
-                caller_effect_chain: None,
+                caller_effect_chain: caller_effect_chain.clone(),
             })
             .await
         }
@@ -52,6 +53,7 @@ pub(crate) async fn invoke_proxy_handler(
                 .with_name(Arc::from("proxy field access")),
             caller_env_id,
             Arc::clone(ctx),
+            caller_effect_chain.clone(),
         ))),
         Value::EffectPerformDispatcher { candidates, .. } => {
             // Try each candidate in order until one matches.
@@ -74,7 +76,7 @@ pub(crate) async fn invoke_proxy_handler(
                             .clone()
                             .with_name(Arc::from("proxy field access")),
                         ctx,
-                        caller_effect_chain: None,
+                        caller_effect_chain: caller_effect_chain.clone(),
                     };
                     match invoke_function(&call_ctx).await {
                         Ok(result_thunk) => {

@@ -225,19 +225,19 @@ pub struct EffectChainNode {
     pub group: Arc<GroupSpine>,                 // scope at this call level
     pub tail: Option<Arc<EffectChainNode>>,     // enclosing call levels
 }
-pub type EffectChain = Option<Arc<EffectChainNode>>;
+pub type EffectChain = Arc<EffectChainNode>;
 ```
 
-`EvalFrame` carries an `effect_chain: EffectChain` field. Document-level frames have `effect_chain: None` because their `group` field already represents the full accumulated scope (root → prelude → user document entries via `GroupSpine` prev links). Function-call frames have `effect_chain: Some(...)` carrying the caller's scope chain.
+`EvalFrame` carries an `effect_chain: EffectChain` field. Every frame has a real `EffectChainNode`. Document-level frames carry an EffectChainNode with an empty group and `tail: None`, because their `group` field already represents the full accumulated scope (root → prelude → user document entries via `GroupSpine` prev links). Function-call frames carry an EffectChainNode whose group is the caller's accumulated scope and whose tail links to the caller's chain.
 
 #### Chain construction at call time
 
 When constructing a function call frame (in `eval_call.rs` / `CallContext`), the caller's current group is prepended to the chain:
 
 ```
-new_frame.effect_chain = Some(EffectChainNode {
-    group: caller_frame.group,        // caller's accumulated group
-    tail: caller_frame.effect_chain,  // inherited chain from caller's caller
+new_frame.effect_chain = Arc::new(EffectChainNode {
+    group: caller_frame.group,           // caller's accumulated group
+    tail: Some(caller_frame.effect_chain),  // inherited chain from caller's caller
 })
 ```
 

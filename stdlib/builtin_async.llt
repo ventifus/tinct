@@ -20,7 +20,10 @@
   builtin-signal-channel:   [fn@Any   [let signals@Any] ...]
   builtin-timer-channel:    [fn@Any   [let clk@ClockCap interval@Any] ...]
   builtin-watch-channel:    [fn@Any   [let cap@DirCap path@String] ...]
-  builtin-select-once:      [fn@Any   [let ctx@Any sources@Any] ...]
+  builtin-try-recv:         [fn@Dict  [let ch@Channel] ...]
+  builtin-try-recv-broadcast: [fn@Dict [let ch@Any] ...]
+  builtin-try-recv-oneshot: [fn@Dict  [let ch@Any] ...]
+  builtin-yield:            [fn@Dict  [let] ...]
 
   # ── Context and cancellation ───────────────────────────────────────────────
   builtin-context:          [fn@Any   [] ...]

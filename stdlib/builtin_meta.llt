@@ -43,9 +43,7 @@
   # is-contractive: check if a recursive type body is contractive (non-immediately-recursive).
   builtin-is-contractive:    [fn@Integer [let ty@Any] ...]
 
-  # ── Apply and meta-call ────────────────────────────────────────────────────
-  # apply: call f with args dict as positional arguments.
-  builtin-apply:             [fn@Any     [let f@Any args@Dict] ...]
+  # ── Meta-call ───────────────────────────────────────────────────────────────
   # proxy: create a proxy value that intercepts field access via a handler dict.
   builtin-proxy:             [fn@Any     [let handler@Dict] ...]
 
@@ -63,7 +61,6 @@
 
   # ── Evaluation control ────────────────────────────────────────────────────
   builtin-materialize:       [fn@Any     [let x@Any] ...]
-  builtin-until:             [fn@Any     [let ...args] ...]
 
   # ── AST operations ────────────────────────────────────────────────────────
   builtin-ast-of:            [fn@Dict    [let x@Any] ...]

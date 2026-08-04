@@ -1,0 +1,9 @@
+# Class method dispatch works inside fn-body intermediate dict entries.
+# The intermediate dict [sum: [+ a b]] evaluates in a letrec frame
+# that must inherit the caller's effect chain for + dispatch to succeed.
+[compute: [fn [let a b]
+  [sum: [+ a b]]
+  sum]]
+[result: [compute 3 4]]
+=== out
+["result": 7]

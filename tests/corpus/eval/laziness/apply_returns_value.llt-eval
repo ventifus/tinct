@@ -1,4 +1,0 @@
-# Lazy evaluation: $apply returns function result thunk
-[apply [fn [let x] x] [42]]
-=== out
-Int(42)

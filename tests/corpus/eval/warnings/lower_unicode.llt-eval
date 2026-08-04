@@ -1,5 +1,5 @@
-# lower: unicode lowercase conversion
+# lowercase: unicode lowercase conversion
 [include %libdir "strings.llt"]
-[lower "CAFÉ"]
+[lowercase "CAFÉ"]
 === out
 String("café")

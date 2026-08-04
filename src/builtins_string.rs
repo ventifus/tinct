@@ -1,10 +1,7 @@
 //! String builtins: `str`, `replace`, `trim`, `str-length`,
 //! `str-slice`, `str-chars`, `str-index-of`, `char-code`, `chr`, `str-bytes`, `bytes-str`,
-//! `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`,
+//! `trim-start`, `trim-end`, `upper`, `lower`,
 //! `regex-match?`, `int->string`, `float->string`, `builtin-string-concat`.
-//!
-//! Note: `upper` and `lower` are no longer Rust builtins. They live in `stdlib/strings.llt`
-//! and are implemented using `str-map-chars` + `str-to-upper-char` / `str-to-lower-char`.
 //!
 //! These builtins operate on String values. They are all inherently materializing
 //! because they must inspect string content to compute their results.
@@ -23,8 +20,6 @@ use std::sync::Arc;
 
 use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
-use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
 /// `replace`: Replace all occurrences of a pattern in a string.
@@ -853,14 +848,11 @@ pub(crate) fn builtin_bytes_str(
     })
 }
 
-/// `str-to-upper-char`: Convert a single character (as a Str) to uppercase.
+/// `upper`: Convert a string to uppercase using Unicode case mapping.
 ///
-/// Takes 1 arg: `c` (String, expected to be a single Unicode character).
-/// Returns a String containing the uppercase version of the character.
-/// For multi-char or empty strings, applies to_uppercase() to the whole input.
-/// This is the primitive used by the stdlib `upper` function via `str-map-chars`.
-/// Inherently materializing: must inspect string content to convert case.
-pub(crate) fn builtin_str_to_upper_char(
+/// Takes 1 arg: a String.
+/// Returns a String with all characters converted to uppercase.
+pub(crate) fn builtin_upper(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
@@ -871,26 +863,17 @@ pub(crate) fn builtin_str_to_upper_char(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg(
-            "str-to-upper-char",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-        let s = require_string("str-to-upper-char", val, Arc::clone(&args[0]).span.clone())?;
+        let val = expect_one_arg("upper", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("upper", val, Arc::clone(&args[0]).span.clone())?;
         ok_val(string_val(&s.to_uppercase()), call_span)
     })
 }
 
-/// `str-to-lower-char`: Convert a single character (as a Str) to lowercase.
+/// `lower`: Convert a string to lowercase using Unicode case mapping.
 ///
-/// Takes 1 arg: `c` (String, expected to be a single Unicode character).
-/// Returns a String containing the lowercase version of the character.
-/// For multi-char or empty strings, applies to_lowercase() to the whole input.
-/// This is the primitive used by the stdlib `lower` function via `str-map-chars`.
-/// Inherently materializing: must inspect string content to convert case.
-pub(crate) fn builtin_str_to_lower_char(
+/// Takes 1 arg: a String.
+/// Returns a String with all characters converted to lowercase.
+pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
@@ -901,157 +884,9 @@ pub(crate) fn builtin_str_to_lower_char(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg(
-            "str-to-lower-char",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-        let s = require_string("str-to-lower-char", val, Arc::clone(&args[0]).span.clone())?;
+        let val = expect_one_arg("lower", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("lower", val, Arc::clone(&args[0]).span.clone())?;
         ok_val(string_val(&s.to_lowercase()), call_span)
-    })
-}
-
-/// `str-map-chars`: Map a tinct function over every Unicode character in a string.
-///
-/// Takes 2 args: `f` (Function: Str → Str), `s` (String).
-/// Applies `f` to each Unicode character (as a single-char string) in `s`,
-/// then concatenates all results into a new string.
-/// The output of `f` need not be a single character — it can be any string.
-/// Inherently materializing: must iterate characters and force each function call.
-pub(crate) fn builtin_str_map_chars(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        reject_named("str-map-chars", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        // Get pre-materialized function (arg 0) and the input string (arg 1).
-        let thunk0 = Arc::clone(&args[0]);
-        let thunk1 = Arc::clone(&args[1]);
-        let func_val = thunk0.require_value()?.clone();
-        let input_val = thunk1.require_value()?.clone();
-
-        let s = require_string("str-map-chars", input_val, thunk1.span.clone())?;
-
-        // For an empty string, return empty string immediately.
-        if s.is_empty() {
-            return ok_val(string_val(""), call_span);
-        }
-
-        // Build the result by calling f on each character.
-        let mut result = String::with_capacity(s.len());
-
-        for ch in s.chars() {
-            let ch_str = ch.to_string();
-            // Wrap each char as a materialized thunk, then register it in the arena.
-            let char_thunk = Arc::new(Thunk::value(string_val(&ch_str), call_span.clone()));
-
-            // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin vs EffectPerformDispatcher.
-            let call_result_thunk = match &func_val {
-                Value::Function {
-                    clauses,
-                    closure_env,
-                    ..
-                } => {
-                    let pos_args = vec![Arc::clone(&char_thunk)];
-                    invoke_function(&CallContext {
-                        clauses,
-                        closure_env: Arc::clone(closure_env),
-                        positional: &pos_args,
-                        named: None,
-                        call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
-                        ctx: &ctx,
-                        caller_effect_chain: None,
-                    })
-                    .await?
-                }
-                Value::Builtin { def, .. } => {
-                    let builtin_args = BuiltinArgs {
-                        args: vec![Arc::clone(&char_thunk)],
-                        named: None,
-                        call_span: call_span.clone(),
-                        caller_env_id: None,
-                        ctx: Arc::clone(&ctx),
-                    };
-                    (def.func)(builtin_args).await?
-                }
-                Value::EffectPerformDispatcher { candidates, .. } => {
-                    // Try each candidate in order until one matches.
-                    let pos_args = vec![Arc::clone(&char_thunk)];
-                    let mut last_error: Option<Box<crate::error::EvalError>> = None;
-                    let mut matched = false;
-                    let mut result_thunk = None;
-                    for candidate_value in candidates.iter() {
-                        if let Value::Function {
-                            clauses,
-                            closure_env,
-                            ..
-                        } = candidate_value.as_ref()
-                        {
-                            let call_ctx = CallContext {
-                                clauses,
-                                closure_env: Arc::clone(closure_env),
-                                positional: &pos_args,
-                                named: None,
-                                call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
-                                ctx: &ctx,
-                                caller_effect_chain: None,
-                            };
-                            match invoke_function(&call_ctx).await {
-                                Ok(thunk) => {
-                                    result_thunk = Some(thunk);
-                                    matched = true;
-                                    break;
-                                }
-                                Err(e) => {
-                                    last_error = Some(e);
-                                }
-                            }
-                        }
-                    }
-                    if matched {
-                        result_thunk.expect("matched but no result_thunk")
-                    } else if let Some(e) = last_error {
-                        return Err(e);
-                    } else {
-                        return Err(EvalError::user_error(
-                            "no matching instance for EffectPerform dispatch in str-map-chars"
-                                .to_string(),
-                            call_span.clone(),
-                        )
-                        .into());
-                    }
-                }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "str-map-chars".to_string(),
-                        "Function",
-                        other.type_name(),
-                        thunk0.span.clone(),
-                    )
-                    .into());
-                }
-            };
-
-            // Materialize the result and require it to be a String.
-            let mapped_val = materialize(&call_result_thunk, Some(&call_span), &ctx).await?;
-            let mapped_str = require_string("str-map-chars", mapped_val, call_span.clone())?;
-
-            result.push_str(&mapped_str);
-        }
-
-        ok_val(string_val(&result), call_span)
     })
 }
 
@@ -1303,25 +1138,18 @@ pub fn string_builtins() -> Vec<crate::value::BuiltinDef> {
             ["str"]
         ),
         builtin!(
-            "builtin-str-to-upper-char",
-            builtin_str_to_upper_char,
+            "builtin-str-upper",
+            builtin_upper,
             [Strictness::Seq],
             1,
             ["str"]
         ),
         builtin!(
-            "builtin-str-to-lower-char",
-            builtin_str_to_lower_char,
+            "builtin-str-lower",
+            builtin_lower,
             [Strictness::Seq],
             1,
             ["str"]
-        ),
-        builtin!(
-            "builtin-str-map-chars",
-            builtin_str_map_chars,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["f", "str"]
         ),
         builtin!(
             "builtin-regex-match?",

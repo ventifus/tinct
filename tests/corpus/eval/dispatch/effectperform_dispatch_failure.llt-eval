@@ -9,5 +9,5 @@
     [let a@String]: [whoops: [fn [let x] "string"]]]
   result: [whoops 42]
 ]
-=== err
-no instance found for typeclass method
+=== error
+no instance found for typeclass method 'whoops'

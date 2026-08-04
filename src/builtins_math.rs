@@ -378,6 +378,7 @@ pub(crate) fn builtin_lte(
         named,
         call_span,
         caller_env_id,
+        caller_effect_chain,
         ctx,
         ..
     } = ctx_arg;
@@ -394,6 +395,7 @@ pub(crate) fn builtin_lte(
             named,
             call_span: call_span.clone(),
             caller_env_id,
+            caller_effect_chain,
             ctx,
         })
         .await?;
@@ -1802,6 +1804,13 @@ mod tests {
         Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
+    fn empty_chain() -> crate::value::EffectChain {
+        Arc::new(crate::value::EffectChainNode {
+            group: crate::value::GroupSpine::empty(),
+            tail: None,
+        })
+    }
+
     /// Drive an async builtin to completion synchronously in tests.
     fn run(f: impl std::future::Future<Output = EvalResult<Arc<Thunk>>>) -> EvalResult<Arc<Thunk>> {
         crate::async_rt::block_on(f)
@@ -1834,6 +1843,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
@@ -1858,6 +1868,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }));
         assert!(
             result.is_err(),
@@ -1892,6 +1903,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(
@@ -1928,6 +1940,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(
@@ -1950,6 +1963,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }));
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(

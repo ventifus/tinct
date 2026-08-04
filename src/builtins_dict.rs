@@ -313,7 +313,19 @@ pub(crate) fn builtin_get(
         let target_val = thunk1.require_value()?.clone();
         let target_span = thunk1.span.clone();
 
-        builtin_get_on_value(key, target_val, target_span, call_span, None, &ctx).await
+        builtin_get_on_value(
+            key,
+            target_val,
+            target_span,
+            call_span,
+            None,
+            &ctx,
+            std::sync::Arc::new(crate::value::EffectChainNode {
+                group: crate::value::GroupSpine::empty(),
+                tail: None,
+            }),
+        )
+        .await
     })
 }
 
@@ -328,6 +340,7 @@ async fn builtin_get_on_value(
     call_span: crate::ast::Span,
     variant_tag: Option<String>,
     ctx: &Arc<crate::eval::EvalContext>,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> EvalResult<Arc<Thunk>> {
     let key_str = key.to_string();
 
@@ -376,6 +389,7 @@ async fn builtin_get_on_value(
                 0,
                 ctx,
                 &call_span,
+                caller_effect_chain,
             )
             .await
         }
@@ -397,6 +411,7 @@ async fn builtin_get_on_value(
                         call_span,
                         Some(composite_tag),
                         ctx,
+                        caller_effect_chain,
                     ))
                     .await
                 }

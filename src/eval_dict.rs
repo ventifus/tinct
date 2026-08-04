@@ -563,7 +563,7 @@ pub(crate) async fn eval_dict_core(
             closure_env,
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
-            effect_chain: None,
+            effect_chain: std::sync::Arc::clone(&outer_frame.effect_chain),
         });
 
         for maybe_core_thunk in &core_expr_thunks {
@@ -589,23 +589,6 @@ pub(crate) async fn eval_dict_core(
                 }
             }
             // If try_claim returns None the thunk is already settled; nothing to patch.
-        }
-    }
-
-    // Phase 3: pre-force instance method thunks.
-    // CoreExpr::Fn with instance_of stamps are syntactic values (WHNF) — forcing them
-    // is O(1) and produces a settled Value::Function. The eval_core_expr handler for
-    // CoreExpr::Fn registers these in ctx.instance_registry, making them globally
-    // visible to EffectPerform dispatch regardless of scope.
-    for (entry, maybe_core_thunk) in entries.iter().zip(core_expr_thunks.iter()) {
-        if let CoreExpr::Fn {
-            instance_of: Some(_),
-            ..
-        } = &entry.node.value.node
-        {
-            if let Some(core_thunk) = maybe_core_thunk {
-                crate::eval::materialize(core_thunk, Some(dict_span), ctx).await?;
-            }
         }
     }
 

@@ -778,40 +778,17 @@ pub(crate) fn eval_core_expr<'a>(
                         // 2. Traverse the effect chain from innermost to outermost.
                         //    Each node carries the caller's group at the call point.
                         //    This implements Koka evidence passing.
-                        let mut chain = &frame.effect_chain;
-                        while let Some(node) = chain {
+                        scan_spine(&frame.effect_chain.group, &mut candidates);
+                        let mut tail = &frame.effect_chain.tail;
+                        while let Some(node) = tail {
                             scan_spine(&node.group, &mut candidates);
-                            chain = &node.tail;
-                        }
-
-                        // 3. Scan the global instance registry.
-                        //    Instance method thunks are registered here when
-                        //    CoreExpr::Fn with instance_of is evaluated. This covers
-                        //    instances from any scope (prelude, user code, nested evals).
-                        if candidates.is_empty() {
-                            let registry = ctx
-                                .instance_registry
-                                .lock()
-                                .expect("instance_registry poisoned");
-                            for thunk in registry.iter() {
-                                if let Some(Ok(
-                                    func_value @ Value::Function {
-                                        instance_of: Some((cid, m)),
-                                        ..
-                                    },
-                                )) = thunk.peek_result()
-                                {
-                                    if cid == class_id && m == method {
-                                        candidates.push(Arc::new(func_value.clone()));
-                                    }
-                                }
-                            }
+                            tail = &node.tail;
                         }
 
                         if candidates.is_empty() {
                             let chain_len = {
-                                let mut len = 0u32;
-                                let mut c = &frame.effect_chain;
+                                let mut len = 1u32;
+                                let mut c = &frame.effect_chain.tail;
                                 while let Some(node) = c {
                                     len += 1;
                                     c = &node.tail;
@@ -821,7 +798,7 @@ pub(crate) fn eval_core_expr<'a>(
                             return Err(EvalError::user_error(
                                 format!(
                                     "no instance found for typeclass method '{}' (class_id={}): \
-                                     scanned frame.group + {} effect chain level(s) + global registry",
+                                     scanned frame.group + {} effect chain level(s)",
                                     method, class_id, chain_len
                                 ),
                                 span.clone(),
@@ -1106,12 +1083,6 @@ pub(crate) fn eval_core_expr<'a>(
                     },
                     span.clone(),
                 ));
-                if instance_of.is_some() {
-                    ctx.instance_registry
-                        .lock()
-                        .expect("instance_registry poisoned")
-                        .push(Arc::clone(&thunk));
-                }
                 Ok(thunk)
             }
 
@@ -1511,7 +1482,10 @@ mod tests {
             closure_env: GroupSpine::empty(),
             group: GroupSpine::from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
-            effect_chain: None,
+            effect_chain: Arc::new(crate::value::EffectChainNode {
+                group: GroupSpine::empty(),
+                tail: None,
+            }),
         });
 
         // Build a Var node: addr = Dispatch(0, 0).

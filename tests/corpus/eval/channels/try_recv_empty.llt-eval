@@ -1,0 +1,9 @@
+--- uses: ["core"]
+# try-recv returns {empty: []} when no message is available on the channel.
+[
+  ch:  [channel 1]
+  raw: [try-recv ch]
+]
+[has? "empty" raw]
+=== out
+Variant(Boolean.True, Null)

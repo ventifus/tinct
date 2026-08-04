@@ -33,9 +33,8 @@
   builtin-trim-start:      [fn@String  [let s@String] ...]
   builtin-trim-end:        [fn@String  [let s@String] ...]
   builtin-replace:         [fn@String  [let pat@String rep@String s@String] ...]
-  builtin-str-map-chars:   [fn@String  [let f@Any s@String] ...]
-  builtin-str-to-upper-char: [fn@String [let c@String] ...]
-  builtin-str-to-lower-char: [fn@String [let c@String] ...]
+  builtin-str-upper: [fn@String [let s@String] ...]
+  builtin-str-lower: [fn@String [let s@String] ...]
 
   # ── Character operations ───────────────────────────────────────────────────
   builtin-char-code:       [fn@Integer [let s@String] ...]

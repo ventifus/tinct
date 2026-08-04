@@ -119,10 +119,10 @@ pub(crate) async fn eval_call_core(
             caller_env_id,
             ctx: Arc::clone(ctx),
             original_call,
-            caller_effect_chain: Some(std::sync::Arc::new(crate::value::EffectChainNode {
+            caller_effect_chain: std::sync::Arc::new(crate::value::EffectChainNode {
                 group: std::sync::Arc::clone(&caller_frame.group),
-                tail: caller_frame.effect_chain.clone(),
-            })),
+                tail: Some(std::sync::Arc::clone(&caller_frame.effect_chain)),
+            }),
         },
     )))
 }
@@ -278,7 +278,10 @@ pub(crate) async fn try_clause(
         let pre_frame = Arc::new(EvalFrame::for_function_call(
             Arc::clone(&closure_env),
             vec![],
-            None,
+            std::sync::Arc::new(crate::value::EffectChainNode {
+                group: crate::value::GroupSpine::empty(),
+                tail: None,
+            }),
         ));
         // Build the binding_map from clause.params (name → slot).
         let binding_map: IndexMap<String, u32> = clause
@@ -355,7 +358,17 @@ pub(crate) async fn try_clause(
             if let Some(guard_expr) = &clause.guard {
                 let guard_thunk = eval_core_expr(guard_expr, &bound_frame, ctx).await?;
                 let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
-                if !Box::pin(call_to_match(&guard_value, ctx, call_span)).await? {
+                if !Box::pin(call_to_match(
+                    &guard_value,
+                    ctx,
+                    call_span,
+                    Arc::new(crate::value::EffectChainNode {
+                        group: Arc::clone(&bound_frame.group),
+                        tail: Some(Arc::clone(&bound_frame.effect_chain)),
+                    }),
+                ))
+                .await?
+                {
                     return Ok(None);
                 }
             }
@@ -383,7 +396,17 @@ pub(crate) async fn try_clause(
         })?;
         let guard_thunk = eval_core_expr(guard_expr, &bound_frame, ctx).await?;
         let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
-        if !Box::pin(call_to_match(&guard_value, ctx, call_span)).await? {
+        if !Box::pin(call_to_match(
+            &guard_value,
+            ctx,
+            call_span,
+            Arc::new(crate::value::EffectChainNode {
+                group: Arc::clone(&bound_frame.group),
+                tail: Some(Arc::clone(&bound_frame.effect_chain)),
+            }),
+        ))
+        .await?
+        {
             return Ok(None);
         }
         // Guard passed — return the already-bound frame.

@@ -2218,18 +2218,13 @@ to-float@[doc: "Parse String to Float"]: builtin-to-float
 try@[doc: "Catch errors from a zero-arg function; returns Result.Ok on success or Result.Error on failure"]:
     [fn@[bind: [a]  return: [Result a]] [let f@[Fn@a []]]
         [raw-to-result [builtin-try [f]]]]
-apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
-partial@[doc: "Pre-fill leading arguments of f. Returns a function that accepts the remaining arguments and calls [f bound... extra...]."]:
-    [fn [let f ...bound]
-      [n: [length bound]]
-      [fn [let ...extra]
-        [apply f
-          [reduce
-            [fn [let acc i] [set [+ i n] [get i extra] acc]]
-            bound
-            [keys extra]]]]]
 materialize@[doc: "Force evaluation to weak-head normal form (WHNF). Use with care — lazy evaluation is preferred."]: builtin-materialize
-until@[doc: "Iterative loop primitive: call thunk repeatedly until it returns a non-thunk. Use for fixed-point convergence."]: builtin-until
+until@[doc: """
+Repeat [f val] until [pred val] returns true, then return val.
+
+Example: [until [fn [let n] [> n 10]] [fn [let n] [+ n 3]] 1] => 13
+"""]: [fn [let pred f val]
+  [if [pred val] val [until pred f [f val]]]]
 
 validate@[doc: "Validate a value against a schema dict; returns value on success, raises on failure."]: builtin-validate
 
@@ -2479,10 +2474,8 @@ str-index-of@[doc: "Return the byte index of the first occurrence of needle in h
 trim-start@[doc: "Remove leading whitespace from a string"]: builtin-trim-start
 trim-end@[doc: "Remove trailing whitespace from a string"]: builtin-trim-end
 
-str-to-upper-char@[doc: "Convert a single-character string to uppercase"]: builtin-str-to-upper-char
-str-to-lower-char@[doc: "Convert a single-character string to lowercase"]: builtin-str-to-lower-char
-
-str-map-chars@[doc: "Apply a function to each character of a string, returning a new string"]: builtin-str-map-chars
+uppercase@[doc: "Convert a string to uppercase"]: builtin-str-upper
+lowercase@[doc: "Convert a string to lowercase"]: builtin-str-lower
 
 regex-match?@[doc: "Return True if the string matches the regular expression pattern"]: builtin-regex-match?
 
@@ -2973,11 +2966,7 @@ chunks@[doc: "Lazily read fixed-size byte chunks from a handle. Returns a Seq of
 
 bytes-concat@[doc: "Concatenate a Seq or Dict of Bytes values into a single Bytes value"]:
   [fn [let chunks-seq]
-    [if [seq? chunks-seq]
-      [apply builtin-bytes [collect-dict chunks-seq]]
-      [if [list? chunks-seq]
-        [apply builtin-bytes [collect-dict [ft-to-seq chunks-seq]]]
-        [apply builtin-bytes chunks-seq]]]]
+    [reduce builtin-bytes-concat [builtin-bytes] [each chunks-seq]]]
 
 timestamp-nanos:   [get "timestamp-nanos"   [builtin-module "datetime"]]
 duration-nanos:    [get "duration-nanos"    [builtin-module "datetime"]]
@@ -2989,9 +2978,9 @@ timestamp->unix:   [get "timestamp->unix"   [builtin-module "datetime"]]
 unix->timestamp:   [get "unix->timestamp"   [builtin-module "datetime"]]
 timestamp-add:     [get "timestamp-add"     [builtin-module "datetime"]]
 timestamp-diff:    [get "timestamp-diff"    [builtin-module "datetime"]]
-timestamp<?:       [fn@Boolean [let a@Dict b@Dict] [apply [get "timestamp<?"  [builtin-module "datetime"]] [0: a  1: b]]]
-timestamp>?:       [fn@Boolean [let a@Dict b@Dict] [apply [get "timestamp>?"  [builtin-module "datetime"]] [0: a  1: b]]]
-timestamp=?:       [fn@Boolean [let a@Dict b@Dict] [apply [get "timestamp=?"  [builtin-module "datetime"]] [0: a  1: b]]]
+timestamp<?:       [fn@Boolean [let a@Dict b@Dict] [f: [get "timestamp<?"  [builtin-module "datetime"]]] [f a b]]
+timestamp>?:       [fn@Boolean [let a@Dict b@Dict] [f: [get "timestamp>?"  [builtin-module "datetime"]]] [f a b]]
+timestamp=?:       [fn@Boolean [let a@Dict b@Dict] [f: [get "timestamp=?"  [builtin-module "datetime"]]] [f a b]]
 timestamp-year:    [get "timestamp-year"    [builtin-module "datetime"]]
 timestamp-month:   [get "timestamp-month"   [builtin-module "datetime"]]
 timestamp-day:     [get "timestamp-day"     [builtin-module "datetime"]]
@@ -3040,12 +3029,41 @@ recv:               builtin-recv
 broadcast-channel:  builtin-broadcast-channel
 oneshot-channel:    builtin-oneshot-channel
 try-send:           builtin-try-send
+try-recv:           builtin-try-recv
+try-recv-broadcast: builtin-try-recv-broadcast
+try-recv-oneshot:   builtin-try-recv-oneshot
+yield:              builtin-yield
+
+mpsc-source:      [fn [let ch handler] [poll: [fn [let] [builtin-try-recv ch]]           handler: .handler]]
+broadcast-source: [fn [let ch handler] [poll: [fn [let] [builtin-try-recv-broadcast ch]]  handler: .handler]]
+oneshot-source:   [fn [let ch handler] [poll: [fn [let] [builtin-try-recv-oneshot ch]]    handler: .handler]]
+
+poll-sources-pass: [fn [let sources-dict n i closed-n]
+  [match [= i n]
+    1: [if [= closed-n n]
+         [state: "closed"]
+         [state: "empty"]]
+    [case [let] ...
+      [src: [get i sources-dict]]
+      [result: [src.poll]]
+      [match [builtin-has-key? "value" result]
+        [case [let _] ...
+          [state: "value"  value: [builtin-dict-get "value" result]  handler: src.handler]]
+        [case [let] ...
+          [poll-sources-pass sources-dict n [+ i 1] [+ closed-n [builtin-has-key? "closed" result]]]]]]]]
+
 select-once: [fn@Any [let ctx sources]
-    [call [fn [let raw]
-        [match [builtin-has-key? "ok" raw]
-            0: Closed.Closed
-            [case [let _] ... [builtin-dict-get "ok" raw]]]]
-        [builtin-select-once ctx sources]]]
+  [sources-dict: [collect sources]]
+  [n: [length sources-dict]]
+  [poll-loop: [fn [let]
+    [match [builtin-cancelled-q ctx]
+      0: [r: [poll-sources-pass sources-dict n 0 0]]
+         [match r.state
+           "value":  [r.handler r.value]
+           "closed": Closed.Closed
+           "empty":  [>> [builtin-yield] [poll-loop]]]
+      ...: []]]]
+  [poll-loop]]
 
 emit@[doc: "Print a value to stdout"]: builtin-emit
 
@@ -3062,12 +3080,12 @@ with-cancel:     builtin-with-cancel
 with-timeout:    [fn@Context [let clock@ClockCap ctx@Context dur@Integer]   [builtin-with-timeout  clock ctx dur]]
 with-deadline:   [fn@Context [let clock@ClockCap ctx@Context ts@Integer]    [builtin-with-deadline clock ctx ts]]
 with-context:    builtin-with-context
-non-cancellable@[doc: "Create a fresh root Context that will never be cancelled. Used for cleanup code that must run even when the main context is cancelled."]: [fn@Any [let] [apply builtin-non-cancellable []]]
+non-cancellable@[doc: "Create a fresh root Context that will never be cancelled. Used for cleanup code that must run even when the main context is cancelled."]: builtin-non-cancellable
 cancelled?:      builtin-cancelled-q
 cancel-task:     builtin-cancel-task
 
 cancel-root:   builtin-cancel-root
-drain@[doc: "Await all background tasks until complete. Waits indefinitely."]: [fn@Any [let] [apply builtin-drain []]]
+drain@[doc: "Await all background tasks until complete. Waits indefinitely."]: builtin-drain
 exit-now:      builtin-exit-now
 
 
@@ -3123,25 +3141,27 @@ If drain times out, exits immediately without waiting for remaining tasks.
 select@[doc: """
 Repeatedly select from channels until the context is cancelled.
 
-Sources must be a Seq of dicts with `ch:` (Channel) and `handler:` (Fn) fields.
+Sources must be a Seq of dicts with `poll:` (zero-arg Fn returning {value: v},
+{empty: []}, or {closed: []}) and `handler:` (Fn) fields. Use mpsc-source,
+broadcast-source, or oneshot-source to construct them.
 
 Example:
   [select [context]
-    [seq [ch: sig-ch   handler: [fn [let _] [exit 0]]]
-     [seq [ch: req-ch  handler: [fn [let req] [task [handle req]]]] []]]
+    [seq [mpsc-source req-ch [fn [let req] [task [handle req]]]]
+     [seq [mpsc-source sig-ch [fn [let _] [exit 0]]] []]]
     identity]
 
 Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sprint.
-"""]: [fn@Any [let ctx sources@[Seq Dict] handler@[Fn@Any [Any]]]
+"""]: [fn@Any [let ctx sources handler]
+  [sources-dict: [collect sources]]
+  [n: [length sources-dict]]
   [go: [fn [let]
     [match [builtin-cancelled-q ctx]
-      0: [call [fn [let raw]
-            [match [builtin-has-key? "ok" raw]
-              0: Closed.Closed
-              [case [let _] ...
-                [call [fn [let _ignored] [go]]
-                      [handler [builtin-dict-get "ok" raw]]]]]]
-           [builtin-select-once ctx sources]]
+      0: [r: [poll-sources-pass sources-dict n 0 0]]
+         [match r.state
+           "value":  [>> [handler [r.handler r.value]] [go]]
+           "closed": Closed.Closed
+           "empty":  [>> [builtin-yield] [go]]]
       ...: []]]]
   [go]]
 

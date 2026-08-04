@@ -5,11 +5,12 @@
 # Strategy: send a value via an awaited task (forces the send before select-once polls),
 # then call select-once and verify the handler result is returned directly.
 # Only .result is accessed — the Channel value in ch is never serialized.
+# Source uses the mpsc-source constructor ({poll: fn, handler: fn} format).
 [
   ch:          [channel 1]
   send-done:   [await [task [fn [] [send ch 42]]]]
   ctx:         [context]
-  source:      [ch: ch  handler: [fn [let x] [+ x 1]]]
+  source:      [mpsc-source ch [fn [let x] [+ x 1]]]
   sources:     [seq source Seq.End]
   result:      [begin send-done [select-once ctx sources]]
 ]

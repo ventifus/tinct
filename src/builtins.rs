@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{CoreExpr, Span, Spanned};
+use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
@@ -140,25 +140,6 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
 }
 
 /// Convert a `Value::Bytes` slice into a lazy collection of `Value::Int` (one per byte).
-///
-/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
-///
-/// Used when builtins construct PendingCall thunks (e.g., map, filter, until).
-/// The CoreExpr is needed for PendingBuiltin re-dispatch but won't be re-evaluated.
-pub(crate) fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
-    Arc::new(Spanned {
-        node: CoreExpr::Call {
-            func: Arc::new(Spanned {
-                node: CoreExpr::Int(0), // placeholder, never evaluated
-                span: span.clone(),
-            }),
-            args: vec![],
-            named_args: vec![],
-            implied: false,
-        },
-        span,
-    })
-}
 
 /// Helper: get a pre-materialized single positional argument, enforcing exact arity of 1
 /// and rejecting named arguments. Used by many single-arg builtins with force_count=1.
@@ -557,7 +538,7 @@ mod tests {
         builtin_float_lt, builtin_float_mul, builtin_float_sub, builtin_int_add, builtin_int_mul,
         builtin_int_sub, builtin_lt, builtin_str_lt,
     };
-    use crate::builtins_meta::{builtin_apply, builtin_raise, builtin_try, builtin_type_of};
+    use crate::builtins_meta::{builtin_raise, builtin_try, builtin_type_of};
     use crate::builtins_string::{builtin_replace, builtin_trim};
     use crate::error::ErrorKind;
     use crate::rust_span;
@@ -584,6 +565,13 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         crate::eval::EvalContext::new_empty()
+    }
+
+    fn empty_chain() -> crate::value::EffectChain {
+        Arc::new(crate::value::EffectChainNode {
+            group: crate::value::GroupSpine::empty(),
+            tail: None,
+        })
     }
 
     /// Drive an async builtin to completion in tests.
@@ -694,6 +682,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -720,6 +709,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -746,6 +736,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -772,6 +763,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -799,6 +791,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -825,6 +818,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -851,6 +845,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -877,6 +872,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -898,6 +894,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -923,6 +920,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -942,6 +940,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -961,6 +960,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -986,6 +986,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1005,6 +1006,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1039,6 +1041,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1075,6 +1078,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1100,6 +1104,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1125,6 +1130,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1150,6 +1156,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1176,6 +1183,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1203,6 +1211,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1230,6 +1239,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1256,6 +1266,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1282,6 +1293,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1309,6 +1321,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1336,6 +1349,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1362,6 +1376,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1388,6 +1403,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1414,6 +1430,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1440,6 +1457,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1461,6 +1479,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1486,6 +1505,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1505,6 +1525,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1524,6 +1545,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1543,6 +1565,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1577,6 +1600,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1602,6 +1626,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1627,6 +1652,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1646,6 +1672,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1666,6 +1693,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1686,6 +1714,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1706,6 +1735,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1726,6 +1756,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1745,6 +1776,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1764,6 +1796,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1783,6 +1816,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1808,6 +1842,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1838,6 +1873,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1863,6 +1899,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1888,6 +1925,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1907,6 +1945,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1926,6 +1965,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -1945,6 +1985,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1966,6 +2007,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -1986,6 +2028,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -2006,6 +2049,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -2026,6 +2070,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -2046,6 +2091,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -2067,6 +2113,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -2087,6 +2134,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2106,6 +2154,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2125,6 +2174,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2144,6 +2194,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2163,6 +2214,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2182,6 +2234,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2207,6 +2260,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2232,6 +2286,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2257,6 +2312,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2276,6 +2332,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2298,6 +2355,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2319,6 +2377,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2339,6 +2398,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2363,6 +2423,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2383,6 +2444,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2405,6 +2467,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2426,6 +2489,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2461,6 +2525,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2479,6 +2544,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2505,6 +2571,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -2535,6 +2602,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -2561,6 +2629,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         if let Value::Dict { entries: map, .. } = result {
@@ -2582,6 +2651,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -2617,6 +2687,7 @@ mod tests {
             call_span(),
             0,
             Arc::clone(&ctx),
+            empty_chain(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2624,6 +2695,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -2665,6 +2737,7 @@ mod tests {
             call_span(),
             0,
             Arc::clone(&ctx),
+            empty_chain(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2672,6 +2745,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -2715,6 +2789,7 @@ mod tests {
             call_span(),
             0,
             Arc::clone(&ctx),
+            empty_chain(),
         ));
         let err = run(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2722,360 +2797,13 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("exceeded resource limit"),
             "expected resource limit error to propagate, got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_single_arg() {
-        // [fn [x] $x] applied to [42]
-        let ctx = test_ctx();
-        let func = parse_eval("[fn [let x] $x]", &ctx).await;
-        let args_val = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Int(0),
-                    thunk(Value::Int {
-                        n: 42,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m
-            },
-            &ctx,
-        );
-
-        let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), args_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 42,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_multiple_args_returns_first() {
-        // [fn [a b] $a] applied to [10, 20]
-        let ctx = test_ctx();
-        let func = parse_eval("[fn [let a b] $a]", &ctx).await;
-        let args_val = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Int(0),
-                    thunk(Value::Int {
-                        n: 10,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m.insert(
-                    HashableValue::Int(1),
-                    thunk(Value::Int {
-                        n: 20,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m
-            },
-            &ctx,
-        );
-
-        let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), args_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 10,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_multiple_args_returns_second() {
-        // [fn [a b] $b] applied to [10, 20]
-        let ctx = test_ctx();
-        let func = parse_eval("[fn [let a b] $b]", &ctx).await;
-        let args_val = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Int(0),
-                    thunk(Value::Int {
-                        n: 10,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m.insert(
-                    HashableValue::Int(1),
-                    thunk(Value::Int {
-                        n: 20,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m
-            },
-            &ctx,
-        );
-
-        let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), args_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 20,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_with_builtin() {
-        fn add_builtin(
-            builtin_ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-            Box::pin(async move {
-                let BuiltinArgs {
-                    args,
-                    call_span,
-                    ctx,
-                    ..
-                } = builtin_ctx;
-                // TEST: test-only add_builtin with force_count=0 deliberately uses materialize directly
-                let a = materialize(&args[0], None, &ctx).await?; // TEST: test-only inline builtin
-                let b = materialize(&args[1], None, &ctx).await?; // TEST: test-only inline builtin
-                match (a, b) {
-                    (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
-                        Value::Int {
-                            n: x + y,
-                            type_val: crate::value::unknown_type_val(),
-                        },
-                        call_span,
-                    ),
-                    _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
-                }
-            })
-        }
-        let ctx = test_ctx();
-        let func = Value::Builtin {
-            def: crate::value::BuiltinDef {
-                func: add_builtin,
-                name: "add",
-                pos_strictness: &[],
-                force_count: 0,
-                needs_caller_env: false,
-            },
-            type_val: crate::value::unknown_type_val(),
-        };
-        let args_val = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Int(0),
-                    thunk(Value::Int {
-                        n: 3,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m.insert(
-                    HashableValue::Int(1),
-                    thunk(Value::Int {
-                        n: 4,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m
-            },
-            &ctx,
-        );
-
-        let result = mat(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), args_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 7,
-                type_val: crate::value::unknown_type_val()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_arity_mismatch() {
-        let ctx = test_ctx();
-        let func = parse_eval("[fn [let x y] $x]", &ctx).await;
-        let args_val = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Int(0),
-                    thunk(Value::Int {
-                        n: 1,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m
-            },
-            &ctx,
-        );
-
-        let apply_thunk = run(builtin_apply(BuiltinArgs {
-            args: vec![alloc(func, &ctx), args_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await
-        .expect("should return thunk");
-        let err = materialize_sync(&apply_thunk, None, &ctx)
-            .await
-            .unwrap_err();
-        assert!(
-            err.kind
-                .to_string()
-                .contains("missing argument for required parameter"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_non_function_type_error() {
-        let ctx = test_ctx();
-        let args_val = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Int(0),
-                    thunk(Value::Int {
-                        n: 1,
-                        type_val: crate::value::unknown_type_val(),
-                    }),
-                );
-                m
-            },
-            &ctx,
-        );
-
-        let apply_thunk = run(builtin_apply(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 42,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-                args_val,
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await
-        .expect("should return thunk");
-        let err = materialize_sync(&apply_thunk, None, &ctx)
-            .await
-            .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected Function"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_non_dict_args_type_error() {
-        let ctx = test_ctx();
-        let func = parse_eval("[fn [let x] $x]", &ctx).await;
-        let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![
-                alloc(func, &ctx),
-                alloc(
-                    Value::Int {
-                        n: 42,
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await
-        .expect("should return thunk");
-        let err = materialize_sync(&apply_result, None, &ctx)
-            .await
-            .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected Dict"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_wrong_arity() {
-        let ctx = test_ctx();
-        let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 1,
-                    type_val: crate::value::unknown_type_val(),
-                },
-                &ctx,
-            )],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await
-        .expect("should return thunk");
-        let err = materialize_sync(&apply_result, None, &ctx)
-            .await
-            .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
             err.kind
         );
     }
@@ -3098,6 +2826,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         // ground_typevalue_of(Int) → TypeValue.Repr("Value::Int") — a Variant, not unknown.
@@ -3132,6 +2861,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match &result {
@@ -3159,6 +2889,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match &result {
@@ -3192,6 +2923,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match &result {
@@ -3222,6 +2954,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         // ground_typevalue_of(Function) is always a Variant (TypeValue.Fn or TypeValue.Repr).
@@ -3269,6 +3002,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         // ground_typevalue_of(Builtin) → TypeValue.Repr("Value::Function").
@@ -3307,6 +3041,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         // ground_typevalue_of(Variant) → TypeValue.Op(tycon) — a Variant with ctor=TV_OP.
@@ -3334,6 +3069,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3354,6 +3090,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -3377,6 +3114,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -3422,6 +3160,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -3456,6 +3195,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -3519,6 +3259,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -3546,6 +3287,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -3589,6 +3331,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -3613,6 +3356,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -3665,6 +3409,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3685,6 +3430,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3704,6 +3450,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3724,6 +3471,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3749,6 +3497,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3774,6 +3523,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -3795,6 +3545,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -3815,6 +3566,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -3836,6 +3588,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -3860,6 +3613,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello Rust"));
@@ -3878,6 +3632,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("bonono"));
@@ -3896,6 +3651,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3914,6 +3670,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-"));
@@ -3932,6 +3689,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("heo"));
@@ -3954,6 +3712,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(result.is_err());
@@ -3976,6 +3735,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -3991,6 +3751,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4005,6 +3766,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4019,6 +3781,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4033,6 +3796,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4047,6 +3811,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -4061,6 +3826,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4075,6 +3841,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -4089,6 +3856,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4113,6 +3881,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4142,6 +3911,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4176,6 +3946,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4205,6 +3976,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4235,6 +4007,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4266,6 +4039,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4301,6 +4075,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4337,6 +4112,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4367,6 +4143,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4401,6 +4178,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4446,6 +4224,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4491,6 +4270,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4536,6 +4316,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4581,6 +4362,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4626,6 +4408,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4671,6 +4454,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4715,6 +4499,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4752,6 +4537,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -4783,52 +4569,10 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_rejects_named_args() {
-        let ctx = test_ctx();
-        let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-                    type_val: crate::value::unknown_type_val(),
-                },
-                &ctx,
-            ),
-        );
-        let func = parse_eval("[fn [let] 42]", &ctx).await;
-        let apply_result = run(builtin_apply(BuiltinArgs {
-            args: vec![
-                alloc(func, &ctx),
-                alloc(
-                    Value::Dict {
-                        entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
-                    },
-                    &ctx,
-                ),
-            ],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-            caller_env_id: Some(0),
-        }))
-        .await
-        .expect("should return thunk");
-        let err = materialize_sync(&apply_result, None, &ctx)
-            .await
-            .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
@@ -4887,6 +4631,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -4924,6 +4669,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -4959,6 +4705,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -4994,6 +4741,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5029,6 +4777,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5058,6 +4807,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5084,6 +4834,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5118,6 +4869,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5152,6 +4904,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5186,6 +4939,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5221,6 +4975,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5256,6 +5011,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5291,6 +5047,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5311,6 +5068,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5336,6 +5094,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5364,6 +5123,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5399,6 +5159,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5434,6 +5195,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5469,6 +5231,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5504,6 +5267,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5539,6 +5303,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5574,6 +5339,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5608,6 +5374,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5643,6 +5410,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5677,6 +5445,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5715,6 +5484,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5749,6 +5519,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match r {
@@ -5783,6 +5554,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match r {
@@ -5815,6 +5587,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match r {
@@ -5849,6 +5622,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -5884,6 +5658,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5924,6 +5699,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5959,6 +5735,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -5993,6 +5770,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6028,6 +5806,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6063,6 +5842,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6099,6 +5879,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6134,6 +5915,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6169,6 +5951,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6204,6 +5987,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6228,6 +6012,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6251,6 +6036,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6277,6 +6063,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -6311,6 +6098,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6346,6 +6134,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6381,6 +6170,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6416,6 +6206,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6439,6 +6230,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6462,6 +6254,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6485,6 +6278,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6508,6 +6302,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6545,6 +6340,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -6580,6 +6376,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -6608,6 +6405,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -6643,6 +6441,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6679,6 +6478,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6715,6 +6515,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6751,6 +6552,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6786,6 +6588,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -6807,6 +6610,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -6841,6 +6645,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6876,6 +6681,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -6949,6 +6755,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -7010,6 +6817,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -7047,6 +6855,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -7091,6 +6900,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -7119,6 +6929,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(result.is_err());
@@ -7142,6 +6953,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(result.is_err());
@@ -7162,6 +6974,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(result.is_err());
@@ -7194,6 +7007,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
 
@@ -7248,6 +7062,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
 
@@ -7319,6 +7134,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
 
@@ -7387,6 +7203,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -7441,6 +7258,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
 
@@ -7509,6 +7327,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
 
@@ -7545,6 +7364,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap();
@@ -7576,6 +7396,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -7607,6 +7428,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -7645,6 +7467,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -7676,6 +7499,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await
         .unwrap_err();
@@ -7764,6 +7588,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(
@@ -7803,6 +7628,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(
@@ -7844,6 +7670,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -7875,6 +7702,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         match result {
@@ -7908,6 +7736,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert_eq!(result, string_val("second"));
@@ -7937,6 +7766,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(result.is_err());
@@ -7978,6 +7808,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -8020,6 +7851,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

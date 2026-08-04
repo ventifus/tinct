@@ -42,15 +42,12 @@ use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{
-    builtin, ok_val, reject_named, require_string, require_type_context, synthetic_call_expr,
-};
+use crate::builtins::{ok_val, reject_named, require_string, require_type_context};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
-use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::make_span_dict;
 use crate::rust_span;
-use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value};
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
@@ -522,272 +519,6 @@ pub(crate) fn builtin_try(
                 )
             }
         }
-    })
-}
-
-/// `until`: Repeat f(val) until predicate(val) returns true.
-///
-/// Rust builtin for performance: avoids per-iteration thunk allocation and memoization
-/// overhead that a TCO-optimized LLT tail-recursive version would still incur.
-///
-/// This implementation uses a Rust loop with eager materialization at each step.
-pub(crate) fn builtin_until(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            caller_env_id,
-            ctx,
-        } = ctx_arg;
-        // caller_env_id is Some because builtin-until is registered with needs_caller_env: true.
-        let caller_env_id = caller_env_id.expect(
-            "builtin-until: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
-        );
-        reject_named("until", named.as_ref(), call_span.clone())?;
-        if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-        }
-
-        let pred_thunk = Arc::clone(&args[0]);
-        let f_thunk = Arc::clone(&args[1]);
-        let mut val_thunk = Arc::clone(&args[2]);
-
-        // Pre-materialize the predicate function to extract its return type annotation.
-        // This lets us pre-resolve the Matchable binding name once before the loop,
-        // avoiding repeated runtime type derivation on every iteration.
-        let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
-        let pred_matchable_binding =
-            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val, &ctx);
-        // Wrap the materialized predicate back into a thunk for use in pending calls.
-        let pred_thunk = Arc::new(Thunk::value(pred_fn_val, call_span.clone()));
-
-        loop {
-            // Create a pending call to pred(val) and materialize it.
-            let pred_id = Arc::clone(&pred_thunk);
-            let val_id = Arc::clone(&val_thunk);
-            let pred_result = Arc::new(Thunk::fn_call(
-                pred_id,
-                vec![val_id],
-                IndexMap::new(),
-                val_thunk.span.clone().with_name(Arc::from("until")),
-                crate::value::FnCallSpec {
-                    call_span: call_span.clone(),
-                    caller_env_id,
-                    ctx: Arc::clone(&ctx),
-                    original_call: synthetic_call_expr(call_span.clone()),
-                    caller_effect_chain: None,
-                },
-            ));
-
-            let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
-
-            if crate::eval::call_to_match_opt_resolved(
-                &pred_val,
-                pred_matchable_binding.as_deref(),
-                &ctx,
-                &call_span,
-            )
-            .await?
-            {
-                // Predicate holds, return the current value (as thunk)
-                return Ok(val_thunk);
-            } else {
-                // Predicate doesn't hold yet, apply f and materialize to get next value.
-                // Alloc ThunkIds for func and arg.
-                let f_id = Arc::clone(&f_thunk);
-                let val_id = Arc::clone(&val_thunk);
-                let f_result = Arc::new(Thunk::fn_call(
-                    f_id,
-                    vec![val_id],
-                    IndexMap::new(),
-                    call_span.clone().with_name(Arc::from("until")),
-                    crate::value::FnCallSpec {
-                        call_span: call_span.clone(),
-                        caller_env_id,
-                        ctx: Arc::clone(&ctx),
-                        original_call: synthetic_call_expr(call_span.clone()),
-                        caller_effect_chain: None,
-                    },
-                ));
-
-                // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
-                // This breaks the thunk chain and prevents stack overflow
-                let f_val = materialize(&f_result, Some(&call_span), &ctx).await?;
-                val_thunk = Arc::new(Thunk::value(f_val, call_span.clone()));
-            }
-        }
-    })
-}
-
-/// Helper that performs the actual $apply logic after args are pre-materialized.
-/// This is separated from builtin_apply so that builtin_apply can return a
-/// PendingBuiltin thunk, enabling iterative arg materialization via BuiltinForceArg.
-pub(crate) fn builtin_apply_impl(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        reject_named("apply", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        // Both args[0] and args[1] have been pre-materialized by force_count.
-        let arg0_thunk = Arc::clone(&args[0]);
-        let arg1_thunk = Arc::clone(&args[1]);
-        let func_val = arg0_thunk.require_value()?.clone();
-        let args_val = arg1_thunk.require_value()?.clone();
-
-        let arg_dict = crate::builtins::require_dict(
-            "apply",
-            args_val,
-            arg1_thunk.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-
-        // Split dict entries: integer-keyed → positional, string-keyed → named
-        let mut int_entries: Vec<(i64, Arc<Thunk>)> = Vec::with_capacity(arg_dict.len());
-        let mut named_args_arcs: IndexMap<String, Arc<Thunk>> =
-            IndexMap::with_capacity(arg_dict.len());
-        for (key, thunk) in &arg_dict {
-            match key {
-                HashableValue::Int(n) => int_entries.push((*n, Arc::clone(thunk))),
-                HashableValue::Str(s) => {
-                    named_args_arcs.insert(s.to_string(), Arc::clone(thunk));
-                }
-                _ => {
-                    // Non-Int/Str keys in call argument dicts are ignored (not valid as named args)
-                }
-            }
-        }
-        int_entries.sort_by_key(|(k, _)| *k);
-        // Collect positional Arc<Thunk> for invoke_function.
-        let positional_ids: Vec<Arc<Thunk>> = int_entries.into_iter().map(|(_, t)| t).collect();
-        let named_args: IndexMap<String, Arc<Thunk>> = named_args_arcs;
-
-        match func_val {
-            Value::Function {
-                clauses,
-                closure_env,
-                ..
-            } => {
-                let named_ids: IndexMap<String, Arc<Thunk>> = named_args; // already Arc<Thunk>
-                invoke_function(&CallContext {
-                    clauses: &clauses,
-                    closure_env,
-                    positional: &positional_ids,
-                    named: if named_ids.is_empty() {
-                        None
-                    } else {
-                        Some(&named_ids)
-                    },
-                    ctx: &ctx,
-                    call_span: call_span.with_name(Arc::from("apply")),
-                    caller_effect_chain: None,
-                })
-                .await
-            }
-            Value::Builtin { def, .. } => {
-                // Pre-materialize strict args before calling the builtin.
-                // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
-                // so `force_count` and `pos_strictness` pre-materialization do NOT happen
-                // automatically. Builtins that use `require_value()` rely
-                // on force_count/pos_strictness having been applied; without this, passing a
-                // force_count>0 builtin like `$keys` through `$apply` would panic.
-                //
-                // Ordering: force_count range first (matches force_step dispatch order), then
-                // pos_strictness Seq/Spine. Both loops skip args that are already materialized.
-                let force_limit = def.force_count.min(positional_ids.len());
-                for arg in &positional_ids[..force_limit] {
-                    if !arg.is_materialized() {
-                        materialize(arg, Some(&call_span), &ctx).await?;
-                    }
-                }
-                for (i, &s) in def.pos_strictness.iter().enumerate() {
-                    if i < positional_ids.len() && (s == Strictness::Seq || s == Strictness::Spine)
-                    {
-                        let arg = Arc::clone(&positional_ids[i]);
-                        if !arg.is_materialized() {
-                            materialize(&arg, Some(&call_span), &ctx).await?;
-                        }
-                    }
-                }
-                let builtin_args = BuiltinArgs {
-                    args: positional_ids,
-                    named: if named_args.is_empty() {
-                        None
-                    } else {
-                        Some(named_args)
-                    },
-                    call_span,
-                    // builtin_apply_impl calls the target builtin directly, without going
-                    // through the CEK machine. caller_env_id is not available at this point
-                    // (builtin_apply_impl does not receive it in its own BuiltinArgs — it uses
-                    // `..` to ignore its own caller_env_id). Builtins with needs_caller_env: true
-                    // will panic if called through $apply; this is a known semantic limitation.
-                    caller_env_id: None,
-                    ctx: Arc::clone(&ctx),
-                };
-                (def.func)(builtin_args).await
-            }
-            _ => Err(EvalError::type_mismatch_ctx(
-                "apply".to_string(),
-                "Function",
-                func_val.type_name(),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
-/// `apply`: wrapper that returns a PendingBuiltin thunk for iterative arg materialization.
-pub(crate) fn builtin_apply(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            caller_env_id,
-            ctx,
-        } = ctx_arg;
-        // caller_env_id is Some because builtin-apply is registered with needs_caller_env: true.
-        let caller_env_id = caller_env_id.expect(
-            "builtin-apply: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
-        );
-        // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
-        // When materialized, the PendingBuiltin handler will use BuiltinForceArg
-        // to pre-materialize both args[0] and args[1] iteratively, avoiding
-        // Rust stack growth.
-        // Pass named args through: $apply may forward named args to the target function.
-        // Use None when named is empty to skip the IndexMap allocation.
-        let named_opt = if named.as_ref().map(|n| n.is_empty()).unwrap_or(true) {
-            None
-        } else {
-            named
-        };
-        Ok(Arc::new(Thunk::builtin_call(
-            // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
-            // before calling builtin_apply_impl, which uses require_value().
-            builtin!("builtin-apply", builtin_apply_impl, [], 2),
-            args,
-            named_opt,
-            call_span.with_name(Arc::from("apply")),
-            caller_env_id,
-            ctx,
-        )))
     })
 }
 
@@ -5304,15 +5035,6 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
             0,
             ["x"]
         ),
-        builtin!(@needs_caller_env, "builtin-until", builtin_until),
-        builtin!(
-            @needs_caller_env,
-            "builtin-apply",
-            builtin_apply,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["f", "args"]
-        ),
         builtin!(
             "builtin-validate",
             builtin_validate,
@@ -5416,6 +5138,13 @@ mod tests {
         thunk(val)
     }
 
+    fn empty_chain() -> crate::value::EffectChain {
+        Arc::new(crate::value::EffectChainNode {
+            group: crate::value::GroupSpine::empty(),
+            tail: None,
+        })
+    }
+
     fn call_span() -> crate::ast::Span {
         test_span(1, 1, 1, 5)
     }
@@ -5457,6 +5186,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5489,6 +5219,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5527,6 +5258,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5544,6 +5276,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: Some(42),
+            caller_effect_chain: empty_chain(),
         }))
         .await?;
 
@@ -5573,6 +5306,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: Some(0),
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(
@@ -5607,6 +5341,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
+            caller_effect_chain: empty_chain(),
         }))
         .await;
         assert!(

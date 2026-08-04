@@ -37,7 +37,6 @@ use crate::ast::Span;
 use crate::builtins::ok_val;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value};
 
@@ -123,24 +122,6 @@ fn take_three_thunks(
     ))
 }
 
-/// Helper to collect a Seq into a Vec<Arc<Thunk>> by walking the linked list.
-/// Returns the thunks in order. Materializes each tail to check for continuation or termination.
-/// Collect elements from an integer-keyed Dict into a Vec of Arc<Thunk>.
-/// Used by select-once which accepts Dict input.
-async fn collect_dict_to_vec(
-    dict_val: Value,
-    _ctx: &Arc<crate::eval::EvalContext>,
-    call_span: Span,
-    _name: &str,
-) -> EvalResult<Vec<Arc<Thunk>>> {
-    let map = match dict_val {
-        Value::Dict { entries: m, .. } => m,
-        other => return Err(EvalError::type_mismatch("Dict", other.type_name(), call_span).into()),
-    };
-
-    Ok(map.into_values().collect())
-}
-
 /// `task`: Spawn a concurrent evaluation.
 ///
 /// Signature: `expr → Task@T`
@@ -205,7 +186,10 @@ pub(crate) fn builtin_task(
                         &crate::value::EvalFrame::for_function_call(
                             Arc::clone(&closure_env),
                             vec![],
-                            None,
+                            Arc::new(crate::value::EffectChainNode {
+                                group: crate::value::GroupSpine::empty(),
+                                tail: None,
+                            }),
                         ),
                         &ctx_clone,
                     )
@@ -219,6 +203,10 @@ pub(crate) fn builtin_task(
                         named: None,
                         call_span: call_span_clone,
                         caller_env_id: None,
+                        caller_effect_chain: Arc::new(crate::value::EffectChainNode {
+                            group: crate::value::GroupSpine::empty(),
+                            tail: None,
+                        }),
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;
@@ -878,403 +866,302 @@ pub(crate) fn builtin_try_send(
     })
 }
 
-/// `select-once`: Wait for the first of multiple sources to complete.
+/// `try-recv`: Non-blocking receive from an mpsc channel.
 ///
-/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → {ok: T} | {closed: []}`
-///
-/// Takes a context (for cancellation checking) and a sequence of source dicts, where each
-/// source has a `ch:` field (Channel, BroadcastChannel, or OneshotReceiver) and a `handler:` field (Fn).
-/// Waits for the FIRST channel to have a value available, then calls that channel's handler
-/// with the received value. Returns `{ok: handler_result}` on success; `{closed: []}` if
-/// all channels are closed (not an error). Context cancellation still raises an exception.
-///
-/// The discriminated dict return (`{ok: ...}` vs `{closed: ...}`) prevents protocol
-/// ambiguity where a handler returning a Closed variant would prematurely terminate select loops.
-///
-/// Channel type semantics:
-/// - Channel (mpsc): Standard FIFO channel, each value consumed once
-/// - BroadcastChannel: Creates a subscriber at select-once start; receives values sent after subscription
-/// - OneshotReceiver: Single-use receiver; after receiving one value, marked as closed
-///
-/// Implementation note: uses a manual polling loop over all channels. When a channel
-/// produces a value, we call its handler and return `{ok: handler_result}`.
-/// Closed channels are removed from consideration. If all channels are closed,
-/// returns `{closed: []}`.
-///
-/// Fairness: channels are checked in order, but since this is a cooperative runtime,
-/// fairness emerges naturally from the event loop.
-pub(crate) fn builtin_select_once(
+/// Returns `{value: v}` if a message was available, `{empty: []}` if the channel
+/// had no message ready, or `{closed: []}` if the channel is closed.
+pub(crate) fn builtin_try_recv(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
-        named: _,
+        named,
         call_span,
         ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
-        // First arg: context (for cancellation checking)
-        if args.is_empty() {
-            return Err(EvalError::user_error(
-                "select-once requires a context argument".to_string(),
-                call_span,
-            )
-            .into());
-        }
+        let chan_thunk =
+            take_one_thunk("try-recv", &args, named.as_ref(), call_span.clone(), &ctx)?;
+        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
-        // Second arg: sources
-        if args.len() < 2 {
-            return Err(EvalError::user_error(
-                "select-once requires sources as second argument".to_string(),
-                call_span,
-            )
-            .into());
-        }
-
-        // Materialize and validate the context argument.
-        let user_ctx_thunk = Arc::clone(&args[0]);
-        let user_ctx_val = materialize(&user_ctx_thunk, Some(&call_span), &ctx).await?;
-        let user_token = match user_ctx_val {
-            Value::Context { token, .. } => token,
-            other => {
-                return Err(
-                    EvalError::type_mismatch("Context", other.type_name(), call_span).into(),
-                )
-            }
-        };
-
-        let sources_thunk = Arc::clone(&args[1]);
-        let sources_val = materialize(&sources_thunk, Some(&call_span), &ctx).await?;
-
-        // Collect the sequence of sources into a vec
-        let source_ids =
-            collect_dict_to_vec(sources_val, &ctx, call_span.clone(), "select-once").await?;
-
-        if source_ids.is_empty() {
-            return Err(EvalError::user_error(
-                "select-once requires at least one source".to_string(),
-                call_span,
-            )
-            .into());
-        }
-
-        // Define the channel source enum to support all three channel types.
-        // For BroadcastChannel, we create a subscriber immediately so it sees messages
-        // sent during the select operation.
-        enum ChannelSource {
-            Channel(Arc<crate::value::ChannelInner>),
-            BroadcastChannel(tokio::sync::broadcast::Receiver<Value>),
-            OneshotReceiver(Arc<crate::value::OneshotReceiverInner>),
-        }
-
-        // Parse each source as a {ch:, handler:} Dict
-        let mut sources: Vec<(ChannelSource, Arc<Thunk>)> = Vec::with_capacity(source_ids.len());
-        for source_thunk in source_ids {
-            let source_val = materialize(&source_thunk, Some(&call_span), &ctx).await?;
-
-            match source_val {
-                Value::Dict {
-                    entries: ref map, ..
-                } => {
-                    // Validate that the dict has the required `ch:` and `handler:` keys.
-                    let ch_thunk_opt = map.get(&HashableValue::Str("ch".into())).cloned();
-                    let handler_thunk_opt = map.get(&HashableValue::Str("handler".into())).cloned();
-                    match (ch_thunk_opt, handler_thunk_opt) {
-                        (Some(ch_thunk_val), Some(handler_id)) => {
-                            let ch_val = materialize(&ch_thunk_val, Some(&call_span), &ctx).await?;
-                            match ch_val {
-                                Value::Channel { inner: ch, .. } => {
-                                    sources.push((ChannelSource::Channel(ch), handler_id));
-                                }
-                                Value::BroadcastChannel { inner: ch, .. } => {
-                                    // Subscribe immediately so we see messages sent during select
-                                    let rx = ch.sender.subscribe();
-                                    sources.push((ChannelSource::BroadcastChannel(rx), handler_id));
-                                }
-                                Value::OneshotReceiver { inner: ch, .. } => {
-                                    sources.push((ChannelSource::OneshotReceiver(ch), handler_id));
-                                }
-                                _ => {
-                                    return Err(EvalError::type_mismatch(
-                                        "Channel, BroadcastChannel, or OneshotReceiver",
-                                        ch_val.type_name(),
-                                        call_span,
-                                    )
-                                    .into())
-                                }
-                            }
-                        }
-                        _ => {
-                            return Err(EvalError::type_mismatch(
-                                "Dict with ch: and handler: fields",
-                                "Dict",
-                                call_span,
-                            )
-                            .into());
-                        }
-                    }
-                }
-                other => {
-                    return Err(EvalError::type_mismatch(
-                        "Dict with ch: and handler: fields",
-                        other.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            }
-        }
-
-        // Track which channels are closed (TryRecvError::Disconnected).
-        // When all channels are closed, return [Closed].
-        let sources_len = sources.len();
-        let mut closed = vec![false; sources_len];
-        // O(1) all-closed check: increment on each close, compare to sources_len.
-        let mut closed_count: usize = 0;
-
-        // Poll all channels in a loop until one produces a value.
-        // Impose a maximum iteration limit to prevent infinite busy-poll loops
-        // when all channels are empty (e.g., due to lazy evaluation not forcing
-        // send operations before select-once runs).
-        const MAX_SELECT_POLLS: usize = 10_000;
-        let mut poll_count = 0;
-
-        loop {
-            poll_count += 1;
-            if poll_count > MAX_SELECT_POLLS {
-                return Err(EvalError::resource_limit_exceeded(
-                    "select-once: channel poll limit exceeded — no channel was ready".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-
-            for (i, (channel_source, handler_id)) in sources.iter_mut().enumerate() {
-                if closed[i] {
-                    continue;
-                }
-
-                // Try to receive from the channel based on its type
-                let recv_result: Result<Value, ()> = match channel_source {
-                    ChannelSource::Channel(channel_inner) => {
-                        // Use try_lock() to avoid blocking on contended receivers.
-                        // If the lock is held by a concurrent `recv`, skip this channel
-                        // this iteration — we will retry after yield_now().
-                        let mut rx = match channel_inner.receiver.try_lock() {
-                            Ok(guard) => guard,
-                            Err(tokio::sync::TryLockError { .. }) => continue, // lock contended, try next channel
-                        };
-
-                        match rx.try_recv() {
-                            Ok(value) => Ok(value),
-                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Err(()),
-                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                                // Channel is closed
-                                if !closed[i] {
-                                    closed[i] = true;
-                                    closed_count += 1;
-                                }
-                                if closed_count == sources_len {
-                                    // All channels closed — return {closed: []}
-                                    // (discriminated from handler result {ok: v}).
-                                    let mut closed_map = IndexMap::new();
-                                    closed_map.insert(
-                                        HashableValue::Str("closed".into()),
-                                        Arc::new(Thunk::value(
-                                            Value::Dict {
-                                                entries: IndexMap::new(),
-                                                type_val: crate::value::unknown_type_val(),
-                                            },
-                                            call_span.clone(),
-                                        )),
-                                    );
-                                    return ok_val(
-                                        Value::Dict {
-                                            entries: closed_map,
-                                            type_val: crate::value::unknown_type_val(),
-                                        },
-                                        call_span,
-                                    );
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    ChannelSource::BroadcastChannel(rx) => {
-                        // We have a persistent subscriber created at the start.
-                        // Try to receive from it.
-                        match rx.try_recv() {
-                            Ok(value) => Ok(value),
-                            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => Err(()),
-                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                                // Subscriber lagged — treat as empty and continue
-                                Err(())
-                            }
-                            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                                // Channel is closed
-                                if !closed[i] {
-                                    closed[i] = true;
-                                    closed_count += 1;
-                                }
-                                if closed_count == sources_len {
-                                    // All channels closed — return {closed: []}
-                                    // (discriminated from handler result {ok: v}).
-                                    let mut closed_map = IndexMap::new();
-                                    closed_map.insert(
-                                        HashableValue::Str("closed".into()),
-                                        Arc::new(Thunk::value(
-                                            Value::Dict {
-                                                entries: IndexMap::new(),
-                                                type_val: crate::value::unknown_type_val(),
-                                            },
-                                            call_span.clone(),
-                                        )),
-                                    );
-                                    return ok_val(
-                                        Value::Dict {
-                                            entries: closed_map,
-                                            type_val: crate::value::unknown_type_val(),
-                                        },
-                                        call_span,
-                                    );
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    ChannelSource::OneshotReceiver(receiver_inner) => {
-                        // Try to take the receiver (single-use)
-                        let mut rx_opt = match receiver_inner.receiver.try_lock() {
-                            Ok(guard) => guard,
-                            Err(tokio::sync::TryLockError { .. }) => continue, // lock contended, try next channel
-                        };
-
-                        // Check if the receiver has already been consumed
-                        if rx_opt.is_none() {
-                            // Receiver already used — mark as closed
-                            if !closed[i] {
-                                closed[i] = true;
-                                closed_count += 1;
-                            }
-                            if closed_count == sources_len {
-                                // All channels closed — return [Closed]
-                                return ok_val(
-                                    Value::Variant {
-                                        type_val: crate::value::unknown_type_val(),
-                                        type_decl_id: 0,
-                                        ctor: Arc::from("Closed.Closed"),
-                                        payload: None,
-                                    },
-                                    call_span,
-                                );
-                            }
-                            continue;
-                        }
-
-                        // Try to receive without consuming the receiver yet.
-                        // We need to use try_recv which consumes, so we must be careful.
-                        let mut rx = rx_opt.take().unwrap();
-                        match rx.try_recv() {
-                            Ok(value) => {
-                                // Got a value! Receiver is now consumed (already taken).
-                                Ok(value)
-                            }
-                            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                                // No value available yet — put the receiver back and retry.
-                                *rx_opt = Some(rx);
-                                Err(())
-                            }
-                            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                                // Sender dropped without sending — channel is closed.
-                                if !closed[i] {
-                                    closed[i] = true;
-                                    closed_count += 1;
-                                }
-                                if closed_count == sources_len {
-                                    // All channels closed — return {closed: []}
-                                    // (discriminated from handler result {ok: v}).
-                                    let mut closed_map = IndexMap::new();
-                                    closed_map.insert(
-                                        HashableValue::Str("closed".into()),
-                                        Arc::new(Thunk::value(
-                                            Value::Dict {
-                                                entries: IndexMap::new(),
-                                                type_val: crate::value::unknown_type_val(),
-                                            },
-                                            call_span.clone(),
-                                        )),
-                                    );
-                                    return ok_val(
-                                        Value::Dict {
-                                            entries: closed_map,
-                                            type_val: crate::value::unknown_type_val(),
-                                        },
-                                        call_span,
-                                    );
-                                }
-                                continue;
-                            }
-                        }
+        match chan_val {
+            Value::Channel {
+                inner: channel_inner,
+                ..
+            } => {
+                let mut rx = match channel_inner.receiver.try_lock() {
+                    Ok(guard) => guard,
+                    Err(tokio::sync::TryLockError { .. }) => {
+                        // Lock contended — treat as empty
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("empty".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        return ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        );
                     }
                 };
 
-                // If we got a value, call the handler
-                if let Ok(value) = recv_result {
-                    // Retrieve and materialize the handler.
-                    let handler_val = materialize(&handler_id, Some(&call_span), &ctx).await?;
+                match rx.try_recv() {
+                    Ok(value) => {
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("value".into()),
+                            Arc::new(Thunk::value(value, call_span.clone())),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("empty".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("closed".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                }
+            }
+            _ => Err(EvalError::type_mismatch("Channel", chan_val.type_name(), call_span).into()),
+        }
+    })
+}
 
-                    // Call the handler with the received value.
-                    let result_thunk = match handler_val {
-                        Value::Function {
-                            clauses,
-                            closure_env,
-                            ..
-                        } => {
-                            // Invoke the handler function with the received value as its single
-                            // argument, using the standard call path (invoke_function) so that
-                            // multi-clause dispatch and pattern variables are handled correctly.
-                            let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
-                            invoke_function(&CallContext {
-                                clauses: &clauses,
-                                closure_env,
-                                positional: &[arg_thunk],
-                                named: None,
-                                call_span: call_span.clone(),
-                                ctx: &ctx,
-                                caller_effect_chain: None,
-                            })
-                            .await?
-                        }
-                        Value::Builtin { def, .. } => {
-                            // Call builtin with the value — return result thunk directly.
-                            let arg_thunk = Arc::new(Thunk::value(value, call_span.clone()));
-                            (def.func)(BuiltinArgs {
-                                args: vec![arg_thunk],
-                                named: None,
-                                call_span: call_span.clone(),
-                                caller_env_id: None,
-                                ctx: Arc::clone(&ctx),
-                            })
-                            .await?
-                        }
-                        _ => {
-                            return Err(EvalError::type_mismatch(
-                                "Function",
-                                handler_val.type_name(),
-                                call_span,
-                            )
-                            .into())
-                        }
-                    };
+/// `try-recv-broadcast`: Non-blocking receive from a broadcast channel.
+///
+/// Returns `{value: v}` if a message was available, `{empty: []}` if the channel
+/// had no message ready (or the subscriber lagged), or `{closed: []}` if the channel is closed.
+pub(crate) fn builtin_try_recv_broadcast(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        let chan_thunk = take_one_thunk(
+            "try-recv-broadcast",
+            &args,
+            named.as_ref(),
+            call_span.clone(),
+            &ctx,
+        )?;
+        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
-                    // Wrap handler result in {ok: handler_result} to distinguish
-                    // from the {closed: []} return. Prelude's select-impl uses
-                    // builtin-has-key? "ok" to discriminate, avoiding the protocol
-                    // ambiguity where a handler returning Closed.Closed would
-                    // prematurely terminate the select loop.
+        match chan_val {
+            Value::BroadcastChannel {
+                inner: channel_inner,
+                ..
+            } => {
+                let mut rx = channel_inner.sender.subscribe();
+
+                match rx.try_recv() {
+                    Ok(value) => {
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("value".into()),
+                            Arc::new(Thunk::value(value, call_span.clone())),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("empty".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                        // Subscriber lagged — treat as empty
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("empty".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("closed".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                }
+            }
+            _ => Err(
+                EvalError::type_mismatch("BroadcastChannel", chan_val.type_name(), call_span)
+                    .into(),
+            ),
+        }
+    })
+}
+
+/// `try-recv-oneshot`: Non-blocking receive from a oneshot receiver.
+///
+/// Returns `{value: v}` if the value was available, `{empty: []}` if no value has been
+/// sent yet (or the lock was contended), or `{closed: []}` if the sender was dropped
+/// or the receiver was already consumed.
+pub(crate) fn builtin_try_recv_oneshot(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        let chan_thunk = take_one_thunk(
+            "try-recv-oneshot",
+            &args,
+            named.as_ref(),
+            call_span.clone(),
+            &ctx,
+        )?;
+        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+
+        match chan_val {
+            Value::OneshotReceiver {
+                inner: receiver_inner,
+                ..
+            } => {
+                let mut rx_opt = match receiver_inner.receiver.try_lock() {
+                    Ok(guard) => guard,
+                    Err(tokio::sync::TryLockError { .. }) => {
+                        // Lock contended — treat as empty
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("empty".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        return ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        );
+                    }
+                };
+
+                if rx_opt.is_none() {
+                    // Already consumed — closed
                     let mut map = IndexMap::new();
-                    map.insert(HashableValue::Str("ok".into()), result_thunk);
+                    map.insert(
+                        HashableValue::Str("closed".into()),
+                        Arc::new(Thunk::value(
+                            Value::Dict {
+                                entries: IndexMap::new(),
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span.clone(),
+                        )),
+                    );
                     return ok_val(
                         Value::Dict {
                             entries: map,
@@ -1283,19 +1170,115 @@ pub(crate) fn builtin_select_once(
                         call_span,
                     );
                 }
-            }
 
-            // Check for context cancellation before yielding.
-            // Honour both the EvalContext token and the user-supplied Context token.
-            if ctx.cancel.is_cancelled() || user_token.is_cancelled() {
-                return Err(
-                    EvalError::user_error("select-once: cancelled".to_string(), call_span).into(),
-                );
+                let mut rx = rx_opt.take().unwrap();
+                match rx.try_recv() {
+                    Ok(value) => {
+                        // Got a value — receiver consumed (already taken)
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("value".into()),
+                            Arc::new(Thunk::value(value, call_span.clone())),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                        // No value yet — put the receiver back
+                        *rx_opt = Some(rx);
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("empty".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        // Sender dropped without sending — closed
+                        let mut map = IndexMap::new();
+                        map.insert(
+                            HashableValue::Str("closed".into()),
+                            Arc::new(Thunk::value(
+                                Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_val: crate::value::unknown_type_val(),
+                                },
+                                call_span.clone(),
+                            )),
+                        );
+                        ok_val(
+                            Value::Dict {
+                                entries: map,
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            call_span,
+                        )
+                    }
+                }
             }
-
-            // No channel had a value this pass — yield and retry.
-            tokio::task::yield_now().await;
+            _ => Err(
+                EvalError::type_mismatch("OneshotReceiver", chan_val.type_name(), call_span).into(),
+            ),
         }
+    })
+}
+
+/// `yield`: Cooperative scheduler yield.
+///
+/// Signature: `→ {}`
+///
+/// Yields control back to the tokio runtime, allowing other tasks to make progress.
+/// Returns the empty dict `[]`.
+pub(crate) fn builtin_yield(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx: _ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        if !args.is_empty() {
+            return Err(EvalError::user_error(
+                format!("yield expects 0 arguments, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        }
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
+            return Err(EvalError::user_error(
+                "yield does not accept named arguments".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        tokio::task::yield_now().await;
+        ok_val(
+            Value::Dict {
+                entries: IndexMap::new(),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2712,7 +2695,10 @@ pub fn async_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-broadcast-channel", builtin_broadcast_channel),
         builtin!("builtin-oneshot-channel", builtin_oneshot_channel),
         builtin!("builtin-try-send", builtin_try_send),
-        builtin!("builtin-select-once", builtin_select_once),
+        builtin!("builtin-try-recv", builtin_try_recv),
+        builtin!("builtin-try-recv-broadcast", builtin_try_recv_broadcast),
+        builtin!("builtin-try-recv-oneshot", builtin_try_recv_oneshot),
+        builtin!("builtin-yield", builtin_yield),
         builtin!("builtin-signal-channel", builtin_signal_channel),
         builtin!(
             "builtin-timer-channel",

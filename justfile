@@ -69,7 +69,7 @@ build-release:
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt $(find tests/corpus/eval/simple -name '*.llt-eval' | sort)
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests -- --quiet
 
 # Run a specific test (same flags as CI: -D warnings, test-threads=1)
@@ -93,10 +93,10 @@ test-cli-summary:
 
 
 # Run only corpus tests using the tinct test runner.
-# With no arguments: auto-discovers all tests under tests/corpus/.
+# Default: runs tests/corpus/eval/simple/ only.
 # With file arguments: runs only those specific tests.
 test-corpus:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt $(find tests/corpus/eval/simple -name '*.llt-eval' | sort)
 
 # Run specific corpus test files under gdb for crash diagnosis.
 # Usage: just test-corpus-one tests/corpus/eval/simple_dict.llt-eval

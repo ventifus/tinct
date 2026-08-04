@@ -1178,7 +1178,7 @@ No hardcoded strings, no fallback to bare name matching. `[Ok x]` → TypeEnv re
 
 **Correct monad dispatch — typecheck-time resolution, lexically scoped:**
 
-`[do ...]` desugaring happens in `typecheck_special.rs` during the typecheck pass, where the scoped type environment (`InferState`) is available. Instance lookup must use this scoped environment — NOT the global eval-time `instance_registry` in `EvalContext.state`. The global registry is mutable and unscoped; an instance registered in a local dict would leak globally and could shadow instances in unrelated scopes.
+`[do ...]` desugaring happens in `typecheck_special.rs` during the typecheck pass, where the scoped type environment (`InferState`) is available. Instance lookup must use this scoped environment — NOT a global eval-time registry. A global registry would be mutable and unscoped; an instance registered in a local dict would leak globally and could shadow instances in unrelated scopes.
 
 The correct mechanism:
 
@@ -1244,7 +1244,7 @@ Two `Color` types in different scope frames both produce runtime tag `"Color.Red
 
 W042 fires only when the same tag string is declared twice within the SAME scope frame — that is a genuine collision, because within one scope, `Color` resolves to two different declarations and pattern matching `Color.Red:` becomes ambiguous. Cross-scope same-name types are not errors; the scope chain provides unambiguous resolution at each use site.
 
-**Dead code to delete:** `EvalState.class_registry`, `EvalState.instance_registry`, `EvalState.registered_classes` — never populated, never read. Remnants of an abandoned runtime typeclass design. Delete them.
+**Dead code to delete:** `EvalState.class_registry`, `EvalState.registered_classes` — never populated, never read. Remnants of an abandoned runtime typeclass design. Delete them. (`EvalState.instance_registry` was removed in B-733.)
 
 **Type inference state must become per-dict scoped.** The current `InferState` carries globally shared state that is logically local to each dict's checking pass: the unification substitution (`InferState.subst`), type variable level map (`InferState.levels`), and name counter (`name_counter`). These are currently global across all dicts in a checking session as an implementation convenience, not a theoretical requirement. The scoping guarantees specified in this whatif (InstanceEnv, ClassEnv, TyConDef all following lexical scope) are hollow if the underlying type inference machinery is still globally shared across dicts. The end state this whatif describes requires per-dict scoping throughout.
 

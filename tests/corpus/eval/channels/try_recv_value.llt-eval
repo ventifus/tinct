@@ -1,0 +1,10 @@
+--- uses: ["core"]
+# try-recv returns {value: v} when a message is pre-sent on the channel.
+[
+  ch:        [channel 1]
+  send-done: [await [task [fn [] [send ch 42]]]]
+  raw:       [begin send-done [try-recv ch]]
+]
+.raw.value
+=== out
+Int(42)

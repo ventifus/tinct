@@ -1,6 +1,6 @@
 [
   sentence: "the quick brown fox jumps over the lazy dog"
-  upper:    [fn [let s] [str-map-chars str-to-upper-char s]]
+  upper:    [fn [let s] [upper s]]
 ]
 ---
 [words: [split " " %.sentence]]

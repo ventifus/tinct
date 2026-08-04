@@ -293,8 +293,6 @@ struct EvalState {
     include_chain: Vec<(String, Span)>,
     eval_stack: Vec<(String, Span)>,
     class_registry: HashMap<String, RuntimeClassDecl>,
-    // class_name interned via intern_class_name (&'static str); type_tags is Vec<String> (MPTC)
-    instance_registry: HashMap<(&'static str, Vec<String>), Arc<Thunk>>,
     registered_classes: HashSet<String>,
 }
 

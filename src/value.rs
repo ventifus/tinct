@@ -50,6 +50,7 @@ pub struct BuiltinArgs {
     /// None for the vast majority of builtins that do not need lexical scope access.
     /// Panics in `builtin-current-env` if unexpectedly None (indicates a registration bug).
     pub caller_env_id: Option<u32>,
+    pub caller_effect_chain: EffectChain,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -204,7 +205,7 @@ impl std::fmt::Debug for EffectChainNode {
     }
 }
 
-pub type EffectChain = Option<std::sync::Arc<EffectChainNode>>;
+pub type EffectChain = std::sync::Arc<EffectChainNode>;
 
 /// Replaces ScopeArena-based scope chain traversal.
 ///
@@ -231,7 +232,10 @@ impl EvalFrame {
             closure_env: GroupSpine::empty(),
             group: GroupSpine::empty(),
             params: std::sync::Arc::new(vec![]),
-            effect_chain: None,
+            effect_chain: std::sync::Arc::new(EffectChainNode {
+                group: GroupSpine::empty(),
+                tail: None,
+            }),
         })
     }
 
@@ -1996,6 +2000,7 @@ pub enum UnevaluatedState {
         /// Caller environment identity; used by `builtin-current-env` for scope introspection.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
+        caller_effect_chain: EffectChain,
     },
     /// Deferred function call (was PendingCall).
     FnCall {
@@ -2221,6 +2226,7 @@ impl Thunk {
         span: Span,
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
+        caller_effect_chain: EffectChain,
     ) -> Self {
         Self {
             inner: ThunkInner {
@@ -2232,6 +2238,7 @@ impl Thunk {
                         call_span: span.clone(),
                         caller_env_id,
                         ctx,
+                        caller_effect_chain,
                     }),
                     None,
                 )),
@@ -2436,6 +2443,7 @@ impl Thunk {
                 call_span,
                 caller_env_id,
                 ctx: _,
+                caller_effect_chain,
             } => UnevaluatedState::BuiltinCall {
                 def,
                 args,
@@ -2443,6 +2451,7 @@ impl Thunk {
                 call_span,
                 caller_env_id,
                 ctx: new_ctx,
+                caller_effect_chain,
             },
             UnevaluatedState::FnCall {
                 func,

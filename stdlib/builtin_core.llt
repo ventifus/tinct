@@ -23,7 +23,8 @@
     # Absent: the empty closed dict type — the Rust-protocol encoding of the absent/null sentinel.
     # Maps to Type::Dict(Row { fields: {}, tail: RowTail::Empty }).
     # The empty dict `[]` is `Value::Dict({})` at runtime; @Absent is its static type.
-    Absent
+    # TODO: This is wrong, rust should not have any knowlede of "Absent" or "Null", and the comment here erroneously defined Absent as exactly the same as `[]`
+    Absent # FIXME: prelude leak
     Union:        [types: Any]
     Intersect:    [types: Any]
     Negation:     [inner: Any]
@@ -47,8 +48,8 @@
     TypeContext
     DirCap
     NetCap
-    Handle
-    File
+    Handle # FIXME: prelude leak
+    File 
     BuilderHandle
     Task
     Channel
@@ -88,7 +89,7 @@
   Never:        TypeNode.Never
   Any:          TypeNode.Top
   Unknown:      TypeNode.Unknown
-  Absent:       TypeNode.Absent
+  Absent:       TypeNode.Absent # FIXME: prelude leak
   Proxy:        TypeNode.Proxy
   # Kind sentinels: @Operator and @Label resolve to fresh TypeVars of the given kind.
   # Consumed by typenode_typevar_kind in type_normalize.rs → TypeStageEntry::TypeVar.
@@ -101,7 +102,7 @@
   TypeContext:  TypeNode.TypeContext
   DirCap:       TypeNode.DirCap
   NetCap:       TypeNode.NetCap
-  Handle:       TypeNode.Handle
+  Handle:       TypeNode.Handle # FIXME: prelude leak
   File:         TypeNode.File
   BuilderHandle: TypeNode.BuilderHandle
   Task:         TypeNode.Task
