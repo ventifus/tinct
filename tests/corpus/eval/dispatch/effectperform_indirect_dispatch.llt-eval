@@ -1,0 +1,7 @@
+# Evidence chain: typeclass dispatch at call depth > 1.
+# my-add wraps prelude [+]. Calling [my-add 40 2] must find Addable Int
+# instance via the effect chain carrying the caller's scope.
+[my-add: [fn [let x y] [+ x y]]]
+[result: [my-add 40 2]]
+=== out
+["result": 42]

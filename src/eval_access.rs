@@ -39,6 +39,7 @@ pub(crate) async fn invoke_proxy_handler(
                     .clone()
                     .with_name(Arc::from("proxy field access")),
                 ctx,
+                caller_effect_chain: None,
             })
             .await
         }
@@ -73,6 +74,7 @@ pub(crate) async fn invoke_proxy_handler(
                             .clone()
                             .with_name(Arc::from("proxy field access")),
                         ctx,
+                        caller_effect_chain: None,
                     };
                     match invoke_function(&call_ctx).await {
                         Ok(result_thunk) => {

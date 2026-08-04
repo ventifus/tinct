@@ -119,6 +119,10 @@ pub(crate) async fn eval_call_core(
             caller_env_id,
             ctx: Arc::clone(ctx),
             original_call,
+            caller_effect_chain: Some(std::sync::Arc::new(crate::value::EffectChainNode {
+                group: std::sync::Arc::clone(&caller_frame.group),
+                tail: caller_frame.effect_chain.clone(),
+            })),
         },
     )))
 }
@@ -137,6 +141,7 @@ pub struct CallContext<'a> {
     /// Call site span — `name` field carries the function label for blame tracking.
     pub call_span: Span,
     pub ctx: &'a Arc<EvalContext>,
+    pub caller_effect_chain: crate::value::EffectChain,
 }
 
 /// Try to match a single function clause against the provided arguments.
@@ -165,6 +170,7 @@ pub(crate) async fn try_clause(
     closure_env: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> EvalResult<Option<Arc<EvalFrame>>> {
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
@@ -177,6 +183,7 @@ pub(crate) async fn try_clause(
             variadic: p.node.variadic,
             slot: p.node.slot,
             resolved_type: p.node.resolved_type.clone(),
+            dispatch_guard: p.node.dispatch_guard,
         })
         .collect();
 
@@ -221,6 +228,9 @@ pub(crate) async fn try_clause(
     // knowing the runtime type, analogous to the typed-variadic bucket routing in
     // bind_args_thunks. Only params with a concrete resolved_type (not Unknown/None) are checked.
     for (i, param) in params.iter().enumerate() {
+        if !param.dispatch_guard {
+            continue; // Only instance method type guards participate in dispatch.
+        }
         let Some(tv) = &param.resolved_type else {
             continue; // No annotation → wildcard, always matches.
         };
@@ -241,6 +251,9 @@ pub(crate) async fn try_clause(
     // Without this check, named args bypass type dispatch entirely.
     if let Some(named_map) = named {
         for param in params.iter() {
+            if !param.dispatch_guard {
+                continue;
+            }
             let Some(tv) = &param.resolved_type else {
                 continue;
             };
@@ -265,6 +278,7 @@ pub(crate) async fn try_clause(
         let pre_frame = Arc::new(EvalFrame::for_function_call(
             Arc::clone(&closure_env),
             vec![],
+            None,
         ));
         // Build the binding_map from clause.params (name → slot).
         let binding_map: IndexMap<String, u32> = clause
@@ -331,7 +345,11 @@ pub(crate) async fn try_clause(
                     })
                 })
                 .collect();
-            let bound_frame = EvalFrame::for_function_call(Arc::clone(&closure_env), params_final);
+            let bound_frame = EvalFrame::for_function_call(
+                Arc::clone(&closure_env),
+                params_final,
+                caller_effect_chain.clone(),
+            );
 
             // Step 4 (guard) with pattern-bound frame.
             if let Some(guard_expr) = &clause.guard {
@@ -356,6 +374,7 @@ pub(crate) async fn try_clause(
             Arc::clone(&closure_env),
             ctx,
             call_span,
+            caller_effect_chain.clone(),
         )
         .await
         .map_err(|mut e| {
@@ -372,12 +391,20 @@ pub(crate) async fn try_clause(
     }
 
     // Step 5 — All checks pass: bind args and return the call frame.
-    let frame = bind_args_thunks(&params, args, named, closure_env, ctx, call_span)
-        .await
-        .map_err(|mut e| {
-            e.set_arity_callee(call_span.name.clone());
-            e
-        })?;
+    let frame = bind_args_thunks(
+        &params,
+        args,
+        named,
+        closure_env,
+        ctx,
+        call_span,
+        caller_effect_chain,
+    )
+    .await
+    .map_err(|mut e| {
+        e.set_arity_callee(call_span.name.clone());
+        e
+    })?;
     Ok(Some(frame))
 }
 
@@ -401,6 +428,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
+            ctx.caller_effect_chain.clone(),
         )
         .await?;
         if let Some(frame) = result {
@@ -433,6 +461,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
                 variadic: p.node.variadic,
                 slot: p.node.slot,
                 resolved_type: p.node.resolved_type.clone(),
+                dispatch_guard: p.node.dispatch_guard,
             })
             .collect();
         match bind_args_thunks(
@@ -442,6 +471,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
+            ctx.caller_effect_chain.clone(),
         )
         .await
         {
@@ -478,6 +508,7 @@ pub(crate) async fn invoke_function_tco(
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
+            ctx.caller_effect_chain.clone(),
         )
         .await?;
         if let Some(frame) = result {
@@ -497,6 +528,7 @@ pub(crate) async fn invoke_function_tco(
                 variadic: p.node.variadic,
                 slot: p.node.slot,
                 resolved_type: p.node.resolved_type.clone(),
+                dispatch_guard: p.node.dispatch_guard,
             })
             .collect();
         match bind_args_thunks(
@@ -506,6 +538,7 @@ pub(crate) async fn invoke_function_tco(
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
+            ctx.caller_effect_chain.clone(),
         )
         .await
         {
@@ -537,6 +570,7 @@ pub(crate) async fn bind_args_thunks(
     closure_env: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> EvalResult<Arc<EvalFrame>> {
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
@@ -872,7 +906,11 @@ pub(crate) async fn bind_args_thunks(
         .map(|opt| opt.expect("param slot invariant violated: unfilled slot after arity check"))
         .collect();
 
-    Ok(EvalFrame::for_function_call(closure_env, params_vec))
+    Ok(EvalFrame::for_function_call(
+        closure_env,
+        params_vec,
+        caller_effect_chain,
+    ))
 }
 
 /// Extract the default value node from a param's annotation, if present.
@@ -963,6 +1001,7 @@ mod tests {
             variadic: false,
             slot,
             resolved_type: None,
+            dispatch_guard: false,
         }
     }
 
@@ -1004,6 +1043,7 @@ mod tests {
             variadic: true,
             slot,
             resolved_type: Some(make_repr_typevalue(repr)),
+            dispatch_guard: false,
         }
     }
 
@@ -1014,6 +1054,7 @@ mod tests {
             variadic: true,
             slot,
             resolved_type: None,
+            dispatch_guard: false,
         }
     }
 
@@ -1153,6 +1194,7 @@ mod tests {
             variadic: true,
             slot: 0,
             resolved_type: Some(make_repr_typevalue(REPR_INT)),
+            dispatch_guard: false,
         };
         let unknown_bucket = Param {
             name: "rest".to_string(),
@@ -1160,6 +1202,7 @@ mod tests {
             variadic: true,
             slot: 1,
             resolved_type: Some(crate::value::unknown_type_val()),
+            dispatch_guard: false,
         };
         let none_bucket = Param {
             name: "extra".to_string(),
@@ -1167,6 +1210,7 @@ mod tests {
             variadic: true,
             slot: 2,
             resolved_type: None,
+            dispatch_guard: false,
         };
         let params = vec![int_bucket, unknown_bucket.clone(), none_bucket.clone()];
         let (fixed, typed, rest) = classify(&params);

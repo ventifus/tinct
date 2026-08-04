@@ -271,6 +271,20 @@ impl Env {
         false
     }
 
+    pub fn mark_referenced_by_name(&mut self, name: &str) -> bool {
+        if let Some(&pos) = self.slot_index.get(name) {
+            if let Some(Some((_, ref mut slot_entry))) = self.slots.get_mut(pos) {
+                slot_entry.referenced = true;
+                return true;
+            }
+        }
+        if let Some(ref parent) = self.parent {
+            let mut guard = parent.write().unwrap();
+            return guard.mark_referenced_by_name(name);
+        }
+        false
+    }
+
     /// Return the `definition_span` of the slot entry at `(level, slot)`, walking `level`
     /// parent frames.
     ///

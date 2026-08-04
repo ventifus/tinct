@@ -972,6 +972,7 @@ pub(crate) fn builtin_str_map_chars(
                         named: None,
                         call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
                         ctx: &ctx,
+                        caller_effect_chain: None,
                     })
                     .await?
                 }
@@ -1005,6 +1006,7 @@ pub(crate) fn builtin_str_map_chars(
                                 named: None,
                                 call_span: call_span.clone().with_name(Arc::from("str-map-chars")),
                                 ctx: &ctx,
+                                caller_effect_chain: None,
                             };
                             match invoke_function(&call_ctx).await {
                                 Ok(thunk) => {

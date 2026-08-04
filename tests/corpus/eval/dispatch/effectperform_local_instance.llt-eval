@@ -1,0 +1,11 @@
+# Local instance: instance defined in an inner dict, method dispatched from same scope.
+# The local Addable instance for MyT must be found in frame.group before
+# the effect chain is traversed.
+# Two-dict pattern: first dict is private (type + instance), second is output.
+[
+  MyT: [type MyT]
+  [instance Addable [let a@MyT b@MyT c]: [+: [fn [let x y] [merge [l: x] [r: y]]]]]
+]
+[result: [+ MyT.MyT MyT.MyT]]
+=== out
+["result": ["l": MyT.MyT  "r": MyT.MyT]]

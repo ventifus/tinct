@@ -96,7 +96,7 @@ test-cli-summary:
 # With no arguments: auto-discovers all tests under tests/corpus/.
 # With file arguments: runs only those specific tests.
 test-corpus:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --init stdlib/test-loader.llt
 
 # Run specific corpus test files under gdb for crash diagnosis.
 # Usage: just test-corpus-one tests/corpus/eval/simple_dict.llt-eval
@@ -411,7 +411,6 @@ clean-volumes:
 # Full cleanup (images + volumes)
 clean-all: clean-images clean-volumes
     @echo "✅ All containers and volumes removed"
-
 # Profile a tinct file and show materialization hotspots
 profile FILE:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.llt-stream {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i stream scripts/profile/materialize.llt < /tmp/spans.llt-stream"

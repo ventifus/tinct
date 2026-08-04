@@ -1,0 +1,16 @@
+# Nested class: class declared inside a namespace dict.
+# Phase 1b must find Container.Sized inside the namespace,
+# extract 'size' as a method name, and inject it as EffectPerform.
+# The unicode instance key (ɪɴꜱᴛᴀɴᴄᴇ⧼...⧽) in output is the internal
+# naming convention for instance bindings (small caps + math brackets).
+[
+  Container: [
+    Sized: [class [let c]
+      size: []]
+  ]
+  [instance Container.Sized
+    [let c@String]: [size: [fn [let s] [str-length s]]]]
+  result: [size "hello"]
+]
+=== out
+["Container": ["Sized": []]  "ɪɴꜱᴛᴀɴᴄᴇ⧼Sized∷size⟨String⟩⧽": [fn [let s] ...]  "result": 5]

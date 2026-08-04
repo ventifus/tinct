@@ -219,6 +219,7 @@ pub(crate) struct PendingCallDispatchData {
     /// Span of the function thunk — where the callee value was defined.
     /// Used as the primary span in not-a-function errors ("defined at").
     pub(crate) func_span: Span,
+    pub(crate) caller_effect_chain: crate::value::EffectChain,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -611,6 +612,7 @@ pub(crate) fn apply_predicate_to_subject(
     subj_span: Span,
     caller_env_id: u32,
     ctx: &Arc<EvalContext>,
+    caller_effect_chain: crate::value::EffectChain,
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::value(subject, subj_span));
     let pred_thunk = Arc::new(Thunk::value(predicate, pred_span.clone()));
@@ -627,6 +629,7 @@ pub(crate) fn apply_predicate_to_subject(
                 node: CoreExpr::Int(0),
                 span: pred_span,
             }),
+            caller_effect_chain,
         },
     ))
 }
@@ -893,6 +896,7 @@ async fn dispatch_state(
             caller_env_id,
             ctx: thunk_ctx,
             original_call,
+            caller_effect_chain,
         } => {
             // func is Arc<Thunk> directly — no arena lookup needed.
             let func_thunk = func;
@@ -929,6 +933,7 @@ async fn dispatch_state(
                     original_call,
                     tail_hint,
                     func_span,
+                    caller_effect_chain,
                 },
             )));
             eval_stack_guard.disarm();
@@ -1324,6 +1329,7 @@ pub(crate) async fn apply_cont(
                 original_call,
                 tail_hint,
                 func_span,
+                caller_effect_chain,
             } = *data;
             // Inherited guard: PendingCallDispatch inherits the eval_stack entry
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
@@ -1515,6 +1521,7 @@ pub(crate) async fn apply_cont(
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
+                                        caller_effect_chain: caller_effect_chain.clone(),
                                     };
                                     invoke_function_tco(&call_ctx).await
                                 };
@@ -1552,6 +1559,7 @@ pub(crate) async fn apply_cont(
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
+                                        caller_effect_chain: caller_effect_chain.clone(),
                                     };
                                     invoke_function(&call_ctx).await
                                 };
@@ -1748,6 +1756,7 @@ pub(crate) async fn apply_cont(
                                         named: named_ref,
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
+                                        caller_effect_chain: caller_effect_chain.clone(),
                                     };
                                     match invoke_function(&call_ctx).await {
                                         Ok(result_thunk) => {
@@ -2609,6 +2618,7 @@ pub(crate) async fn apply_cont(
                             group: frame.group.extend(new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
+                            effect_chain: frame.effect_chain.clone(),
                         });
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
@@ -2699,6 +2709,7 @@ pub(crate) async fn apply_cont(
                             group: frame.group.extend(new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
+                            effect_chain: frame.effect_chain.clone(),
                         });
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
@@ -2828,11 +2839,16 @@ pub(crate) async fn apply_cont(
                                 // - CoreExpr::Var with pre-resolved TypeNode binding → structural
                                 // - CoreExpr::Placeholder → wildcard (structural)
                                 // - CoreExpr::Dict → structural dict pattern (field destructure)
-                                // - Other (CoreExpr::Call etc.) → guard expression
+                                // - CoreExpr::Call with nested Call func → structural (constructor
+                                //   pattern: [Type.Ctor arg] lowers to Call(Call(builtin-dict-get,...), args))
+                                // - CoreExpr::Call with Var func → guard expression (predicate: [< x 5])
                                 let is_structural = match &lowered_pattern.node {
                                     CoreExpr::Var { .. } => true,
                                     CoreExpr::Placeholder => true,
                                     CoreExpr::Dict(_) => true,
+                                    CoreExpr::Call { func, .. } => {
+                                        matches!(&func.node, CoreExpr::Call { .. })
+                                    }
                                     _ => false,
                                 };
 
@@ -2884,6 +2900,7 @@ pub(crate) async fn apply_cont(
                                     std::sync::Arc::new(EvalFrame::for_function_call(
                                         std::sync::Arc::new(closure_env_vec.clone()),
                                         vec![],
+                                        None,
                                     ));
 
                                 // T-2128: Build binding_map from CoreClause.params instead of
@@ -2957,6 +2974,7 @@ pub(crate) async fn apply_cont(
                                 let arm_frame = EvalFrame::for_function_call(
                                     Arc::new(closure_env_vec),
                                     params_vec,
+                                    frame.effect_chain.clone(),
                                 );
 
                                 // If guard expression pattern, evaluate it to check if truthy.
@@ -3102,6 +3120,7 @@ pub(crate) async fn apply_cont(
                                         node: CoreExpr::Int(0),
                                         span: match_span.clone(),
                                     }),
+                                    caller_effect_chain: parent_frame.effect_chain.clone(),
                                 },
                             ));
                             // Push MatchGuardCheck again with callable_invoked=true.
@@ -3389,6 +3408,7 @@ fn eval_structural_pattern_inner<'a>(
                         match_span.clone(),
                         0,
                         ctx,
+                        pctx.frame.effect_chain.clone(),
                     );
 
                     let pred_result = materialize(&pred_call_thunk, Some(match_span), ctx).await?;

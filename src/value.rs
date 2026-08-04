@@ -186,6 +186,26 @@ impl GroupSpine {
     }
 }
 
+/// One level of the Koka-style evidence chain.
+pub struct EffectChainNode {
+    pub group: std::sync::Arc<GroupSpine>,
+    pub tail: Option<std::sync::Arc<EffectChainNode>>,
+}
+
+impl std::fmt::Debug for EffectChainNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut len = 1;
+        let mut current = &self.tail;
+        while let Some(node) = current {
+            len += 1;
+            current = &node.tail;
+        }
+        write!(f, "EffectChainNode(len={})", len)
+    }
+}
+
+pub type EffectChain = Option<std::sync::Arc<EffectChainNode>>;
+
 /// Replaces ScopeArena-based scope chain traversal.
 ///
 /// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references (fn captures only)
@@ -202,6 +222,7 @@ pub struct EvalFrame {
     pub closure_env: std::sync::Arc<GroupSpine>,
     pub group: std::sync::Arc<GroupSpine>,
     pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+    pub effect_chain: EffectChain,
 }
 
 impl EvalFrame {
@@ -210,17 +231,20 @@ impl EvalFrame {
             closure_env: GroupSpine::empty(),
             group: GroupSpine::empty(),
             params: std::sync::Arc::new(vec![]),
+            effect_chain: None,
         })
     }
 
     pub fn for_function_call(
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         params: Vec<std::sync::Arc<Thunk>>,
+        effect_chain: EffectChain,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             closure_env: GroupSpine::from_flat(closure_env.iter().cloned().collect()),
             group: GroupSpine::empty(),
             params: std::sync::Arc::new(params),
+            effect_chain,
         })
     }
 }
@@ -1984,6 +2008,7 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for PendingBuiltin lazy-arg re-dispatch.
         original_call: Arc<Spanned<CoreExpr>>,
+        caller_effect_chain: EffectChain,
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
@@ -2045,6 +2070,7 @@ pub struct FnCallSpec {
     pub ctx: Arc<crate::eval::EvalContext>,
     /// The original call expression (for error messages).
     pub original_call: Arc<Spanned<CoreExpr>>,
+    pub caller_effect_chain: EffectChain,
 }
 
 /// New thunk structure for async evaluation (Sprint 2B).
@@ -2239,6 +2265,7 @@ impl Thunk {
                         caller_env_id: spec.caller_env_id,
                         ctx: spec.ctx,
                         original_call: spec.original_call,
+                        caller_effect_chain: spec.caller_effect_chain,
                     }),
                     None,
                 )),
@@ -2425,6 +2452,7 @@ impl Thunk {
                 caller_env_id,
                 ctx: _,
                 original_call,
+                caller_effect_chain,
             } => UnevaluatedState::FnCall {
                 func,
                 args,
@@ -2433,6 +2461,7 @@ impl Thunk {
                 caller_env_id,
                 ctx: new_ctx,
                 original_call,
+                caller_effect_chain,
             },
             UnevaluatedState::Guarded {
                 inner,

@@ -563,6 +563,7 @@ pub(crate) async fn eval_dict_core(
             closure_env,
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
+            effect_chain: None,
         });
 
         for maybe_core_thunk in &core_expr_thunks {
@@ -575,33 +576,11 @@ pub(crate) async fn eval_dict_core(
                     crate::value::UnevaluatedState::CoreExpr {
                         expr, ctx: t_ctx, ..
                     } => {
-                        // Eagerly settle ONLY instance binding fns (instance_of: Some(_)).
-                        // These are the fn values stamped for EffectPerform dispatch; their
-                        // captures are always builtins (root group slots, always available).
-                        //
-                        // Regular fns (instance_of: None) are NOT eagerly settled — they may
-                        // capture cross-dict forward references (e.g., `task` at a higher slot)
-                        // that are not yet in the letrec frame at this point.
-                        //
-                        // peek_result() returns Some for settled thunks; the EffectPerform scan
-                        // in eval_core.rs relies on this to find instance candidates.
-                        let is_instance_fn = matches!(
-                            &expr.node,
-                            CoreExpr::Fn {
-                                instance_of: Some(_),
-                                ..
-                            }
-                        );
                         core_thunk.reset(crate::value::UnevaluatedState::CoreExpr {
                             expr,
                             frame: std::sync::Arc::clone(&letrec_frame),
                             ctx: t_ctx,
                         });
-                        if is_instance_fn {
-                            // Safe: instance fns only capture builtins (root group, always present).
-                            // No cross-dict forward references — no capture miss risk.
-                            let _ = crate::eval::materialize(core_thunk, None, ctx).await;
-                        }
                     }
                     other => {
                         // Should not happen: we only put CoreExpr thunks in core_expr_thunks.
@@ -610,6 +589,23 @@ pub(crate) async fn eval_dict_core(
                 }
             }
             // If try_claim returns None the thunk is already settled; nothing to patch.
+        }
+    }
+
+    // Phase 3: pre-force instance method thunks.
+    // CoreExpr::Fn with instance_of stamps are syntactic values (WHNF) — forcing them
+    // is O(1) and produces a settled Value::Function. The eval_core_expr handler for
+    // CoreExpr::Fn registers these in ctx.instance_registry, making them globally
+    // visible to EffectPerform dispatch regardless of scope.
+    for (entry, maybe_core_thunk) in entries.iter().zip(core_expr_thunks.iter()) {
+        if let CoreExpr::Fn {
+            instance_of: Some(_),
+            ..
+        } = &entry.node.value.node
+        {
+            if let Some(core_thunk) = maybe_core_thunk {
+                crate::eval::materialize(core_thunk, Some(dict_span), ctx).await?;
+            }
         }
     }
 

@@ -1,0 +1,11 @@
+# Evidence chain traversal: dispatch from 3 levels of fn nesting.
+# f1 -> f2 -> f3, f3 calls [+] which dispatches via EffectPerform.
+# The Addable Int instance must be found through 3 effect chain links.
+[
+  f3: [fn [let a b] [+ a b]]
+  f2: [fn [let a b] [f3 a b]]
+  f1: [fn [let a b] [f2 a b]]
+  result: [f1 40 2]
+]
+=== out
+["f3": [fn [let a b] ...]  "f2": [fn [let a b] ...]  "f1": [fn [let a b] ...]  "result": 42]

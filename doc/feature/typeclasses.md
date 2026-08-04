@@ -214,6 +214,52 @@ Inference generates constraints when overloaded builtins are used. Let-generaliz
 
 **Phase 2:** Dictionary passing replaces runtime dispatch. Overloaded builtins receive an implicit dictionary argument containing the method implementations for the specific type. The evaluator threads dictionaries through function calls.
 
+### Runtime Dispatch: Evidence-Passing (`src/eval_core.rs`, `src/value.rs`)
+
+Typeclass method dispatch uses the Koka evidence-passing model. Every function call frame carries an `EffectChain` — a linked list of `GroupSpine` references representing the accumulated scope at each level of the call stack. When a typeclass method is invoked (via `VarAddr::EffectPerform`), the evaluator scans this chain from innermost to outermost to find matching instance implementations.
+
+#### EffectChain structure
+
+```rust
+pub struct EffectChainNode {
+    pub group: Arc<GroupSpine>,                 // scope at this call level
+    pub tail: Option<Arc<EffectChainNode>>,     // enclosing call levels
+}
+pub type EffectChain = Option<Arc<EffectChainNode>>;
+```
+
+`EvalFrame` carries an `effect_chain: EffectChain` field. Document-level frames have `effect_chain: None` because their `group` field already represents the full accumulated scope (root → prelude → user document entries via `GroupSpine` prev links). Function-call frames have `effect_chain: Some(...)` carrying the caller's scope chain.
+
+#### Chain construction at call time
+
+When constructing a function call frame (in `eval_call.rs` / `CallContext`), the caller's current group is prepended to the chain:
+
+```
+new_frame.effect_chain = Some(EffectChainNode {
+    group: caller_frame.group,        // caller's accumulated group
+    tail: caller_frame.effect_chain,  // inherited chain from caller's caller
+})
+```
+
+#### Dispatch scan order
+
+`VarAddr::EffectPerform` dispatch (in `eval_core.rs`) scans in this order:
+
+1. **Current frame's group** — handles document-level dispatch and local intermediate dict instances
+2. **Effect chain nodes, innermost to outermost** — handles indirect dispatch through function calls
+
+Each `GroupSpine` is scanned from highest slot index to lowest (innermost to outermost), checking `peek_result()` for `Value::Function { instance_of: Some((class_id, method)) }` matching the target.
+
+#### Why evidence-passing is correct
+
+- **Direct dispatch**: `[< x y]` in user code — `frame.group` is the full accumulated scope including user-defined instances
+- **Indirect dispatch**: `sort` calls `<` internally — `sort`'s `effect_chain` head carries the call site's group, which includes user-defined `Comparable` instances
+- **Deep indirect**: A calls B calls C, C dispatches — chain `{B.group, {A.group, {user_doc.group}}}` is traversed in order
+- **Local instances**: function body defines instance in intermediate dict, calls sub-function — sub-function's chain head includes the intermediate dict entries
+- **Innermost wins**: chain traversal finds the most recently installed handler first, shadowing outer ones
+
+This replaces the previous `init_accumulated_group` approach, which required a single flat scan of the document-level accumulated group and could not find instances across function call boundaries (the "indirect dispatch" problem).
+
 ### Row Polymorphism (`src/types.rs`)
 
 Row variables carry class constraints (`ClassRow(class, row_var)`) expressing that all fields in the row must satisfy the given class. Remy-style four-case unification adds constraint checking when binding row variables to concrete field sets.

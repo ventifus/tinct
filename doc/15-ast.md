@@ -249,11 +249,30 @@ pub struct CoreNamedArg {
     pub value: Arc<Spanned<CoreExpr>>,
 }
 
-/// A function parameter in a CoreExpr::Fn.
+/// A function parameter (surface-level, before lowering).
+pub struct Param {
+    pub name: String,
+    pub annotation: Option<Spanned<Annotation>>,
+    pub variadic: bool,
+    pub slot: u32,
+    pub resolved_type: Option<Arc<Value>>,
+    pub dispatch_guard: bool,
+}
+
+/// A function parameter in a CoreExpr::Fn (after lowering).
 pub struct CoreParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
+    /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
+    pub slot: u32,
+    /// TypeValue resolved by the type checker from the parameter annotation.
+    /// None means unknown/unannotated — accept all values at runtime (gradual typing).
+    pub resolved_type: Option<Arc<Value>>,
+    /// When true, resolved_type is a dispatch guard set by inject_instance_type_guards
+    /// for instance method type-based dispatch. try_clause Step 2 only checks params
+    /// where this is true — regular function annotations are not runtime dispatch guards.
+    pub dispatch_guard: bool,
 }
 
 /// A unified clause: one arm of a function, match arm, or instance method.

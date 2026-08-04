@@ -138,6 +138,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             group: Arc::clone(&spine),
             closure_env: crate::value::GroupSpine::empty(),
             params: Arc::new(vec![]),
+            effect_chain: None,
         });
 
         if i == last_idx {
@@ -244,6 +245,7 @@ pub(crate) async fn eval_core_document_exprs(
             group: Arc::clone(&spine),
             closure_env: crate::value::GroupSpine::empty(),
             params: Arc::new(vec![]),
+            effect_chain: None,
         });
 
         if i == last_idx {
@@ -678,6 +680,15 @@ pub struct EvalContext {
     /// are accumulated in a single unified collection. Printed at the end of the pipeline
     /// by `run_loader_pipeline` in lib.rs.
     pub runtime_diagnostics: std::sync::Arc<std::sync::Mutex<Vec<crate::error::Diagnostic>>>,
+    /// Global instance method registry for EffectPerform dispatch.
+    ///
+    /// Populated by `eval_core_expr` when a `CoreExpr::Fn` with `instance_of: Some(...)` is
+    /// evaluated: the settled `Thunk::value(Value::Function { instance_of, ... })` is appended.
+    /// Instance method thunks in dict letrec groups are pre-forced at dict construction time
+    /// (eval_dict.rs) so they register here before any EffectPerform scan runs.
+    ///
+    /// Shared across all child contexts via `Arc` — instances are globally coherent.
+    pub instance_registry: Arc<Mutex<Vec<Arc<Thunk>>>>,
 }
 
 impl EvalContext {
@@ -768,6 +779,7 @@ impl EvalContext {
             is_predicates,
             type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
             runtime_diagnostics: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            instance_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -813,6 +825,7 @@ impl EvalContext {
             is_predicates,
             type_identity_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
             runtime_diagnostics: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            instance_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -855,6 +868,7 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
+            instance_registry: Arc::clone(&self.instance_registry),
         });
         (child_ctx, child_token)
     }
@@ -901,6 +915,7 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
+            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -950,6 +965,7 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
+            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -994,6 +1010,7 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
+            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -1052,6 +1069,7 @@ impl EvalContext {
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
+            instance_registry: Arc::clone(&self.instance_registry),
         })
     }
 
@@ -1979,6 +1997,7 @@ async fn call_to_match_by_name(
         named: None,
         call_span: span.clone(),
         ctx,
+        caller_effect_chain: None,
     };
     let result_thunk = invoke_function(&call_ctx).await?;
     // Step 8: materialize the call result and check if it is a nonzero Int.
@@ -2405,6 +2424,7 @@ mod tests {
                     node: crate::ast::CoreExpr::Int(0),
                     span: rust_span!(),
                 }),
+                caller_effect_chain: None,
             },
         ))
     }
@@ -3589,6 +3609,7 @@ mod tests {
                         variadic: false,
                         slot: 0,
                         resolved_type: None,
+                        dispatch_guard: false,
                     },
                     test_span(1, 1, 1, 1),
                 )],
@@ -3692,6 +3713,7 @@ mod tests {
                         variadic: false,
                         slot: 0,
                         resolved_type: None,
+                        dispatch_guard: false,
                     },
                     test_span(1, 1, 1, 1),
                 )],

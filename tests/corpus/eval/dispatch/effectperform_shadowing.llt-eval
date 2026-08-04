@@ -1,0 +1,19 @@
+# Shadowing: when two instances for the same class+type exist at
+# different scope levels, evidence-passing finds the innermost first.
+# Here both instances are for Integer but produce different results.
+# A helper function dispatches 'show' — its effect chain carries
+# the call site's scope where the later instance appears after the
+# earlier one. The scan finds the later (innermost) instance first.
+[
+  Showable: [class [let a]
+    show: []]
+  [instance Showable
+    [let a@Integer]: [show: [fn [let x] "first"]]]
+  [instance Showable
+    [let a@Integer]: [show: [fn [let x] "second"]]]
+
+  # Direct dispatch — innermost (later) instance should win
+  result: [show 42]
+]
+=== out
+["Showable": []  "ɪɴꜱᴛᴀɴᴄᴇ⧼Showable∷show⟨Integer⟩⧽": [fn [let x] ...]  "result": "second"]

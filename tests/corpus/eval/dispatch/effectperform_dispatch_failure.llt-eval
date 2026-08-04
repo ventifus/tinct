@@ -1,0 +1,13 @@
+# Dispatch failure: instance exists for String but call site passes
+# Integer — no type guard matches, so "no instance found" error fires.
+# The String instance causes Phase 1b to inject an EffectPerform address
+# for 'whoops', but at runtime the Integer argument matches no candidate.
+[
+  NoMatch: [class [let a]
+    whoops: []]
+  [instance NoMatch
+    [let a@String]: [whoops: [fn [let x] "string"]]]
+  result: [whoops 42]
+]
+=== err
+no instance found for typeclass method

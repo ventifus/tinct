@@ -716,8 +716,7 @@ pub(crate) fn eval_core_expr<'a>(
                     VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
                     VarAddr::EffectPerform { class_id, method } => {
-                        // T-2146: Scan the accumulated group from innermost (highest slot) to
-                        // outermost (slot 0) for instance method implementations.
+                        // T-2187: Scan frame.group and effect_chain for instance methods.
                         //
                         // An instance method is a `Value::Function` with
                         // `instance_of == Some((class_id, method))`. The scan uses
@@ -736,69 +735,100 @@ pub(crate) fn eval_core_expr<'a>(
                         // clauses, and annotation. We collect them and return a PendingEffectPerform
                         // thunk that will try each candidate in order until one matches.
                         //
-                        // Instance fns live in the DOCUMENT-LEVEL accumulated group
-                        // (init_accumulated_group), not in the current function call frame's group.
-                        // frame.group only holds the fn's sequential body thunks. Using it caused
-                        // "no instance found" errors when EffectPerform was called from inside a fn.
-                        // The document-level group has all instance binding thunks regardless of
-                        // call depth. Fall back to frame.group in bootstrap/test contexts where
-                        // init_accumulated_group is unavailable.
-                        let init_group = ctx.get_init_accumulated_group();
-                        let scan_group: &crate::value::GroupSpine = match init_group {
-                            Some(g) => g,
-                            None => &frame.group,
-                        };
-                        let scan_len = scan_group.len();
+                        // The effect_chain implements Koka evidence passing:
+                        // - frame.group: For document-level frames, this IS the full accumulated
+                        //   chain (root → prelude → user doc entries via GroupSpine prev links).
+                        //   For fn-call frames, this holds only local intermediate dict entries.
+                        // - frame.effect_chain: A linked list of EffectChainNodes, each carrying
+                        //   the caller's group at the call point. Traversing the chain from
+                        //   innermost to outermost collects all instances visible at the call site.
+
                         let mut candidates: Vec<Arc<Value>> = Vec::new();
 
-                        // Iterate from innermost (highest slot index) to outermost (slot 0).
-                        // Innermost instances take priority (inner scopes can shadow outer ones).
-                        //
-                        // Instance fn thunks are settled at definition time: eval_dict_core
-                        // immediately materializes CoreExpr::Fn thunks after patching the letrec
-                        // frame (see eval_dict.rs). peek_result() therefore always returns
-                        // Some(Ok(Value::Function{...})) for instance fns, and returns None for
-                        // non-Fn thunks that haven't been forced (which are not instance methods).
-                        // This preserves lazy evaluation — only Fn thunks are eagerly settled.
-                        for i in (0..scan_len).rev() {
-                            let Some(slot_thunk) = scan_group.get(i) else {
-                                continue;
+                        // Scan one GroupSpine for matching instance fns.
+                        // Iterates from innermost (highest slot) to outermost (slot 0).
+                        // peek_result() succeeds for instance fn thunks because CoreExpr::Fn
+                        // settles immediately as WHNF (Launchbury 1993).
+                        let scan_spine =
+                            |spine: &crate::value::GroupSpine, candidates: &mut Vec<Arc<Value>>| {
+                                for i in (0..spine.len()).rev() {
+                                    let Some(slot_thunk) = spine.get(i) else {
+                                        continue;
+                                    };
+                                    if let Some(Ok(
+                                        func_value @ Value::Function {
+                                            instance_of: Some((cid, m)),
+                                            ..
+                                        },
+                                    )) = slot_thunk.peek_result()
+                                    {
+                                        if cid == class_id && m == method {
+                                            candidates.push(Arc::new(func_value.clone()));
+                                        }
+                                    }
+                                }
                             };
-                            if let Some(Ok(
-                                func_value @ Value::Function {
-                                    instance_of: Some((cid, m)),
-                                    ..
-                                },
-                            )) = slot_thunk.peek_result()
-                            {
-                                if cid == class_id && m == method {
-                                    candidates.push(Arc::new(func_value.clone()));
+
+                        // 1. Scan current frame's local group.
+                        //    Document-level frames: group IS the full accumulated chain
+                        //    (root → prelude → user doc entries via GroupSpine prev links).
+                        //    Fn-call frames: group holds only local intermediate dict entries.
+                        scan_spine(&frame.group, &mut candidates);
+
+                        // 2. Traverse the effect chain from innermost to outermost.
+                        //    Each node carries the caller's group at the call point.
+                        //    This implements Koka evidence passing.
+                        let mut chain = &frame.effect_chain;
+                        while let Some(node) = chain {
+                            scan_spine(&node.group, &mut candidates);
+                            chain = &node.tail;
+                        }
+
+                        // 3. Scan the global instance registry.
+                        //    Instance method thunks are registered here when
+                        //    CoreExpr::Fn with instance_of is evaluated. This covers
+                        //    instances from any scope (prelude, user code, nested evals).
+                        if candidates.is_empty() {
+                            let registry = ctx
+                                .instance_registry
+                                .lock()
+                                .expect("instance_registry poisoned");
+                            for thunk in registry.iter() {
+                                if let Some(Ok(
+                                    func_value @ Value::Function {
+                                        instance_of: Some((cid, m)),
+                                        ..
+                                    },
+                                )) = thunk.peek_result()
+                                {
+                                    if cid == class_id && m == method {
+                                        candidates.push(Arc::new(func_value.clone()));
+                                    }
                                 }
                             }
                         }
 
                         if candidates.is_empty() {
-                            // No instance found — propagate as an evaluation error.
-                            // Returning Err here causes the evaluating task to settle
-                            // its thunk with this error; all dependents see the error
-                            // when they force the thunk. This is the correct path for
-                            // "no instance found" — it is a hard error, not a no-match
-                            // that falls through to something else.
+                            let chain_len = {
+                                let mut len = 0u32;
+                                let mut c = &frame.effect_chain;
+                                while let Some(node) = c {
+                                    len += 1;
+                                    c = &node.tail;
+                                }
+                                len
+                            };
                             return Err(EvalError::user_error(
                                 format!(
                                     "no instance found for typeclass method '{}' (class_id={}): \
-                                     no Value::Function with instance_of=Some({}, {:?}) \
-                                     in accumulated group ({} entries)",
-                                    method, class_id, class_id, method, scan_len
+                                     scanned frame.group + {} effect chain level(s) + global registry",
+                                    method, class_id, chain_len
                                 ),
                                 span.clone(),
                             )
                             .into());
                         }
 
-                        // Return a PendingEffectPerform thunk that will try each candidate in order.
-                        // Each candidate preserves its own closure_env, so ClosureCapture lookups
-                        // will resolve correctly when the candidate's clauses are evaluated.
                         return Ok(Arc::new(Thunk::pending_effect_perform(
                             candidates,
                             span.clone(),
@@ -1063,7 +1093,7 @@ pub(crate) fn eval_core_expr<'a>(
                     });
                     closure_env_vec.push(thunk);
                 }
-                Ok(Arc::new(Thunk::value(
+                let thunk = Arc::new(Thunk::value(
                     Value::Function {
                         clauses: Arc::new(clauses.clone()),
                         closure_env: Arc::new(closure_env_vec),
@@ -1075,7 +1105,14 @@ pub(crate) fn eval_core_expr<'a>(
                             .unwrap_or_else(crate::value::unknown_type_val),
                     },
                     span.clone(),
-                )))
+                ));
+                if instance_of.is_some() {
+                    ctx.instance_registry
+                        .lock()
+                        .expect("instance_registry poisoned")
+                        .push(Arc::clone(&thunk));
+                }
+                Ok(thunk)
             }
 
             // TypeAssert: wrap as CoreExpr thunk — force_step's take_core_expr branch
@@ -1474,6 +1511,7 @@ mod tests {
             closure_env: GroupSpine::empty(),
             group: GroupSpine::from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
+            effect_chain: None,
         });
 
         // Build a Var node: addr = Dispatch(0, 0).

@@ -178,6 +178,10 @@ pub struct Param {
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
     pub resolved_type: Option<Arc<crate::value::Value>>,
+    /// When true, `resolved_type` is a dispatch guard set by `inject_instance_type_guards`
+    /// for instance method type-based dispatch. `try_clause` Step 2 only checks params
+    /// where this is true.
+    pub dispatch_guard: bool,
 }
 
 impl std::fmt::Display for Param {
@@ -1513,6 +1517,10 @@ pub struct CoreParam {
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
     pub resolved_type: Option<Arc<crate::value::Value>>,
+    /// When true, `resolved_type` is a dispatch guard set by `inject_instance_type_guards`
+    /// for instance method type-based dispatch. `try_clause` Step 2 only checks params
+    /// where this is true — regular function annotations are not runtime dispatch guards.
+    pub dispatch_guard: bool,
 }
 
 /// A unified clause: one arm of a function, match arm, or instance method.

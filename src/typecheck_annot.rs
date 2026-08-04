@@ -3794,6 +3794,7 @@ pub(crate) async fn as_type_dispatch(
                 named: None,
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
+                caller_effect_chain: None,
             };
             crate::eval_call::invoke_function(&call_ctx).await?
         }
@@ -3897,6 +3898,7 @@ pub(crate) async fn eval_type_stage_expr(
             group,
             closure_env: crate::value::GroupSpine::empty(),
             params: std::sync::Arc::new(vec![]),
+            effect_chain: None,
         })
     };
     let core_thunk = Arc::new(Thunk::core_expr(

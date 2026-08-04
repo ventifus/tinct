@@ -578,6 +578,7 @@ pub(crate) fn builtin_until(
                     caller_env_id,
                     ctx: Arc::clone(&ctx),
                     original_call: synthetic_call_expr(call_span.clone()),
+                    caller_effect_chain: None,
                 },
             ));
 
@@ -608,6 +609,7 @@ pub(crate) fn builtin_until(
                         caller_env_id,
                         ctx: Arc::clone(&ctx),
                         original_call: synthetic_call_expr(call_span.clone()),
+                        caller_effect_chain: None,
                     },
                 ));
 
@@ -691,6 +693,7 @@ pub(crate) fn builtin_apply_impl(
                     },
                     ctx: &ctx,
                     call_span: call_span.with_name(Arc::from("apply")),
+                    caller_effect_chain: None,
                 })
                 .await
             }
@@ -2966,6 +2969,13 @@ pub(crate) fn builtin_typecheck_doc(
             crate::env::merge_env_chain_into(&doc_env, &guard.inference_env);
             // guard.inference_env stays unchanged — it is the single flat root
 
+            // Merge classes and instances from state.env into inference_env.
+            // Pass 0c registers ClassDecl records (with populated method_signatures)
+            // into state.env, which is child_env — a sibling of doc_env, not an
+            // ancestor. merge_env_chain_into above only traverses doc_env's chain,
+            // so classes written to child_env are lost without this merge.
+            crate::env::merge_env_chain_into(&state.env, &guard.inference_env);
+
             // Write back type_stage_scope: merge new declarations (ADTs, classes) from
             // frame[0] back into TypeContextData so subsequent typecheck calls see them.
             if let Some(new_entries) = state.type_stage_scope.first() {
@@ -2978,6 +2988,26 @@ pub(crate) fn builtin_typecheck_doc(
                     guard.type_stage_scope[0]
                         .entry(name.clone())
                         .or_insert_with(|| entry.clone());
+                }
+            }
+        }
+
+        // Sync the Value::TypeContext (tc_arc) into the EvalContext's type_context.
+        // builtin-make-type-ctx clones the TypeContextData when creating the
+        // Value::TypeContext — the EvalContext and Value handle diverge after that.
+        // builtin-resolve reads from ctx.type_context (the EvalContext's copy), so
+        // class registrations (with populated method_signatures) must be synced back.
+        {
+            let tc_guard = tc_arc.lock().unwrap();
+            let mut ctx_tc = ctx.type_context.lock().unwrap();
+            if let Some(ref mut ctx_data) = *ctx_tc {
+                let src_env = tc_guard.inference_env.read().unwrap();
+                let mut dst_env = ctx_data.inference_env.write().unwrap();
+                for (name, class) in &src_env.classes {
+                    dst_env.classes.insert(name.clone(), class.clone());
+                }
+                for (mangled, inst) in &src_env.instances {
+                    dst_env.instances.insert(mangled.clone(), inst.clone());
                 }
             }
         }

@@ -1,0 +1,6 @@
+# EffectPerform dispatch at document level -- the baseline case.
+# [+] dispatches directly from the doc-level frame where the prelude
+# Addable Int instance lives in frame.group. No effect_chain traversal needed.
+[result: [+ 40 2]]
+=== out
+["result": 42]

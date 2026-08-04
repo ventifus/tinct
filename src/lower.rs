@@ -621,6 +621,8 @@ fn lower_expr(
                                     let dispatch_tags = extract_dispatch_tags(&pattern.expr);
                                     let type_args: Vec<&str> =
                                         dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                                    let instance_type_guards =
+                                        extract_instance_type_guards(&pattern.expr);
                                     for me in method_entries {
                                         let method_name = match me.node.key.as_ref() {
                                             Some(key_node) => match &key_node.expr {
@@ -680,23 +682,29 @@ fn lower_expr(
                                         // when scanning the accumulated group for matching impls.
                                         lowered_value.node = match lowered_value.node {
                                             CoreExpr::Fn {
-                                                clauses,
+                                                mut clauses,
                                                 captures,
                                                 instance_of: _,
                                                 resolved_fn_type,
                                                 desugared,
                                                 return_ann,
-                                            } => CoreExpr::Fn {
-                                                clauses,
-                                                captures,
-                                                instance_of: Some((
-                                                    class_decl_id,
-                                                    method_name.clone(),
-                                                )),
-                                                resolved_fn_type,
-                                                desugared,
-                                                return_ann,
-                                            },
+                                            } => {
+                                                inject_instance_type_guards(
+                                                    &mut clauses,
+                                                    &instance_type_guards,
+                                                );
+                                                CoreExpr::Fn {
+                                                    clauses,
+                                                    captures,
+                                                    instance_of: Some((
+                                                        class_decl_id,
+                                                        method_name.clone(),
+                                                    )),
+                                                    resolved_fn_type,
+                                                    desugared,
+                                                    return_ann,
+                                                }
+                                            }
                                             // Non-Fn body (e.g., a VarRef to an existing function):
                                             // Cannot stamp instance_of without wrapping in a Fn,
                                             // but a zero-param wrapper is arity-incompatible —
@@ -924,6 +932,7 @@ fn lower_expr(
                             // TypeValue.Unknown (which Error maps to) is treated as accept-all at
                             // runtime — pass it through as-is; None means unannotated.
                             resolved_type: p.node.resolved_annotation_type.get().cloned(),
+                            dispatch_guard: false,
                         },
                         p.span.clone(),
                     )
@@ -1148,6 +1157,7 @@ fn lower_expr(
                                             variadic: false,
                                             annotation: None,
                                             resolved_type: None,
+                                            dispatch_guard: false,
                                         },
                                         let_bindings.span.clone(),
                                     )
@@ -1244,6 +1254,7 @@ fn lower_expr(
                     let dispatch_tags = extract_dispatch_tags(&pattern.expr);
                     let type_args: Vec<&str> =
                         dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                    let instance_type_guards = extract_instance_type_guards(&pattern.expr);
 
                     for me in method_entries {
                         let method_name = match me.node.key.as_ref() {
@@ -1286,20 +1297,23 @@ fn lower_expr(
                             lower_inner(&me.node.value, diagnostics, scope_frames);
                         lowered_value.node = match lowered_value.node {
                             CoreExpr::Fn {
-                                clauses,
+                                mut clauses,
                                 captures,
                                 instance_of: _,
                                 resolved_fn_type,
                                 desugared,
                                 return_ann,
-                            } => CoreExpr::Fn {
-                                clauses,
-                                captures,
-                                instance_of: Some((class_decl_id, method_name.clone())),
-                                resolved_fn_type,
-                                desugared,
-                                return_ann,
-                            },
+                            } => {
+                                inject_instance_type_guards(&mut clauses, &instance_type_guards);
+                                CoreExpr::Fn {
+                                    clauses,
+                                    captures,
+                                    instance_of: Some((class_decl_id, method_name.clone())),
+                                    resolved_fn_type,
+                                    desugared,
+                                    return_ann,
+                                }
+                            }
                             // Non-Fn body (e.g., a VarRef to an existing function):
                             // Cannot stamp instance_of without wrapping in a Fn, but
                             // a zero-param wrapper is arity-incompatible — when the
@@ -1701,6 +1715,80 @@ fn annotation_dispatch_tag(ann: &crate::ast::Annotation) -> Option<String> {
     }
 }
 
+/// Extract (binding_name, type_tag) pairs from an instance arm pattern.
+///
+/// For `[let h@File]`, returns `[("h", "File")]`.
+/// For `[let a@Integer b@Integer c]`, returns `[("a", "Integer"), ("b", "Integer")]`.
+/// Bindings without type annotations are omitted.
+/// The `bind: [...]` TypeVar declarations are skipped (same as `extract_dispatch_tags`).
+///
+/// Used by instance method lowering to inject the instance arm's type guard into
+/// method clause parameters that share the same name — enabling EffectPerform dispatch
+/// to select the correct instance based on argument types.
+fn extract_instance_type_guards(arm_pattern: &SurfaceExpression) -> Vec<(String, String)> {
+    let bindings = match arm_pattern {
+        SurfaceExpression::LetDecl { bindings } => bindings,
+        _ => return vec![],
+    };
+    bindings
+        .iter()
+        .filter(|binding| {
+            if let SurfaceExpression::VarRef {
+                name, annotation, ..
+            } = &binding.expr
+            {
+                if name.as_str() == "bind" {
+                    if let Some(ann) = annotation {
+                        if matches!(ann.node, crate::ast::Annotation::PropertyDict(_)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        })
+        .filter_map(|binding_spanned| {
+            if let SurfaceExpression::VarRef {
+                name,
+                annotation: Some(ann),
+                ..
+            } = &binding_spanned.expr
+            {
+                let tag = annotation_dispatch_tag(&ann.node)?;
+                let tycon = tag.split('.').next().unwrap_or(&tag).to_string();
+                Some((name.clone(), tycon))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Inject instance arm type guards into method clause parameters for dispatch.
+///
+/// For each clause parameter whose name matches an instance arm binding AND that
+/// has no existing `resolved_type`, sets `resolved_type` to `TypeValue.Op(tycon)`.
+/// This enables `try_clause` step 2 (type guard check) to reject candidates whose
+/// instance type doesn't match the argument.
+fn inject_instance_type_guards(
+    clauses: &mut [crate::ast::CoreClause],
+    type_guards: &[(String, String)],
+) {
+    if type_guards.is_empty() {
+        return;
+    }
+    for clause in clauses.iter_mut() {
+        for param in clause.params.iter_mut() {
+            if param.node.resolved_type.is_none() {
+                if let Some((_, tycon)) = type_guards.iter().find(|(n, _)| n == &param.node.name) {
+                    param.node.resolved_type = Some(crate::type_infer::make_typevalue_op(tycon));
+                    param.node.dispatch_guard = true;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>> {
     let bindings = match arm_pattern {
         SurfaceExpression::LetDecl { bindings } => bindings,
@@ -1963,6 +2051,7 @@ fn lower_type_alias_to_constructor_dict(
                             variadic: false,
                             slot: i as u32,
                             resolved_type: None,
+                            dispatch_guard: false,
                         },
                         syn_span.clone(),
                     )

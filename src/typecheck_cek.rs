@@ -972,11 +972,9 @@ async fn infer_step(
                         type_map,
                     ))
                     .await;
-                    // Write resolved_class_decl_id so the lowerer can populate instance_of.
-                    if r.is_ok() {
-                        if let Some(cd) = state.env.read().unwrap().get_class(&class_name_str) {
-                            resolved_class_decl_id.set(cd.class_decl_id);
-                        }
+                    // Set resolved_class_decl_id from the class lookup alone.
+                    if let Some(cd) = state.env.read().unwrap().get_class(&class_name_str) {
+                        resolved_class_decl_id.set(cd.class_decl_id);
                     }
                     r
                 }
@@ -1964,12 +1962,30 @@ async fn infer_var_ref(
             }
         }
     } else {
-        // No resolver address — should not happen for user bindings.
-        // User bindings always have resolver addresses via typecheck_program_bootstrap.
-        // Type-checker-internal bindings (narrowing overrides, class dispatch names) are
-        // now stored in slots with an appended position — look up by name via get_scheme.
-        // DO NOT record use_def edge for these — they are not Sequential intermediates.
-        env.read().unwrap().get_scheme(name)
+        // No resolver address — either type-checker-internal bindings (narrowing overrides,
+        // class dispatch) or user bindings when resolution_table is empty (builtin-typecheck-doc
+        // path). Look up by name, mark slot referenced, and record use_def edges to prevent
+        // false-positive lost-binding warnings.
+        let scheme = { env.read().unwrap().get_scheme(name) };
+        if scheme.is_some() {
+            env.write().unwrap().mark_referenced_by_name(name);
+            let dep_def_span = Env::find_def_span_by_name(env, name);
+            if let (Some(ref binder), Some(ref def_span)) = (&state.current_binding, &dep_def_span)
+            {
+                let dep_id = BindingId {
+                    def_span: def_span.clone(),
+                    name: name.to_string(),
+                };
+                if *binder != dep_id {
+                    state
+                        .use_def
+                        .entry(binder.clone())
+                        .or_default()
+                        .insert(dep_id);
+                }
+            }
+        }
+        scheme
     };
 
     if let Some(scheme) = scheme {
@@ -4941,6 +4957,120 @@ pub(crate) async fn run_typecheck_dict(
     // Pass 0c: pre-register class/instance declarations so all classes and instances
     // are visible during body type-checking, regardless of declaration order in the file.
     // Runs AFTER Pass 1 so dict_env includes all letrec TypeVar placeholders.
+    //
+    // Two sub-passes ensure correct ordering:
+    //   0c-classes: register ALL ClassDecl entries first — both direct and nested one level
+    //               inside Dict values (e.g. `File: [Readable: [class ...]]`).
+    //   0c-instances: then process InstanceDecl entries, which can now find their classes.
+
+    // Pass 0c-classes: register ClassDecl entries (direct + nested in Dict values).
+    for (idx, entry) in entries.iter().enumerate() {
+        if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
+            if let SurfaceDeclaration::ClassDecl {
+                name,
+                params,
+                superclasses,
+                methods: _,
+                determines,
+                resolver,
+                resolver_injective,
+                structural,
+                pre_assigned_class_decl_id,
+            } = decl_box.as_ref()
+            {
+                let resolver_name: Option<String> =
+                    resolver.as_ref().and_then(|rnode| match &rnode.expr {
+                        crate::ast::SurfaceExpression::VarRef { name: rname, .. } => {
+                            Some(rname.clone())
+                        }
+                        crate::ast::SurfaceExpression::StringLiteral { content, .. } => {
+                            Some(content.clone())
+                        }
+                        _ => None,
+                    });
+                let result = super::infer_class_decl_from_surface(
+                    &super::ClassDeclSurface {
+                        name,
+                        params,
+                        superclasses,
+                        determines,
+                        structural,
+                        span: entry.node.value.span.clone(),
+                        resolver: resolver_name,
+                        resolver_injective: *resolver_injective,
+                        pre_assigned_class_decl_id: Some(pre_assigned_class_decl_id),
+                    },
+                    state,
+                );
+                let (ref key_name, _, _) = key_entries[idx];
+                match result {
+                    Ok(ty) => {
+                        if let Some(name) = key_name {
+                            field_types.insert(name.clone(), ty);
+                        }
+                    }
+                    Err(mut errs) => {
+                        if let Some(name) = key_name {
+                            let error_ty = state.fresh_type_var(&entry.span);
+                            field_types.insert(name.clone(), error_ty);
+                            state
+                                .failed_bindings
+                                .insert(name.clone(), entry.span.clone());
+                        }
+                        errors.append(&mut errs);
+                    }
+                }
+            }
+        } else if let SurfaceExpression::Dict(inner_entries) = &entry.node.value.expr {
+            // Scan one level into namespace dicts for nested ClassDecl entries.
+            for inner_entry in inner_entries.iter() {
+                if let SurfaceExpression::Decl(inner_decl) = &inner_entry.node.value.expr {
+                    if let SurfaceDeclaration::ClassDecl {
+                        name,
+                        params,
+                        superclasses,
+                        methods: _,
+                        determines,
+                        resolver,
+                        resolver_injective,
+                        structural,
+                        pre_assigned_class_decl_id,
+                    } = inner_decl.as_ref()
+                    {
+                        let resolver_name: Option<String> =
+                            resolver.as_ref().and_then(|rnode| match &rnode.expr {
+                                crate::ast::SurfaceExpression::VarRef { name: rname, .. } => {
+                                    Some(rname.clone())
+                                }
+                                crate::ast::SurfaceExpression::StringLiteral {
+                                    content, ..
+                                } => Some(content.clone()),
+                                _ => None,
+                            });
+                        let result = super::infer_class_decl_from_surface(
+                            &super::ClassDeclSurface {
+                                name,
+                                params,
+                                superclasses,
+                                determines,
+                                structural,
+                                span: inner_entry.node.value.span.clone(),
+                                resolver: resolver_name,
+                                resolver_injective: *resolver_injective,
+                                pre_assigned_class_decl_id: Some(pre_assigned_class_decl_id),
+                            },
+                            state,
+                        );
+                        if let Err(mut errs) = result {
+                            errors.append(&mut errs);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 0c-instances: process InstanceDecl entries (classes are now registered).
     for (idx, entry) in entries.iter().enumerate() {
         let is_class_or_instance = matches!(
             &entry.node.value.expr,
@@ -5005,11 +5135,11 @@ pub(crate) async fn run_typecheck_dict(
                             type_map,
                         ))
                         .await;
-                        // Write resolved_class_decl_id so the lowerer can populate instance_of.
-                        if r.is_ok() {
-                            if let Some(cd) = dict_env.read().unwrap().get_class(&class_name_str) {
-                                resolved_class_decl_id.set(cd.class_decl_id);
-                            }
+                        // Set resolved_class_decl_id from the class lookup alone —
+                        // it depends only on which class this instance targets,
+                        // not on whether instance body types are resolvable yet.
+                        if let Some(cd) = dict_env.read().unwrap().get_class(&class_name_str) {
+                            resolved_class_decl_id.set(cd.class_decl_id);
                         }
                         r
                     }
@@ -5171,6 +5301,7 @@ pub(crate) async fn run_typecheck_dict(
                                         }
                                     }
                                 }
+                            } else {
                             }
                         }
                     }

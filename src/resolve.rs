@@ -30,8 +30,9 @@
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
-    class_decl_name, node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument,
-    SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
+    class_decl_name, node_id, DotKey, ResolutionTable, Spanned, SurfaceDeclaration,
+    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+    VarAddr,
 };
 use crate::error::Diagnostic;
 use std::sync::Arc;
@@ -139,17 +140,6 @@ struct SurfaceResolver {
     /// Each entry is `(name→slot map, FrameKind)` so callers can distinguish
     /// document-level sequential frames from fn-body/dict letrec frames.
     unified_frames: Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
-    /// Index of class method names → `class_decl_id`.
-    ///
-    /// Populated by callers via `resolve_surface_document_with_class_methods` (or similar)
-    /// from the type checker's `Env.classes` map after class declarations have been processed.
-    /// When the VarRef arm resolves a name to a `Dispatch(depth, slot)` address and the name
-    /// appears in this index, the resolver emits `VarAddr::EffectPerform { class_id, method }`
-    /// instead — signalling to the evaluator that this is a typeclass method dispatch site.
-    ///
-    /// Empty (no typeclass emission) when the resolver runs without class information (the
-    /// common case for standalone expression evaluation and tests).
-    class_methods: std::collections::HashMap<String, u64>,
 }
 
 impl SurfaceResolver {
@@ -166,18 +156,31 @@ impl SurfaceResolver {
             accumulated_dict_offset: 0,
             field_getter_name: Arc::from("builtin-dict-get"),
             unified_frames: Vec::new(),
-            class_methods: std::collections::HashMap::new(),
         }
     }
 
-    /// Seed the resolver with class method information so that typeclass method VarRefs
-    /// emit `VarAddr::EffectPerform { class_id, method }` instead of `Dispatch`.
-    ///
-    /// `methods` maps each method name to its class's `class_decl_id`. Callers derive
-    /// this map from `Env.classes` after the type checker has processed `ClassDecl` entries.
-    fn with_class_methods(mut self, methods: std::collections::HashMap<String, u64>) -> Self {
-        self.class_methods = methods;
-        self
+    /// Inject EffectPerform addresses for class methods into the current topmost scope.
+    /// Used when the resolver is seeded with class information from previously-resolved
+    /// files — the class method names must be findable through the normal scope chain.
+    fn inject_class_methods(&mut self, methods: &std::collections::HashMap<String, u64>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            for (method_name, &class_id) in methods {
+                let should_inject = match scope.get(method_name) {
+                    None => true,
+                    Some(VarAddr::EffectPerform { .. }) => true,
+                    _ => false,
+                };
+                if should_inject {
+                    scope.insert(
+                        method_name.clone(),
+                        VarAddr::EffectPerform {
+                            class_id,
+                            method: method_name.clone(),
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// Enter a letrec dict scope with a slot offset.
@@ -298,17 +301,11 @@ impl SurfaceResolver {
         // variable → add to the innermost function's capture list.
         if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
             if match_depth < fn_boundary {
-                // Typeclass method inside a fn body: emit EffectPerform instead of
-                // ClosureCapture so the evaluator performs open dispatch at call time.
-                // The name must NOT be added to the capture list — EffectPerform looks up
-                // instances by scanning the accumulated group at call time, not via the
-                // closure_env captured at definition time. This check must come BEFORE the
-                // capture cascade to avoid pushing wasted captures into intermediate fn levels.
-                if let Some(&class_id) = self.class_methods.get(name) {
-                    return Some(VarAddr::EffectPerform {
-                        class_id,
-                        method: name.to_string(),
-                    });
+                // EffectPerform is dynamically scoped — resolved at call time via the
+                // effect chain, not via closure capture. Return as-is without adding to
+                // the capture list.
+                if matches!(&addr, VarAddr::EffectPerform { .. }) {
+                    return Some(addr);
                 }
 
                 // Free variable: found in a scope outside the current function boundary.
@@ -562,27 +559,6 @@ impl SurfaceResolver {
                 name, resolution, ..
             } => {
                 if let Some(addr) = self.resolve_name(name) {
-                    // If this name resolves to a Dispatch address AND it is a registered
-                    // typeclass method, emit EffectPerform instead so the evaluator can
-                    // perform instance-based runtime dispatch (T-2130).
-                    //
-                    // EffectPerform is emitted here for the non-capture path (Dispatch from
-                    // resolve_name at document scope or inside a fn with local scope).
-                    // Inside fn bodies where the method name crosses the fn boundary,
-                    // resolve_name emits EffectPerform directly (before closure capture) —
-                    // see the class_methods check in resolve_name's capture-conversion block.
-                    let addr = if let VarAddr::Dispatch(_, _) = &addr {
-                        if let Some(&class_id) = self.class_methods.get(name.as_str()) {
-                            VarAddr::EffectPerform {
-                                class_id,
-                                method: name.clone(),
-                            }
-                        } else {
-                            addr
-                        }
-                    } else {
-                        addr
-                    };
                     resolution.set(Some(addr.clone()));
                     self.table.insert(node_id(arc), addr);
                 } else {
@@ -639,68 +615,76 @@ impl SurfaceResolver {
                 // at their eval_dict_core call site = base_offset + static_keys.len()).
                 self.accumulated_dict_offset = base_offset + static_keys.len() as u32;
 
-                // Phase 1b: scan entries for ClassDecl values and register their method names
-                // into `class_methods` so that sibling entries in the same letrec scope can
-                // resolve class method VarRefs to VarAddr::EffectPerform at Phase 2 walk time.
+                // Phase 1b: two-pass scan for typeclass method injection.
                 //
-                // This fixes the timing problem where classes and their method-calling siblings
-                // appear in the same document: the type-checker hasn't run yet, so `class_methods`
-                // is not yet populated from Env.classes. Phase 1b pre-assigns a class_decl_id and
-                // injects method names before the Phase 2 walk begins.
+                // Pass 1: assign class_ids to all ClassDecl nodes (including nested ones
+                // inside namespace dicts like `File: [Readable: [class ...]]`).
                 //
-                // Shadowing rule: innermost ClassDecl wins. We use `insert` (not `or_insert`) so
-                // that an inner scope's class overrides an outer scope's class for the same method
-                // name. We track which method names were freshly inserted by this dict so that
-                // cleanup after exit_scope() removes only what this Phase 1b added, preserving
-                // method names from enclosing scopes that were not shadowed.
-                let mut added_class_methods: Vec<String> = Vec::new();
+                // Pass 2: scan for InstanceDecl entries (named or anonymous), resolve
+                // each instance's class_name to find the ClassDecl, and inject the
+                // class's method names into the current scope as EffectPerform addresses.
+                //
+                // Method injection is INSTANCE-driven: the instance provides evidence
+                // that the methods are callable from this scope. The class only needs to
+                // be visible from the instance's scope — the caller sees the instance.
+
+                // Pass 1: assign class_ids to ClassDecl entries.
                 for entry in entries.iter() {
-                    if let Some(key_node) = &entry.node.key {
-                        // Only process static (non-escaped) key entries — escaped keys ($x:)
-                        // are runtime expressions, not class declaration positions.
-                        if matches!(
-                            &key_node.expr,
-                            SurfaceExpression::VarRef { escaped: false, .. }
-                        ) {
-                            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                    if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                        if let crate::ast::SurfaceDeclaration::ClassDecl {
+                            pre_assigned_class_decl_id,
+                            ..
+                        } = decl.as_ref()
+                        {
+                            if pre_assigned_class_decl_id.get().is_none() {
+                                pre_assigned_class_decl_id
+                                    .set(crate::type_class::next_class_decl_id());
+                            }
+                        }
+                    } else if let SurfaceExpression::Dict(inner_entries) = &entry.node.value.expr {
+                        for inner_entry in inner_entries.iter() {
+                            if let SurfaceExpression::Decl(inner_decl) =
+                                &inner_entry.node.value.expr
+                            {
                                 if let crate::ast::SurfaceDeclaration::ClassDecl {
-                                    methods,
                                     pre_assigned_class_decl_id,
                                     ..
-                                } = decl.as_ref()
+                                } = inner_decl.as_ref()
                                 {
-                                    // Pre-assign class_decl_id if not already done (idempotent).
-                                    let class_id =
-                                        if let Some(id) = pre_assigned_class_decl_id.get() {
-                                            id
-                                        } else {
-                                            let id = crate::type_class::next_class_decl_id();
-                                            pre_assigned_class_decl_id.set(id);
-                                            id
+                                    if pre_assigned_class_decl_id.get().is_none() {
+                                        pre_assigned_class_decl_id
+                                            .set(crate::type_class::next_class_decl_id());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Pass 2: scan for InstanceDecl entries and inject method names.
+                for entry in entries.iter() {
+                    if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                        if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, .. } =
+                            decl.as_ref()
+                        {
+                            if let Some((class_id, methods)) =
+                                find_class_decl_in_entries(class_name, entries)
+                            {
+                                if let Some(scope) = self.scopes.last_mut() {
+                                    for method_name in methods {
+                                        let should_inject = match scope.get(&method_name) {
+                                            None => true,
+                                            Some(VarAddr::EffectPerform { .. }) => true,
+                                            _ => false,
                                         };
-                                    // Register each method name → class_id in class_methods.
-                                    for method_entry in methods {
-                                        if let Some(mk) = &method_entry.node.key {
-                                            let method_name = match &mk.expr {
-                                                SurfaceExpression::VarRef { name, .. } => {
-                                                    name.clone()
-                                                }
-                                                SurfaceExpression::StringLiteral {
-                                                    content,
-                                                    ..
-                                                } => content.clone(),
-                                                _ => continue,
-                                            };
-                                            // Track which names were absent before insertion so
-                                            // cleanup correctly restores the enclosing scope's state.
-                                            let was_present = self
-                                                .class_methods
-                                                .contains_key(method_name.as_str());
-                                            self.class_methods
-                                                .insert(method_name.clone(), class_id);
-                                            if !was_present {
-                                                added_class_methods.push(method_name);
-                                            }
+                                        if should_inject {
+                                            scope.insert(
+                                                method_name.clone(),
+                                                VarAddr::EffectPerform {
+                                                    class_id,
+                                                    method: method_name,
+                                                },
+                                            );
                                         }
                                     }
                                 }
@@ -731,12 +715,6 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
                 self.exit_scope();
-                // Phase 1b cleanup: remove method names added by this dict's scan.
-                // Only removes names that were absent before this dict's scan ran,
-                // preserving method names from enclosing scopes that were not shadowed.
-                for method_name in &added_class_methods {
-                    self.class_methods.remove(method_name.as_str());
-                }
                 // Restore accumulated_dict_offset after exiting this dict's scope.
                 // Sibling dicts (same level as this one) use the same base_offset.
                 self.accumulated_dict_offset = base_offset;
@@ -1609,14 +1587,12 @@ pub fn resolve_surface_document_with_seed_frames(
     (table, diagnostics, unreferenced, unified_frames)
 }
 
-/// Variant of `resolve_surface_document_with_seed_frames` that additionally emits
-/// `VarAddr::EffectPerform` for typeclass method references (T-2130).
+/// Variant of `resolve_surface_document_with_seed_frames` that injects
+/// `VarAddr::EffectPerform` addresses for typeclass method names into the scope chain.
 ///
 /// `class_methods` maps `method_name → class_decl_id` — derived from `Env.classes` after the
-/// type checker has processed all `ClassDecl` entries in scope. VarRefs that resolve to a
-/// `Dispatch` address and whose name appears in this map are re-emitted as
-/// `VarAddr::EffectPerform { class_id, method }` so the evaluator performs typeclass instance
-/// dispatch at runtime rather than a plain letrec group lookup.
+/// type checker has processed all `ClassDecl` entries in scope. These are injected into the
+/// env-names scope so `resolve_name` finds them through the normal scope chain search.
 ///
 /// Callers that do not have class information should use
 /// `resolve_surface_document_with_seed_frames` instead.
@@ -1632,15 +1608,14 @@ pub fn resolve_surface_document_with_seed_frames_and_classes(
     Vec<String>,
     Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
 ) {
-    // Mirror resolve_surface_document_with_seed_frames exactly — only difference is the
-    // `with_class_methods` call on the SurfaceResolver constructor.
-    let mut resolver = SurfaceResolver::new().with_class_methods(class_methods);
+    let mut resolver = SurfaceResolver::new();
 
     for frame in seed_frames {
         resolver.enter_scope_from_frame(frame);
     }
 
     resolver.enter_scope_with_offset(env_names, root_group_len, FrameKind::DocSequential);
+    resolver.inject_class_methods(&class_methods);
     resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
 
     let initial_offset = root_group_len + env_names.len() as u32;
@@ -1710,17 +1685,15 @@ pub fn resolve_surface_program(
     (table, unified_frames)
 }
 
-/// Variant of `resolve_surface_program` that additionally emits `VarAddr::EffectPerform`
-/// for typeclass method references (T-2130).
+/// Variant of `resolve_surface_program` that injects `VarAddr::EffectPerform` addresses
+/// for typeclass method names into the scope chain.
 ///
 /// `class_methods` maps `method_name → class_decl_id` — derived from `Env.classes` after
-/// the type checker has processed all `ClassDecl` entries in scope. VarRefs that resolve to
-/// a `Dispatch` address and whose name appears in this map are re-emitted as
-/// `VarAddr::EffectPerform { class_id, method }` so the evaluator performs typeclass instance
-/// dispatch at runtime rather than a plain letrec group lookup.
+/// the type checker has processed all `ClassDecl` entries in scope. These are injected
+/// directly into the topmost seed scope so that `resolve_name` finds them through the
+/// normal scope chain search.
 ///
-/// Callers that do not have class information should use `resolve_surface_program` instead
-/// (passes an empty map internally, which is equivalent).
+/// Callers that do not have class information should use `resolve_surface_program` instead.
 pub fn resolve_surface_program_with_classes(
     program: &SurfaceProgram,
     initial_frames: &[indexmap::IndexMap<String, u32>],
@@ -1729,7 +1702,7 @@ pub fn resolve_surface_program_with_classes(
     ResolutionTable,
     Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
 ) {
-    let mut resolver = SurfaceResolver::new().with_class_methods(class_methods);
+    let mut resolver = SurfaceResolver::new();
 
     let initial_offset: u32 = initial_frames
         .iter()
@@ -1742,6 +1715,7 @@ pub fn resolve_surface_program_with_classes(
     for frame in initial_frames {
         resolver.enter_scope_from_frame(frame);
     }
+    resolver.inject_class_methods(&class_methods);
 
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
@@ -1944,6 +1918,95 @@ fn collect_var_accesses_node(
             collect_var_accesses_node(inner, var_name, accesses, dynamic_use);
         }
         _ => {}
+    }
+}
+
+/// Find a ClassDecl in a dict's entries by walking an InstanceDecl's class_name AST node.
+///
+/// Handles two cases:
+/// - `VarRef("Addable")` → scan entries for key "Addable" with ClassDecl value
+/// - `Field(VarRef("File"), "Readable")` → scan entries for key "File", enter its Dict
+///   value, scan inner entries for key "Readable" with ClassDecl value
+///
+/// Returns `(class_id, method_names)` if found.
+fn find_class_decl_in_entries(
+    class_name: &Arc<SurfaceNode>,
+    entries: &[Spanned<SurfaceEntry>],
+) -> Option<(u64, Vec<String>)> {
+    match &class_name.expr {
+        SurfaceExpression::VarRef { name, .. } => find_class_decl_by_key(name, entries),
+        SurfaceExpression::Field {
+            expr: Some(inner),
+            field: DotKey::Ident(field_name),
+            ..
+        } => {
+            // Resolve the base (e.g. "File") in entries, then look inside for the field.
+            let base_name = match &inner.expr {
+                SurfaceExpression::VarRef { name, .. } => name,
+                _ => return None,
+            };
+            for entry in entries {
+                if entry_has_key(entry, base_name) {
+                    if let SurfaceExpression::Dict(inner_entries) = &entry.node.value.expr {
+                        return find_class_decl_by_key(field_name, inner_entries);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Scan entries for a keyed ClassDecl with the given name.
+/// Returns `(class_id, method_names)` if found.
+fn find_class_decl_by_key(
+    name: &str,
+    entries: &[Spanned<SurfaceEntry>],
+) -> Option<(u64, Vec<String>)> {
+    for entry in entries {
+        if entry_has_key(entry, name) {
+            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                if let crate::ast::SurfaceDeclaration::ClassDecl {
+                    methods,
+                    pre_assigned_class_decl_id,
+                    ..
+                } = decl.as_ref()
+                {
+                    let class_id = pre_assigned_class_decl_id.get()?;
+                    let method_names: Vec<String> = methods
+                        .iter()
+                        .filter_map(|me| {
+                            me.node.key.as_ref().and_then(|k| match &k.expr {
+                                SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                                SurfaceExpression::StringLiteral { content, .. } => {
+                                    Some(content.clone())
+                                }
+                                _ => None,
+                            })
+                        })
+                        .collect();
+                    return Some((class_id, method_names));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if an entry's key matches a given name (VarRef or StringLiteral).
+fn entry_has_key(entry: &Spanned<SurfaceEntry>, name: &str) -> bool {
+    match &entry.node.key {
+        Some(key_node) => match &key_node.expr {
+            SurfaceExpression::VarRef {
+                name: key_name,
+                escaped: false,
+                ..
+            } => key_name == name,
+            SurfaceExpression::StringLiteral { content, .. } => content == name,
+            _ => false,
+        },
+        None => false,
     }
 }
 

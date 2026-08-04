@@ -205,6 +205,7 @@ pub(crate) fn builtin_task(
                         &crate::value::EvalFrame::for_function_call(
                             Arc::clone(&closure_env),
                             vec![],
+                            None,
                         ),
                         &ctx_clone,
                     )
@@ -1241,6 +1242,7 @@ pub(crate) fn builtin_select_once(
                                 named: None,
                                 call_span: call_span.clone(),
                                 ctx: &ctx,
+                                caller_effect_chain: None,
                             })
                             .await?
                         }
