@@ -26,21 +26,7 @@
     TypeConstructor: [name: String]
     TypeApplication: [ctor: TypeNode  args: TypeNode]
     IntLiteral:    [n: Integer]
-    StringLiteral: [s: String]
-    Program
-    Document
-    CoreDocument
-    TypeContext
-    DirCap
-    Handle
-    File
-    BuilderHandle
-    Task
-    Channel
-    Context
-    ReactiveCell
-    ClockCap
-    Scope]
+    StringLiteral: [s: String]]
 
   Integer: TypeNode.Int
   String:  TypeNode.String
@@ -52,20 +38,6 @@
   Proxy:   TypeNode.Proxy
   Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
   Callable: TypeNode.Callable
-  Program: TypeNode.Program
-  Document: TypeNode.Document
-  CoreDocument: TypeNode.CoreDocument
-  TypeContext: TypeNode.TypeContext
-  DirCap: TypeNode.DirCap
-  Handle: TypeNode.Handle
-  File: TypeNode.File
-  BuilderHandle: TypeNode.BuilderHandle
-  Task: TypeNode.Task
-  Channel: TypeNode.Channel
-  Context: TypeNode.Context
-  ReactiveCell: TypeNode.ReactiveCell
-  ClockCap: TypeNode.ClockCap
-  Scope: TypeNode.Scope
 ]
 
 ---

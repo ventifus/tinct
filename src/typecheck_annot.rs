@@ -3591,37 +3591,6 @@ pub(crate) async fn typenode_value_to_type(
                         }
                     }
 
-                    // ── Opaque builtin types ──────────────────────────────────────────
-                    // Unit constructors with no payload — each maps directly to
-                    // TypeValue.Repr with the corresponding Value variant discriminant.
-                    // These are the runtime-opaque types declared in builtin_core.llt
-                    // whose values are native Rust Value enum variants (not Value::Variant).
-                    TN_BARE_PROGRAM => Ok(Some(make_typevalue_repr(REPR_PROGRAM))),
-                    TN_BARE_DOCUMENT => Ok(Some(make_typevalue_repr(REPR_DOCUMENT))),
-                    TN_BARE_CORE_DOCUMENT => Ok(Some(make_typevalue_repr(REPR_CORE_DOCUMENT))),
-                    TN_BARE_TYPE_CONTEXT => Ok(Some(make_typevalue_repr(REPR_TYPE_CONTEXT))),
-                    TN_BARE_DIR_CAP => Ok(Some(make_typevalue_repr(REPR_DIR_CAP))),
-                    TN_BARE_NET_CAP => Ok(Some(make_typevalue_repr(REPR_NET_CAP))),
-                    TN_BARE_FILE => Ok(Some(make_typevalue_repr(REPR_FILE))),
-                    TN_BARE_TASK => Ok(Some(make_typevalue_repr(REPR_TASK))),
-                    TN_BARE_CHANNEL => Ok(Some(make_typevalue_repr(REPR_CHANNEL))),
-                    TN_BARE_CONTEXT => Ok(Some(make_typevalue_repr(REPR_CONTEXT))),
-                    TN_BARE_REACTIVE_CELL => Ok(Some(make_typevalue_repr(REPR_REACTIVE_CELL))),
-                    TN_BARE_CLOCK_CAP => Ok(Some(make_typevalue_repr(REPR_CLOCK_CAP))),
-                    TN_BARE_TIMEZONE => Ok(Some(make_typevalue_repr(REPR_TIMEZONE))),
-                    TN_BARE_TIMESTAMP => Ok(Some(make_typevalue_repr(REPR_TIMESTAMP))),
-                    TN_BARE_DURATION => Ok(Some(make_typevalue_repr(REPR_DURATION))),
-                    TN_BARE_DECIMAL => Ok(Some(make_typevalue_repr(REPR_DECIMAL))),
-                    TN_BARE_BIG_INT => Ok(Some(make_typevalue_repr(REPR_BIGINT))),
-                    TN_BARE_QUIC_SESSION => Ok(Some(make_typevalue_repr(REPR_QUIC_SESSION))),
-                    TN_BARE_QUIC_DATAGRAM_HANDLE => {
-                        Ok(Some(make_typevalue_repr(REPR_QUIC_DATAGRAM_HANDLE)))
-                    }
-                    TN_BARE_HTTP2_SESSION => Ok(Some(make_typevalue_repr(REPR_HTTP2_SESSION))),
-                    TN_BARE_HTTP3_SESSION => Ok(Some(make_typevalue_repr(REPR_HTTP3_SESSION))),
-                    TN_BARE_URI => Ok(Some(make_typevalue_repr(REPR_URI))),
-                    TN_BARE_SCOPE => Ok(Some(make_typevalue_repr(REPR_SCOPE))),
-
                     // Unknown tag — not a recognized TypeNode constructor.
                     _ => Ok(None),
                 }

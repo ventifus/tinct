@@ -40,34 +40,7 @@
     # Literal type constructors — produced by [or 0 1], [or "ok" "err"], [or 1.5 2.5] in type position.
     IntLiteral:    [n: Integer]
     StringLiteral: [s: String]
-    FloatLiteral:  [value: Float]
-    # Opaque Rust value types — no payload, identity-matched by tag name.
-    Program
-    Document
-    CoreDocument
-    TypeContext
-    DirCap
-    NetCap
-    Handle # FIXME: prelude leak
-    File 
-    BuilderHandle
-    Task
-    Channel
-    Context
-    ReactiveCell
-    ClockCap
-    Timezone
-    Timestamp
-    Duration
-    Decimal
-    BigInt
-    QuicSession
-    QuicDatagramHandle
-    Http2Session
-    Http3Session
-    Uri
-    Urn
-    Scope]
+    FloatLiteral:  [value: Float]]
 
   # ── Primitive type aliases ────────────────────────────────────────────────
   # These are simple TypeNode leaf aliases. They depend only on TypeNode (declared
@@ -97,33 +70,6 @@
   Operator:     [TypeNode.TypeVar kind: "Operator"]
   Label:        [TypeNode.TypeVar kind: "Label"]
   Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
-  Program:      TypeNode.Program
-  Document:     TypeNode.Document
-  CoreDocument: TypeNode.CoreDocument
-  TypeContext:  TypeNode.TypeContext
-  DirCap:       TypeNode.DirCap
-  NetCap:       TypeNode.NetCap
-  Handle:       TypeNode.Handle # FIXME: prelude leak
-  File:         TypeNode.File
-  BuilderHandle: TypeNode.BuilderHandle
-  Task:         TypeNode.Task
-  Channel:      TypeNode.Channel
-  Context:      TypeNode.Context
-  ReactiveCell: TypeNode.ReactiveCell
-  ClockCap:     TypeNode.ClockCap
-  Timezone:     TypeNode.Timezone
-  Timestamp:    TypeNode.Timestamp
-  Duration:     TypeNode.Duration
-  Decimal:      TypeNode.Decimal
-  BigInt:       TypeNode.BigInt
-  QuicSession:        TypeNode.QuicSession
-  QuicDatagramHandle: TypeNode.QuicDatagramHandle
-  Http2Session: TypeNode.Http2Session
-  Http3Session: TypeNode.Http3Session
-  Uri:          TypeNode.Uri
-  Urn:          TypeNode.Urn
-  Scope:        TypeNode.Scope
-
   # ── Structural protocol types ────────────────────────────────────────────
   # These depend on the primitive aliases above (via key-type/value-type fields
   # that are forced during classify_type_stage_entry → typenode_value_to_type).
@@ -189,24 +135,22 @@
     value-type: Diagnostic]
 
   # Documents: auto-indexed collection of Document values (produced by builtin-program-docs).
-  # value-type uses TypeNode.Document now that typenode_value_to_type handles opaque
-  # TypeNode unit variants (mapping them to TypeValue.Repr with the Value discriminant).
+  # value-type is Top — Document is an opaque runtime type declared via [type repr: ...]
+  # in the runtime section, not a TypeNode constructor.
   Documents: [TypeNode.Dict
     fields: []
     open: 1
     key-type: TypeNode.Int
-    value-type: TypeNode.Document]
+    value-type: TypeNode.Top]
 ]
 
 ---
 [
   # ── Opaque types ──────────────────────────────────────────────────────────
-  # All opaque Rust value types (Program, Document, TypeContext, DirCap, etc.)
-  # are declared in the type-stage section above as unit constructors in the
-  # TypeNode ADT. They are NOT declared here with [type X] — those entries
-  # create nominal TyConDefs expecting Value::Variant at runtime, which never
-  # matches actual opaque Rust Value variants.
-  # Primitive types (Integer, String, Float, Bytes, etc.) are also type-stage.
+  # Opaque Rust value types (Program, Document, TypeContext, DirCap, etc.)
+  # are declared below as [type repr: "Value::X"] in the native runtime types
+  # section. Primitive types (Integer, String, Float, Bytes, etc.) are
+  # type-stage aliases in the section above.
 
   # Url is a tinct nominal type (not an opaque Rust Value variant) — kept here.
   Url: [type Url]
@@ -463,6 +407,7 @@
   Expression:        [type repr: "Value::Expression"]
   CoreDocument:      [type repr: "Value::CoreDocument"]
   TypeContext:       [type repr: "Value::TypeContext"]
+  Scope:             [type repr: "Value::Scope"]
 
   # ── Callable typeclass ────────────────────────────────────────────────────
   # Abstracts over function-like values (Fn and Builtin).

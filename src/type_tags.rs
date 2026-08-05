@@ -294,7 +294,6 @@ pub const TN_HTTP2_SESSION: &str = "TypeNode.Http2Session";
 pub const TN_HTTP3_SESSION: &str = "TypeNode.Http3Session";
 pub const TN_URI: &str = "TypeNode.Uri";
 pub const TN_URN: &str = "TypeNode.Urn";
-pub const TN_SCOPE: &str = "TypeNode.Scope";
 
 // ── TypeNode payload field name constants ────────────────────────────────────
 //
@@ -385,36 +384,6 @@ pub const TN_BARE_RECURSIVE_REF: &str = "RecursiveRef";
 pub const TN_BARE_INT_LITERAL: &str = "IntLiteral";
 pub const TN_BARE_FLOAT_LIT: &str = "FloatLiteral";
 pub const TN_BARE_STRING_LITERAL: &str = "StringLiteral";
-
-// Opaque builtin types — unit constructors with no payload, identity-matched by tag.
-// Each corresponds to a TN_* fully-qualified constant above and (where a matching
-// REPR_* constant exists) maps to TypeValue.Repr in typenode_value_to_type.
-pub const TN_BARE_PROGRAM: &str = "Program";
-pub const TN_BARE_DOCUMENT: &str = "Document";
-pub const TN_BARE_CORE_DOCUMENT: &str = "CoreDocument";
-pub const TN_BARE_TYPE_CONTEXT: &str = "TypeContext";
-pub const TN_BARE_DIR_CAP: &str = "DirCap";
-pub const TN_BARE_NET_CAP: &str = "NetCap";
-pub const TN_BARE_HANDLE: &str = "Handle";
-pub const TN_BARE_FILE: &str = "File";
-pub const TN_BARE_BUILDER_HANDLE: &str = "BuilderHandle";
-pub const TN_BARE_TASK: &str = "Task";
-pub const TN_BARE_CHANNEL: &str = "Channel";
-pub const TN_BARE_CONTEXT: &str = "Context";
-pub const TN_BARE_REACTIVE_CELL: &str = "ReactiveCell";
-pub const TN_BARE_CLOCK_CAP: &str = "ClockCap";
-pub const TN_BARE_TIMEZONE: &str = "Timezone";
-pub const TN_BARE_TIMESTAMP: &str = "Timestamp";
-pub const TN_BARE_DURATION: &str = "Duration";
-pub const TN_BARE_DECIMAL: &str = "Decimal";
-pub const TN_BARE_BIG_INT: &str = "BigInt";
-pub const TN_BARE_QUIC_SESSION: &str = "QuicSession";
-pub const TN_BARE_QUIC_DATAGRAM_HANDLE: &str = "QuicDatagramHandle";
-pub const TN_BARE_HTTP2_SESSION: &str = "Http2Session";
-pub const TN_BARE_HTTP3_SESSION: &str = "Http3Session";
-pub const TN_BARE_URI: &str = "Uri";
-pub const TN_BARE_URN: &str = "Urn";
-pub const TN_BARE_SCOPE: &str = "Scope";
 
 // ── Kind name constants ───────────────────────────────────────────────────────
 //
