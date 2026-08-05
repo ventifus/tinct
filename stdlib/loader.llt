@@ -15,11 +15,11 @@
     Unknown
     Proxy
     Callable
-    Dict: [fields: Any  open: Any  key-type: Any  value-type: Any]
-    TypeConstructor: [name: Any]
-    TypeApplication: [ctor: Any  args: Any]
-    IntLiteral:    [n: Any]
-    StringLiteral: [s: Any]]
+    Dict: [fields: Dict  open: Integer  key-type: TypeNode  value-type: TypeNode]
+    TypeConstructor: [name: String]
+    TypeApplication: [ctor: TypeNode  args: Dict]
+    IntLiteral:    [n: Integer]
+    StringLiteral: [s: String]]
 
   Integer: TypeNode.Int
   String:  TypeNode.String
@@ -100,12 +100,12 @@
 [
   # bytes-empty? is a runtime function (not a macro): macro bodies receive AST
   # nodes, not byte values, so builtin-dict-length on an AST node would fail.
-  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-bytes-length b] 0]]
+  bytes-empty?: [fn [let b@Bytes] [builtin-eq-int [builtin-bytes-length b] 0]]
 
   # merge: right-biased dict union using the builder API — no Rust merge needed.
   # _copy helper is private (inside the function's letrec scope).
-  merge: [fn [let a b]
-    [_copy: [fn [let builder d n i]
+  merge: [fn [let a@Dict b@Dict]
+    [_copy: [fn [let builder@BuilderHandle d@Dict n@Integer i@Integer]
       [match [builtin-int-gte i n]
         0: [_copy
               [builtin-builder-set [builtin-dict-key-nth d i] [builtin-dict-nth d i] builder]
@@ -117,8 +117,8 @@
 
   # path-dirname: extract the directory portion of a path string.
   # Scans right-to-left for the last "/" and returns the prefix, or "." if none.
-  path-dirname: [fn [let path]
-    [find-slash: [fn [let i]
+  path-dirname: [fn [let path@String]
+    [find-slash: [fn [let i@Integer]
       [match [builtin-int-gte i 0]
         0: -1
         ...: [match [builtin-eq-string [builtin-str-slice path i [builtin-int-add i 1]] "/"]
@@ -129,7 +129,7 @@
       0: [builtin-str-slice path 0 last-slash]
       ...: "."]]
 
-  read-file: [fn [let f acc]
+  read-file: [fn [let f@File acc@Bytes]
     [chunk: [builtin-file-read f 65536]]
     [match [bytes-empty? chunk]
       0: [read-file f [builtin-bytes-concat acc chunk]]
@@ -151,13 +151,13 @@
      blame: []]]
 
   # reduce and join defined with core builtins only (prelude not yet loaded).
-  _reduce-loop: [fn [let f acc xs i len]
+  _reduce-loop: [fn [let f acc xs@Dict i@Integer len@Integer]
     [match [builtin-int-gte i len]
       0: [_reduce-loop f [f acc [builtin-dict-get i xs]] xs [builtin-int-add i 1] len]
       ...: acc]]
-  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
+  reduce: [fn [let f init xs@Dict] [_reduce-loop f init xs 0 [builtin-dict-length xs]]]
 
-  _join-loop: [fn [let sep acc xs i len]
+  _join-loop: [fn [let sep@String acc@String xs@Dict i@Integer len@Integer]
     [match [builtin-int-gte i len]
       0: [_join-loop sep
            [match [builtin-eq-int i 0]
@@ -165,11 +165,11 @@
              ...: [builtin-dict-get 0 xs]]
            xs [builtin-int-add i 1] len]
       ...: acc]]
-  join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
+  join: [fn [let sep@String xs@Dict] [_join-loop sep "" xs 0 [builtin-dict-length xs]]]
 
   # make-entry: construct single-entry dict from key and value.
   # Defined here for Dict 1 because it runs before prelude is loaded.
-  make-entry: [fn [let k v] [$k: v]]
+  make-entry: [fn [let k@String v] [$k: v]]
 
   # null?: test if value is [] (empty dict).
   # Uses builtin-try to attempt builtin-dict-length. If the value is a Dict, returns the
@@ -183,7 +183,7 @@
       ...: [builtin-eq-int [builtin-dict-get "ok" _try-result] 0]]]
 
   # get-or: dict.get with default fallback.
-  get-or: [fn [let default key dict]
+  get-or: [fn [let default key@String dict@Dict]
     [match [builtin-has-key? key dict]
       0: default
       ...: [builtin-dict-get key dict]]]
@@ -250,7 +250,7 @@
   # DirCap, Boolean, etc. propagate only through this explicit parameter.
   #
   # seed-env: the accumulated env dict to use for declaration file resolve/doc-meta.
-  uses-scope: [fn [let module-names seed-tc seed-env]
+  uses-scope: [fn [let module-names@Dict seed-tc@TypeContext seed-env@Scope]
     [reduce
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
@@ -299,7 +299,7 @@
   # ── Named section accumulation ────────────────────────────────────────────
 
   # meta.name is a string from builtin-doc-meta evaluation or "" if absent.
-  update-named: [fn [let state val meta]
+  update-named: [fn [let state@Dict val meta@Dict]
     [name: [get-or "" "name" meta]]
     [match [builtin-eq-string name ""]
       0: [merge state.named [make-entry [builtin-string-concat "%" name] val]]
@@ -311,14 +311,14 @@
   #    notes, call-stack, macro-expand, blame}
   # Formatted as: "file:start-line:start-col: level: kind — message\n"
   # Uses only core builtins — safe to call before prelude is loaded.
-  format-diagnostic: [fn [let d]
+  format-diagnostic: [fn [let d@Dict]
     [s: d.span]
     [file-part: [match [builtin-eq-int [builtin-dict-length s.file] 0]
       0: [builtin-string-concat s.file ":"]
       ...: "<unknown>:"]]
     [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.level  6: ": "  7: d.kind  8: " — "  9: d.message  10: "\n"]]]
 
-  emit-diagnostics: [fn [let diagnostics]
+  emit-diagnostics: [fn [let diagnostics@Dict]
     # Use builtin-try per diagnostic so a formatting failure doesn't suppress remaining errors.
     # >> forces the write before returning _ so the side effect is not a dormant thunk.
     [reduce
@@ -338,7 +338,7 @@
   # include does NOT take include-dir or prelude — it IS what loads prelude.
   # Uses fundamental-tc (built from builtin_core.llt); it is building the context.
 
-  include: [fn [let cap path extras@[default: []]]
+  include: [fn [let cap@DirCap path@String extras@[default: []]]
     [handle:        [builtin-file-open cap path ["read"] -1 -1]]
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
@@ -358,7 +358,7 @@
     [seed-env: extras]
     # Per-document reduce fn: unified for type-stage and runtime passes.
     # acc is {env: Scope  tc: TypeContext}.
-    [eval-doc: [fn [let acc doc]
+    [eval-doc: [fn [let acc@[env: Scope  tc: TypeContext] doc@Document]
       [meta:     [builtin-doc-meta doc]]
       [uses:     [uses-scope [get-or [] "uses" meta] acc.tc acc.env]]
       [doc-env:  [builtin-scope-extend acc.env uses]]
@@ -418,7 +418,7 @@
   # mod-scope: Dict of module builtins from uses-scope.
   # prelude-env: the accumulated env dict from prelude evaluation.
   # Computed once per file in eval-file and threaded into each document.
-  eval-document-runtime: [fn [let state mod-scope doc include-dir prelude-env tc emit-ch]
+  eval-document-runtime: [fn [let state@Dict mod-scope@Dict doc@Document include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
     [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
     # Build full env: start from prelude env, add per-doc bindings.
     # Env priority (later merges shadow earlier ones):
@@ -430,7 +430,7 @@
     #
     # ctx-include: a prelude-carrying version of include injected into document scope.
     # Evaluates included files with prelude env in scope.
-    [ctx-include: [fn [let cap path]
+    [ctx-include: [fn [let cap@DirCap path@String]
       # Call the top-level include with %prelude in the extras dict so included
       # files see the prelude env. Capture prelude-env from outer scope.
       [include cap path [%prelude: prelude-env]].env]]
@@ -499,12 +499,12 @@
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 
-  eval-pipeline-item: [fn [let item prev include-dir prelude-env tc emit-ch]
+  eval-pipeline-item: [fn [let item@ProgramItem prev include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
     [match item
       [case [let p] [ProgramItem.File p] [eval-file p prev include-dir prelude-env tc emit-ch]]
       [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude-env tc emit-ch]]]]
 
-  eval-file: [fn [let item prev include-dir prelude-env tc emit-ch]
+  eval-file: [fn [let item prev include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
     # %include-dir for this file's documents = the directory containing item.path,
     # derived by narrowing %cwd (the CLI-provided working directory cap) to the
     # parent directory component of the path. No ambient filesystem access.
@@ -534,7 +534,7 @@
       [percent: prev  named: []  doc-index: 0]
       docs].percent]
 
-  eval-expr: [fn [let src prev include-dir prelude-env tc emit-ch]
+  eval-expr: [fn [let src@String prev include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
     [bytes:        [builtin-str-bytes src]]
     [parse-result: [builtin-parse bytes "<expr>"]]
     # Emit parse errors as a data dependency (no >> needed).
@@ -560,7 +560,7 @@
   # %cwd, %libdir, %stdout, %stderr, %args flow via closure, not as parameters.
   # The formatter is passed separately and run last.
 
-  cli-pipeline: [fn [let programs formatter initial include-dir prelude-env tc emit-ch]
+  cli-pipeline: [fn [let programs@Dict formatter@ProgramItem initial include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
     [result: [reduce
       [fn [let prev item]
         [eval-pipeline-item item prev include-dir prelude-env tc emit-ch]]

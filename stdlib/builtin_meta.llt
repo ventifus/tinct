@@ -4,9 +4,9 @@
 [
   # ── AST and evaluation ─────────────────────────────────────────────────────
   # eval-types: evaluate only type-stage documents, returning a Program.
-  builtin-eval-types:        [fn@Program  [let prog@Any] ...]
+  builtin-eval-types:        [fn@Program  [let prog@Program] ...]
   # eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
-  builtin-eval-macro-ast:    [fn@Any      [let ast@Any] ...]
+  builtin-eval-macro-ast:    [fn@Any      [let ast@Dict] ...]
 
   # ── Type-checking context ──────────────────────────────────────────────────
   # get-type-context: retrieve the EvalContext's TypeContext handle.
@@ -16,7 +16,7 @@
   # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.
   builtin-fork-type-ctx:     [fn@TypeContext [let ctx@TypeContext] ...]
   # validate: validate program AST structure; returns Program or error.
-  builtin-validate:          [fn@Program    [let prog@Any ctx@TypeContext] ...]
+  builtin-validate:          [fn@Program    [let prog@Program ctx@TypeContext] ...]
 
   # ── Reflection and introspection ───────────────────────────────────────────
   # tag-of: return the qualified constructor name (e.g. "Color.Red", "Boolean.True").
@@ -39,13 +39,13 @@
   # macro-error: raise a macro-level error with message and offending form. Never returns.
   builtin-macro-error:       [fn@Never   [let msg@String form@Any] ...]
   # eval-ast: evaluate a quoted AST node in the current scope; returns the result.
-  builtin-eval-ast:          [fn@Any     [let ast@Any] ...]
+  builtin-eval-ast:          [fn@Any     [let ast@Dict] ...]
   # is-contractive: check if a recursive type body is contractive (non-immediately-recursive).
-  builtin-is-contractive:    [fn@Integer [let ty@Any] ...]
+  builtin-is-contractive:    [fn@Integer [let ty@Dict] ...]
 
   # ── Meta-call ───────────────────────────────────────────────────────────────
   # proxy: create a proxy value that intercepts field access via a handler dict.
-  builtin-proxy:             [fn@Any     [let handler@Dict] ...]
+  builtin-proxy:             [fn@Proxy   [let handler@Dict] ...]
 
   # ── Capability and identity ────────────────────────────────────────────────
   # cap-identity: return a stable string identity for a DirCap (for content-addressed caching).
@@ -64,7 +64,7 @@
 
   # ── AST operations ────────────────────────────────────────────────────────
   builtin-ast-of:            [fn@Dict    [let x@Any] ...]
-  builtin-ast-to-program:    [fn@Program [let x@Any] ...]
+  builtin-ast-to-program:    [fn@Program [let x@Dict] ...]
   builtin-program:           [fn@Program [let ...docs] ...]
   builtin-to-tinct:          [fn@String  [let x@Any] ...]
 

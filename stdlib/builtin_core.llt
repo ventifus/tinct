@@ -25,22 +25,22 @@
     # The empty dict `[]` is `Value::Dict({})` at runtime; @Absent is its static type.
     # TODO: This is wrong, rust should not have any knowlede of "Absent" or "Null", and the comment here erroneously defined Absent as exactly the same as `[]`
     Absent # FIXME: prelude leak
-    Union:        [types: Any]
-    Intersect:    [types: Any]
-    Negation:     [inner: Any]
-    Arrow:        [params: Any  result: Any]
-    Recursive:    [var: Any  body: Any]
-    RecursiveRef: [name: Any]
-    Dict: [fields: Dict  open: Integer  key-type: Any  value-type: Any]
-    TypeConstructor: [name: Any]
-    TypeApplication: [ctor: Any  args: Any]
+    Union:        [types: TypeNode]
+    Intersect:    [types: TypeNode]
+    Negation:     [inner: TypeNode]
+    Arrow:        [params: TypeNode  result: TypeNode]
+    Recursive:    [var: String  body: TypeNode]
+    RecursiveRef: [name: String]
+    Dict: [fields: Dict  open: Integer  key-type: TypeNode  value-type: TypeNode]
+    TypeConstructor: [name: String]
+    TypeApplication: [ctor: TypeNode  args: TypeNode]
     # Kind-annotated type variable sentinel: resolves to a fresh TypeVar of the given kind.
     # kind: "Operator" | "Label" — string keys matching crate::type_def::Kind variants.
-    TypeVar: [kind: Any]
+    TypeVar: [kind: String]
     # Literal type constructors — produced by [or 0 1], [or "ok" "err"], [or 1.5 2.5] in type position.
-    IntLiteral:    [n: Any]
-    StringLiteral: [s: Any]
-    FloatLiteral:  [value: Any]
+    IntLiteral:    [n: Integer]
+    StringLiteral: [s: String]
+    FloatLiteral:  [value: Float]
     # Opaque Rust value types — no payload, identity-matched by tag name.
     Program
     Document

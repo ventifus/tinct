@@ -4,41 +4,41 @@
 
 [
   # ── Task lifecycle ─────────────────────────────────────────────────────────
-  builtin-task:            [fn@Any     [let body@Any] ...]
-  builtin-await:           [fn@Any     [let t@Any] ...]
-  builtin-par:             [fn@Any     [let a@Any b@Any] ...]
+  builtin-task:            [fn@Task    [let body@Callable] ...]
+  builtin-await:           [fn@Any     [let t@Task] ...]
+  builtin-par:             [fn@Any     [let a@Callable b@Callable] ...]
   builtin-exit-now:        [fn@Never   [let code@Integer] ...]
-  builtin-non-cancellable: [fn@Any     [let body@Any] ...]
+  builtin-non-cancellable: [fn@Context  [let body@Callable] ...]
 
   # ── Channels ───────────────────────────────────────────────────────────────
   # builtin-channel and builtin-send are core primitives — declared in builtin_core.llt.
-  builtin-recv:             [fn@Any    [let ch@Any] ...]
-  builtin-try-send:         [fn@Any    [let ch@Any val@Any] ...]
-  builtin-drain:            [fn@Any    [let ch@Any] ...]
-  builtin-broadcast-channel: [fn@Any  [let n@Integer] ...]
-  builtin-oneshot-channel:  [fn@Any   [] ...]
-  builtin-signal-channel:   [fn@Any   [let signals@Any] ...]
-  builtin-timer-channel:    [fn@Any   [let clk@ClockCap interval@Any] ...]
-  builtin-watch-channel:    [fn@Any   [let cap@DirCap path@String] ...]
+  builtin-recv:             [fn@Any    [let ch@Channel] ...]
+  builtin-try-send:         [fn@Any    [let ch@Channel val@Any] ...]
+  builtin-drain:            [fn@Dict   [let ch@Channel] ...]
+  builtin-broadcast-channel: [fn@Channel [let n@Integer] ...]
+  builtin-oneshot-channel:  [fn@Dict  [] ...]
+  builtin-signal-channel:   [fn@Any   [let signals@Dict] ...]
+  builtin-timer-channel:    [fn@Any   [let clk@ClockCap interval@Integer] ...]
+  builtin-watch-channel:    [fn@Channel [let cap@DirCap path@String] ...]
   builtin-try-recv:         [fn@Dict  [let ch@Channel] ...]
-  builtin-try-recv-broadcast: [fn@Dict [let ch@Any] ...]
-  builtin-try-recv-oneshot: [fn@Dict  [let ch@Any] ...]
+  builtin-try-recv-broadcast: [fn@Dict [let ch@Channel] ...]
+  builtin-try-recv-oneshot: [fn@Dict  [let ch@Channel] ...]
   builtin-yield:            [fn@Dict  [let] ...]
 
   # ── Context and cancellation ───────────────────────────────────────────────
-  builtin-context:          [fn@Any   [] ...]
-  builtin-with-cancel:      [fn@Any   [let ctx@Any] ...]
-  builtin-with-timeout:     [fn@Any   [let clk@ClockCap ctx@Any dur@Any] ...]
-  builtin-with-deadline:    [fn@Any   [let clk@ClockCap ctx@Any deadline@Any] ...]
-  builtin-with-context:     [fn@Any   [let ctx@Any body@Any] ...]
-  builtin-cancel-task:      [fn@Any   [let ctx@Any] ...]
+  builtin-context:          [fn@Context [] ...]
+  builtin-with-cancel:      [fn@Context [let ctx@Context] ...]
+  builtin-with-timeout:     [fn@Any   [let clk@ClockCap ctx@Context dur@Integer] ...]
+  builtin-with-deadline:    [fn@Any   [let clk@ClockCap ctx@Context deadline@Integer] ...]
+  builtin-with-context:     [fn@Any   [let ctx@Context body@Callable] ...]
+  builtin-cancel-task:      [fn@Any   [let ctx@Context] ...]
   builtin-cancel-root:      [fn@Any   [] ...]
 
   # ── Reactive cells ─────────────────────────────────────────────────────────
-  builtin-reactive-cell:    [fn@Any   [let init@Any] ...]
-  builtin-cell-get:         [fn@Any   [let cell@Any] ...]
-  builtin-cell-set:         [fn@Any   [let val@Any cell@Any] ...]
+  builtin-reactive-cell:    [fn@ReactiveCell [let init@Any] ...]
+  builtin-cell-get:         [fn@Any   [let cell@ReactiveCell] ...]
+  builtin-cell-set:         [fn@Any   [let val@Any cell@ReactiveCell] ...]
 
   # ── Cancellation check ─────────────────────────────────────────────────────
-  builtin-cancelled-q:      [fn@Integer [let ctx@Any] ...]
+  builtin-cancelled-q:      [fn@Integer [let ctx@Context] ...]
 ]
