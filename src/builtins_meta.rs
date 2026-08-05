@@ -1837,7 +1837,6 @@ fn type_name(val: &Value) -> String {
         Value::Expression { .. } => "Expression",
         Value::Arena { .. } => "Arena",
         Value::CoreDocument { .. } => "CoreDocument",
-        Value::EffectPerformDispatcher { .. } => "Function",
     }
     .to_string()
 }
@@ -5138,11 +5137,8 @@ mod tests {
         thunk(val)
     }
 
-    fn empty_chain() -> crate::value::EffectChain {
-        Arc::new(crate::value::EffectChainNode {
-            group: crate::value::empty_scope(),
-            tail: None,
-        })
+    fn empty_evidence() -> crate::value::Scope {
+        crate::value::empty_scope()
     }
 
     fn call_span() -> crate::ast::Span {
@@ -5186,7 +5182,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5219,7 +5215,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5258,7 +5254,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5276,7 +5272,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
             caller_env_id: Some(42),
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await?;
 
@@ -5306,7 +5302,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: Some(0),
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(
@@ -5341,7 +5337,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(

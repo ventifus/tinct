@@ -1801,7 +1801,7 @@ async fn infer_var_ref(
                 // in the env parent chain, which includes the outer function's scope.
                 env.read().unwrap().get_scheme(name)
             }
-            crate::ast::VarAddr::EffectPerform { class_id, method } => {
+            crate::ast::VarAddr::EffectPerform { slot } => {
                 // Typeclass method call — resolved at runtime by scanning the accumulated group
                 // for an instance whose primary dispatch type matches the first argument's runtime type.
                 // Look up the class by class_decl_id, extract the method signature, and instantiate
@@ -1811,12 +1811,11 @@ async fn infer_var_ref(
                 let class_opt = env_read
                     .all_classes()
                     .into_iter()
-                    .find(|c| c.class_decl_id == *class_id);
+                    .find(|c| c.class_decl_id == 0);
                 if let Some(class_decl) = class_opt {
                     let method_sig = class_decl
                         .method_signatures
-                        .iter()
-                        .find(|(name, _)| name == method)
+                        .get(*slot as usize)
                         .map(|(_, tv)| Arc::clone(tv));
                     if let Some(sig) = method_sig {
                         // The method signature is a TypeValue.Fn using the class's type parameters
@@ -2149,10 +2148,10 @@ async fn apply_cont_call_func(
     // T-2149: Extract EffectPerform metadata for instance checking after args are inferred.
     let effect_perform_meta = if let SurfaceExpression::VarRef { .. } = &func_node.expr {
         let func_id = node_id(&func_node);
-        if let Some(crate::ast::VarAddr::EffectPerform { class_id, method }) =
+        if let Some(crate::ast::VarAddr::EffectPerform { slot }) =
             ctx.state.resolution_table.get(&func_id)
         {
-            Some((*class_id, method.clone()))
+            Some((0, slot.to_string()))
         } else {
             None
         }
@@ -4698,12 +4697,12 @@ pub(crate) async fn run_typecheck_dict(
         if entry.node.key.is_none() {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                 if let SurfaceDeclaration::InstanceDecl {
-                    class_name, arms, ..
+                    class_name: _, arms, ..
                 } = decl.as_ref()
                 {
                     for (pattern, method_entries) in arms {
                         let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
-                        let type_args: Vec<&str> =
+                        let _type_args: Vec<&str> =
                             dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
                         for me in method_entries {
                             let method_name = match me.node.key.as_ref() {
@@ -4716,11 +4715,7 @@ pub(crate) async fn run_typecheck_dict(
                                 },
                                 None => continue,
                             };
-                            let binding_name = crate::type_def::instance_binding_name(
-                                &class_decl_name(class_name),
-                                &method_name,
-                                &type_args,
-                            );
+                            let binding_name = method_name.clone();
                             let fresh_var = state.fresh_type_var(&entry.span);
                             fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
                             {

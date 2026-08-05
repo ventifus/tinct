@@ -1490,15 +1490,11 @@ async fn instantiate_tycon_def(
                         // Defer constraint checking — assume satisfied to avoid false errors.
                         true
                     } else {
-                        let tags_ref: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-                        class_decl.method_signatures.iter().any(|(method_name, _)| {
-                            let mangled = crate::type_def::instance_binding_name(
-                                &class_name,
-                                method_name,
-                                &tags_ref,
-                            );
-                            env_guard.get_instance(&mangled).is_some()
-                        })
+                        let _tags_ref: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+                        class_decl
+                            .method_signatures
+                            .iter()
+                            .any(|(method_name, _)| env_guard.get_instance(method_name).is_some())
                     }
                 }
             }
@@ -3630,9 +3626,7 @@ pub(crate) async fn typenode_value_to_type(
                                     }
                                 }
                                 // Function entries (payload constructors) — still count as the same ADT
-                                Value::Function { .. }
-                                | Value::Builtin { .. }
-                                | Value::EffectPerformDispatcher { .. } => {}
+                                Value::Function { .. } | Value::Builtin { .. } => {}
                                 _ => {
                                     all_match = false;
                                     break;
@@ -3794,10 +3788,7 @@ pub(crate) async fn as_type_dispatch(
                 named: None,
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
-                caller_effect_chain: std::sync::Arc::new(crate::value::EffectChainNode {
-                    group: crate::value::empty_scope(),
-                    tail: None,
-                }),
+                caller_evidence: crate::value::empty_scope(),
             };
             crate::eval_call::invoke_function(&call_ctx).await?
         }
@@ -3901,10 +3892,7 @@ pub(crate) async fn eval_type_stage_expr(
             group,
             closure_env: crate::value::empty_scope(),
             params: std::sync::Arc::new(vec![]),
-            effect_chain: std::sync::Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            caller_evidence: crate::value::empty_scope(),
         })
     };
     let core_thunk = Arc::new(Thunk::core_expr(

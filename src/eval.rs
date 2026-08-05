@@ -138,10 +138,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             group: Arc::clone(&spine),
             closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
-            effect_chain: Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            caller_evidence: crate::value::empty_scope(),
         });
 
         if i == last_idx {
@@ -248,10 +245,7 @@ pub(crate) async fn eval_core_document_exprs(
             group: Arc::clone(&spine),
             closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
-            effect_chain: Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            caller_evidence: crate::value::empty_scope(),
         });
 
         if i == last_idx {
@@ -1937,7 +1931,7 @@ async fn call_to_match_by_name(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> EvalResult<bool> {
     // Step 1: get the init accumulated group snapshot.
     let Some(acc_group) = ctx.get_init_accumulated_group() else {
@@ -1986,7 +1980,7 @@ async fn call_to_match_by_name(
         named: None,
         call_span: span.clone(),
         ctx,
-        caller_effect_chain,
+        caller_evidence,
     };
     let result_thunk = invoke_function(&call_ctx).await?;
     // Step 8: materialize the call result and check if it is a nonzero Int.
@@ -2033,9 +2027,9 @@ pub async fn call_to_match(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> EvalResult<bool> {
-    call_to_match_by_name("to-match", val, ctx, span, caller_effect_chain).await
+    call_to_match_by_name("to-match", val, ctx, span, caller_evidence).await
 }
 
 /// Convert a tinct value to a match signal using a pre-resolved Matchable instance binding name.
@@ -2056,9 +2050,9 @@ pub async fn call_to_match_resolved(
     binding_name: &str,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> EvalResult<bool> {
-    call_to_match_by_name(binding_name, val, ctx, span, caller_effect_chain).await
+    call_to_match_by_name(binding_name, val, ctx, span, caller_evidence).await
 }
 
 /// Pre-resolve the match-signal class instance binding name from a predicate function's
@@ -5351,10 +5345,7 @@ mod tests {
             span,
             0, // caller_env_id bridge placeholder
             Arc::clone(&ctx),
-            Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            crate::value::empty_scope(),
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is

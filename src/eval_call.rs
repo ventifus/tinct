@@ -119,10 +119,7 @@ pub(crate) async fn eval_call_core(
             caller_env_id,
             ctx: Arc::clone(ctx),
             original_call,
-            caller_effect_chain: std::sync::Arc::new(crate::value::EffectChainNode {
-                group: std::sync::Arc::clone(&caller_frame.group),
-                tail: Some(std::sync::Arc::clone(&caller_frame.effect_chain)),
-            }),
+            caller_evidence: std::sync::Arc::clone(&caller_frame.group),
         },
     )))
 }
@@ -141,7 +138,7 @@ pub struct CallContext<'a> {
     /// Call site span — `name` field carries the function label for blame tracking.
     pub call_span: Span,
     pub ctx: &'a Arc<EvalContext>,
-    pub caller_effect_chain: crate::value::EffectChain,
+    pub caller_evidence: crate::value::Scope,
 }
 
 /// Try to match a single function clause against the provided arguments.
@@ -170,7 +167,7 @@ pub(crate) async fn try_clause(
     closure_env: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> EvalResult<Option<Arc<EvalFrame>>> {
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
@@ -272,10 +269,7 @@ pub(crate) async fn try_clause(
         let pre_frame = Arc::new(EvalFrame::for_function_call(
             Arc::clone(&closure_env),
             vec![],
-            std::sync::Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            crate::value::empty_scope(),
         ));
         // Build the binding_map from clause.params (name → slot).
         let binding_map: IndexMap<String, u32> = clause
@@ -345,7 +339,7 @@ pub(crate) async fn try_clause(
             let bound_frame = EvalFrame::for_function_call(
                 Arc::clone(&closure_env),
                 params_final,
-                caller_effect_chain.clone(),
+                caller_evidence.clone(),
             );
 
             // Step 4 (guard) with pattern-bound frame.
@@ -356,10 +350,7 @@ pub(crate) async fn try_clause(
                     &guard_value,
                     ctx,
                     call_span,
-                    Arc::new(crate::value::EffectChainNode {
-                        group: Arc::clone(&bound_frame.group),
-                        tail: Some(Arc::clone(&bound_frame.effect_chain)),
-                    }),
+                    Arc::clone(&bound_frame.group),
                 ))
                 .await?
                 {
@@ -381,7 +372,7 @@ pub(crate) async fn try_clause(
             Arc::clone(&closure_env),
             ctx,
             call_span,
-            caller_effect_chain.clone(),
+            caller_evidence.clone(),
         )
         .await
         .map_err(|mut e| {
@@ -394,10 +385,7 @@ pub(crate) async fn try_clause(
             &guard_value,
             ctx,
             call_span,
-            Arc::new(crate::value::EffectChainNode {
-                group: Arc::clone(&bound_frame.group),
-                tail: Some(Arc::clone(&bound_frame.effect_chain)),
-            }),
+            Arc::clone(&bound_frame.group),
         ))
         .await?
         {
@@ -415,7 +403,7 @@ pub(crate) async fn try_clause(
         closure_env,
         ctx,
         call_span,
-        caller_effect_chain,
+        caller_evidence,
     )
     .await
     .map_err(|mut e| {
@@ -445,7 +433,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
-            ctx.caller_effect_chain.clone(),
+            ctx.caller_evidence.clone(),
         )
         .await?;
         if let Some(frame) = result {
@@ -487,7 +475,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
-            ctx.caller_effect_chain.clone(),
+            ctx.caller_evidence.clone(),
         )
         .await
         {
@@ -524,7 +512,7 @@ pub(crate) async fn invoke_function_tco(
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
-            ctx.caller_effect_chain.clone(),
+            ctx.caller_evidence.clone(),
         )
         .await?;
         if let Some(frame) = result {
@@ -553,7 +541,7 @@ pub(crate) async fn invoke_function_tco(
             Arc::clone(&ctx.closure_env),
             ctx.ctx,
             &ctx.call_span,
-            ctx.caller_effect_chain.clone(),
+            ctx.caller_evidence.clone(),
         )
         .await
         {
@@ -585,7 +573,7 @@ pub(crate) async fn bind_args_thunks(
     closure_env: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> EvalResult<Arc<EvalFrame>> {
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
@@ -924,7 +912,7 @@ pub(crate) async fn bind_args_thunks(
     Ok(EvalFrame::for_function_call(
         closure_env,
         params_vec,
-        caller_effect_chain,
+        caller_evidence,
     ))
 }
 
@@ -980,7 +968,7 @@ mod tests {
             clauses: vec![make_test_clause(sp(CoreExpr::Int(42)))],
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
-            instance_of: None,
+
             resolved_fn_type: None,
             return_ann: None,
         };
@@ -998,7 +986,7 @@ mod tests {
             clauses: vec![make_test_clause(sp(CoreExpr::Int(42)))],
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
-            instance_of: None,
+
             resolved_fn_type: None,
             return_ann: None,
         };

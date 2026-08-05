@@ -88,10 +88,7 @@ pub(crate) async fn call_strict_resolver(
     let call_frame = crate::value::EvalFrame::for_function_call(
         closure_env,
         param_thunks,
-        std::sync::Arc::new(crate::value::EffectChainNode {
-            group: crate::value::empty_scope(),
-            tail: None,
-        }),
+        crate::value::empty_scope(),
     );
 
     // Evaluate the function body in the call frame and force the result.

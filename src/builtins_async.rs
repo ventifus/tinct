@@ -186,10 +186,7 @@ pub(crate) fn builtin_task(
                         &crate::value::EvalFrame::for_function_call(
                             Arc::clone(&closure_env),
                             vec![],
-                            Arc::new(crate::value::EffectChainNode {
-                                group: crate::value::empty_scope(),
-                                tail: None,
-                            }),
+                            crate::value::empty_scope(),
                         ),
                         &ctx_clone,
                     )
@@ -203,10 +200,7 @@ pub(crate) fn builtin_task(
                         named: None,
                         call_span: call_span_clone,
                         caller_env_id: None,
-                        caller_effect_chain: Arc::new(crate::value::EffectChainNode {
-                            group: crate::value::empty_scope(),
-                            tail: None,
-                        }),
+                        caller_evidence: crate::value::empty_scope(),
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;

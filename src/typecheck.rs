@@ -666,12 +666,11 @@ pub(crate) async fn process_document(
 
 /// Pre-register type aliases in `target_env` before Pass 1 inference.
 ///
-/// Map a resolved TypeValue (Arc<Value>) to the dispatch tag string used in instance binding names.
+/// Map a resolved TypeValue (Arc<Value>) to the dispatch tag string used in instance dispatch.
 ///
 /// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
 /// names from instance arm patterns.  Annotations are written as `@Integer`, `@Float`,
-/// `@String`, `@Bytes`, `@SomeType` — the strings that appear in
-/// `instance_binding_name` calls.
+/// `@String`, `@Bytes`, `@SomeType`.
 ///
 /// Returns `None` for:
 /// - Unbound `TypeValue.Var` (instance not yet determined).
@@ -1330,19 +1329,13 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
             method_types.insert(method_name.clone(), method_impl_type.clone());
 
-            // Insert TypeValue for the ɪ-prefixed binding name so that VarRef resolution
-            // can find the method type. This mirrors what lower.rs does at runtime:
-            // lower.rs creates a dict entry with key `ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽` and the
-            // type checker must insert a matching TypeValue at that name.
-            let type_args_str: Vec<&str> = type_args.iter().map(|s| s.as_str()).collect();
-            let binding_name =
-                crate::type_def::instance_binding_name(class_name, &method_name, &type_args_str);
+            // Insert TypeValue for the method so that VarRef resolution
+            // can find the method type.
+            let binding_name = method_name.clone();
 
             let scheme = generalize_tv(state.ctx.current_level, &method_impl_type, &state.ctx);
 
             // Insert into the parent dict env at the resolver-assigned slot, or append.
-            // The ɪ-prefixed binding name is assigned a slot by the resolver since lower.rs
-            // creates a concrete dict entry for it.
             {
                 let mut env_write = env.write().unwrap();
                 let slot = find_slot_in_frames(&state.resolver_frames, &binding_name)

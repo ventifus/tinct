@@ -30,9 +30,8 @@
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
-    class_decl_name, node_id, DotKey, ResolutionTable, Spanned, SurfaceDeclaration,
-    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
-    VarAddr,
+    node_id, DotKey, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
+    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
 };
 use crate::error::Diagnostic;
 use std::sync::Arc;
@@ -164,7 +163,7 @@ impl SurfaceResolver {
     /// files — the class method names must be findable through the normal scope chain.
     fn inject_class_methods(&mut self, methods: &std::collections::HashMap<String, u64>) {
         if let Some(scope) = self.scopes.last_mut() {
-            for (method_name, &class_id) in methods {
+            for (method_name, _class_id) in methods {
                 let should_inject = match scope.get(method_name) {
                     None => true,
                     Some(VarAddr::EffectPerform { .. }) => true,
@@ -174,8 +173,7 @@ impl SurfaceResolver {
                     scope.insert(
                         method_name.clone(),
                         VarAddr::EffectPerform {
-                            class_id,
-                            method: method_name.clone(),
+                            slot: 0, // placeholder — will be resolved to actual slot at lookup time
                         },
                     );
                 }
@@ -258,7 +256,7 @@ impl SurfaceResolver {
     ///   builds closure_env at fn-creation time by looking up each capture's original_addr
     ///   in the enclosing EvalFrame (frame.group[slot] for Dispatch captures).
     /// - `Parameter(i)` — fn argument.
-    /// - `EffectPerform { class_id, method }` — typeclass method call (future work, T-2126).
+    /// - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
     ///
     /// If we are inside one or more functions (fn_scope_boundaries is non-empty) and the
     /// name is found in a scope frame that belongs to an outer function or document scope
@@ -656,7 +654,8 @@ impl SurfaceResolver {
                                                 )
                                             });
                                         if has_method_key {
-                                            let _ = me.node.assigned_slot.set(base_offset + slot_idx);
+                                            let _ =
+                                                me.node.assigned_slot.set(base_offset + slot_idx);
                                             slot_idx += 1;
                                         }
                                     }
@@ -718,7 +717,7 @@ impl SurfaceResolver {
                         if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, .. } =
                             decl.as_ref()
                         {
-                            if let Some((class_id, methods)) =
+                            if let Some((_class_id, methods)) =
                                 find_class_decl_in_entries(class_name, entries)
                             {
                                 if let Some(scope) = self.scopes.last_mut() {
@@ -732,8 +731,7 @@ impl SurfaceResolver {
                                             scope.insert(
                                                 method_name.clone(),
                                                 VarAddr::EffectPerform {
-                                                    class_id,
-                                                    method: method_name,
+                                                    slot: 0, // placeholder — actual slot assigned by enter_scope_with_offset
                                                 },
                                             );
                                         }
@@ -924,7 +922,10 @@ impl SurfaceResolver {
                                                                 },
                                                             );
                                                         if has_method_key {
-                                                            let _ = me.node.assigned_slot.set(sequential_offset + slot_idx);
+                                                            let _ = me
+                                                                .node
+                                                                .assigned_slot
+                                                                .set(sequential_offset + slot_idx);
                                                             slot_idx += 1;
                                                         }
                                                     }
@@ -2120,20 +2121,16 @@ fn entry_has_key(entry: &Spanned<SurfaceEntry>, name: &str) -> bool {
 
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
 ///
-/// Handles two cases that the lowerer also handles, so the resolver's letrec scope matches
-/// the evaluator's letrec environment exactly:
+/// Handles two cases:
 ///
 /// 1. Keyed entries — VarRef or string literal keys become static scope slots.
-/// 2. Anonymous InstanceDecl entries (no outer key) — the lowerer flattens these into
-///    ɪ-prefixed binding names (`ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽`) in the outer dict.
-///    We register those same names so the resolver can find instance methods directly
-///    when they are referenced from within the same letrec scope.
+/// 2. InstanceDecl entries — emit plain method names (deduplicated) so the resolver's
+///    letrec scope has slots for each method. Multiple instance arms defining the same
+///    method (e.g., "+" for Int and "+" for String) produce only one slot.
 pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     // Build the key list.
     // ClassDecl is type-level only — push the outer class name, no method injection.
-    // InstanceDecl (named or anonymous) injects only mangled binding names (for dispatch).
-    // Plain method slots are no longer emitted — VarAddr::EffectPerform scans the group at
-    // call time instead. The lowerer's slot layout matches: only outer key + mangled slots.
+    // InstanceDecl emits plain method names (deduplicated across arms).
     let mut keys = Vec::new();
     for entry in entries {
         // Push outer key name if present (for all keyed entries including named instances).
@@ -2148,16 +2145,10 @@ pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec
                 _ => {}
             }
         }
-        // For any InstanceDecl (named or anonymous), inject only mangled binding names.
+        // For any InstanceDecl (named or anonymous), inject plain method names.
         if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-            if let crate::ast::SurfaceDeclaration::InstanceDecl {
-                class_name, arms, ..
-            } = decl.as_ref()
-            {
-                for (pattern, method_entries) in arms {
-                    let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
-                    let type_args: Vec<&str> =
-                        dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+            if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
+                for (_pattern, method_entries) in arms {
                     for me in method_entries {
                         let method_name = match me.node.key.as_ref() {
                             Some(k) => match &k.expr {
@@ -2167,12 +2158,9 @@ pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec
                             },
                             None => continue,
                         };
-                        // Inject only the mangled binding name for dispatch.
-                        keys.push(crate::type_def::instance_binding_name(
-                            &class_decl_name(class_name),
-                            &method_name,
-                            &type_args,
-                        ));
+                        if !keys.contains(&method_name) {
+                            keys.push(method_name);
+                        }
                     }
                 }
             }

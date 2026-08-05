@@ -50,7 +50,7 @@ pub struct BuiltinArgs {
     /// None for the vast majority of builtins that do not need lexical scope access.
     /// Panics in `builtin-current-env` if unexpectedly None (indicates a registration bug).
     pub caller_env_id: Option<u32>,
-    pub caller_effect_chain: EffectChain,
+    pub caller_evidence: Scope,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -138,26 +138,6 @@ pub fn scope_extend(parent: &Scope, new_entries: Vec<std::sync::Arc<Thunk>>) -> 
     std::sync::Arc::new(v)
 }
 
-/// One level of the Koka-style evidence chain.
-pub struct EffectChainNode {
-    pub group: Scope,
-    pub tail: Option<std::sync::Arc<EffectChainNode>>,
-}
-
-impl std::fmt::Debug for EffectChainNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut len = 1;
-        let mut current = &self.tail;
-        while let Some(node) = current {
-            len += 1;
-            current = &node.tail;
-        }
-        write!(f, "EffectChainNode(len={})", len)
-    }
-}
-
-pub type EffectChain = std::sync::Arc<EffectChainNode>;
-
 /// Replaces ScopeArena-based scope chain traversal.
 ///
 /// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references (fn captures only)
@@ -166,15 +146,16 @@ pub type EffectChain = std::sync::Arc<EffectChainNode>;
 ///   followed by each dict's entries at cumulative slot offsets. No outer-frame traversal needed.
 /// - `params[i]`: thunk for `VarAddr::Parameter(i)` references
 ///
-/// All four VarAddr variants index directly into this frame's vectors (EffectPerform is future work).
-/// No outer-frame chain traversal — cross-scope references are resolved at the resolver level
-/// (captures become ClosureCapture; document cross-dict refs become LGM with cumulative slots).
+/// All four VarAddr variants index directly into this frame's vectors (EffectPerform does a
+/// direct slot lookup in caller_evidence). No outer-frame chain traversal — cross-scope
+/// references are resolved at the resolver level (captures become ClosureCapture; document
+/// cross-dict refs become LGM with cumulative slots).
 #[derive(Debug, Clone)]
 pub struct EvalFrame {
     pub closure_env: Scope,
     pub group: Scope,
     pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
-    pub effect_chain: EffectChain,
+    pub caller_evidence: Scope,
 }
 
 impl EvalFrame {
@@ -183,23 +164,20 @@ impl EvalFrame {
             closure_env: empty_scope(),
             group: empty_scope(),
             params: std::sync::Arc::new(vec![]),
-            effect_chain: std::sync::Arc::new(EffectChainNode {
-                group: empty_scope(),
-                tail: None,
-            }),
+            caller_evidence: empty_scope(),
         })
     }
 
     pub fn for_function_call(
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         params: Vec<std::sync::Arc<Thunk>>,
-        effect_chain: EffectChain,
+        caller_evidence: Scope,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             closure_env: scope_from_flat(closure_env.iter().cloned().collect()),
             group: empty_scope(),
             params: std::sync::Arc::new(params),
-            effect_chain,
+            caller_evidence,
         })
     }
 }
@@ -868,31 +846,18 @@ pub enum Value {
     /// All cross-scope captures are resolved at definition time; no outer-frame pointer is
     /// needed at call time.
     ///
-    /// `instance_of` identifies the typeclass method this function implements, if any.
-    /// `None` for ordinary functions; `Some((class_decl_id, method_name))` for instance methods.
-    ///
     /// T-2133 will implement full multi-clause dispatch via `invoke_function`. Until then,
     /// call sites that need `params`/`body` must extract them from `clauses[0]` using the
     /// helpers defined for the single-clause common case.
     Function {
         clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
-        instance_of: Option<(u64, String)>,
         annotation: Option<Box<FnAnnotation>>,
         type_val: Arc<Value>,
     },
     /// Rust-native built-in function
     Builtin {
         def: BuiltinDef,
-        type_val: Arc<Value>,
-    },
-    /// EffectPerform dispatcher — tries each candidate function in order (T-2146).
-    ///
-    /// When called, iterates through candidates and tries invoke_function on each
-    /// until one matches. Each candidate is a complete Value::Function with its own
-    /// closure_env, so ClosureCapture lookups resolve correctly.
-    EffectPerformDispatcher {
-        candidates: Arc<Vec<Arc<Value>>>,
         type_val: Arc<Value>,
     },
     /// Proxy object — field access calls the handler function with the field name
@@ -1157,25 +1122,16 @@ impl Clone for Value {
             Value::Function {
                 clauses,
                 closure_env,
-                instance_of,
                 annotation,
                 type_val,
             } => Value::Function {
                 clauses: std::sync::Arc::clone(clauses),
                 closure_env: std::sync::Arc::clone(closure_env),
-                instance_of: instance_of.clone(),
                 annotation: annotation.clone(),
                 type_val: Arc::clone(type_val),
             },
             Value::Builtin { def, type_val } => Value::Builtin {
                 def: *def,
-                type_val: Arc::clone(type_val),
-            },
-            Value::EffectPerformDispatcher {
-                candidates,
-                type_val,
-            } => Value::EffectPerformDispatcher {
-                candidates: Arc::clone(candidates),
                 type_val: Arc::clone(type_val),
             },
             Value::Proxy { handler, type_val } => Value::Proxy {
@@ -1452,7 +1408,6 @@ impl Value {
             Value::Builder(_) => TYPE_ID_BUILDER,
             Value::Function { .. } => TYPE_ID_FUNCTION,
             Value::Builtin { .. } => TYPE_ID_BUILTIN,
-            Value::EffectPerformDispatcher { .. } => TYPE_ID_FUNCTION,
             Value::Proxy { .. } => TYPE_ID_PROXY,
             Value::DirCap { .. } => TYPE_ID_DIRCAP,
             Value::NetCap { .. } => TYPE_ID_NETCAP,
@@ -1499,7 +1454,6 @@ impl Value {
             Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
             Value::Builtin { .. } => "Builtin",
-            Value::EffectPerformDispatcher { .. } => "Function",
             Value::Proxy { .. } => "Proxy",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap { .. } => "NetCap",
@@ -1606,7 +1560,6 @@ impl Value {
             Value::Dict { type_val, .. } => type_val,
             Value::Function { type_val, .. } => type_val,
             Value::Builtin { type_val, .. } => type_val,
-            Value::EffectPerformDispatcher { type_val, .. } => type_val,
             Value::Proxy { type_val, .. } => type_val,
             Value::Variant { type_val, .. } => type_val,
             Value::Decimal { type_val, .. } => type_val,
@@ -1677,13 +1630,6 @@ impl fmt::Debug for Value {
                 write!(f, "Function({})", param_names.join(", "))
             }
             Value::Builtin { def, .. } => write!(f, "Builtin({})", def.name),
-            Value::EffectPerformDispatcher { candidates, .. } => {
-                write!(
-                    f,
-                    "EffectPerformDispatcher({} candidates)",
-                    candidates.len()
-                )
-            }
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap { entries, .. } => write!(f, "NetCap({} entries)", entries.len()),
@@ -1789,7 +1735,6 @@ impl fmt::Display for Value {
                 write!(f, "] ...]")
             }
             Value::Builtin { def, .. } => write!(f, "<builtin {}>", def.name),
-            Value::EffectPerformDispatcher { .. } => write!(f, "[fn [let ...] ...]"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap { .. } => write!(f, "<NetCap>"),
@@ -1951,7 +1896,7 @@ pub enum UnevaluatedState {
         /// Caller environment identity; used by `builtin-current-env` for scope introspection.
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
-        caller_effect_chain: EffectChain,
+        caller_evidence: Scope,
     },
     /// Deferred function call (was PendingCall).
     FnCall {
@@ -1964,7 +1909,7 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for PendingBuiltin lazy-arg re-dispatch.
         original_call: Arc<Spanned<CoreExpr>>,
-        caller_effect_chain: EffectChain,
+        caller_evidence: Scope,
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
@@ -1988,16 +1933,6 @@ pub enum UnevaluatedState {
         annotation: Box<Value>,
         ctx: Arc<crate::eval::EvalContext>,
     },
-    /// Deferred EffectPerform dispatch — tries each candidate function in order.
-    ///
-    /// T-2146: When evaluating VarAddr::EffectPerform, collect all matching instance
-    /// methods from the accumulated group and try each in order. Each candidate is a
-    /// complete Value::Function with its own closure_env, so ClosureCapture lookups
-    /// resolve correctly. This replaces the broken synthesized-function approach that
-    /// concatenated clauses with an empty closure_env.
-    EffectPerform {
-        candidates: Vec<std::sync::Arc<Value>>,
-    },
 }
 
 impl UnevaluatedState {
@@ -2009,7 +1944,6 @@ impl UnevaluatedState {
             UnevaluatedState::AstField { .. } => 0,
             UnevaluatedState::Guarded { .. } => 0,
             UnevaluatedState::AnnotatedWrap { .. } => 0,
-            UnevaluatedState::EffectPerform { .. } => 0,
         }
     }
 }
@@ -2026,7 +1960,7 @@ pub struct FnCallSpec {
     pub ctx: Arc<crate::eval::EvalContext>,
     /// The original call expression (for error messages).
     pub original_call: Arc<Spanned<CoreExpr>>,
-    pub caller_effect_chain: EffectChain,
+    pub caller_evidence: Scope,
 }
 
 /// New thunk structure for async evaluation (Sprint 2B).
@@ -2177,7 +2111,7 @@ impl Thunk {
         span: Span,
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
-        caller_effect_chain: EffectChain,
+        caller_evidence: Scope,
     ) -> Self {
         Self {
             inner: ThunkInner {
@@ -2189,7 +2123,7 @@ impl Thunk {
                         call_span: span.clone(),
                         caller_env_id,
                         ctx,
-                        caller_effect_chain,
+                        caller_evidence,
                     }),
                     None,
                 )),
@@ -2223,7 +2157,7 @@ impl Thunk {
                         caller_env_id: spec.caller_env_id,
                         ctx: spec.ctx,
                         original_call: spec.original_call,
-                        caller_effect_chain: spec.caller_effect_chain,
+                        caller_evidence: spec.caller_evidence,
                     }),
                     None,
                 )),
@@ -2259,24 +2193,6 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span: guard_span.with_name(Arc::from("type guard")),
-        }
-    }
-
-    /// Create a pending EffectPerform thunk (T-2146).
-    ///
-    /// When forced, tries each candidate function in order until one matches.
-    /// Each candidate is a complete Value::Function with its own closure_env.
-    pub fn pending_effect_perform(candidates: Vec<std::sync::Arc<Value>>, span: Span) -> Self {
-        Self {
-            inner: ThunkInner {
-                unevaluated: Mutex::new((
-                    Some(UnevaluatedState::EffectPerform { candidates }),
-                    None,
-                )),
-                result: tokio::sync::OnceCell::new(),
-                notify: std::sync::OnceLock::new(),
-            },
-            span,
         }
     }
 
@@ -2394,7 +2310,7 @@ impl Thunk {
                 call_span,
                 caller_env_id,
                 ctx: _,
-                caller_effect_chain,
+                caller_evidence,
             } => UnevaluatedState::BuiltinCall {
                 def,
                 args,
@@ -2402,7 +2318,7 @@ impl Thunk {
                 call_span,
                 caller_env_id,
                 ctx: new_ctx,
-                caller_effect_chain,
+                caller_evidence,
             },
             UnevaluatedState::FnCall {
                 func,
@@ -2412,7 +2328,7 @@ impl Thunk {
                 caller_env_id,
                 ctx: _,
                 original_call,
-                caller_effect_chain,
+                caller_evidence,
             } => UnevaluatedState::FnCall {
                 func,
                 args,
@@ -2421,7 +2337,7 @@ impl Thunk {
                 caller_env_id,
                 ctx: new_ctx,
                 original_call,
-                caller_effect_chain,
+                caller_evidence,
             },
             UnevaluatedState::Guarded {
                 inner,
@@ -2447,9 +2363,6 @@ impl Thunk {
                 annotation,
                 ctx: new_ctx,
             },
-            UnevaluatedState::EffectPerform { candidates } => {
-                UnevaluatedState::EffectPerform { candidates }
-            }
         };
         Some(Arc::new(Thunk {
             inner: ThunkInner {

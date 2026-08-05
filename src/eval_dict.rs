@@ -589,7 +589,7 @@ pub(crate) async fn eval_dict_core(
             closure_env,
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
-            effect_chain: std::sync::Arc::clone(&outer_frame.effect_chain),
+            caller_evidence: std::sync::Arc::clone(&outer_frame.caller_evidence),
         });
 
         for maybe_core_thunk in &core_expr_thunks {

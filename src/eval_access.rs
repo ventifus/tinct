@@ -18,7 +18,7 @@ pub(crate) async fn invoke_proxy_handler(
     caller_env_id: u32,
     ctx: &Arc<EvalContext>,
     access_span: &Span,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> EvalResult<Arc<Thunk>> {
     // Performance: handler thunk is memoized by Launchbury sharing, but each
     // access clones the materialized Value. Consider eager materialization in
@@ -40,7 +40,7 @@ pub(crate) async fn invoke_proxy_handler(
                     .clone()
                     .with_name(Arc::from("proxy field access")),
                 ctx,
-                caller_effect_chain: caller_effect_chain.clone(),
+                caller_evidence: caller_evidence.clone(),
             })
             .await
         }
@@ -53,50 +53,8 @@ pub(crate) async fn invoke_proxy_handler(
                 .with_name(Arc::from("proxy field access")),
             caller_env_id,
             Arc::clone(ctx),
-            caller_effect_chain.clone(),
+            caller_evidence.clone(),
         ))),
-        Value::EffectPerformDispatcher { candidates, .. } => {
-            // Try each candidate in order until one matches.
-            use crate::eval_call::{invoke_function, CallContext};
-            let pos_args = vec![key_arg_id];
-            let mut last_error: Option<Box<crate::error::EvalError>> = None;
-            for candidate_value in candidates.iter() {
-                if let Value::Function {
-                    clauses,
-                    closure_env,
-                    ..
-                } = candidate_value.as_ref()
-                {
-                    let call_ctx = CallContext {
-                        clauses,
-                        closure_env: Arc::clone(closure_env),
-                        positional: &pos_args,
-                        named: None,
-                        call_span: access_span
-                            .clone()
-                            .with_name(Arc::from("proxy field access")),
-                        ctx,
-                        caller_effect_chain: caller_effect_chain.clone(),
-                    };
-                    match invoke_function(&call_ctx).await {
-                        Ok(result_thunk) => {
-                            return Ok(result_thunk);
-                        }
-                        Err(e) => {
-                            last_error = Some(e);
-                        }
-                    }
-                }
-            }
-            // No candidate matched
-            Err(last_error.unwrap_or_else(|| {
-                Box::new(EvalError::user_error(
-                    "no matching instance for EffectPerform dispatch in proxy field access"
-                        .to_string(),
-                    access_span.clone(),
-                ))
-            }))
-        }
         _ => Err(EvalError::type_mismatch(
             "Function or Builtin",
             handler_val.type_name(),

@@ -567,11 +567,8 @@ mod tests {
         crate::eval::EvalContext::new_empty()
     }
 
-    fn empty_chain() -> crate::value::EffectChain {
-        Arc::new(crate::value::EffectChainNode {
-            group: crate::value::empty_scope(),
-            tail: None,
-        })
+    fn empty_evidence() -> crate::value::Scope {
+        crate::value::empty_scope()
     }
 
     /// Drive an async builtin to completion in tests.
@@ -682,7 +679,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -709,7 +706,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -736,7 +733,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -763,7 +760,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -791,7 +788,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -818,7 +815,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -845,7 +842,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -872,7 +869,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -894,7 +891,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -920,7 +917,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -940,7 +937,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -960,7 +957,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -986,7 +983,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1006,7 +1003,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1041,7 +1038,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1078,7 +1075,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1104,7 +1101,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1130,7 +1127,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1156,7 +1153,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1183,7 +1180,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1211,7 +1208,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1239,7 +1236,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1266,7 +1263,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1293,7 +1290,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1321,7 +1318,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1349,7 +1346,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1376,7 +1373,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1403,7 +1400,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1430,7 +1427,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1457,7 +1454,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1479,7 +1476,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1505,7 +1502,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1525,7 +1522,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1545,7 +1542,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1565,7 +1562,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1600,7 +1597,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1626,7 +1623,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1652,7 +1649,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1672,7 +1669,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1693,7 +1690,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1714,7 +1711,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1735,7 +1732,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -1756,7 +1753,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1776,7 +1773,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1796,7 +1793,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1816,7 +1813,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1842,7 +1839,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1873,7 +1870,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1899,7 +1896,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1925,7 +1922,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1945,7 +1942,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1965,7 +1962,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -1985,7 +1982,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2007,7 +2004,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2028,7 +2025,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2049,7 +2046,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2070,7 +2067,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2091,7 +2088,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2113,7 +2110,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -2134,7 +2131,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2154,7 +2151,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2174,7 +2171,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2194,7 +2191,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2214,7 +2211,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2234,7 +2231,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2260,7 +2257,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2286,7 +2283,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2312,7 +2309,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2332,7 +2329,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2355,7 +2352,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2377,7 +2374,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2398,7 +2395,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2423,7 +2420,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2444,7 +2441,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2467,7 +2464,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2489,7 +2486,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2525,7 +2522,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2544,7 +2541,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2571,7 +2568,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -2602,7 +2599,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -2629,7 +2626,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         if let Value::Dict { entries: map, .. } = result {
@@ -2651,7 +2648,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2687,7 +2684,7 @@ mod tests {
             call_span(),
             0,
             Arc::clone(&ctx),
-            empty_chain(),
+            empty_evidence(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2695,7 +2692,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -2737,7 +2734,7 @@ mod tests {
             call_span(),
             0,
             Arc::clone(&ctx),
-            empty_chain(),
+            empty_evidence(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2745,7 +2742,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -2789,7 +2786,7 @@ mod tests {
             call_span(),
             0,
             Arc::clone(&ctx),
-            empty_chain(),
+            empty_evidence(),
         ));
         let err = run(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2797,7 +2794,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -2826,7 +2823,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         // ground_typevalue_of(Int) → TypeValue.Repr("Value::Int") — a Variant, not unknown.
@@ -2861,7 +2858,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match &result {
@@ -2889,7 +2886,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match &result {
@@ -2923,7 +2920,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match &result {
@@ -2954,7 +2951,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         // ground_typevalue_of(Function) is always a Variant (TypeValue.Fn or TypeValue.Repr).
@@ -3002,7 +2999,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         // ground_typevalue_of(Builtin) → TypeValue.Repr("Value::Function").
@@ -3041,7 +3038,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         // ground_typevalue_of(Variant) → TypeValue.Op(tycon) — a Variant with ctor=TV_OP.
@@ -3069,7 +3066,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3090,7 +3087,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -3114,7 +3111,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -3160,7 +3157,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -3195,7 +3192,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -3259,7 +3256,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -3287,7 +3284,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -3331,7 +3328,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -3356,7 +3353,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -3409,7 +3406,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3430,7 +3427,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3450,7 +3447,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3471,7 +3468,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3497,7 +3494,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3523,7 +3520,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3545,7 +3542,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -3566,7 +3563,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -3588,7 +3585,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -3613,7 +3610,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello Rust"));
@@ -3632,7 +3629,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("bonono"));
@@ -3651,7 +3648,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3670,7 +3667,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-"));
@@ -3689,7 +3686,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("heo"));
@@ -3712,7 +3709,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(result.is_err());
@@ -3735,7 +3732,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -3751,7 +3748,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3766,7 +3763,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3781,7 +3778,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3796,7 +3793,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3811,7 +3808,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -3826,7 +3823,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3841,7 +3838,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -3856,7 +3853,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3881,7 +3878,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3911,7 +3908,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3946,7 +3943,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -3976,7 +3973,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4007,7 +4004,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4039,7 +4036,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4075,7 +4072,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4112,7 +4109,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4143,7 +4140,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4178,7 +4175,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4224,7 +4221,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4270,7 +4267,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4316,7 +4313,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4362,7 +4359,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4408,7 +4405,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4454,7 +4451,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4499,7 +4496,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4537,7 +4534,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4569,7 +4566,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4631,7 +4628,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -4669,7 +4666,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -4705,7 +4702,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -4741,7 +4738,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -4777,7 +4774,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -4807,7 +4804,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4834,7 +4831,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4869,7 +4866,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4904,7 +4901,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -4939,7 +4936,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -4975,7 +4972,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5011,7 +5008,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5047,7 +5044,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5068,7 +5065,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5094,7 +5091,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5123,7 +5120,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5159,7 +5156,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5195,7 +5192,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5231,7 +5228,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5267,7 +5264,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5303,7 +5300,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5339,7 +5336,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5374,7 +5371,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5410,7 +5407,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5445,7 +5442,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5484,7 +5481,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5519,7 +5516,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match r {
@@ -5554,7 +5551,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match r {
@@ -5587,7 +5584,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match r {
@@ -5622,7 +5619,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5658,7 +5655,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5699,7 +5696,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5735,7 +5732,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -5770,7 +5767,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5806,7 +5803,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5842,7 +5839,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5879,7 +5876,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5915,7 +5912,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5951,7 +5948,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -5987,7 +5984,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6012,7 +6009,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6036,7 +6033,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6063,7 +6060,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -6098,7 +6095,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6134,7 +6131,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6170,7 +6167,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6206,7 +6203,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6230,7 +6227,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6254,7 +6251,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6278,7 +6275,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6302,7 +6299,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6340,7 +6337,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -6376,7 +6373,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -6405,7 +6402,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -6441,7 +6438,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6478,7 +6475,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6515,7 +6512,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6552,7 +6549,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6588,7 +6585,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -6610,7 +6607,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -6645,7 +6642,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6681,7 +6678,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -6755,7 +6752,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -6817,7 +6814,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -6855,7 +6852,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -6900,7 +6897,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -6929,7 +6926,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(result.is_err());
@@ -6953,7 +6950,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(result.is_err());
@@ -6974,7 +6971,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(result.is_err());
@@ -7007,7 +7004,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
 
@@ -7062,7 +7059,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
 
@@ -7134,7 +7131,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
 
@@ -7203,7 +7200,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -7258,7 +7255,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
 
@@ -7327,7 +7324,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
 
@@ -7364,7 +7361,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap();
@@ -7396,7 +7393,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -7428,7 +7425,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -7467,7 +7464,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -7499,7 +7496,7 @@ mod tests {
             call_span: call_span(),
             ctx,
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await
         .unwrap_err();
@@ -7588,7 +7585,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(
@@ -7628,7 +7625,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(
@@ -7670,7 +7667,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -7702,7 +7699,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         match result {
@@ -7736,7 +7733,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert_eq!(result, string_val("second"));
@@ -7766,7 +7763,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         assert!(result.is_err());
@@ -7808,7 +7805,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -7851,7 +7848,7 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
             caller_env_id: None,
-            caller_effect_chain: empty_chain(),
+            caller_evidence: empty_evidence(),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

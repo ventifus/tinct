@@ -717,100 +717,13 @@ pub(crate) fn eval_core_expr<'a>(
                     VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize).cloned(),
                     VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize).cloned(),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
-                    VarAddr::EffectPerform { class_id, method } => {
-                        // T-2187: Scan frame.group and effect_chain for instance methods.
-                        //
-                        // An instance method is a `Value::Function` with
-                        // `instance_of == Some((class_id, method))`. The scan uses
-                        // `peek_result()` to avoid forcing unevaluated thunks — only
-                        // already-materialized functions are considered. Instance methods are
-                        // CoreExpr::Fn nodes (lambda abstractions), which are syntactic values
-                        // — evaluation of a Fn immediately produces a settled
-                        // Thunk::value(Value::Function{...}) because lambda abstraction is
-                        // already in WHNF (Launchbury 1993). So peek_result() always succeeds
-                        // for instance method thunks regardless of evaluation order. (Letrec
-                        // bindings are mutually recursive and lazily evaluated; there is no
-                        // ordering guarantee among siblings in the same scope.)
-                        //
-                        // Candidates are collected in innermost-first order (highest slot first).
-                        // Each candidate is a complete Value::Function with its own closure_env,
-                        // clauses, and annotation. We collect them and return a PendingEffectPerform
-                        // thunk that will try each candidate in order until one matches.
-                        //
-                        // The effect_chain implements Koka evidence passing:
-                        // - frame.group: For document-level frames, this IS the full accumulated
-                        //   scope (root + prelude + user doc entries in a flat Vec).
-                        //   For fn-call frames, this holds only local intermediate dict entries.
-                        // - frame.effect_chain: A linked list of EffectChainNodes, each carrying
-                        //   the caller's group at the call point. Traversing the chain from
-                        //   innermost to outermost collects all instances visible at the call site.
-
-                        let mut candidates: Vec<Arc<Value>> = Vec::new();
-
-                        // Scan one scope for matching instance fns.
-                        // Iterates from innermost (highest slot) to outermost (slot 0).
-                        // peek_result() succeeds for instance fn thunks because CoreExpr::Fn
-                        // settles immediately as WHNF (Launchbury 1993).
-                        let scan_scope =
-                            |scope: &crate::value::Scope, candidates: &mut Vec<Arc<Value>>| {
-                                for i in (0..scope.len()).rev() {
-                                    let Some(slot_thunk) = scope.get(i) else {
-                                        continue;
-                                    };
-                                    if let Some(Ok(
-                                        func_value @ Value::Function {
-                                            instance_of: Some((cid, m)),
-                                            ..
-                                        },
-                                    )) = slot_thunk.peek_result()
-                                    {
-                                        if cid == class_id && m == method {
-                                            candidates.push(Arc::new(func_value.clone()));
-                                        }
-                                    }
-                                }
-                            };
-
-                        // 1. Scan current frame's local group.
-                        //    Document-level frames: group IS the full accumulated scope.
-                        //    Fn-call frames: group holds only local intermediate dict entries.
-                        scan_scope(&frame.group, &mut candidates);
-
-                        // 2. Traverse the effect chain from innermost to outermost.
-                        //    Each node carries the caller's group at the call point.
-                        //    This implements Koka evidence passing.
-                        scan_scope(&frame.effect_chain.group, &mut candidates);
-                        let mut tail = &frame.effect_chain.tail;
-                        while let Some(node) = tail {
-                            scan_scope(&node.group, &mut candidates);
-                            tail = &node.tail;
-                        }
-
-                        if candidates.is_empty() {
-                            let chain_len = {
-                                let mut len = 1u32;
-                                let mut c = &frame.effect_chain.tail;
-                                while let Some(node) = c {
-                                    len += 1;
-                                    c = &node.tail;
-                                }
-                                len
-                            };
-                            return Err(EvalError::user_error(
-                                format!(
-                                    "no instance found for typeclass method '{}' (class_id={}): \
-                                     scanned frame.group + {} effect chain level(s)",
-                                    method, class_id, chain_len
-                                ),
+                    VarAddr::EffectPerform { slot } => {
+                        let thunk = frame.caller_evidence.get(*slot as usize)
+                            .ok_or_else(|| EvalError::user_error(
+                                format!("no instance found for typeclass method at slot {} — caller evidence has {} entries", slot, frame.caller_evidence.len()),
                                 span.clone(),
-                            )
-                            .into());
-                        }
-
-                        return Ok(Arc::new(Thunk::pending_effect_perform(
-                            candidates,
-                            span.clone(),
-                        )));
+                            ))?;
+                        Some(Arc::clone(thunk))
                     }
                 };
                 match thunk {
@@ -972,7 +885,6 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Fn {
                 clauses,
                 captures,
-                instance_of,
                 resolved_fn_type,
                 return_ann,
                 ..
@@ -1075,7 +987,6 @@ pub(crate) fn eval_core_expr<'a>(
                     Value::Function {
                         clauses: Arc::new(clauses.clone()),
                         closure_env: Arc::new(closure_env_vec),
-                        instance_of: instance_of.clone(),
                         annotation,
                         type_val: resolved_fn_type
                             .as_ref()
@@ -1483,10 +1394,7 @@ mod tests {
             closure_env: empty_scope(),
             group: scope_from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
-            effect_chain: Arc::new(crate::value::EffectChainNode {
-                group: empty_scope(),
-                tail: None,
-            }),
+            caller_evidence: empty_scope(),
         });
 
         // Build a Var node: addr = Dispatch(0, 0).

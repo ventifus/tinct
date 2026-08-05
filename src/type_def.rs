@@ -8,7 +8,6 @@
 //! - `Variance` — type parameter variance annotation
 //! - `TyConDef` — type constructor definition (body: Arc<Value> after T-1986)
 //! - `TyConEnv` — type constructor environment
-//! - `instance_binding_name` — gensym naming for instance specializations
 //!
 //! Inference machinery (`InferState`, generalization) lives in `type_infer.rs`.
 //! Unification lives in `type_unify.rs`.
@@ -222,19 +221,6 @@ pub type TyConEnv = HashMap<String, Arc<TyConDef>>;
 /// to produce a direct binding reference rather than going through the method dispatch
 /// sentinel machinery.
 ///
-/// All component characters are valid tinct identifier chars (not in the denylist).
-/// `∷` (U+2237, PROPORTION) distinguishes class from method without being DotAccess.
-/// `⧼`/`⧽` (U+29FC/U+29FD) are the gensym delimiters used elsewhere in tinct.
-/// `⟨`/`⟩` (U+27E8/U+27E9) delimit type arguments.
-pub fn instance_binding_name(class: &str, method: &str, type_args: &[&str]) -> String {
-    let args = type_args.join(",");
-    if args.is_empty() {
-        format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽")
-    } else {
-        format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽")
-    }
-}
-
 // T-1995: check_kind_wellformed deleted along with Kind enum.
 // Kind checking is now done at the TypeValue level (Arc<Value>) by other machinery.
 
@@ -245,22 +231,6 @@ mod tests {
     // T-1995: Kind tests deleted along with Kind enum.
     // T-1986: Type-based subtyping tests deleted along with Type enum.
     // T-2001: Row/RowTail tests deleted along with those types.
-
-    #[test]
-    fn test_instance_binding_name_no_args() {
-        assert_eq!(
-            instance_binding_name("Equatable", "=", &[]),
-            "ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⧽"
-        );
-    }
-
-    #[test]
-    fn test_instance_binding_name_with_args() {
-        assert_eq!(
-            instance_binding_name("Addable", "+", &["Int", "Int"]),
-            "ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int⟩⧽"
-        );
-    }
 
     #[test]
     fn test_tycondef_new_parameterized_sets_invariant_variance() {

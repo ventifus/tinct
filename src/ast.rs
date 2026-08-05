@@ -976,8 +976,8 @@ pub enum SurfaceDeclaration {
         structural: String,
         /// Pre-assigned class declaration ID, written by the resolver's Phase 1b scan.
         /// Read by the type-checker to create ClassDecl with a consistent ID so that
-        /// VarAddr::EffectPerform { class_id } emitted during resolution matches the
-        /// class_decl_id used in the type environment and instance lowering.
+        /// VarAddr::EffectPerform { slot } emitted during resolution matches the
+        /// slot used in the type environment and instance lowering.
         /// Same pattern as InstanceDecl.resolved_class_decl_id.
         pre_assigned_class_decl_id: ClassDeclIdCell,
     },
@@ -1321,8 +1321,8 @@ impl std::fmt::Debug for MatchableBinding {
 ///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
 /// - `ClosureCapture(slot)` — fn capture, resolved at fn creation time.
 /// - `Parameter(slot)` — fn argument.
-/// - `EffectPerform { class_id, method }` — typeclass method call; resolved by scanning
-///   the accumulated group for an instance that matches the runtime argument types.
+/// - `EffectPerform { slot }` — typeclass method call; resolved by direct slot lookup
+///   in the caller's evidence (scope).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VarAddr {
     /// Index into EvalFrame.group (current letrec group thunks).
@@ -1341,10 +1341,9 @@ pub enum VarAddr {
     ClosureCapture(u32),
     /// Index into EvalFrame.params (function call arguments)
     Parameter(u32),
-    /// Typeclass method call — resolved at runtime by scanning the accumulated group
-    /// for an instance whose primary dispatch type matches the first argument's runtime type.
-    /// `class_id` identifies the class declaration; `method` is the method name.
-    EffectPerform { class_id: u64, method: String },
+    /// Typeclass method call — resolved at runtime by direct slot lookup in
+    /// the caller's evidence (scope). `slot` is the slot index assigned by the resolver.
+    EffectPerform { slot: u32 },
 }
 
 /// Specifies how the TypeAssert node obtains its expected type.
@@ -1424,10 +1423,6 @@ pub enum CoreExpr {
         /// common single-clause case. Used by the evaluator to build `closure_env` at
         /// function-definition time (before dispatch to a specific clause).
         captures: std::sync::Arc<Vec<(String, VarAddr)>>,
-        /// Some((class_decl_id, method_name)) for instance method functions — identifies
-        /// which typeclass method this function implements. Used by the evaluator for
-        /// typeclass dispatch. None for ordinary functions.
-        instance_of: Option<(u64, String)>,
         /// Resolved TypeValue.Fn for this function — set by the lowerer from the type checker's
         /// `resolved_return_annotation` and per-param `resolved_annotation_type` fields.
         /// Stored in `Value::Function.type_val` at runtime so `ground_typevalue_of` can use it

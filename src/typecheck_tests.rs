@@ -1797,10 +1797,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
 
     // Manually set the resolution to EffectPerform.
     if let SurfaceExpression::VarRef { resolution, .. } = &varref_node.expr {
-        resolution.set(Some(VarAddr::EffectPerform {
-            class_id: class_decl_id,
-            method: method_name.clone(),
-        }));
+        resolution.set(Some(VarAddr::EffectPerform { slot: 0 }));
     }
 
     // Infer the VarRef's type.

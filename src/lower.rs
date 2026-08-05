@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::ast::{
-    class_decl_name, CoreClause, CoreEntry, CoreExpr, CoreNamedArg, CoreParam, Span, Spanned,
-    SurfaceEntry, SurfaceExpression, SurfaceNode, VarAddr,
+    CoreClause, CoreEntry, CoreExpr, CoreNamedArg, CoreParam, Span, Spanned, SurfaceEntry,
+    SurfaceExpression, SurfaceNode, VarAddr,
 };
 use crate::error::Diagnostic;
 use crate::eval_call::is_typevalue_unknown;
@@ -589,12 +589,7 @@ fn lower_expr(
             for se in entries {
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     match decl.as_ref() {
-                        crate::ast::SurfaceDeclaration::InstanceDecl {
-                            class_name,
-                            arms,
-                            resolved_class_decl_id,
-                            ..
-                        } => {
+                        crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } => {
                             {
                                 // Both named and anonymous instances:
                                 // 1. If named, emit the outer key binding first.
@@ -629,9 +624,6 @@ fn lower_expr(
                                     ));
                                 }
                                 for (pattern, method_entries) in arms {
-                                    let dispatch_tags = extract_dispatch_tags(&pattern.expr);
-                                    let type_args: Vec<&str> =
-                                        dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
                                     let instance_type_guards =
                                         extract_instance_type_guards(&pattern.expr);
                                     for me in method_entries {
@@ -648,97 +640,24 @@ fn lower_expr(
                                             },
                                             None => continue,
                                         };
-                                        // The plain method slot (`<` itself) is no longer emitted.
-                                        // VarAddr::EffectPerform scans the accumulated group for
-                                        // Value::Function { instance_of: Some((class_id, method)) }
-                                        // at call time — no synthesized dispatcher needed.
-
-                                        // Mangled binding slot for dispatch.
-                                        // Lower the method body and stamp instance_of so the
-                                        // evaluator can locate this function via EffectPerform scan.
-                                        let binding_name = crate::type_def::instance_binding_name(
-                                            &class_decl_name(class_name),
-                                            &method_name,
-                                            &type_args,
-                                        );
+                                        let binding_name = method_name.clone();
                                         let key = Some(Arc::new(Spanned::new(
                                             CoreExpr::Str(binding_name),
                                             se.span.clone(),
                                         )));
-                                        // class_decl_id is written by the type checker via
-                                        // resolved_class_decl_id. If absent, the type checker did
-                                        // not run — emit an error and skip this method entry.
-                                        let class_decl_id: u64 = match resolved_class_decl_id.get()
-                                        {
-                                            Some(id) => id,
-                                            None => {
-                                                diagnostics.push(Diagnostic::error(
-                                                    "lower-error",
-                                                    format!(
-                                                        "instance declaration: class_decl_id not set \
-                                                         for method '{}' — type checker must run \
-                                                         before lowering instances",
-                                                        method_name
-                                                    ),
-                                                    se.span.clone(),
-                                                ));
-                                                continue;
-                                            }
-                                        };
                                         let mut lowered_value =
                                             lower_inner(&me.node.value, diagnostics, scope_frames);
-                                        // If the method body lowered to a CoreExpr::Fn, stamp
-                                        // instance_of = Some((class_decl_id, method_name)) on it.
-                                        // This is the discriminator VarAddr::EffectPerform uses
-                                        // when scanning the accumulated group for matching impls.
-                                        lowered_value.node = match lowered_value.node {
-                                            CoreExpr::Fn {
-                                                mut clauses,
-                                                captures,
-                                                instance_of: _,
-                                                resolved_fn_type,
-                                                desugared,
-                                                return_ann,
-                                            } => {
-                                                inject_instance_type_guards(
-                                                    &mut clauses,
-                                                    &instance_type_guards,
-                                                );
-                                                CoreExpr::Fn {
-                                                    clauses,
-                                                    captures,
-                                                    instance_of: Some((
-                                                        class_decl_id,
-                                                        method_name.clone(),
-                                                    )),
-                                                    resolved_fn_type,
-                                                    desugared,
-                                                    return_ann,
-                                                }
-                                            }
-                                            // Non-Fn body (e.g., a VarRef to an existing function):
-                                            // Cannot stamp instance_of without wrapping in a Fn,
-                                            // but a zero-param wrapper is arity-incompatible —
-                                            // when the method is called with args, the arity
-                                            // check rejects. We cannot copy the target's params
-                                            // because the VarRef is not yet resolved to a
-                                            // concrete function at lowering time. Emit a
-                                            // diagnostic warning so the author knows the
-                                            // instance method body must be an explicit [fn ...].
-                                            other => {
-                                                diagnostics.push(Diagnostic::warn(
-                                                    "lower-warning",
-                                                    format!(
-                                                        "instance method '{}': non-fn body cannot \
-                                                         carry instance_of stamp — use an explicit \
-                                                         [fn ...] wrapper",
-                                                        method_name
-                                                    ),
-                                                    lowered_value.span.clone(),
-                                                ));
-                                                other
-                                            }
-                                        };
+                                        // If the method body lowered to a CoreExpr::Fn,
+                                        // inject type guards for dispatch.
+                                        if let CoreExpr::Fn {
+                                            ref mut clauses, ..
+                                        } = lowered_value.node
+                                        {
+                                            inject_instance_type_guards(
+                                                clauses,
+                                                &instance_type_guards,
+                                            );
+                                        }
                                         let value = Arc::new(lowered_value);
                                         core_entries.push(Spanned::new(
                                             CoreEntry {
@@ -1112,7 +1031,6 @@ fn lower_expr(
             CoreExpr::Fn {
                 clauses: vec![clause],
                 captures: fn_captures,
-                instance_of: None,
                 desugared: *desugared,
                 resolved_fn_type,
                 // Carry return_ann into CoreExpr::Fn so the evaluator can populate
@@ -1273,19 +1191,11 @@ fn lower_expr(
         },
 
         SurfaceExpression::Decl(decl) => match decl.as_ref() {
-            crate::ast::SurfaceDeclaration::InstanceDecl {
-                class_name,
-                arms,
-                resolved_class_decl_id,
-                ..
-            } => {
+            crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } => {
                 let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
                 let syn_span = rust_span!();
 
                 for (pattern, method_entries) in arms {
-                    let dispatch_tags = extract_dispatch_tags(&pattern.expr);
-                    let type_args: Vec<&str> =
-                        dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
                     let instance_type_guards = extract_instance_type_guards(&pattern.expr);
 
                     for me in method_entries {
@@ -1299,74 +1209,22 @@ fn lower_expr(
                             None => continue,
                         };
 
-                        let binding_name = crate::type_def::instance_binding_name(
-                            &class_decl_name(class_name),
-                            &method_name,
-                            &type_args,
-                        );
+                        let binding_name = method_name.clone();
 
                         let key = Some(Arc::new(Spanned::new(
                             CoreExpr::Str(binding_name),
                             syn_span.clone(),
                         )));
-                        let class_decl_id: u64 = match resolved_class_decl_id.get() {
-                            Some(id) => id,
-                            None => {
-                                diagnostics.push(Diagnostic::info(
-                                    "lower-info",
-                                    format!(
-                                        "instance declaration: class_decl_id not set \
-                                         for method '{}' — class declared in nested \
-                                         scope; EffectPerform dispatch skipped",
-                                        method_name
-                                    ),
-                                    syn_span.clone(),
-                                ));
-                                continue;
-                            }
-                        };
                         let mut lowered_value =
                             lower_inner(&me.node.value, diagnostics, scope_frames);
-                        lowered_value.node = match lowered_value.node {
-                            CoreExpr::Fn {
-                                mut clauses,
-                                captures,
-                                instance_of: _,
-                                resolved_fn_type,
-                                desugared,
-                                return_ann,
-                            } => {
-                                inject_instance_type_guards(&mut clauses, &instance_type_guards);
-                                CoreExpr::Fn {
-                                    clauses,
-                                    captures,
-                                    instance_of: Some((class_decl_id, method_name.clone())),
-                                    resolved_fn_type,
-                                    desugared,
-                                    return_ann,
-                                }
-                            }
-                            // Non-Fn body (e.g., a VarRef to an existing function):
-                            // Cannot stamp instance_of without wrapping in a Fn, but
-                            // a zero-param wrapper is arity-incompatible — when the
-                            // method is called with args, the arity check rejects.
-                            // We cannot copy the target's params because the VarRef
-                            // is not yet resolved to a concrete function at lowering
-                            // time. Emit a diagnostic warning so the author knows
-                            // the instance method body must be an explicit [fn ...].
-                            other => {
-                                diagnostics.push(Diagnostic::warn(
-                                    "lower-warning",
-                                    format!(
-                                        "instance method '{}': non-fn body cannot carry \
-                                         instance_of stamp — use an explicit [fn ...] wrapper",
-                                        method_name
-                                    ),
-                                    lowered_value.span.clone(),
-                                ));
-                                other
-                            }
-                        };
+                        // If the method body lowered to a CoreExpr::Fn,
+                        // inject type guards for dispatch.
+                        if let CoreExpr::Fn {
+                            ref mut clauses, ..
+                        } = lowered_value.node
+                        {
+                            inject_instance_type_guards(clauses, &instance_type_guards);
+                        }
                         let value = Arc::new(lowered_value);
                         core_entries.push(Spanned::new(
                             CoreEntry {
@@ -2167,7 +2025,6 @@ fn lower_type_alias_to_constructor_dict(
                 CoreExpr::Fn {
                     clauses: vec![ctor_clause],
                     captures: fn_captures,
-                    instance_of: None,
                     desugared: false,
                     resolved_fn_type: None,
                     // Payload constructor: carry the qualified tag as return_ann so that

@@ -219,7 +219,7 @@ pub(crate) struct PendingCallDispatchData {
     /// Span of the function thunk — where the callee value was defined.
     /// Used as the primary span in not-a-function errors ("defined at").
     pub(crate) func_span: Span,
-    pub(crate) caller_effect_chain: crate::value::EffectChain,
+    pub(crate) caller_evidence: crate::value::Scope,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -274,7 +274,7 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     pub(crate) arg_idx: usize,
-    pub(crate) caller_effect_chain: crate::value::EffectChain,
+    pub(crate) caller_evidence: crate::value::Scope,
 }
 
 /// Payload for Cont::LetrecChainStep. Boxed to keep the Cont enum ≤96 bytes.
@@ -613,7 +613,7 @@ pub(crate) fn apply_predicate_to_subject(
     subj_span: Span,
     caller_env_id: u32,
     ctx: &Arc<EvalContext>,
-    caller_effect_chain: crate::value::EffectChain,
+    caller_evidence: crate::value::Scope,
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::value(subject, subj_span));
     let pred_thunk = Arc::new(Thunk::value(predicate, pred_span.clone()));
@@ -630,7 +630,7 @@ pub(crate) fn apply_predicate_to_subject(
                 node: CoreExpr::Int(0),
                 span: pred_span,
             }),
-            caller_effect_chain,
+            caller_evidence,
         },
     ))
 }
@@ -757,7 +757,7 @@ async fn dispatch_state(
             call_span,
             caller_env_id: builtin_caller_env,
             ctx: thunk_ctx,
-            caller_effect_chain,
+            caller_evidence,
         } => {
             // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
             // EvalStackGuard ensures pop on all exit paths; disarmed when delegating to a
@@ -795,7 +795,7 @@ async fn dispatch_state(
                         thunk_span: thunk_span.clone(),
                         mat_span: None,
                         arg_idx,
-                        caller_effect_chain: caller_effect_chain.clone(),
+                        caller_evidence: caller_evidence.clone(),
                     })));
                     // BuiltinForceArg continuation inherits eval_stack pop responsibility
                     eval_stack_guard.disarm();
@@ -835,7 +835,7 @@ async fn dispatch_state(
                     thunk_span: thunk_span.clone(),
                     mat_span: None,
                     arg_idx,
-                    caller_effect_chain,
+                    caller_evidence,
                 })));
                 // BuiltinForceArg continuation inherits eval_stack pop responsibility
                 eval_stack_guard.disarm();
@@ -858,7 +858,7 @@ async fn dispatch_state(
                     None
                 },
                 ctx: Arc::clone(&thunk_ctx),
-                caller_effect_chain: caller_effect_chain.clone(),
+                caller_evidence: caller_evidence.clone(),
             };
 
             match (def.func)(builtin_args).await.map_err(|mut e| {
@@ -901,7 +901,7 @@ async fn dispatch_state(
             caller_env_id,
             ctx: thunk_ctx,
             original_call,
-            caller_effect_chain,
+            caller_evidence,
         } => {
             // func is Arc<Thunk> directly — no arena lookup needed.
             let func_thunk = func;
@@ -938,7 +938,7 @@ async fn dispatch_state(
                     original_call,
                     tail_hint,
                     func_span,
-                    caller_effect_chain,
+                    caller_evidence,
                 },
             )));
             eval_stack_guard.disarm();
@@ -1241,19 +1241,6 @@ async fn dispatch_state(
                 mat_span: None,
             }
         }
-
-        // EffectPerform dispatcher — materialize to Value::EffectPerformDispatcher.
-        // T-2146: Candidates are already-materialized Value::Function values collected
-        // from the accumulated group. When this dispatcher is called, PendingCallDispatch
-        // will try each candidate in order using invoke_function.
-        UnevaluatedState::EffectPerform { candidates } => {
-            let dispatcher = crate::value::Value::EffectPerformDispatcher {
-                candidates: std::sync::Arc::new(candidates),
-                type_val: crate::value::unknown_type_val(),
-            };
-            thunk.settle(Ok(dispatcher.clone()));
-            Action::Continue(Ok(dispatcher))
-        }
     }
 }
 
@@ -1334,7 +1321,7 @@ pub(crate) async fn apply_cont(
                 original_call,
                 tail_hint,
                 func_span,
-                caller_effect_chain,
+                caller_evidence,
             } = *data;
             // Inherited guard: PendingCallDispatch inherits the eval_stack entry
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
@@ -1526,7 +1513,7 @@ pub(crate) async fn apply_cont(
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
-                                        caller_effect_chain: caller_effect_chain.clone(),
+                                        caller_evidence: caller_evidence.clone(),
                                     };
                                     invoke_function_tco(&call_ctx).await
                                 };
@@ -1564,7 +1551,7 @@ pub(crate) async fn apply_cont(
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
-                                        caller_effect_chain: caller_effect_chain.clone(),
+                                        caller_evidence: caller_evidence.clone(),
                                     };
                                     invoke_function(&call_ctx).await
                                 };
@@ -1651,7 +1638,7 @@ pub(crate) async fn apply_cont(
                                     call_span: call_span.clone(),
                                     caller_env_id,
                                     ctx: thunk_ctx,
-                                    caller_effect_chain: caller_effect_chain.clone(),
+                                    caller_evidence: caller_evidence.clone(),
                                 });
                                 return Action::Materialize { thunk, mat_span };
                             }
@@ -1672,7 +1659,7 @@ pub(crate) async fn apply_cont(
                                         None
                                     },
                                     ctx: Arc::clone(&thunk_ctx),
-                                    caller_effect_chain: caller_effect_chain.clone(),
+                                    caller_evidence: caller_evidence.clone(),
                                 };
                                 (def.func)(builtin_args).await.map_err(|mut e| {
                                     e.set_arity_callee(Some(def.name.into()));
@@ -1736,76 +1723,6 @@ pub(crate) async fn apply_cont(
                                 thunk.settle(Ok(result_val.clone()));
                             }
                             Action::Continue(Ok(result_val))
-                        }
-                        Value::EffectPerformDispatcher { candidates, .. } => {
-                            // T-2146: Try each candidate function in order until one matches.
-                            // Each candidate is a complete Value::Function with its own closure_env,
-                            // clauses, and annotation. We iterate through candidates and use
-                            // invoke_function on each until we get a match (Some(frame)).
-                            use crate::eval_call::{invoke_function, CallContext};
-
-                            let args_ref = args.as_deref().expect("args set above");
-                            let named_ref = named.as_ref().expect("named set above").as_deref();
-
-                            // Try each candidate in order (innermost-first, as collected in eval_core.rs).
-                            let mut last_error: Option<Box<crate::error::EvalError>> = None;
-                            for candidate_value in candidates.iter() {
-                                if let Value::Function {
-                                    clauses,
-                                    closure_env,
-                                    ..
-                                } = candidate_value.as_ref()
-                                {
-                                    let call_ctx = CallContext {
-                                        clauses,
-                                        closure_env: Arc::clone(closure_env),
-                                        positional: args_ref,
-                                        named: named_ref,
-                                        call_span: call_span.clone(),
-                                        ctx: &thunk_ctx,
-                                        caller_effect_chain: caller_effect_chain.clone(),
-                                    };
-                                    match invoke_function(&call_ctx).await {
-                                        Ok(result_thunk) => {
-                                            // Found a matching clause — memoize and return.
-                                            if !tail_hint {
-                                                stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                                    thunk: Arc::clone(&thunk),
-                                                    origin,
-                                                    thunk_span: thunk_span.clone(),
-                                                    mat_span: mat_span.clone(),
-                                                })));
-                                                eval_stack_guard.disarm();
-                                            }
-                                            return Action::Materialize {
-                                                thunk: result_thunk,
-                                                mat_span,
-                                            };
-                                        }
-                                        Err(e) => {
-                                            // This candidate didn't match — try the next one.
-                                            // Keep the last error for diagnostics if all fail.
-                                            last_error = Some(e);
-                                        }
-                                    }
-                                }
-                            }
-                            // No candidate matched — return the last error or a generic no-match error.
-                            let err = if let Some(e) = last_error {
-                                e
-                            } else {
-                                Box::new(EvalError::user_error(
-                                    "no matching instance for EffectPerform dispatch".to_string(),
-                                    call_span.clone(),
-                                ))
-                            };
-                            let mut decorated = decorate(err);
-                            decorated.push_frame(
-                                origin.as_deref().unwrap_or("call").to_string(),
-                                call_span.clone(),
-                            );
-                            thunk.settle(Err(Arc::new((*decorated).clone())));
-                            Action::Continue(Err(decorated))
                         }
                         other => {
                             // Extract the name of what was called (from original_call or call_span).
@@ -2071,7 +1988,7 @@ pub(crate) async fn apply_cont(
                 thunk_span,
                 mat_span,
                 arg_idx,
-                caller_effect_chain,
+                caller_evidence,
             } = *data;
             // Inherited guard: BuiltinForceArg inherits the eval_stack entry
             // pushed by force_step(PendingBuiltin). Auto-pops on all exit paths;
@@ -2121,7 +2038,7 @@ pub(crate) async fn apply_cont(
                                 thunk_span: thunk_span.clone(),
                                 mat_span: mat_span.clone(),
                                 arg_idx: next_idx,
-                                caller_effect_chain: caller_effect_chain.clone(),
+                                caller_evidence: caller_evidence.clone(),
                             })));
                             // Next BuiltinForceArg inherits eval_stack pop responsibility
                             eval_stack_guard.disarm();
@@ -2158,7 +2075,7 @@ pub(crate) async fn apply_cont(
                             thunk_span: thunk_span.clone(),
                             mat_span: mat_span.clone(),
                             arg_idx: next_idx,
-                            caller_effect_chain: caller_effect_chain.clone(),
+                            caller_evidence: caller_evidence.clone(),
                         })));
                         // Next BuiltinForceArg inherits eval_stack pop responsibility
                         eval_stack_guard.disarm();
@@ -2181,7 +2098,7 @@ pub(crate) async fn apply_cont(
                             None
                         },
                         ctx: Arc::clone(&thunk_ctx),
-                        caller_effect_chain: caller_effect_chain.clone(),
+                        caller_evidence: caller_evidence.clone(),
                     };
                     match (def.func)(builtin_args)
                         .await
@@ -2629,7 +2546,7 @@ pub(crate) async fn apply_cont(
                             group: crate::value::scope_extend(&frame.group, new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
-                            effect_chain: frame.effect_chain.clone(),
+                            caller_evidence: frame.caller_evidence.clone(),
                         });
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
@@ -2720,7 +2637,7 @@ pub(crate) async fn apply_cont(
                             group: crate::value::scope_extend(&frame.group, new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
-                            effect_chain: frame.effect_chain.clone(),
+                            caller_evidence: frame.caller_evidence.clone(),
                         });
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
@@ -2911,10 +2828,7 @@ pub(crate) async fn apply_cont(
                                     std::sync::Arc::new(EvalFrame::for_function_call(
                                         std::sync::Arc::new(closure_env_vec.clone()),
                                         vec![],
-                                        std::sync::Arc::new(crate::value::EffectChainNode {
-                                            group: crate::value::empty_scope(),
-                                            tail: None,
-                                        }),
+                                        crate::value::empty_scope(),
                                     ));
 
                                 // T-2128: Build binding_map from CoreClause.params instead of
@@ -2988,7 +2902,7 @@ pub(crate) async fn apply_cont(
                                 let arm_frame = EvalFrame::for_function_call(
                                     Arc::new(closure_env_vec),
                                     params_vec,
-                                    frame.effect_chain.clone(),
+                                    frame.caller_evidence.clone(),
                                 );
 
                                 // If guard expression pattern, evaluate it to check if truthy.
@@ -3111,10 +3025,7 @@ pub(crate) async fn apply_cont(
                     // PM1: If the guard is callable and we haven't yet invoked it, do so
                     // iteratively via the CEK machine rather than block_on_anywhere.
                     if !callable_invoked {
-                        if let Value::Function { .. }
-                        | Value::Builtin { .. }
-                        | Value::EffectPerformDispatcher { .. } = &guard_value
-                        {
+                        if let Value::Function { .. } | Value::Builtin { .. } = &guard_value {
                             // Create Arc<Thunk> for scrutinee and predicate directly.
                             let scrutinee_thunk =
                                 Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));
@@ -3134,7 +3045,7 @@ pub(crate) async fn apply_cont(
                                         node: CoreExpr::Int(0),
                                         span: match_span.clone(),
                                     }),
-                                    caller_effect_chain: parent_frame.effect_chain.clone(),
+                                    caller_evidence: parent_frame.caller_evidence.clone(),
                                 },
                             ));
                             // Push MatchGuardCheck again with callable_invoked=true.
@@ -3157,11 +3068,7 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let guard_chain: crate::value::EffectChain =
-                        Arc::new(crate::value::EffectChainNode {
-                            group: Arc::clone(&frame.group),
-                            tail: Some(Arc::clone(&frame.effect_chain)),
-                        });
+                    let guard_chain: crate::value::Scope = Arc::clone(&frame.group);
                     let guard_passed_result =
                         if let Some(ref binding_name) = guard_matchable_binding {
                             crate::eval::call_to_match_resolved(
@@ -3427,7 +3334,7 @@ fn eval_structural_pattern_inner<'a>(
                         match_span.clone(),
                         0,
                         ctx,
-                        pctx.frame.effect_chain.clone(),
+                        pctx.frame.caller_evidence.clone(),
                     );
 
                     let pred_result = materialize(&pred_call_thunk, Some(match_span), ctx).await?;
@@ -3436,10 +3343,7 @@ fn eval_structural_pattern_inner<'a>(
                         &pred_result,
                         ctx,
                         match_span,
-                        Arc::new(crate::value::EffectChainNode {
-                            group: Arc::clone(&frame.group),
-                            tail: Some(Arc::clone(&frame.effect_chain)),
-                        }),
+                        Arc::clone(&frame.group),
                     )
                     .await?
                     {
@@ -3691,10 +3595,7 @@ fn eval_structural_pattern_inner<'a>(
                                     &call_result,
                                     ctx,
                                     match_span,
-                                    Arc::new(crate::value::EffectChainNode {
-                                        group: Arc::clone(&frame.group),
-                                        tail: Some(Arc::clone(&frame.effect_chain)),
-                                    }),
+                                    Arc::clone(&frame.group),
                                 )
                                 .await
                             }
@@ -3725,10 +3626,7 @@ fn eval_structural_pattern_inner<'a>(
                                 &guard_result,
                                 ctx,
                                 match_span,
-                                Arc::new(crate::value::EffectChainNode {
-                                    group: Arc::clone(&frame.group),
-                                    tail: Some(Arc::clone(&frame.effect_chain)),
-                                }),
+                                Arc::clone(&frame.group),
                             )
                             .await
                         }
@@ -4597,10 +4495,7 @@ mod tests {
             span,
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
-            Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            crate::value::empty_scope(),
         ));
 
         // Force via the CEK machine (not via materialize() recursive path).
@@ -4714,10 +4609,7 @@ mod tests {
             span,
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
-            Arc::new(crate::value::EffectChainNode {
-                group: crate::value::empty_scope(),
-                tail: None,
-            }),
+            crate::value::empty_scope(),
         ));
 
         // Force via CEK — exercises BuiltinForceArg loop for both positions.
