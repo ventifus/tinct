@@ -26,7 +26,21 @@
     TypeConstructor: [name: String]
     TypeApplication: [ctor: TypeNode  args: TypeNode]
     IntLiteral:    [n: Integer]
-    StringLiteral: [s: String]]
+    StringLiteral: [s: String]
+    Program
+    Document
+    CoreDocument
+    TypeContext
+    DirCap
+    Handle
+    File
+    BuilderHandle
+    Task
+    Channel
+    Context
+    ReactiveCell
+    ClockCap
+    Scope]
 
   Integer: TypeNode.Int
   String:  TypeNode.String
@@ -38,6 +52,20 @@
   Proxy:   TypeNode.Proxy
   Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
   Callable: TypeNode.Callable
+  Program: TypeNode.Program
+  Document: TypeNode.Document
+  CoreDocument: TypeNode.CoreDocument
+  TypeContext: TypeNode.TypeContext
+  DirCap: TypeNode.DirCap
+  Handle: TypeNode.Handle
+  File: TypeNode.File
+  BuilderHandle: TypeNode.BuilderHandle
+  Task: TypeNode.Task
+  Channel: TypeNode.Channel
+  Context: TypeNode.Context
+  ReactiveCell: TypeNode.ReactiveCell
+  ClockCap: TypeNode.ClockCap
+  Scope: TypeNode.Scope
 ]
 
 ---
@@ -153,7 +181,7 @@
   # log-step: write msg to state.stderr and return state with updated handle.
   # The returned state.stderr is the genuine consumer — it is forced when the next
   # stage (or the reduce's passed computation) accesses state.stderr.
-  log-step: [fn [let msg@String state@[stderr: Handle]]
+  log-step: [fn [let msg@String state@[stderr: Dict]]
     [merge state [stderr: [call [builtin-dict-get "write" %stderr] [builtin-string-concat msg "\n"] state.stderr]]]]
 
   merge: [fn [let a b]
@@ -300,7 +328,7 @@
   # creates mutual dependencies that the evaluator detects as cycles (T-1646).
   uses-scope: [fn [let module-names@Dict tc@TypeContext env@Dict err]
     [reduce
-      [fn [let acc@[impls: Dict  stderr: Handle] name]
+      [fn [let acc@[impls: Dict  stderr: Dict] name]
         # Intermediate dict: path and result (type-checking side effect).
         # builtin-typecheck-doc updates tc as a side effect — TypeContext is mutable.
         # The type-stage scope is pre-seeded by lib.rs; no builtin-tc-update-type-stage-env needed.
@@ -327,7 +355,7 @@
                    0: [merge acc.impls [builtin-module name]]
                    1: [merge acc.impls [builtin-module name]]]
          stderr: acc.stderr]]
-      [@[impls: Dict  stderr: Handle] [impls: []  stderr: err]]
+      [@[impls: Dict  stderr: Dict] [impls: []  stderr: err]]
       module-names]]
 
   # core-tc: TypeContext pre-initialized by lib.rs with the builtin_core type-stage scope
@@ -388,7 +416,7 @@
 
   # ── Stage: load-bytes ─────────────────────────────────────────────────────────
   # Opens state.path under cap and reads all bytes. Adds: bytes.
-  load-bytes: [fn [let cap@DirCap state@[path: String  diagnostics: Dict  stderr: Handle]]
+  load-bytes: [fn [let cap@DirCap state@[path: String  diagnostics: Dict  stderr: Dict]]
     [merge state [bytes: [read-file [builtin-file-open cap state.path ["read"] -1 -1] [builtin-bytes]]]]]
 
   # ── Stage: load-from-string ───────────────────────────────────────────────────
@@ -399,7 +427,7 @@
   # ── Stage: parse-source ───────────────────────────────────────────────────────
   # Parses state.bytes into state.parsed and desugars the program.
   # On parse errors: emits diagnostics via state.stderr and sets state.diagnostics.
-  parse-source: [fn [let state@[path: String  bytes: Bytes  diagnostics: Dict  stderr: Handle]]
+  parse-source: [fn [let state@[path: String  bytes: Bytes  diagnostics: Dict  stderr: Dict]]
     [r:     [builtin-parse state.bytes state.path]]
     [diags: [@Dict r.diagnostics]]
     [n:     [builtin-dict-length diags]]
@@ -417,7 +445,7 @@
   # Uses Scope protocol: builtin-resolve takes Scope, builtin-eval takes
   # (lowered, Scope) and returns a Scope. builtin-scope-exports extracts the Dict.
   # Adds: env, last-result.
-  eval-program: [fn [let seed@Scope tc@TypeContext state@[parsed: [documents: Dict]  stderr: Handle  diagnostics: Dict]]
+  eval-program: [fn [let seed@Scope tc@TypeContext state@[parsed: [documents: Dict]  stderr: Dict  diagnostics: Dict]]
     # Capture Boolean from the outer closure before any inner dict could shadow it.
     # bool-type ≠ Boolean, so this is not a self-reference.
     [bool-type: Boolean]
@@ -428,13 +456,13 @@
     # uses-scope passes only the type-stage module's own exports to
     # builtin-tc-update-type-stage-env, never the full env. See uses-scope.
     [env: [builtin-scope-extend seed [Boolean: bool-type  True: bool-type.True  False: bool-type.False]]]
-    [step: [fn [let acc@[env: Scope  tc: TypeContext  last-result: Dict  stderr: Handle  diagnostics: Dict] doc]
+    [step: [fn [let acc@[env: Scope  tc: TypeContext  last-result: Dict  stderr: Dict  diagnostics: Dict] doc]
       # Short-circuit: if a previous doc in this pass already has errors, skip remaining docs.
       [match [builtin-eq-int [count-errors acc.diagnostics] 0]
         0: acc
         1: [call [fn [let]
           [hdr:   [builtin-doc-meta doc]]
-          [mods:  [@[impls: Dict  stderr: Handle] [uses-scope [get-or [] "uses" hdr] acc.tc acc.env acc.stderr]]]
+          [mods:  [@[impls: Dict  stderr: Dict] [uses-scope [get-or [] "uses" hdr] acc.tc acc.env acc.stderr]]]
           [scope: [builtin-scope-extend acc.env mods.impls]]
           [res:   [builtin-resolve doc scope]]
           [err:   [emit-diagnostics res.diagnostics mods.stderr]]
@@ -477,7 +505,7 @@
       [@[ts: Dict  rt: Dict] [ts: []  rt: []]]
       state.parsed.documents]]
     # Pass 1: evaluate type-stage documents. Accumulator threads env dict.
-    [ts: [reduce step [@[env: Scope  tc: TypeContext  last-result: Dict  stderr: Handle  diagnostics: Dict] [env: .env  tc: .tc  last-result: []  stderr: state.stderr  diagnostics: []]] docs.ts]]
+    [ts: [reduce step [@[env: Scope  tc: TypeContext  last-result: Dict  stderr: Dict  diagnostics: Dict] [env: .env  tc: .tc  last-result: []  stderr: state.stderr  diagnostics: []]] docs.ts]]
     # Force ts once via ts-tc before rt's initial acc accesses ts multiple times.
     # Without this, rt's initial acc forces ts.env/ts.tc/ts.stderr/ts.diagnostics
     # concurrently — a diamond-DAG that triggers false InProgress cycle detection (T-1646).
@@ -599,9 +627,9 @@
   # at the pipeline level when diagnostics has errors.
   # builtin-eval errors ARE caught via a nested builtin-try per-document.
   # Adds: env, last-result, diagnostics, doc-results, documents.
-  eval-docs: [fn [let base-env@Scope state@[stderr: Handle  parsed: [documents: Dict]]]
-    [test-state: [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Handle  diagnostics: Dict  doc-index: Integer  doc-results: Dict] [reduce
-      [fn [let s@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Handle  diagnostics: Dict  doc-index: Integer  doc-results: Dict] doc]
+  eval-docs: [fn [let base-env@Scope state@[stderr: Dict  parsed: [documents: Dict]]]
+    [test-state: [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] [reduce
+      [fn [let s@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] doc]
         [env:     [builtin-dict-get "env"         s]]
         [prev:    [builtin-dict-get "last-result" s]]
         [tc:      [builtin-dict-get "tc"          s]]
@@ -614,7 +642,7 @@
           0: s
           1: [call [fn [let]
             [hdr:   [builtin-doc-meta doc]]
-            [mods:  [@[impls: Dict  stderr: Handle] [uses-scope [get-or [] "uses" hdr] core-tc env err]]]
+            [mods:  [@[impls: Dict  stderr: Dict] [uses-scope [get-or [] "uses" hdr] core-tc env err]]]
             # Inject %: prev into env for non-first documents.
             # The first document (idx == 0) has no upstream %; later documents receive
             # the previous document's result as %, mirroring how prelude.llt threads % through
@@ -670,7 +698,7 @@
                      ...: [call [fn [let]
                        [merge s [diagnostics: [append-diags diags [$evaled]]
                                   stderr: err]]]]]]]]]]]]
-      [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Handle  diagnostics: Dict  doc-index: Integer  doc-results: Dict]
+      [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict]
        [env:         base-env
         last-result: []
         tc:         [get-or core-tc "tc" state]
@@ -697,7 +725,7 @@
   # match either kind. Callers distinguish severity by reading d.level on each entry.
   # Also runs the pipeline stage lint (builtin-lint-pipeline-docs) to emit
   # abandoned-output warnings for pipeline keys not consumed by the next stage.
-  typecheck-docs: [fn [let tc@TypeContext base-env@Scope state@[env: Scope  documents: Dict  stderr: Handle  last-result: Dict]]
+  typecheck-docs: [fn [let tc@TypeContext base-env@Scope state@[env: Scope  documents: Dict  stderr: Dict  last-result: Dict]]
     # doc-results from eval-docs: dict of {doc-index → result}. Used to inject % per-document
     # so abandoned-input errors only fire when the CORRECT document ignores its pipeline %.
     [doc-results: [get-or [] "doc-results" state]]
@@ -768,7 +796,7 @@
   # cli/out/llt.llt runs as the output formatter with % = last-result.
   # The formatter writes llt-repr(%) to a StringWriter (prelude's functional
   # string capture). Output = formatter's StringWriter.cells — same as the CLI.
-  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Handle] [let source path prelude-env@Dict prelude-tc stderr-h]
+  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Dict] [let source path prelude-env@Dict prelude-tc stderr-h]
     [out: [make-string-handle]]
     # Parse first so pragma headers are available before the env is constructed.
     # .path references the function parameter from the parent scope, not the letrec
@@ -877,7 +905,7 @@
     [expected-error: [extract-section content "error"]]
 
     # Run test through the pipeline. Errors are returned as state.diagnostics (no builtin-try needed).
-    [run:      [@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Handle] [run-test-pipeline source p.path prelude-env prelude-tc stderr-h]]]
+    [run:      [@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Dict] [run-test-pipeline source p.path prelude-env prelude-tc stderr-h]]]
     [diags:    [@Dict run.diagnostics]]
     [output:   [@String run.output]]
     [tc-diags: [@Dict run.tc-diagnostics]]
@@ -1006,14 +1034,14 @@
 
 [
   # Prelude loading pipeline. Each stage short-circuits via if-ok when diagnostics has errors.
-  # B-688: TypeAssert weakened to [diagnostics: Dict  stderr: Handle] — the fields that are
+  # B-688: TypeAssert weakened to [diagnostics: Dict  stderr: Dict] — the fields that are
   # always present regardless of which if-ok stage short-circuits. full-env and tc-ready are
   # only added by export/set-tc-ready (late stages); on early failure they don't exist.
   # Dummy %prelude: [] seed — breaks the B-688 cycle (prelude-env → prel.full-env →
   # eval-program → prelude-env). During prelude's own loading, %prelude is only captured
   # in the `include` closure, never forced. A [] placeholder satisfies the resolver so
   # prelude docs can reference %prelude without a resolve error.
-  prel: [@[diagnostics: Dict  stderr: Handle] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
+  prel: [@[diagnostics: Dict  stderr: Dict] [[path: "prelude.llt"  diagnostics: []  stderr: %stderr]
     | [if-ok log-step "prelude: loading"]
     | [if-ok load-bytes %libdir]
     | [if-ok log-step "prelude: parsing"]
@@ -1095,9 +1123,9 @@
                  []]]]]
 
   run: [reduce
-    [fn [let s@[idx: Integer  total: Integer  passed: Integer  first-fail: String  stdout: Handle  stderr: Handle] item]
+    [fn [let s@[idx: Integer  total: Integer  passed: Integer  first-fail: String  stdout: Dict  stderr: Dict] item]
       # run-test takes the current stderr handle and returns result including result.stderr.
-      [result: [@[path: String  passed: Boolean  actual: String  expected: String  stderr: Handle] [run-test item prelude-env prel.tc-ready s.stderr]]]
+      [result: [@[path: String  passed: Boolean  actual: String  expected: String  stderr: Dict] [run-test item prelude-env prel.tc-ready s.stderr]]]
       # Thread stdout and stderr handles forward — each write returns the next handle.
       # Both chains collapse when the final dict's stdout/stderr fields are forced.
       [new-stdout: [call [builtin-dict-get "write" %stdout] [format-result result] s.stdout]]
@@ -1137,4 +1165,4 @@
       0: [join "" [", " [builtin-int->string n-failed] " failed\n" run.first-fail "\n"]]
       1: "\n"]]]
   run.stdout]]
-[merge [%stdout.flush summary-stdout] [%stderr.flush [@[stderr: Handle] run].stderr]]
+[merge [%stdout.flush summary-stdout] [%stderr.flush [@[stderr: Dict] run].stderr]]
