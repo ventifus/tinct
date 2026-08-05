@@ -3,66 +3,7 @@
 //! This module contains `invoke_proxy_handler`, extracted
 //! from `eval.rs` to keep that module focused on the core evaluation loop.
 
-use std::sync::Arc;
 
-use crate::ast::Span;
-use crate::error::{EvalError, EvalResult};
-use crate::eval::{materialize, EvalContext};
-use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{Thunk, Value};
-
-/// Invoke a proxy handler with a key value, returning the result thunk.
-pub(crate) async fn invoke_proxy_handler(
-    handler: &Arc<Thunk>,
-    key_val: Value,
-    caller_env_id: u32,
-    ctx: &Arc<EvalContext>,
-    access_span: &Span,
-    caller_evidence: crate::value::Scope,
-) -> EvalResult<Arc<Thunk>> {
-    // Performance: handler thunk is memoized by Launchbury sharing, but each
-    // access clones the materialized Value. Consider eager materialization in
-    // builtin_proxy for hot proxy access.
-    let handler_val = materialize(handler, Some(access_span), ctx).await?;
-    let key_arg_id = Arc::new(Thunk::value(key_val, access_span.clone()));
-    match handler_val {
-        Value::Function {
-            clauses,
-            closure_env,
-            ..
-        } => {
-            invoke_function(&CallContext {
-                clauses: &clauses,
-                closure_env,
-                positional: &[key_arg_id],
-                named: None,
-                call_span: access_span
-                    .clone()
-                    .with_name(Arc::from("proxy field access")),
-                ctx,
-                caller_evidence: caller_evidence.clone(),
-            })
-            .await
-        }
-        Value::Builtin { def, .. } => Ok(Arc::new(Thunk::builtin_call(
-            def,
-            vec![key_arg_id],
-            None,
-            access_span
-                .clone()
-                .with_name(Arc::from("proxy field access")),
-            caller_env_id,
-            Arc::clone(ctx),
-            caller_evidence.clone(),
-        ))),
-        _ => Err(EvalError::type_mismatch(
-            "Function or Builtin",
-            handler_val.type_name(),
-            access_span.clone(),
-        )
-        .into()),
-    }
-}
 
 #[cfg(test)]
 mod tests {

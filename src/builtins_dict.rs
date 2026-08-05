@@ -282,11 +282,8 @@ pub(crate) fn builtin_length(
 /// - Dict: O(1) key lookup
 /// - Variant (with payload): auto-unpacks payload dict and looks up key; falls back to
 ///   TyConDef constructor constants (T-1358) if not found in payload
-/// - Variant (unit, no payload): looks up TyConDef constructor constants directly
-/// - Proxy: invokes the proxy handler with the key string
-///
-/// This is the single primitive backing both dot-access (`target.field`) and explicit
-/// `[get key target]`. The lowerer desugars dot-access to `[builtin-dict-get key target]`.
+/// Dict-only key lookup. Type error on non-Dict values.
+/// The lowerer desugars dot-access to `[builtin-dict-get key target]`.
 pub(crate) fn builtin_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -294,7 +291,6 @@ pub(crate) fn builtin_get(
         args,
         named,
         call_span,
-        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -303,160 +299,34 @@ pub(crate) fn builtin_get(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
-        // Materialize the key
         let thunk0 = args[0].clone();
         let key_val = thunk0.require_value()?.clone();
         let key = value_to_hashable_key(&key_val, "builtin-dict-get", thunk0.span.clone())?;
 
-        // Materialize the target
         let thunk1 = args[1].clone();
         let target_val = thunk1.require_value()?.clone();
         let target_span = thunk1.span.clone();
 
-        builtin_get_on_value(
-            key,
-            target_val,
-            target_span,
-            call_span,
-            None,
-            &ctx,
-            crate::value::empty_scope(),
-        )
-        .await
-    })
-}
-
-/// Inner recursive helper for `builtin-dict-get`, handling Dict, Variant auto-unpack,
-/// TyConDef constructor constants, and Proxy dispatch.
-///
-/// `variant_tag`: when accessing a Variant payload, carry the tag for TyConDef constant fallback.
-async fn builtin_get_on_value(
-    key: HashableValue,
-    target_val: Value,
-    target_span: crate::ast::Span,
-    call_span: crate::ast::Span,
-    variant_tag: Option<String>,
-    ctx: &Arc<crate::eval::EvalContext>,
-    caller_evidence: crate::value::Scope,
-) -> EvalResult<Arc<Thunk>> {
-    let key_str = key.to_string();
-
-    match target_val {
-        Value::Dict { entries: map, .. } => {
-            let thunk_opt = map.get(&key);
-            match thunk_opt {
-                Some(thunk) => Ok(Arc::clone(thunk)),
-                None => {
-                    // Key not found: check TyConDef constructor constants first
-                    // when this access came through a variant payload (T-1358).
-                    if let (HashableValue::Str(ref field_name), Some(ref tag)) =
-                        (&key, &variant_tag)
-                    {
-                        if let Some(type_name) = tag.split('.').next() {
-                            if let Some(tycon_env) = ctx.tycon_env.get() {
-                                if let Some(def) = tycon_env.get(type_name) {
-                                    if let Some(constants) =
-                                        def.constructor_constants.get(tag.as_str())
-                                    {
-                                        if let Some(const_val) =
-                                            constants.get(field_name.as_ref() as &str)
-                                        {
-                                            let thunk = Arc::new(Thunk::value(
-                                                const_val.clone(),
-                                                call_span.clone(),
-                                            ));
-                                            return Ok(thunk);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        match target_val {
+            Value::Dict { entries: map, .. } => {
+                let key_str = key.to_string();
+                match map.get(&key) {
+                    Some(thunk) => Ok(Arc::clone(thunk)),
+                    None => {
+                        let available_keys: Vec<String> =
+                            map.keys().map(|k| k.to_string()).collect();
+                        Err(EvalError::key_not_found(&key_str, available_keys, target_span).into())
                     }
-                    // No constant found — report key-not-found error.
-                    let available_keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
-                    Err(EvalError::key_not_found(&key_str, available_keys, target_span).into())
                 }
             }
-        }
-        Value::Proxy { handler, .. } => {
-            // Proxy handler invocation: call handler with the key string.
-            crate::eval_access::invoke_proxy_handler(
-                &handler,
-                string_val(&key_str),
-                0,
-                ctx,
-                &call_span,
-                caller_evidence,
-            )
-            .await
-        }
-        Value::Variant { ctor, payload, .. } => {
-            // ctor holds the fully-qualified tag e.g. "Color.Red".
-            // composite_tag is the full qualified tag; tycon_name is the prefix.
-            let composite_tag = ctor.as_ref().to_string();
-            let tycon_name = crate::value::tycon_name_from_ctor(ctor.as_ref());
-            // Variant auto-unpacking: dot-access on a variant accesses the payload.
-            match payload {
-                Some(payload_id) => {
-                    let payload_span = payload_id.span.clone();
-                    let payload_val = materialize(&payload_id, Some(&call_span), ctx).await?;
-                    // Recurse with variant_tag set so TyConDef constants can be found.
-                    Box::pin(builtin_get_on_value(
-                        key,
-                        payload_val,
-                        payload_span,
-                        call_span,
-                        Some(composite_tag),
-                        ctx,
-                        caller_evidence,
-                    ))
-                    .await
-                }
-                None => {
-                    // Unit variant: try TyConDef constructor constants first (T-1358).
-                    if let HashableValue::Str(ref field_name) = key {
-                        if let Some(tycon_env) = ctx.tycon_env.get() {
-                            if let Some(def) = tycon_env.get(tycon_name) {
-                                if let Some(constants) =
-                                    def.constructor_constants.get(composite_tag.as_str())
-                                {
-                                    if let Some(const_val) =
-                                        constants.get(field_name.as_ref() as &str)
-                                    {
-                                        let thunk = Arc::new(Thunk::value(
-                                            const_val.clone(),
-                                            call_span.clone(),
-                                        ));
-                                        return Ok(thunk);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(EvalError::internal(
-                        format!("cannot access field .{key_str} on unit variant (no payload)"),
-                        target_span,
-                    )
-                    .into())
-                }
-            }
-        }
-        other => {
-            let key_display = match &key {
-                HashableValue::Int(n) => format!("key {n}"),
-                HashableValue::Str(s) => format!("key \"{s}\""),
-                other_key => format!("key {other_key}"),
-            };
-            let context = format!("builtin-dict-get ({key_display})");
-            Err(EvalError::type_mismatch_ctx(
-                context,
-                "Dict, Variant, or Proxy",
+            other => Err(EvalError::type_mismatch(
+                "Dict",
                 other.type_name(),
                 target_span,
             )
-            .into())
+            .into()),
         }
-    }
+    })
 }
 
 /// `builtin-has-key?`: Check whether a key exists in a dict.
