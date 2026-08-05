@@ -978,11 +978,20 @@ async fn infer_step(
                     }
                     r
                 }
-                _ => Err(vec![Diagnostic::error(
-                    "type-error",
-                    "unexpected declaration in expression position",
-                    node.span.clone(),
-                )]),
+                other => {
+                    let variant = match other {
+                        SurfaceDeclaration::TypeAlias { .. } => "TypeAlias",
+                        SurfaceDeclaration::ClassDecl { .. } => "ClassDecl",
+                        SurfaceDeclaration::InstanceDecl { .. } => "InstanceDecl",
+                        SurfaceDeclaration::SyntaxClass { .. } => "SyntaxClass",
+                        SurfaceDeclaration::Splice(_) => "Splice",
+                    };
+                    Err(vec![Diagnostic::error(
+                        "type-error",
+                        format!("declaration node in expression position: {variant}"),
+                        node.span.clone(),
+                    )])
+                }
             };
             match result {
                 Ok(t) => TypeCheckAction::Done(t),
