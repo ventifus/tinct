@@ -677,7 +677,6 @@ where
                         variadic: p.node.variadic,
                         slot: p.node.slot,
                         resolved_type: p.node.resolved_type.clone(),
-                        dispatch_guard: p.node.dispatch_guard,
                     })
                     .collect();
                 visitor.visit_function(&params, span)

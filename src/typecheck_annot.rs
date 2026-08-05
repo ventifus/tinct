@@ -3795,7 +3795,7 @@ pub(crate) async fn as_type_dispatch(
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
                 caller_effect_chain: std::sync::Arc::new(crate::value::EffectChainNode {
-                    group: crate::value::GroupSpine::empty(),
+                    group: crate::value::empty_scope(),
                     tail: None,
                 }),
             };
@@ -3892,17 +3892,17 @@ pub(crate) async fn eval_type_stage_expr(
             ));
         }
     }
-    // Use an empty GroupSpine as the root frame. Type-stage annotations resolve names
+    // Use an empty scope as the root frame. Type-stage annotations resolve names
     // through the EvalContext (ctx) which carries all accumulated entries via its
-    // root_group and scope_frames. An explicit GroupSpine is not needed here.
+    // root_group and scope_frames. An explicit scope is not needed here.
     let root_frame = {
-        let group = crate::value::GroupSpine::empty();
+        let group = crate::value::empty_scope();
         std::sync::Arc::new(crate::value::EvalFrame {
             group,
-            closure_env: crate::value::GroupSpine::empty(),
+            closure_env: crate::value::empty_scope(),
             params: std::sync::Arc::new(vec![]),
             effect_chain: std::sync::Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         })

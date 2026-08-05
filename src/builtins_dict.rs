@@ -321,7 +321,7 @@ pub(crate) fn builtin_get(
             None,
             &ctx,
             std::sync::Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         )

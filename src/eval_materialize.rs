@@ -2626,7 +2626,7 @@ pub(crate) async fn apply_cont(
                             })
                             .collect();
                         let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
-                            group: frame.group.extend(new_thunks),
+                            group: crate::value::scope_extend(&frame.group, new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
                             effect_chain: frame.effect_chain.clone(),
@@ -2717,7 +2717,7 @@ pub(crate) async fn apply_cont(
                             })
                             .collect();
                         let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
-                            group: frame.group.extend(new_thunks),
+                            group: crate::value::scope_extend(&frame.group, new_thunks),
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
                             effect_chain: frame.effect_chain.clone(),
@@ -2871,10 +2871,10 @@ pub(crate) async fn apply_cont(
                                     for (name, original_addr) in arm.captures.iter() {
                                         let found = match original_addr {
                                             VarAddr::Dispatch(_, slot) => {
-                                                frame.group.get(*slot as usize)
+                                                frame.group.get(*slot as usize).cloned()
                                             }
                                             VarAddr::ClosureCapture(i) => {
-                                                frame.closure_env.get(*i as usize)
+                                                frame.closure_env.get(*i as usize).cloned()
                                             }
                                             VarAddr::Parameter(i) => {
                                                 frame.params.get(*i as usize).cloned()
@@ -2912,7 +2912,7 @@ pub(crate) async fn apply_cont(
                                         std::sync::Arc::new(closure_env_vec.clone()),
                                         vec![],
                                         std::sync::Arc::new(crate::value::EffectChainNode {
-                                            group: crate::value::GroupSpine::empty(),
+                                            group: crate::value::empty_scope(),
                                             tail: None,
                                         }),
                                     ));
@@ -3848,7 +3848,7 @@ async fn bind_or_pin_name(
                     )
                     .into());
                 }
-                frame.group.get(i).expect("bounds check passed above")
+                Arc::clone(frame.group.get(i).expect("bounds check passed above"))
             }
             VarAddr::ClosureCapture(i) => {
                 let i = *i as usize;
@@ -3870,7 +3870,7 @@ async fn bind_or_pin_name(
                     )
                     .into());
                 }
-                frame.closure_env.get(i).expect("bounds check passed above")
+                Arc::clone(frame.closure_env.get(i).expect("bounds check passed above"))
             }
             VarAddr::Parameter(i) => {
                 let i = *i as usize;
@@ -4598,7 +4598,7 @@ mod tests {
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
             Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         ));
@@ -4715,7 +4715,7 @@ mod tests {
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
             Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         ));

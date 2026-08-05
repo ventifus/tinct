@@ -318,9 +318,9 @@ pub(crate) async fn eval_dict_core(
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
-    // EvalFrame-based letrec: static-key entry thunks are collected into group vector
-    // for Dispatch(_, slot) variable lookup. The frame is built once after the loop and
-    // patched into each non-literal CoreExpr thunk via try_claim/reset.
+    // EvalFrame-based letrec: static-key entry thunks are placed into scope_vec at their
+    // assigned_slot positions for Dispatch(_, slot) variable lookup. The frame is built
+    // once after the loop and patched into each non-literal CoreExpr thunk via try_claim/reset.
     //
     // ALL non-literal thunks (both static-key and computed-key) are patched with the
     // letrec frame so that computed-key entry values can access function parameters,
@@ -328,10 +328,9 @@ pub(crate) async fn eval_dict_core(
     // [$k: v] where $k is a computed key), the letrec frame is created with an empty
     // group but still carries params and closure_env from the outer frame.
     //
-    // Collect the outer thunk (what goes in the dict map / letrec group) for each static key.
-    // Position in this Vec corresponds to the Dispatch slot index assigned by the
-    // resolver — the i-th static-key entry goes at index i.
-    let mut letrec_slots: Vec<Arc<Thunk>> = Vec::new();
+    // Clone parent scope: static-key entries are placed at their resolver-assigned slot
+    // positions. Computed-key entries (no static key name) are appended sequentially.
+    let mut scope_vec: Vec<Arc<Thunk>> = outer_frame.group.as_ref().clone();
     // Collect the inner CoreExpr thunk for each non-literal entry (both static and computed key),
     // so we can patch its frame after the group Vec is assembled.
     let mut core_expr_thunks: Vec<Option<Arc<Thunk>>> = Vec::new();
@@ -511,7 +510,35 @@ pub(crate) async fn eval_dict_core(
         }
 
         if is_static_key {
-            letrec_slots.push(Arc::clone(&thunk));
+            if let Some(slot) = entry.node.assigned_slot {
+                let slot = slot as usize;
+                if slot < scope_vec.len() {
+                    scope_vec[slot] = Arc::clone(&thunk);
+                } else {
+                    // Gaps in scope_vec can occur when the resolver assigns non-sequential slots
+                    // (e.g., slot 0 for entry 'a', slot 2 for entry 'c' if slot 1 is reserved for
+                    // a parent-scope binding that is later overridden). Fill gaps with empty dicts
+                    // to maintain slot indexing invariant: scope_vec[N] must exist for all N < len.
+                    // Gap entries are never accessed by correct code — they exist only to preserve
+                    // the direct-indexing property (VarAddr::Dispatch(_, slot) -> scope_vec[slot]).
+                    scope_vec.resize_with(slot + 1, || {
+                        Arc::new(Thunk::value(
+                            Value::Dict {
+                                entries: IndexMap::new(),
+                                type_val: crate::value::unknown_type_val(),
+                            },
+                            crate::rust_span!(),
+                        ))
+                    });
+                    scope_vec[slot] = Arc::clone(&thunk);
+                }
+            } else {
+                // Defensive fallback: static-key entries without assigned_slot should not occur
+                // after resolve (resolver always assigns slots to static keys), but may happen
+                // for programmatically constructed CoreEntry bypassing the resolver pipeline.
+                // Append at end of scope_vec to avoid leaving the entry unmapped.
+                scope_vec.push(Arc::clone(&thunk));
+            }
         }
         // Track all non-literal thunks (both static and computed key) for frame patching.
         core_expr_thunks.push(core_expr_thunk);
@@ -520,11 +547,11 @@ pub(crate) async fn eval_dict_core(
     // Phase 2: build the shared letrec EvalFrame and patch it into each non-literal
     // CoreExpr thunk.
     //
-    // group: outer_frame.group (accumulated_group containing root entries + prior dict entries)
-    // EXTENDED with this dict's own letrec_slots. This ensures LGM(absolute_slot) lookups
-    // resolve correctly for both:
-    //   - Cross-dict refs (e.g., LGM(N) for a root or prior-dict entry) → outer_frame.group[N]
-    //   - Self-refs within this dict (e.g., LGM(outer_frame.group.len() + i)) → letrec_slots[i]
+    // group: scope_vec already contains the parent scope entries plus this dict's own
+    // static-key entries placed at their assigned_slot positions. This ensures
+    // LGM(absolute_slot) lookups resolve correctly for both:
+    //   - Cross-dict refs (e.g., LGM(N) for a root or prior-dict entry) → scope_vec[N]
+    //   - Self-refs within this dict → scope_vec[assigned_slot]
     //
     // closure_env: for document-level dicts (outer_frame.closure_env.is_empty()), carry
     // the outer_frame.group so that fns defined in this dict can capture cross-dict names via
@@ -542,10 +569,9 @@ pub(crate) async fn eval_dict_core(
     // static-key and computed-key). This ensures computed-key values (e.g., [$k: v]
     // in make-entry) can access function parameters and closures via the frame.
     if has_non_literal {
-        // Build extended group: outer group (accumulated) + this dict's letrec slots.
-        let group: std::sync::Arc<crate::value::GroupSpine> = outer_frame
-            .group
-            .extend(letrec_slots.iter().cloned().collect());
+        // Build group from scope_vec which already contains outer scope + this dict's entries
+        // placed at their assigned_slot positions.
+        let group: crate::value::Scope = std::sync::Arc::new(scope_vec);
 
         // closure_env: document-level dicts carry the outer group for fn captures;
         // fn-body dicts carry the fn's closure_env unchanged.

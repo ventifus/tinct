@@ -282,6 +282,7 @@ fn eval_quote_preprocess<'a>(
                                         SurfaceEntry {
                                             key: Some(key_node),
                                             value: value_node,
+                                            assigned_slot: std::sync::OnceLock::new(),
                                         },
                                         inner_span.clone(),
                                     ));
@@ -320,6 +321,7 @@ fn eval_quote_preprocess<'a>(
                             SurfaceEntry {
                                 key: processed_key,
                                 value: processed_value,
+                                assigned_slot: std::sync::OnceLock::new(),
                             },
                             entry.span.clone(),
                         ));
@@ -712,9 +714,9 @@ pub(crate) fn eval_core_expr<'a>(
             // cumulative offsets above them. No outer-frame traversal needed.
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
-                    VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize),
-                    VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
-                    VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
+                    VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize).cloned(),
+                    VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize).cloned(),
+                    VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
                     VarAddr::EffectPerform { class_id, method } => {
                         // T-2187: Scan frame.group and effect_chain for instance methods.
                         //
@@ -737,7 +739,7 @@ pub(crate) fn eval_core_expr<'a>(
                         //
                         // The effect_chain implements Koka evidence passing:
                         // - frame.group: For document-level frames, this IS the full accumulated
-                        //   chain (root → prelude → user doc entries via GroupSpine prev links).
+                        //   scope (root + prelude + user doc entries in a flat Vec).
                         //   For fn-call frames, this holds only local intermediate dict entries.
                         // - frame.effect_chain: A linked list of EffectChainNodes, each carrying
                         //   the caller's group at the call point. Traversing the chain from
@@ -745,14 +747,14 @@ pub(crate) fn eval_core_expr<'a>(
 
                         let mut candidates: Vec<Arc<Value>> = Vec::new();
 
-                        // Scan one GroupSpine for matching instance fns.
+                        // Scan one scope for matching instance fns.
                         // Iterates from innermost (highest slot) to outermost (slot 0).
                         // peek_result() succeeds for instance fn thunks because CoreExpr::Fn
                         // settles immediately as WHNF (Launchbury 1993).
-                        let scan_spine =
-                            |spine: &crate::value::GroupSpine, candidates: &mut Vec<Arc<Value>>| {
-                                for i in (0..spine.len()).rev() {
-                                    let Some(slot_thunk) = spine.get(i) else {
+                        let scan_scope =
+                            |scope: &crate::value::Scope, candidates: &mut Vec<Arc<Value>>| {
+                                for i in (0..scope.len()).rev() {
+                                    let Some(slot_thunk) = scope.get(i) else {
                                         continue;
                                     };
                                     if let Some(Ok(
@@ -770,18 +772,17 @@ pub(crate) fn eval_core_expr<'a>(
                             };
 
                         // 1. Scan current frame's local group.
-                        //    Document-level frames: group IS the full accumulated chain
-                        //    (root → prelude → user doc entries via GroupSpine prev links).
+                        //    Document-level frames: group IS the full accumulated scope.
                         //    Fn-call frames: group holds only local intermediate dict entries.
-                        scan_spine(&frame.group, &mut candidates);
+                        scan_scope(&frame.group, &mut candidates);
 
                         // 2. Traverse the effect chain from innermost to outermost.
                         //    Each node carries the caller's group at the call point.
                         //    This implements Koka evidence passing.
-                        scan_spine(&frame.effect_chain.group, &mut candidates);
+                        scan_scope(&frame.effect_chain.group, &mut candidates);
                         let mut tail = &frame.effect_chain.tail;
                         while let Some(node) = tail {
-                            scan_spine(&node.group, &mut candidates);
+                            scan_scope(&node.group, &mut candidates);
                             tail = &node.tail;
                         }
 
@@ -1028,9 +1029,9 @@ pub(crate) fn eval_core_expr<'a>(
                 let mut closure_env_vec: Vec<Arc<Thunk>> = Vec::with_capacity(captures.len());
                 for (name, original_addr) in captures.iter() {
                     let found = match original_addr {
-                        VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize),
-                        VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize),
-                        VarAddr::Parameter(i) => frame.params.get(*i as usize).map(Arc::clone),
+                        VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize).cloned(),
+                        VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize).cloned(),
+                        VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
                         VarAddr::EffectPerform { .. } => {
                             return Err(EvalError::internal(
                                 format!(
@@ -1466,7 +1467,7 @@ mod tests {
     /// value must match the injected value.
     #[tokio::test]
     async fn test_eval_varref() {
-        use crate::value::GroupSpine;
+        use crate::value::{empty_scope, scope_from_flat};
         let span = test_span(1, 1, 1, 5);
         let ctx = test_ctx();
 
@@ -1479,11 +1480,11 @@ mod tests {
             span.clone(),
         ));
         let frame = Arc::new(EvalFrame {
-            closure_env: GroupSpine::empty(),
-            group: GroupSpine::from_flat(vec![Arc::clone(&known_thunk)]),
+            closure_env: empty_scope(),
+            group: scope_from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
             effect_chain: Arc::new(crate::value::EffectChainNode {
-                group: GroupSpine::empty(),
+                group: empty_scope(),
                 tail: None,
             }),
         });

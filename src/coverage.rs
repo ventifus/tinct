@@ -1743,6 +1743,7 @@ mod tests {
             SurfaceEntry {
                 key: Some(key_node),
                 value: val_node,
+                assigned_slot: std::sync::OnceLock::new(),
             },
             crate::rust_span!(),
         );

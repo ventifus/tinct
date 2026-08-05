@@ -101,7 +101,7 @@ pub(crate) async fn eval_document_exprs_with_env(
     // directly — no outer-frame traversal needed.
     let mut spine = Arc::clone(&ctx.root_spine);
     if let Some(env_thunks) = initial_group {
-        spine = spine.extend(env_thunks);
+        spine = crate::value::scope_extend(&spine, env_thunks);
     }
 
     let last_idx = expr_nodes.len() - 1;
@@ -136,10 +136,10 @@ pub(crate) async fn eval_document_exprs_with_env(
         // Build the frame from the current accumulated_group.
         let frame = Arc::new(EvalFrame {
             group: Arc::clone(&spine),
-            closure_env: crate::value::GroupSpine::empty(),
+            closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
             effect_chain: Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         });
@@ -191,7 +191,7 @@ pub(crate) async fn eval_document_exprs_with_env(
                 }
             })
             .collect();
-        spine = spine.extend(new_entries);
+        spine = crate::value::scope_extend(&spine, new_entries);
     }
 
     unreachable!(
@@ -239,17 +239,17 @@ pub(crate) async fn eval_core_document_exprs(
     // The env-dict IS the full scope — no root_spine prefix. The resolver assigns
     // LGM(j) directly for the j-th env-dict name (root_group_len=0 in builtin_resolve).
     // Document dict entries are appended at cumulative slots as each dict is evaluated.
-    let mut spine = crate::value::GroupSpine::from_flat(initial_group);
+    let mut spine = crate::value::scope_from_flat(initial_group);
 
     let last_idx = core_entries.len() - 1;
 
     for (i, (_key, spanned_core)) in core_entries.iter().enumerate() {
         let frame = Arc::new(EvalFrame {
             group: Arc::clone(&spine),
-            closure_env: crate::value::GroupSpine::empty(),
+            closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
             effect_chain: Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         });
@@ -291,7 +291,7 @@ pub(crate) async fn eval_core_document_exprs(
                 }
             })
             .collect();
-        spine = spine.extend(new_entries);
+        spine = crate::value::scope_extend(&spine, new_entries);
     }
 
     unreachable!(
@@ -607,13 +607,11 @@ pub struct EvalContext {
     /// Shared cheaply across child contexts via `Arc::clone`. Child contexts created by
     /// `with_cancel_token`, `with_explicit_cancel`, etc. all see the same root group (read-only).
     pub root_group: Arc<Vec<Arc<Thunk>>>,
-    /// GroupSpine representation of root_group for O(1) frame construction.
+    /// Flat scope vector of root_group for O(1) frame construction.
     ///
-    /// Persistent cons-list version of root_group. Every document evaluation starts with
-    /// `Arc::clone(&ctx.root_spine)` (O(1)) instead of `root_group.iter().cloned().collect()`
-    /// (O(n)). Extended with dict entries via `spine.extend(new_entries)` which is also
-    /// O(|new_entries|) and shares the previous level via Arc::clone.
-    pub root_spine: std::sync::Arc<crate::value::GroupSpine>,
+    /// Every document evaluation starts with `Arc::clone(&ctx.root_spine)` (O(1)).
+    /// Extended with dict entries via `scope_extend(&spine, new_entries)`.
+    pub root_spine: crate::value::Scope,
     /// Snapshot of the accumulated_group after the init program (loader + prelude) finishes
     /// evaluating all its intermediate dicts.
     ///
@@ -629,7 +627,7 @@ pub struct EvalContext {
     ///
     /// `None` (OnceLock not set) in bootstrap/test contexts where the full loader pipeline
     /// has not run. All callers must gracefully fall back when `get()` returns `None`.
-    pub init_accumulated_group: Arc<std::sync::OnceLock<std::sync::Arc<crate::value::GroupSpine>>>,
+    pub init_accumulated_group: Arc<std::sync::OnceLock<crate::value::Scope>>,
     /// Bootstrap TypeValue metatype. Represents the "type of all types." Initialized as an empty
     /// Dict since the self-referential fixed-point requires `Weak<Value>` semantics: constructing
     /// `Type.type_val == Type` needs a back-pointer into an already-constructed `Arc<Value>`, which
@@ -739,7 +737,7 @@ impl EvalContext {
     /// (e.g. during builtin_core.llt evaluation) are immediately visible in all others.
     pub fn new_empty() -> Arc<Self> {
         let root_group = Self::build_root_group_builtins();
-        let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
+        let root_spine = crate::value::scope_from_flat(root_group.iter().cloned().collect());
         let repr_registry = Arc::clone(
             GLOBAL_REPR_REGISTRY
                 .get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new()))),
@@ -784,7 +782,7 @@ impl EvalContext {
         env_allowed: Option<HashSet<String>>,
     ) -> Arc<Self> {
         let root_group = Self::build_root_group_builtins();
-        let root_spine = crate::value::GroupSpine::from_flat(root_group.iter().cloned().collect());
+        let root_spine = crate::value::scope_from_flat(root_group.iter().cloned().collect());
         let repr_registry = Arc::clone(
             GLOBAL_REPR_REGISTRY
                 .get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new()))),
@@ -1030,7 +1028,7 @@ impl EvalContext {
         for (_name, thunk) in capabilities {
             new_group.push(thunk);
         }
-        let root_spine = self.root_spine.extend(cap_thunks);
+        let root_spine = crate::value::scope_extend(&self.root_spine, cap_thunks);
         Arc::new(Self {
             config: Arc::clone(&self.config),
             env_allowed: self.env_allowed.clone(),
@@ -1105,7 +1103,7 @@ impl EvalContext {
     /// The `group` parameter is the full `accumulated_group` at the point just before the last
     /// expression node is evaluated — it contains every thunk for every intermediate dict the
     /// loader has evaluated so far, at their canonical LGM slots.
-    pub fn set_init_accumulated_group(&self, group: std::sync::Arc<crate::value::GroupSpine>) {
+    pub fn set_init_accumulated_group(&self, group: crate::value::Scope) {
         // get_or_init: first write wins; subsequent calls are no-ops (the existing value is
         // returned, and the supplied closure is not called). This is the correct at-most-once
         // initialization pattern — no Result to discard.
@@ -1116,7 +1114,7 @@ impl EvalContext {
     ///
     /// Returns `None` in bootstrap/test contexts where the full loader pipeline has not run.
     /// Callers must gracefully fall back (e.g., return `false`) when this is `None`.
-    pub fn get_init_accumulated_group(&self) -> Option<&std::sync::Arc<crate::value::GroupSpine>> {
+    pub fn get_init_accumulated_group(&self) -> Option<&crate::value::Scope> {
         self.init_accumulated_group.get()
     }
 
@@ -1960,7 +1958,7 @@ async fn call_to_match_by_name(
         return Ok(false);
     };
     // Step 4: materialize the thunk to get the to-match function value.
-    let fn_val = materialize(&fn_thunk, Some(span), ctx).await?;
+    let fn_val = materialize(fn_thunk, Some(span), ctx).await?;
     // Step 5: destructure as a user-defined function.
     let (clauses, closure_env) = match fn_val {
         Value::Function {
@@ -2377,6 +2375,7 @@ mod tests {
                     content: key.into(),
                 })),
                 value: mk(value_expr),
+                assigned_slot: std::sync::OnceLock::new(),
             },
             z,
         )
@@ -2613,6 +2612,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
+                    assigned_slot: None,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -2698,6 +2698,7 @@ mod tests {
                         content: "x".into(),
                     })),
                     value: mk(SurfaceExpression::Int(1)),
+                    assigned_slot: std::sync::OnceLock::new(),
                 },
                 z.clone(),
             ),
@@ -2709,6 +2710,7 @@ mod tests {
                         content: "x".into(),
                     })),
                     value: mk(SurfaceExpression::Int(2)),
+                    assigned_slot: std::sync::OnceLock::new(),
                 },
                 z.clone(),
             ),
@@ -3182,6 +3184,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
+                    assigned_slot: None,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -3248,6 +3251,7 @@ mod tests {
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(1.5))),
                 value: mk(SurfaceExpression::Int(42)),
+                assigned_slot: std::sync::OnceLock::new(),
             },
             z,
         )]));
@@ -3282,6 +3286,7 @@ mod tests {
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(2.5))),
                 value: mk(SurfaceExpression::Int(1)),
+                assigned_slot: std::sync::OnceLock::new(),
             },
             z,
         )]));
@@ -3447,6 +3452,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
+                    assigned_slot: None,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -3551,6 +3557,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
+                    assigned_slot: None,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -3739,6 +3746,7 @@ mod tests {
                                     CoreExpr::Str("Alice".into()),
                                     span.clone(),
                                 )),
+                                assigned_slot: None,
                             },
                             span.clone(),
                         ),
@@ -3749,6 +3757,7 @@ mod tests {
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(CoreExpr::Int(30), span.clone())),
+                                assigned_slot: None,
                             },
                             span.clone(),
                         ),
@@ -3799,6 +3808,7 @@ mod tests {
                                 CoreExpr::Str("Alice".into()),
                                 span.clone(),
                             )),
+                            assigned_slot: None,
                         },
                         span.clone(),
                     )]),
@@ -3844,6 +3854,7 @@ mod tests {
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(CoreExpr::Int(1), span.clone())),
+                                assigned_slot: None,
                             },
                             span.clone(),
                         ),
@@ -3854,6 +3865,7 @@ mod tests {
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(CoreExpr::Int(2), span.clone())),
+                                assigned_slot: None,
                             },
                             span.clone(),
                         ),
@@ -3903,6 +3915,7 @@ mod tests {
                                 span.clone(),
                             ))),
                             value: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                            assigned_slot: None,
                         },
                         span.clone(),
                     )]),
@@ -5339,7 +5352,7 @@ mod tests {
             0, // caller_env_id bridge placeholder
             Arc::clone(&ctx),
             Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         ));

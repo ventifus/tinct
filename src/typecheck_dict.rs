@@ -33,6 +33,7 @@ mod tests {
                 annotation: None,
                 do_infer_placeholder: false,
             }),
+            assigned_slot: std::sync::OnceLock::new(),
         })
     }
 
@@ -41,6 +42,7 @@ mod tests {
         sp(SurfaceEntry {
             key: None,
             value: sn(SurfaceExpression::Int(0)),
+            assigned_slot: std::sync::OnceLock::new(),
         })
     }
 
@@ -95,6 +97,7 @@ mod tests {
                 annotation: None,
                 do_infer_placeholder: false,
             }),
+            assigned_slot: std::sync::OnceLock::new(),
         });
         let entries = vec![a_entry, b_entry];
         let key_entries = key_entries_for(&["a", "b"]);
@@ -128,6 +131,7 @@ mod tests {
                 annotation: None,
                 do_infer_placeholder: false,
             }),
+            assigned_slot: std::sync::OnceLock::new(),
         });
         let b_entry = sp(SurfaceEntry {
             key: None,
@@ -139,6 +143,7 @@ mod tests {
                 annotation: None,
                 do_infer_placeholder: false,
             }),
+            assigned_slot: std::sync::OnceLock::new(),
         });
         let entries = vec![a_entry, b_entry];
         let key_entries = key_entries_for(&["a", "b"]);
@@ -168,6 +173,7 @@ mod tests {
                         annotation: None,
                         do_infer_placeholder: false,
                     }),
+                    assigned_slot: std::sync::OnceLock::new(),
                 }),
                 sp(SurfaceEntry {
                     key: None,
@@ -179,8 +185,10 @@ mod tests {
                         annotation: None,
                         do_infer_placeholder: false,
                     }),
+                    assigned_slot: std::sync::OnceLock::new(),
                 }),
             ])),
+            assigned_slot: std::sync::OnceLock::new(),
         });
         let b_entry = entry_ref("d");
         let c_entry = entry_ref("d");

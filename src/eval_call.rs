@@ -183,7 +183,6 @@ pub(crate) async fn try_clause(
             variadic: p.node.variadic,
             slot: p.node.slot,
             resolved_type: p.node.resolved_type.clone(),
-            dispatch_guard: p.node.dispatch_guard,
         })
         .collect();
 
@@ -227,10 +226,8 @@ pub(crate) async fn try_clause(
     // Materialization here is a necessary strictness point: type dispatch requires
     // knowing the runtime type, analogous to the typed-variadic bucket routing in
     // bind_args_thunks. Only params with a concrete resolved_type (not Unknown/None) are checked.
+    // Every type annotation on a parameter is a runtime dispatch guard.
     for (i, param) in params.iter().enumerate() {
-        if !param.dispatch_guard {
-            continue; // Only instance method type guards participate in dispatch.
-        }
         let Some(tv) = &param.resolved_type else {
             continue; // No annotation → wildcard, always matches.
         };
@@ -251,9 +248,6 @@ pub(crate) async fn try_clause(
     // Without this check, named args bypass type dispatch entirely.
     if let Some(named_map) = named {
         for param in params.iter() {
-            if !param.dispatch_guard {
-                continue;
-            }
             let Some(tv) = &param.resolved_type else {
                 continue;
             };
@@ -279,7 +273,7 @@ pub(crate) async fn try_clause(
             Arc::clone(&closure_env),
             vec![],
             std::sync::Arc::new(crate::value::EffectChainNode {
-                group: crate::value::GroupSpine::empty(),
+                group: crate::value::empty_scope(),
                 tail: None,
             }),
         ));
@@ -484,7 +478,6 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
                 variadic: p.node.variadic,
                 slot: p.node.slot,
                 resolved_type: p.node.resolved_type.clone(),
-                dispatch_guard: p.node.dispatch_guard,
             })
             .collect();
         match bind_args_thunks(
@@ -551,7 +544,6 @@ pub(crate) async fn invoke_function_tco(
                 variadic: p.node.variadic,
                 slot: p.node.slot,
                 resolved_type: p.node.resolved_type.clone(),
-                dispatch_guard: p.node.dispatch_guard,
             })
             .collect();
         match bind_args_thunks(
@@ -1024,7 +1016,6 @@ mod tests {
             variadic: false,
             slot,
             resolved_type: None,
-            dispatch_guard: false,
         }
     }
 
@@ -1066,7 +1057,6 @@ mod tests {
             variadic: true,
             slot,
             resolved_type: Some(make_repr_typevalue(repr)),
-            dispatch_guard: false,
         }
     }
 
@@ -1077,7 +1067,6 @@ mod tests {
             variadic: true,
             slot,
             resolved_type: None,
-            dispatch_guard: false,
         }
     }
 
@@ -1217,7 +1206,6 @@ mod tests {
             variadic: true,
             slot: 0,
             resolved_type: Some(make_repr_typevalue(REPR_INT)),
-            dispatch_guard: false,
         };
         let unknown_bucket = Param {
             name: "rest".to_string(),
@@ -1225,7 +1213,6 @@ mod tests {
             variadic: true,
             slot: 1,
             resolved_type: Some(crate::value::unknown_type_val()),
-            dispatch_guard: false,
         };
         let none_bucket = Param {
             name: "extra".to_string(),
@@ -1233,7 +1220,6 @@ mod tests {
             variadic: true,
             slot: 2,
             resolved_type: None,
-            dispatch_guard: false,
         };
         let params = vec![int_bucket, unknown_bucket.clone(), none_bucket.clone()];
         let (fixed, typed, rest) = classify(&params);

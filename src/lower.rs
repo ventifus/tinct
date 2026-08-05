@@ -497,7 +497,14 @@ fn lower_expr(
                             });
                             let value =
                                 Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
-                            ces.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                            ces.push(Spanned::new(
+                                CoreEntry {
+                                    key,
+                                    value,
+                                    assigned_slot: se.node.assigned_slot.get().copied(),
+                                },
+                                se.span.clone(),
+                            ));
                         }
                         CoreExpr::Dict(ces)
                     }};
@@ -613,7 +620,11 @@ fn lower_expr(
                                         Some(Arc::new(Spanned::new(key_expr, k.span.clone())));
                                     let value = Arc::new(Spanned::new(lowered, se.span.clone()));
                                     core_entries.push(Spanned::new(
-                                        CoreEntry { key, value },
+                                        CoreEntry {
+                                            key,
+                                            value,
+                                            assigned_slot: se.node.assigned_slot.get().copied(),
+                                        },
                                         se.span.clone(),
                                     ));
                                 }
@@ -730,8 +741,12 @@ fn lower_expr(
                                         };
                                         let value = Arc::new(lowered_value);
                                         core_entries.push(Spanned::new(
-                                            CoreEntry { key, value },
-                                            se.span.clone(),
+                                            CoreEntry {
+                                                key,
+                                                value,
+                                                assigned_slot: me.node.assigned_slot.get().copied(),
+                                            },
+                                            me.span.clone(),
                                         ));
                                     }
                                 }
@@ -756,8 +771,14 @@ fn lower_expr(
                                 Arc::new(Spanned::new(lowered, k.span.clone()))
                             });
                             let value = Arc::new(Spanned::new(ctor_dict, se.span.clone()));
-                            core_entries
-                                .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                            core_entries.push(Spanned::new(
+                                CoreEntry {
+                                    key,
+                                    value,
+                                    assigned_slot: se.node.assigned_slot.get().copied(),
+                                },
+                                se.span.clone(),
+                            ));
                         }
                         crate::ast::SurfaceDeclaration::ClassDecl { .. } => {
                             // ClassDecl is type-level only. No method slots emitted here.
@@ -781,8 +802,14 @@ fn lower_expr(
                                 });
                                 let value =
                                     Arc::new(Spanned::new(CoreExpr::Dict(vec![]), se.span.clone()));
-                                core_entries
-                                    .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                                core_entries.push(Spanned::new(
+                                    CoreEntry {
+                                        key,
+                                        value,
+                                        assigned_slot: se.node.assigned_slot.get().copied(),
+                                    },
+                                    se.span.clone(),
+                                ));
                             }
                         }
                         _ => {
@@ -850,7 +877,14 @@ fn lower_expr(
                             }
                         }
                     }
-                    core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                    core_entries.push(Spanned::new(
+                        CoreEntry {
+                            key,
+                            value,
+                            assigned_slot: se.node.assigned_slot.get().copied(),
+                        },
+                        se.span.clone(),
+                    ));
                 }
             }
             CoreExpr::Dict(core_entries)
@@ -932,7 +966,6 @@ fn lower_expr(
                             // TypeValue.Unknown (which Error maps to) is treated as accept-all at
                             // runtime — pass it through as-is; None means unannotated.
                             resolved_type: p.node.resolved_annotation_type.get().cloned(),
-                            dispatch_guard: false,
                         },
                         p.span.clone(),
                     )
@@ -1157,7 +1190,6 @@ fn lower_expr(
                                             variadic: false,
                                             annotation: None,
                                             resolved_type: None,
-                                            dispatch_guard: false,
                                         },
                                         let_bindings.span.clone(),
                                     )
@@ -1336,7 +1368,14 @@ fn lower_expr(
                             }
                         };
                         let value = Arc::new(lowered_value);
-                        core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
+                        core_entries.push(Spanned::new(
+                            CoreEntry {
+                                key,
+                                value,
+                                assigned_slot: me.node.assigned_slot.get().copied(),
+                            },
+                            syn_span.clone(),
+                        ));
                     }
                 }
 
@@ -1563,6 +1602,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                         crate::ast::SurfaceEntry {
                             key: e.node.key.as_ref().map(|k| core_expr_to_surface_node(k)),
                             value: core_expr_to_surface_node(&e.node.value),
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         e.span.clone(),
                     )
@@ -1782,7 +1822,6 @@ fn inject_instance_type_guards(
             if param.node.resolved_type.is_none() {
                 if let Some((_, tycon)) = type_guards.iter().find(|(n, _)| n == &param.node.name) {
                     param.node.resolved_type = Some(crate::type_infer::make_typevalue_op(tycon));
-                    param.node.dispatch_guard = true;
                 }
             }
         }
@@ -1887,6 +1926,7 @@ fn build_field_annotations_core_entry(
                 CoreEntry {
                     key: role_key,
                     value: role_value,
+                    assigned_slot: None,
                 },
                 span.clone(),
             );
@@ -1900,6 +1940,7 @@ fn build_field_annotations_core_entry(
                 CoreEntry {
                     key,
                     value: inner_dict,
+                    assigned_slot: None,
                 },
                 span.clone(),
             )
@@ -1915,6 +1956,7 @@ fn build_field_annotations_core_entry(
         CoreEntry {
             key,
             value: field_ann_dict,
+            assigned_slot: None,
         },
         span.clone(),
     ))
@@ -1999,7 +2041,14 @@ fn lower_type_alias_to_constructor_dict(
                             .map(|k| Arc::new(lower_inner(k, diagnostics, scope_frames)));
                         let value =
                             Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
-                        Spanned::new(CoreEntry { key, value }, se.span.clone())
+                        Spanned::new(
+                            CoreEntry {
+                                key,
+                                value,
+                                assigned_slot: se.node.assigned_slot.get().copied(),
+                            },
+                            se.span.clone(),
+                        )
                     })
                     .collect();
                 let ann_dict = Arc::new(Spanned::new(
@@ -2051,7 +2100,6 @@ fn lower_type_alias_to_constructor_dict(
                             variadic: false,
                             slot: i as u32,
                             resolved_type: None,
-                            dispatch_guard: false,
                         },
                         syn_span.clone(),
                     )
@@ -2080,7 +2128,14 @@ fn lower_type_alias_to_constructor_dict(
                         },
                         syn_span.clone(),
                     ));
-                    Spanned::new(CoreEntry { key, value }, syn_span.clone())
+                    Spanned::new(
+                        CoreEntry {
+                            key,
+                            value,
+                            assigned_slot: None,
+                        },
+                        syn_span.clone(),
+                    )
                 })
                 .collect();
 
@@ -2143,8 +2198,14 @@ fn lower_type_alias_to_constructor_dict(
                             .map(|k| Arc::new(lower_inner(k, diagnostics, scope_frames)));
                         let value =
                             Arc::new(lower_inner(&se.node.value, diagnostics, scope_frames));
-                        ann_core_entries
-                            .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                        ann_core_entries.push(Spanned::new(
+                            CoreEntry {
+                                key,
+                                value,
+                                assigned_slot: se.node.assigned_slot.get().copied(),
+                            },
+                            se.span.clone(),
+                        ));
                     }
                 }
                 // Append field-annotations entry if present.
@@ -2178,7 +2239,14 @@ fn lower_type_alias_to_constructor_dict(
             }
         };
 
-        core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
+        core_entries.push(Spanned::new(
+            CoreEntry {
+                key,
+                value,
+                assigned_slot: None,
+            },
+            syn_span.clone(),
+        ));
     }
 
     let inner_dict = CoreExpr::Dict(core_entries);
@@ -2738,6 +2806,7 @@ mod tests {
                         },
                         span.clone(),
                     ),
+                    assigned_slot: std::sync::OnceLock::new(),
                 },
                 span.clone(),
             )
@@ -2943,6 +3012,7 @@ mod tests {
             SurfaceEntry {
                 key: Some(key_node),
                 value: value_node,
+                assigned_slot: std::sync::OnceLock::new(),
             },
             span.clone(),
         );

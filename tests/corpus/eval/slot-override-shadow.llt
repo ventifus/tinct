@@ -1,0 +1,12 @@
+# Test that a child dict entry at an already-occupied slot replaces the parent's value
+
+[
+  parent: [x: 1]
+]
+[
+  child: [merge parent [x: 2]]  # x should be 2, not 1
+  result: child.x
+]
+
+=== out
+2

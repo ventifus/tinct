@@ -357,6 +357,7 @@ fn parse_bracket_annotation_dict(
                         SurfaceEntry {
                             key: None,
                             value: node,
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         tok_span,
                     ));
@@ -390,6 +391,7 @@ fn parse_bracket_annotation_dict(
                         SurfaceEntry {
                             key: None,
                             value: node,
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         tok_span,
                     ));
@@ -415,6 +417,7 @@ fn parse_bracket_annotation_dict(
                         SurfaceEntry {
                             key: None,
                             value: node,
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         tok_span,
                     ));
@@ -440,6 +443,7 @@ fn parse_bracket_annotation_dict(
                         SurfaceEntry {
                             key: None,
                             value: node,
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         tok_span,
                     ));
@@ -1007,6 +1011,7 @@ fn recover_from_bracket_error(
                                 SurfaceExpression::Error(error_span.clone()),
                                 error_span.clone(),
                             ),
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         error_span.clone(),
                     ));
@@ -4094,6 +4099,8 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                         SurfaceEntry {
                                                             key: None,
                                                             value: dict_node,
+                                                            assigned_slot: std::sync::OnceLock::new(
+                                                            ),
                                                         },
                                                         node_span,
                                                     ));
@@ -4135,6 +4142,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                     SurfaceEntry {
                                                         key: None,
                                                         value: lit_node,
+                                                        assigned_slot: std::sync::OnceLock::new(),
                                                     },
                                                     lit_span,
                                                 ));
@@ -4168,6 +4176,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                     SurfaceEntry {
                                                         key: None,
                                                         value: id_node,
+                                                        assigned_slot: std::sync::OnceLock::new(),
                                                     },
                                                     id_span,
                                                 ));
@@ -4216,6 +4225,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                     SurfaceEntry {
                                                         key: None,
                                                         value: lit_node,
+                                                        assigned_slot: std::sync::OnceLock::new(),
                                                     },
                                                     lit_span,
                                                 ));
@@ -4243,6 +4253,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                     SurfaceEntry {
                                                         key: None,
                                                         value: lit_node,
+                                                        assigned_slot: std::sync::OnceLock::new(),
                                                     },
                                                     lit_span,
                                                 ));
@@ -4296,6 +4307,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                     SurfaceEntry {
                                                         key: None,
                                                         value: assert_node,
+                                                        assigned_slot: std::sync::OnceLock::new(),
                                                     },
                                                     node_span,
                                                 ));
@@ -5415,6 +5427,7 @@ fn push_expr_to_parent(
                     SurfaceEntry {
                         key: None,
                         value: node,
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     node_span,
                 ));
@@ -5557,6 +5570,7 @@ fn push_expr_to_parent(
                         SurfaceEntry {
                             key: Some(key_node),
                             value: node,
+                            assigned_slot: std::sync::OnceLock::new(),
                         },
                         entry_span,
                     ));
@@ -5761,6 +5775,7 @@ fn push_expr_to_parent(
                     SurfaceEntry {
                         key: None,
                         value: node,
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     entry_span,
                 ));
@@ -6228,6 +6243,7 @@ fn commit_let_pending(
                     SurfaceEntry {
                         key: Some(surf_key),
                         value: Arc::clone(&rhs_node),
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     rhs_node.span.clone(),
                 )]),
@@ -6360,6 +6376,7 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
                 SurfaceEntry {
                     key: None,
                     value: Arc::clone(func),
+                    assigned_slot: std::sync::OnceLock::new(),
                 },
                 func.span.clone(),
             ));
@@ -6368,6 +6385,7 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
                     SurfaceEntry {
                         key: None,
                         value: Arc::clone(arg),
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     arg.span.clone(),
                 ));
@@ -6380,6 +6398,7 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
                 SurfaceEntry {
                     key: None,
                     value: Arc::new(node.clone()),
+                    assigned_slot: std::sync::OnceLock::new(),
                 },
                 node.span.clone(),
             );
@@ -6603,6 +6622,7 @@ fn push_value(
                     SurfaceEntry {
                         key: Some(key),
                         value: node,
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     entry_span,
                 ));
@@ -6613,6 +6633,7 @@ fn push_value(
                     SurfaceEntry {
                         key: None,
                         value: node,
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     node_span,
                 ));
@@ -6667,6 +6688,7 @@ fn push_value(
                     SurfaceEntry {
                         key: Some(key),
                         value: node.clone(),
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     entry_span,
                 ));
@@ -6702,6 +6724,7 @@ fn push_value(
                     SurfaceEntry {
                         key: Some(key),
                         value: node.clone(),
+                        assigned_slot: std::sync::OnceLock::new(),
                     },
                     entry_span,
                 ));

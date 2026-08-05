@@ -1806,7 +1806,7 @@ mod tests {
 
     fn empty_chain() -> crate::value::EffectChain {
         Arc::new(crate::value::EffectChainNode {
-            group: crate::value::GroupSpine::empty(),
+            group: crate::value::empty_scope(),
             tail: None,
         })
     }

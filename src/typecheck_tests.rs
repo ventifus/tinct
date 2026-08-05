@@ -154,6 +154,7 @@ fn surf_ann_entry_tc(
         SurfaceEntry {
             key: key.map(mk),
             value: mk(value),
+            assigned_slot: std::sync::OnceLock::new(),
         },
         span,
     )
@@ -1020,6 +1021,7 @@ fn test_cek_compute_sccs_mutual_recursion_forms_one_scc() {
                 annotation: None,
                 do_infer_placeholder: false,
             }),
+            assigned_slot: std::sync::OnceLock::new(),
         })
     }
 
@@ -1103,11 +1105,13 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
     let f_entry = sp(SurfaceEntry {
         key: None,
         value: fn_node,
+        assigned_slot: std::sync::OnceLock::new(),
     });
     // sibling's value is a literal (no deps)
     let sibling_entry = sp(SurfaceEntry {
         key: None,
         value: sn(SurfaceExpression::Int(42)),
+        assigned_slot: std::sync::OnceLock::new(),
     });
 
     let entries = vec![f_entry, sibling_entry];

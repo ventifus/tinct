@@ -681,7 +681,14 @@ fn dict_to_surface_entry(
 
     let span = extract_span(dict, ctx).unwrap_or_else(|| call_site_span.clone());
 
-    Ok(Spanned::new(SurfaceEntry { key, value }, span))
+    Ok(Spanned::new(
+        SurfaceEntry {
+            key,
+            value,
+            assigned_slot: std::sync::OnceLock::new(),
+        },
+        span,
+    ))
 }
 
 /// Deserialize an `Annotation` from a value produced by `annotation_to_value` or the old thunk format.
@@ -1668,6 +1675,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
             SurfaceEntry {
                 key: key_node,
                 value: value_node,
+                assigned_slot: std::sync::OnceLock::new(),
             },
             fallback_span.clone(),
         ));

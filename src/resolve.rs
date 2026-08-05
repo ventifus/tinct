@@ -615,6 +615,57 @@ impl SurfaceResolver {
                 // at their eval_dict_core call site = base_offset + static_keys.len()).
                 self.accumulated_dict_offset = base_offset + static_keys.len() as u32;
 
+                // Populate assigned_slot on each SurfaceEntry.
+                //
+                // Replay the same iteration order as surface_dict_static_keys to determine
+                // which slot index each entry's outer key occupies. For entries with a static
+                // key, set assigned_slot to base_offset + slot_idx. InstanceDecl entries may
+                // also inject mangled binding names — advance slot_idx past those so that
+                // subsequent entries get the correct slot.
+                {
+                    let mut slot_idx: u32 = 0;
+                    for entry in entries.iter() {
+                        // Does this entry have a static outer key? (same predicate as
+                        // surface_dict_static_keys: VarRef with escaped=false, or StringLiteral)
+                        let has_static_key = entry.node.key.as_ref().map_or(false, |k| {
+                            matches!(
+                                &k.expr,
+                                SurfaceExpression::StringLiteral { .. }
+                                    | SurfaceExpression::VarRef { escaped: false, .. }
+                            )
+                        });
+                        if has_static_key {
+                            // First write wins: shared AST nodes may be visited multiple times.
+                            let _ = entry.node.assigned_slot.set(base_offset + slot_idx);
+                            slot_idx += 1;
+                        }
+                        // Count mangled binding names from InstanceDecl (mirrors
+                        // surface_dict_static_keys exactly) to keep slot_idx in sync.
+                        if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                            if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } =
+                                decl.as_ref()
+                            {
+                                for (_pattern, method_entries) in arms {
+                                    for me in method_entries {
+                                        let has_method_key =
+                                            me.node.key.as_ref().map_or(false, |k| {
+                                                matches!(
+                                                    &k.expr,
+                                                    SurfaceExpression::StringLiteral { .. }
+                                                        | SurfaceExpression::VarRef { .. }
+                                                )
+                                            });
+                                        if has_method_key {
+                                            let _ = me.node.assigned_slot.set(base_offset + slot_idx);
+                                            slot_idx += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Phase 1b: two-pass scan for typeclass method injection.
                 //
                 // Pass 1: assign class_ids to all ClassDecl nodes (including nested ones
@@ -825,6 +876,63 @@ impl SurfaceResolver {
                                     sequential_offset,
                                     FrameKind::DictLetrec,
                                 );
+
+                                // Populate assigned_slot on each entry (same logic as Dict arm).
+                                {
+                                    let mut slot_idx: u32 = 0;
+                                    for entry in entries.iter() {
+                                        let has_static_key =
+                                            entry.node.key.as_ref().map_or(false, |k| {
+                                                matches!(
+                                                    &k.expr,
+                                                    SurfaceExpression::StringLiteral { .. }
+                                                        | SurfaceExpression::VarRef {
+                                                            escaped: false,
+                                                            ..
+                                                        }
+                                                )
+                                            });
+                                        if has_static_key {
+                                            let _ = entry
+                                                .node
+                                                .assigned_slot
+                                                .set(sequential_offset + slot_idx);
+                                            slot_idx += 1;
+                                        }
+                                        if let SurfaceExpression::Decl(decl) =
+                                            &entry.node.value.expr
+                                        {
+                                            if let crate::ast::SurfaceDeclaration::InstanceDecl {
+                                                arms,
+                                                ..
+                                            } = decl.as_ref()
+                                            {
+                                                for (_pattern, method_entries) in arms {
+                                                    for me in method_entries {
+                                                        let has_method_key =
+                                                            me.node.key.as_ref().map_or(
+                                                                false,
+                                                                |k| {
+                                                                    matches!(
+                                                                        &k.expr,
+                                                                        SurfaceExpression::StringLiteral {
+                                                                            ..
+                                                                        } | SurfaceExpression::VarRef {
+                                                                            ..
+                                                                        }
+                                                                    )
+                                                                },
+                                                            );
+                                                        if has_method_key {
+                                                            let _ = me.node.assigned_slot.set(sequential_offset + slot_idx);
+                                                            slot_idx += 1;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 // Walk key annotations inside the letrec scope
                                 // (same as the Dict arm — annotations can reference siblings).

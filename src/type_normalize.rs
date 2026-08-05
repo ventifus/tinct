@@ -89,7 +89,7 @@ pub(crate) async fn call_strict_resolver(
         closure_env,
         param_thunks,
         std::sync::Arc::new(crate::value::EffectChainNode {
-            group: crate::value::GroupSpine::empty(),
+            group: crate::value::empty_scope(),
             tail: None,
         }),
     );

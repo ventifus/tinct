@@ -115,81 +115,32 @@ impl fmt::Debug for BuiltinDef {
     }
 }
 
-/// Persistent append-only cons-list for LGM slot resolution in EvalFrame.
+/// Flat scope vector for LGM slot resolution in EvalFrame.
 ///
-/// Each spine node holds the entries added at one dict boundary and a shared
-/// pointer to the previous level. Creating a new EvalFrame is O(1) Arc::clone;
-/// extending after a dict evaluates is O(|new entries|); get(slot) is O(depth)
-/// where depth ≤ number of dicts in the current document (≤ ~5 in practice).
-pub struct GroupSpine {
-    entries: std::sync::Arc<[std::sync::Arc<Thunk>]>,
-    offset: usize,
-    len: usize,
-    prev: Option<std::sync::Arc<GroupSpine>>,
+/// Each slot index maps directly to a thunk. Creating a new scope is O(|entries|);
+/// extending appends to a cloned Vec; get(slot) is O(1).
+pub type Scope = std::sync::Arc<Vec<std::sync::Arc<Thunk>>>;
+
+pub fn empty_scope() -> Scope {
+    std::sync::Arc::new(Vec::new())
 }
 
-impl std::fmt::Debug for GroupSpine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "GroupSpine(len={})", self.len)
-    }
+pub fn scope_from_flat(entries: Vec<std::sync::Arc<Thunk>>) -> Scope {
+    std::sync::Arc::new(entries)
 }
 
-impl GroupSpine {
-    pub fn empty() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            entries: std::sync::Arc::from(vec![]),
-            offset: 0,
-            len: 0,
-            prev: None,
-        })
+pub fn scope_extend(parent: &Scope, new_entries: Vec<std::sync::Arc<Thunk>>) -> Scope {
+    if new_entries.is_empty() {
+        return std::sync::Arc::clone(parent);
     }
-
-    pub fn from_flat(entries: Vec<std::sync::Arc<Thunk>>) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            len: entries.len(),
-            entries: entries.into(),
-            offset: 0,
-            prev: None,
-        })
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn get(&self, slot: usize) -> Option<std::sync::Arc<Thunk>> {
-        if slot >= self.offset {
-            self.entries
-                .get(slot - self.offset)
-                .map(std::sync::Arc::clone)
-        } else {
-            self.prev.as_ref()?.get(slot)
-        }
-    }
-
-    pub fn extend(
-        self: &std::sync::Arc<Self>,
-        new_entries: Vec<std::sync::Arc<Thunk>>,
-    ) -> std::sync::Arc<Self> {
-        if new_entries.is_empty() {
-            return std::sync::Arc::clone(self);
-        }
-        let offset = self.len;
-        std::sync::Arc::new(Self {
-            len: offset + new_entries.len(),
-            entries: new_entries.into(),
-            offset,
-            prev: Some(std::sync::Arc::clone(self)),
-        })
-    }
+    let mut v = (**parent).clone();
+    v.extend(new_entries);
+    std::sync::Arc::new(v)
 }
 
 /// One level of the Koka-style evidence chain.
 pub struct EffectChainNode {
-    pub group: std::sync::Arc<GroupSpine>,
+    pub group: Scope,
     pub tail: Option<std::sync::Arc<EffectChainNode>>,
 }
 
@@ -220,8 +171,8 @@ pub type EffectChain = std::sync::Arc<EffectChainNode>;
 /// (captures become ClosureCapture; document cross-dict refs become LGM with cumulative slots).
 #[derive(Debug, Clone)]
 pub struct EvalFrame {
-    pub closure_env: std::sync::Arc<GroupSpine>,
-    pub group: std::sync::Arc<GroupSpine>,
+    pub closure_env: Scope,
+    pub group: Scope,
     pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
     pub effect_chain: EffectChain,
 }
@@ -229,11 +180,11 @@ pub struct EvalFrame {
 impl EvalFrame {
     pub fn empty() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env: GroupSpine::empty(),
-            group: GroupSpine::empty(),
+            closure_env: empty_scope(),
+            group: empty_scope(),
             params: std::sync::Arc::new(vec![]),
             effect_chain: std::sync::Arc::new(EffectChainNode {
-                group: GroupSpine::empty(),
+                group: empty_scope(),
                 tail: None,
             }),
         })
@@ -245,8 +196,8 @@ impl EvalFrame {
         effect_chain: EffectChain,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env: GroupSpine::from_flat(closure_env.iter().cloned().collect()),
-            group: GroupSpine::empty(),
+            closure_env: scope_from_flat(closure_env.iter().cloned().collect()),
+            group: empty_scope(),
             params: std::sync::Arc::new(params),
             effect_chain,
         })
@@ -3199,83 +3150,102 @@ mod groupspine_tests {
     }
 
     #[test]
-    fn test_empty_spine() {
-        let spine = GroupSpine::empty();
-        assert_eq!(spine.len(), 0);
-        assert!(spine.is_empty());
-        assert!(spine.get(0).is_none());
+    fn test_empty_scope() {
+        let scope = empty_scope();
+        assert_eq!(scope.len(), 0);
+        assert!(scope.is_empty());
+        assert!(scope.get(0).is_none());
     }
 
     #[test]
-    fn test_from_flat() {
+    fn test_scope_from_flat() {
         let t0 = make_thunk(10);
         let t1 = make_thunk(20);
-        let spine = GroupSpine::from_flat(vec![Arc::clone(&t0), Arc::clone(&t1)]);
-        assert_eq!(spine.len(), 2);
-        assert!(!spine.is_empty());
+        let scope = scope_from_flat(vec![Arc::clone(&t0), Arc::clone(&t1)]);
+        assert_eq!(scope.len(), 2);
+        assert!(!scope.is_empty());
         // Verify identity: get returns the exact Arc that was inserted
-        assert!(Arc::ptr_eq(&spine.get(0).unwrap(), &t0));
-        assert!(Arc::ptr_eq(&spine.get(1).unwrap(), &t1));
-        assert!(spine.get(2).is_none());
+        assert!(Arc::ptr_eq(scope.get(0).unwrap(), &t0));
+        assert!(Arc::ptr_eq(scope.get(1).unwrap(), &t1));
+        assert!(scope.get(2).is_none());
     }
 
     #[test]
-    fn test_extend_single_level() {
-        let base = GroupSpine::empty();
+    fn test_scope_extend_single_level() {
+        let base = empty_scope();
         let t0 = make_thunk(1);
-        let spine = base.extend(vec![Arc::clone(&t0)]);
-        assert_eq!(spine.len(), 1);
-        assert!(Arc::ptr_eq(&spine.get(0).unwrap(), &t0));
-        assert!(spine.get(1).is_none());
+        let scope = scope_extend(&base, vec![Arc::clone(&t0)]);
+        assert_eq!(scope.len(), 1);
+        assert!(Arc::ptr_eq(scope.get(0).unwrap(), &t0));
+        assert!(scope.get(1).is_none());
     }
 
     #[test]
-    fn test_extend_multi_level() {
+    fn test_scope_extend_multi_level() {
         let t0 = make_thunk(100);
         let t1 = make_thunk(200);
         let t2 = make_thunk(300);
-        let base = GroupSpine::from_flat(vec![Arc::clone(&t0)]);
-        let mid = base.extend(vec![Arc::clone(&t1)]);
-        let top = mid.extend(vec![Arc::clone(&t2)]);
+        let base = scope_from_flat(vec![Arc::clone(&t0)]);
+        let mid = scope_extend(&base, vec![Arc::clone(&t1)]);
+        let top = scope_extend(&mid, vec![Arc::clone(&t2)]);
 
         assert_eq!(top.len(), 3);
         // Verify each slot returns the correct thunk (not just any present thunk)
-        assert!(Arc::ptr_eq(&top.get(0).unwrap(), &t0)); // from base
-        assert!(Arc::ptr_eq(&top.get(1).unwrap(), &t1)); // from mid
-        assert!(Arc::ptr_eq(&top.get(2).unwrap(), &t2)); // from top
+        assert!(Arc::ptr_eq(top.get(0).unwrap(), &t0)); // from base
+        assert!(Arc::ptr_eq(top.get(1).unwrap(), &t1)); // from mid
+        assert!(Arc::ptr_eq(top.get(2).unwrap(), &t2)); // from top
         assert!(top.get(3).is_none());
 
-        // Earlier levels unaffected — structural sharing doesn't corrupt prior spines
+        // Earlier levels unaffected — scope_extend creates a new Vec copy
         assert_eq!(base.len(), 1);
-        assert!(Arc::ptr_eq(&base.get(0).unwrap(), &t0));
+        assert!(Arc::ptr_eq(base.get(0).unwrap(), &t0));
         assert!(base.get(1).is_none());
 
         assert_eq!(mid.len(), 2);
-        assert!(Arc::ptr_eq(&mid.get(0).unwrap(), &t0));
-        assert!(Arc::ptr_eq(&mid.get(1).unwrap(), &t1));
+        assert!(Arc::ptr_eq(mid.get(0).unwrap(), &t0));
+        assert!(Arc::ptr_eq(mid.get(1).unwrap(), &t1));
         assert!(mid.get(2).is_none());
     }
 
     #[test]
-    fn test_extend_empty_returns_same_arc() {
-        let spine = GroupSpine::from_flat(vec![make_thunk(1)]);
-        let extended = spine.extend(vec![]);
+    fn test_scope_extend_empty_returns_same_arc() {
+        let scope = scope_from_flat(vec![make_thunk(1)]);
+        let extended = scope_extend(&scope, vec![]);
         // extend with empty returns Arc::clone of self
-        assert!(Arc::ptr_eq(&spine, &extended));
+        assert!(Arc::ptr_eq(&scope, &extended));
     }
 
     #[test]
-    fn test_boundary_get() {
+    fn test_scope_boundary_get() {
         let t = make_thunk(42);
-        let base = GroupSpine::from_flat(vec![Arc::clone(&t)]);
+        let base = scope_from_flat(vec![Arc::clone(&t)]);
         // Boundary: slot 0 present, slot 1 absent
-        assert!(Arc::ptr_eq(&base.get(0).unwrap(), &t));
+        assert!(Arc::ptr_eq(base.get(0).unwrap(), &t));
         assert!(base.get(1).is_none());
         // After extend, new entry at slot 1 — old slot 0 still maps to t
         let t2 = make_thunk(99);
-        let ext = base.extend(vec![Arc::clone(&t2)]);
-        assert!(Arc::ptr_eq(&ext.get(0).unwrap(), &t));
-        assert!(Arc::ptr_eq(&ext.get(1).unwrap(), &t2));
+        let ext = scope_extend(&base, vec![Arc::clone(&t2)]);
+        assert!(Arc::ptr_eq(ext.get(0).unwrap(), &t));
+        assert!(Arc::ptr_eq(ext.get(1).unwrap(), &t2));
         assert!(ext.get(2).is_none());
+    }
+
+    #[test]
+    fn test_scope_override() {
+        let t0 = make_thunk(100);
+        let t0_replacement = make_thunk(999);
+        let base = scope_from_flat(vec![Arc::clone(&t0)]);
+
+        // Clone the scope's inner Vec and replace slot 0
+        let mut vec = base.as_ref().clone();
+        vec[0] = Arc::clone(&t0_replacement);
+        let overridden = Arc::new(vec);
+
+        // Verify slot 0 now returns the replacement, not the original
+        assert!(Arc::ptr_eq(overridden.get(0).unwrap(), &t0_replacement));
+        assert!(!Arc::ptr_eq(overridden.get(0).unwrap(), &t0));
+
+        // Original scope unchanged
+        assert!(Arc::ptr_eq(base.get(0).unwrap(), &t0));
     }
 }

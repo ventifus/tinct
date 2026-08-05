@@ -177,11 +177,8 @@ pub struct Param {
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
+    /// When present, `try_clause` Step 2 checks this as a runtime dispatch guard.
     pub resolved_type: Option<Arc<crate::value::Value>>,
-    /// When true, `resolved_type` is a dispatch guard set by `inject_instance_type_guards`
-    /// for instance method type-based dispatch. `try_clause` Step 2 only checks params
-    /// where this is true.
-    pub dispatch_guard: bool,
 }
 
 impl std::fmt::Display for Param {
@@ -810,10 +807,41 @@ pub enum SurfaceExpression {
 }
 
 /// A dict/list entry in a SurfaceExpression::Dict.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct SurfaceEntry {
     pub key: Option<Arc<SurfaceNode>>,
     pub value: Arc<SurfaceNode>,
+    /// Slot index assigned by the resolver. Populated during resolution for entries
+    /// with static keys; absent for positional (auto-indexed) entries or before resolution.
+    /// Uses `OnceLock` for thread-safe write-once semantics — the resolver sets this
+    /// exactly once per node instance; shared nodes visited again see the first value.
+    pub assigned_slot: std::sync::OnceLock<u32>,
+}
+
+impl Clone for SurfaceEntry {
+    fn clone(&self) -> Self {
+        let slot = std::sync::OnceLock::new();
+        if let Some(val) = self.assigned_slot.get() {
+            slot.set(*val)
+                .expect("BUG: OnceLock::set() failed on fresh cell in SurfaceEntry::clone");
+        }
+        SurfaceEntry {
+            key: self.key.clone(),
+            value: self.value.clone(),
+            assigned_slot: slot,
+        }
+    }
+}
+
+impl PartialEq for SurfaceEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value
+        // assigned_slot is resolver metadata (scope-dependent slot index) and not part
+        // of the entry's structural identity. Two entries with the same key and value
+        // are semantically equal even if they occupy different slots in different scopes.
+        // This ensures AST comparison (e.g., in tests) focuses on source-level structure,
+        // not resolver output.
+    }
 }
 
 /// A named argument in a SurfaceExpression::Call.
@@ -1497,6 +1525,9 @@ pub enum CoreExpr {
 pub struct CoreEntry {
     pub key: Option<Arc<Spanned<CoreExpr>>>,
     pub value: Arc<Spanned<CoreExpr>>,
+    /// Slot index assigned by the resolver, copied from `SurfaceEntry::assigned_slot`
+    /// during lowering. `None` for entries without a resolver-assigned slot.
+    pub assigned_slot: Option<u32>,
 }
 
 /// A named argument in a CoreExpr::Call.
@@ -1516,11 +1547,8 @@ pub struct CoreParam {
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
+    /// When present, `try_clause` Step 2 checks this as a runtime dispatch guard.
     pub resolved_type: Option<Arc<crate::value::Value>>,
-    /// When true, `resolved_type` is a dispatch guard set by `inject_instance_type_guards`
-    /// for instance method type-based dispatch. `try_clause` Step 2 only checks params
-    /// where this is true — regular function annotations are not runtime dispatch guards.
-    pub dispatch_guard: bool,
 }
 
 /// A unified clause: one arm of a function, match arm, or instance method.
@@ -1612,6 +1640,7 @@ mod tests {
                     delimiter: "\"".to_string(),
                     content: "Number".into(),
                 }),
+                assigned_slot: std::sync::OnceLock::new(),
             }),
             sp(SurfaceEntry {
                 key: Some(mk_node(SurfaceExpression::StringLiteral {
@@ -1620,6 +1649,7 @@ mod tests {
                     content: "default".into(),
                 })),
                 value: mk_node(SurfaceExpression::Int(42)),
+                assigned_slot: std::sync::OnceLock::new(),
             }),
         ]);
         assert_eq!(format!("{ann}"), "[\"type\": \"Number\"  \"default\": 42]");

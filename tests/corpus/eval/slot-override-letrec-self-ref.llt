@@ -1,0 +1,12 @@
+# Test that a child dict entry can reference the parent's value before overriding
+
+[
+  base: [x: 10  y: 20]
+]
+[
+  derived: [merge base [x: [+ y 5]]]  # y resolves to base.y (20), then x is overridden
+  result: derived.x
+]
+
+=== out
+25
