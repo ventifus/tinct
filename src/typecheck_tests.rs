@@ -383,6 +383,58 @@ async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
     // since payload inspection requires TypeValue structure knowledge.
 }
 
+// -- untyped-binding warning --
+
+#[tokio::test]
+async fn test_untyped_binding_warning_for_undeclared_builtin() {
+    // builtin-scope-extend is registered in core_builtins() (so the resolver
+    // finds it) but NOT declared in builtin_core.llt (so the type checker has
+    // no scheme for it). The type checker should emit a warning[untyped-binding].
+    use crate::ast::{SurfaceDocument, SurfaceItem, SurfaceProgram};
+    use crate::resolve::resolve_surface_program;
+
+    let src = "[x: [builtin-scope-extend [builtin-empty-scope] []]]";
+    let node = crate::parser::parse_surface_expression(src)
+        .unwrap_or_else(|e| panic!("parse failed: {e:?}"));
+    let span = node.span.clone();
+    let doc = SurfaceDocument {
+        header: indexmap::IndexMap::new(),
+        items: vec![SurfaceItem::Expr(std::sync::Arc::clone(&node))],
+    };
+    let program = crate::desugar::desugar_program_full(&SurfaceProgram {
+        documents: vec![crate::ast::Spanned::new(std::sync::Arc::new(doc), span)],
+    });
+    let program = crate::expand::expand_program(&program);
+
+    let ctx = crate::eval::EvalContext::new();
+    let root_frame = ctx.root_group_resolver_map();
+    let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
+
+    // Type-check with builtin_core type env (no builtin-scope-extend declaration).
+    let arc_env = crate::imports::get_builtin_core_type_env().await;
+    let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+        std::sync::Arc::clone(&arc_env),
+    )));
+    let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
+    let (_result_env, _ty, diags) =
+        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
+
+    let untyped_warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.kind == "untyped-binding")
+        .collect();
+    assert!(
+        !untyped_warnings.is_empty(),
+        "expected at least one untyped-binding warning for builtin-scope-extend, got diagnostics: {:?}",
+        diags.iter().map(|d| format!("[{}] {}", d.kind, d.message)).collect::<Vec<_>>()
+    );
+    assert!(
+        untyped_warnings.iter().any(|d| d.message.contains("builtin-scope-extend")),
+        "expected untyped-binding warning to mention builtin-scope-extend, got: {:?}",
+        untyped_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // -- Type::Error cascade prevention --
 
 #[tokio::test]
@@ -1831,11 +1883,16 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         inferred_type
     );
 
-    // Verify no errors were emitted.
+    // Verify no errors were emitted (warnings are acceptable — e.g. untyped-binding
+    // in isolated test environments where the class env is not fully populated).
+    let actual_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.level == crate::error::DiagnosticLevel::Err)
+        .collect();
     assert!(
-        errors.is_empty(),
+        actual_errors.is_empty(),
         "EffectPerform VarRef inference should not produce errors; got: {:?}",
-        errors
+        actual_errors
     );
 }
 
