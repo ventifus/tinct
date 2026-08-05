@@ -82,9 +82,10 @@
 #   Type:    builtin-make-type-ctx, builtin-fork-type-ctx,
 #            builtin-tc-update-type-stage-env
 #   Meta:    builtin-module, builtin-eval
-# Note: builtin-resolve now takes a name-set Dict<String,1> (not scope frames).
-#       builtin-eval now takes (lowered CoreDocument, env Dict) and returns
-#       the exports Dict directly (raises on error — no {result, scope-id, diags}).
+# Note: builtin-resolve now takes a Scope value (not scope frames or name-set).
+#       builtin-eval now takes (lowered CoreDocument, Scope) and returns
+#       a Scope (raises on error). Use builtin-scope-exports to extract the Dict.
+#       builtin-scope-extend takes a Scope + Dict and returns a new Scope.
 #       builtin-tc-update-type-stage-env wires the type-stage env into the TypeContext.
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
@@ -187,25 +188,6 @@
       0: default
       ...: [builtin-dict-get key dict]]]
 
-  # _is-string-key: test if a value is a String by attempting builtin-eq-string.
-  # Returns 1 if the value is a String (comparison succeeds), 0 otherwise.
-  # Uses builtin-try because builtin-eq-string raises for non-String args.
-  _is-string-key: [fn [let k]
-    [builtin-has-key? "ok" [builtin-try [fn [] [builtin-eq-string k k]]]]]
-
-  # env-to-name-set: build name-set Dict<String,1> from env for builtin-resolve.
-  # builtin-resolve now takes a flat Dict<String,1> of all visible names (values ignored).
-  # Replaces the old scope-to-frames walk — env is already a flat dict of all bindings.
-  _env-to-name-set-loop: [fn [let keys n i builder]
-    [match [builtin-eq-int i n]
-      0: [_env-to-name-set-loop keys n [builtin-int-add i 1]
-           [match [_is-string-key [builtin-dict-get i keys]]
-             1: [builtin-builder-set [builtin-dict-get i keys] 1 builder]
-             0: builder]]
-      ...: [builtin-builder-finish builder]]]
-  env-to-name-set: [fn [let env]
-    [keys: [builtin-keys env]]
-    [_env-to-name-set-loop keys [builtin-dict-length keys] 0 [builtin-make-builder]]]
 ]
 
 # ============================================================================
@@ -280,10 +262,9 @@
             [docs:           [builtin-program-docs desugared]]
             # Typecheck each document in the declaration file using the seed env.
             # No eval — just type-check to populate TypeContext with builtin signatures.
-            [name-set: [env-to-name-set seed-env]]
             [reduce
               [fn [let acc doc]
-                [res: [builtin-resolve doc name-set]]
+                [res: [builtin-resolve doc seed-env]]
                 [builtin-int-add acc [builtin-dict-length [@Dict [builtin-typecheck-doc res.doc seed-tc seed-env].diagnostics]]]]
               0
               docs]]]]
@@ -302,7 +283,7 @@
   # The builtin-dict-length data dependency forces uses-scope before returning
   # _fundamental-base-tc, ensuring core types are in place before any
   # downstream module type-checks run.
-  # Uses empty env as seed (no scope arena needed — env-dict protocol).
+  # Uses empty env as seed (no scope arena needed — Scope protocol).
   #
   # Note: repr: TypeValue declarations (third document of builtin_core.llt) are
   # processed at eval time by CoreExpr::ReprDecl, not at type-check time. The
@@ -378,9 +359,8 @@
     [eval-doc: [fn [let acc doc]
       [meta:     [builtin-doc-meta doc acc.env]]
       [uses:     [uses-scope [get-or [] "uses" meta] acc.tc acc.env]]
-      [doc-env:  [merge acc.env uses]]
-      [name-set: [env-to-name-set doc-env]]
-      [res:      [builtin-resolve doc name-set]]
+      [doc-env:  [builtin-scope-extend acc.env uses]]
+      [res:      [builtin-resolve doc doc-env]]
       [n-re:     [builtin-dict-length res.diagnostics]]
       [_re:      [builtin-dict-length [emit-diagnostics res.diagnostics]]]
       # >> forces the resolve-error check before typecheck proceeds, preventing dormancy.
@@ -389,9 +369,11 @@
                       ...: []]
                     [builtin-typecheck-doc res.doc acc.tc doc-env]]]
       [lowered: [builtin-lower typed.doc]]
-      [exports: [builtin-eval lowered doc-env]]
+      [eval-scope: [builtin-eval lowered doc-env]]
+      [all-exports: [builtin-scope-exports eval-scope]]
+      [exports: [builtin-dict-get "%" all-exports]]
       [doc-name: [get-or "" "name" meta]]
-      [next-env: [merge doc-env
+      [next-env: [builtin-scope-extend eval-scope
                    [merge [%: exports]
                      [match [builtin-eq-string doc-name ""]
                        0: [make-entry doc-name exports]
@@ -423,7 +405,7 @@
   # directly from the closure — they are in scope because this function is
   # defined in the initial environment.
   # %include-dir is threaded as a parameter because it changes per-file.
-  # Resolution is done per-document via builtin-resolve doc name-set → {doc, diagnostics}.
+  # Resolution is done per-document via builtin-resolve doc scope → {doc, diagnostics}.
   #
   # Env construction (later merges shadow earlier ones):
   #   mod-scope   — module builtins from --- uses: header  [highest]
@@ -452,8 +434,8 @@
       [include cap path [%prelude: prelude-env]].env]]
     # Env construction: merge in priority order (each merge shadows the previous).
     # merge A B = right-biased, B wins. So later merges have higher priority.
-    [base-env:  [merge prelude-env state.named]]
-    [caps-env:  [merge base-env
+    [base-env:  [builtin-scope-extend prelude-env state.named]]
+    [caps-env:  [builtin-scope-extend base-env
                   [%:            state.percent
                    %include-dir:  include-dir
                    emit:          emit-fn
@@ -464,10 +446,9 @@
                    %stderr:       %stderr
                    %args:         %args
                    include:       ctx-include]]]
-    [full-env:  [merge caps-env mod-scope]]
-    # Per-document resolve against the fully-constructed env.
-    [name-set: [env-to-name-set full-env]]
-    [doc-resolved: [builtin-resolve doc name-set]]
+    [full-env:  [builtin-scope-extend caps-env mod-scope]]
+    # Per-document resolve against the fully-constructed env (Scope).
+    [doc-resolved: [builtin-resolve doc full-env]]
     [n-re: [builtin-dict-length doc-resolved.diagnostics]]
     [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
     # If % was in scope (non-first doc) but never referenced, emit abandoned-input warning.
@@ -491,10 +472,12 @@
                   0: [builtin-raise [make-diag "resolve error(s)"]]
                   ...: []]
                 [builtin-typecheck-doc doc-resolved.doc tc full-env]]]
-    # Lower to CoreDocument, then evaluate with env-dict protocol.
+    # Lower to CoreDocument, then evaluate with Scope protocol.
     [lowered: [builtin-lower typed.doc]]
-    # builtin-eval returns exports Dict directly; raises on error — no try/match needed.
-    [evaled: [builtin-eval lowered full-env]]
+    # builtin-eval returns a Scope; raises on error. Extract exports Dict.
+    [eval-scope: [builtin-eval lowered full-env]]
+    [all-exports: [builtin-scope-exports eval-scope]]
+    [evaled: [builtin-dict-get "%" all-exports]]
     # Extract document metadata for caps validation and named-section bookkeeping.
     [meta: [builtin-doc-meta doc full-env]]
     # Validate --- caps: declarations. Each declared cap must be present in full-env.

@@ -66,7 +66,8 @@
     Http2Session
     Http3Session
     Uri
-    Urn]
+    Urn
+    Scope]
 
   # ── Primitive type aliases ────────────────────────────────────────────────
   # These are simple TypeNode leaf aliases. They depend only on TypeNode (declared
@@ -121,6 +122,7 @@
   Http3Session: TypeNode.Http3Session
   Uri:          TypeNode.Uri
   Urn:          TypeNode.Urn
+  Scope:        TypeNode.Scope
 
   # ── Structural protocol types ────────────────────────────────────────────
   # These depend on the primitive aliases above (via key-type/value-type fields
@@ -310,18 +312,18 @@
   builtin-parse:          [fn@[program: Program  diagnostics: Diagnostics] [let src@Bytes path@String] ...]
   # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
-  # resolve: resolve VarRef de Bruijn coords in a document against a name-set.
-  # name-set: Dict<String, 1> — flat dict of all visible names, values ignored.
+  # resolve: resolve VarRef de Bruijn coords in a document against a scope.
+  # scope: Scope — opaque scope with name-to-slot mapping for all visible names.
   # Returns {doc, diagnostics, unreferenced}.
   # diagnostics: error-level diagnostics only (undefined variables).
-  builtin-resolve:        [fn@[doc: Document  diagnostics: Diagnostics  unreferenced: Dict] [let doc@Document name-set@Dict] ...]
+  builtin-resolve:        [fn@[doc: Document  diagnostics: Diagnostics  unreferenced: Dict] [let doc@Document scope@Scope] ...]
   # lower: lower a resolved+typechecked Document to a CoreDocument.
   # Must be called after builtin-typecheck-doc and before builtin-eval.
   builtin-lower:          [fn@CoreDocument [let typed@Document] ...]
-  # eval: evaluate a lowered CoreDocument with an env dict.
-  # env: flat Dict<String, thunk> — all names in scope (prelude + prior doc exports + caps).
-  # Returns the exports Dict directly (raises on error — no diagnostics wrapper).
-  builtin-eval:           [fn@Dict     [let lowered@CoreDocument env@Dict] ...]
+  # eval: evaluate a lowered CoreDocument with a scope.
+  # scope: Scope — opaque scope with slots and name mapping.
+  # Returns a Scope containing the accumulated scope after evaluation.
+  builtin-eval:           [fn@Scope    [let lowered@CoreDocument scope@Scope] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Required third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.

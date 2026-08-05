@@ -1517,6 +1517,7 @@ impl Value {
             Value::CoreDocument { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
+            Value::Scope { .. } => Err(format!("no tinct representation for {}", self.type_name())),
         }
     }
 }

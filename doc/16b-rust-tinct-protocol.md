@@ -255,6 +255,7 @@ DirCap: TypeNode.DirCap   # exports as @DirCap annotation
 | `Document: TypeNode.Document` | Single document handle |
 | `CoreDocument: TypeNode.CoreDocument` | Core document with entries and span |
 | `TypeContext: TypeNode.TypeContext` | Type checker context |
+| `Scope: TypeNode.Scope` | Opaque scope with slots and name mapping |
 
 Additionally, `Value::U64(u64)` (unsigned 64-bit, from `42u` literals), `Value::Timestamp(jiff::Timestamp)`, `Value::Duration(i64)`, and `Value::RevocableDirCap` exist as Rust-internal variants not yet exported as protocol-level types. `Value::Builder`, `Value::Arena`, `Value::Annotated`, `Value::BroadcastChannel`, `Value::OneshotSender`, `Value::OneshotReceiver`, and `Value::Expression` are infrastructure variants used internally by the evaluator.
 

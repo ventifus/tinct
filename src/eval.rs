@@ -197,7 +197,7 @@ pub(crate) async fn eval_document_exprs_with_env(
 }
 
 /// Evaluate a sequence of pre-lowered `CoreExpr` entries (from `Value::CoreDocument`) as a
-/// scope chain, returning the last expression's result dict.
+/// scope chain, returning the last expression's result thunk and the accumulated scope.
 ///
 /// This is the `builtin-eval` evaluation path for the env-dict protocol (T-1775 / B-553).
 /// Unlike `eval_document_exprs_with_env`, which calls `lower()` on each SurfaceNode, this
@@ -210,10 +210,14 @@ pub(crate) async fn eval_document_exprs_with_env(
 /// which assigns `LGM(j)` to the j-th env-dict name and cumulative slots starting
 /// at `env_names.len()` to document dict entries.
 ///
-/// Returns the last expression's thunk. The caller is responsible for materializing
-/// to a Dict (exports). Intermediate dict expressions are materialized to extract their
-/// string-keyed thunks into the accumulated_group (identical semantics to
-/// `eval_document_exprs_with_env`).
+/// `initial_names`: optional name-to-slot mapping for the initial_group entries.
+/// When provided, intermediate dict entries extend this mapping. When `None`,
+/// names are not tracked (callers that don't need the scope names).
+///
+/// Returns `(result_thunk, accumulated_spine, accumulated_names)`. The caller is
+/// responsible for materializing the result thunk. Intermediate dict expressions
+/// are materialized to extract their string-keyed thunks into the accumulated_group
+/// (identical semantics to `eval_document_exprs_with_env`).
 pub(crate) async fn eval_core_document_exprs(
     core_entries: &[(
         String,
@@ -221,15 +225,25 @@ pub(crate) async fn eval_core_document_exprs(
     )],
     ctx: &Arc<EvalContext>,
     initial_group: Vec<Arc<Thunk>>,
-) -> EvalResult<Arc<Thunk>> {
+    initial_names: Option<IndexMap<String, u32>>,
+) -> EvalResult<(
+    Arc<Thunk>,
+    crate::value::Scope,
+    Option<IndexMap<String, u32>>,
+)> {
     if core_entries.is_empty() {
-        return Ok(Arc::new(Thunk::value(
-            Value::Dict {
-                entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
-            },
-            rust_span!(),
-        )));
+        let spine = crate::value::scope_from_flat(initial_group);
+        return Ok((
+            Arc::new(Thunk::value(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_val: crate::value::unknown_type_val(),
+                },
+                rust_span!(),
+            )),
+            spine,
+            initial_names,
+        ));
     }
 
     // Build accumulated_group from env-dict entries only.
@@ -237,6 +251,7 @@ pub(crate) async fn eval_core_document_exprs(
     // LGM(j) directly for the j-th env-dict name (root_group_len=0 in builtin_resolve).
     // Document dict entries are appended at cumulative slots as each dict is evaluated.
     let mut spine = crate::value::scope_from_flat(initial_group);
+    let mut names = initial_names;
 
     let last_idx = core_entries.len() - 1;
 
@@ -249,9 +264,9 @@ pub(crate) async fn eval_core_document_exprs(
         });
 
         if i == last_idx {
-            // Last expression: return lazily.
+            // Last expression: return lazily along with the accumulated scope.
             let thunk = crate::eval_core::eval_core_expr(spanned_core, &frame, ctx).await?;
-            return Ok(thunk);
+            return Ok((thunk, spine, names));
         }
 
         // Intermediate expression: eval and materialize to extract its exported bindings.
@@ -275,16 +290,17 @@ pub(crate) async fn eval_core_document_exprs(
                 )));
             }
         };
-        let new_entries: Vec<Arc<Thunk>> = dict_map
-            .iter()
-            .filter_map(|(k, v)| {
-                if matches!(k, HashableValue::Str(_)) {
-                    Some(Arc::clone(v))
-                } else {
-                    None
+        // Track names for new string-keyed entries.
+        let current_len = spine.len();
+        let mut new_entries: Vec<Arc<Thunk>> = Vec::new();
+        for (k, v) in dict_map.iter() {
+            if let HashableValue::Str(s) = k {
+                if let Some(ref mut n) = names {
+                    n.insert(s.to_string(), (current_len + new_entries.len()) as u32);
                 }
-            })
-            .collect();
+                new_entries.push(Arc::clone(v));
+            }
+        }
         spine = crate::value::scope_extend(&spine, new_entries);
     }
 
@@ -6069,9 +6085,10 @@ mod tests {
         let initial_group: Vec<Arc<Thunk>> = ctx.root_group.iter().map(Arc::clone).collect();
 
         // Eval via eval_core_document_exprs
-        let result_thunk = eval_core_document_exprs(&core_entries[..], &ctx, initial_group)
-            .await
-            .expect("eval_core_document_exprs must succeed");
+        let (result_thunk, _spine, _names) =
+            eval_core_document_exprs(&core_entries[..], &ctx, initial_group, None)
+                .await
+                .expect("eval_core_document_exprs must succeed");
         let val = materialize(&result_thunk, None, &ctx)
             .await
             .expect("materialize must succeed");

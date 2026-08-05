@@ -72,4 +72,10 @@
   builtin-macro-injects:     [fn@Any     [let x@Any] ...]
   builtin-span-of:           [fn@Dict    [let x@Any] ...]
   builtin-sequential:        [fn@Any     [let x@Any] ...]
+
+  # ── Scope operations ──────────────────────────────────────────────────────
+  # scope-extend: extend a Scope with additional Dict entries.
+  builtin-scope-extend:      [fn@Scope   [let scope@Scope additions@Dict] ...]
+  # scope-exports: convert a Scope to a Dict exposing its named entries.
+  builtin-scope-exports:     [fn@Dict    [let scope@Scope] ...]
 ]

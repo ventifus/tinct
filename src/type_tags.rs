@@ -114,6 +114,7 @@ pub const REPR_ARENA: &str = "Value::Arena";
 pub const REPR_EXPRESSION: &str = "Value::Expression";
 pub const REPR_ANNOTATED: &str = "Value::Annotated";
 pub const REPR_CORE_DOCUMENT: &str = "Value::CoreDocument";
+pub const REPR_SCOPE: &str = "Value::Scope";
 
 // ── TypeValue payload field name constants ───────────────────────────────────
 //

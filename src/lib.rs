@@ -784,6 +784,10 @@ where
             value::Value::CoreDocument { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("CoreDocument".to_string(), span),
             )),
+            value::Value::Scope { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+                "Scope".to_string(),
+                span,
+            ))),
         }
     })
 }

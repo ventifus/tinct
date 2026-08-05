@@ -1307,6 +1307,7 @@ fn is_valid_repr_string(s: &str) -> bool {
         REPR_DOCUMENT,
         REPR_EXPRESSION,
         REPR_CORE_DOCUMENT,
+        REPR_SCOPE,
         REPR_ANNOTATED,
     ]
     .contains(&s)
@@ -1474,6 +1475,7 @@ mod tests {
             REPR_DOCUMENT,
             REPR_EXPRESSION,
             REPR_CORE_DOCUMENT,
+            REPR_SCOPE,
             REPR_ANNOTATED,
         ];
         for s in &valid {

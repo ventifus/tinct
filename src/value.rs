@@ -801,6 +801,7 @@ pub const TYPE_ID_REACTIVE_CELL: u64 = 35;
 pub const TYPE_ID_ARENA: u64 = 36;
 pub const TYPE_ID_TYPE_CONTEXT: u64 = 37;
 pub const TYPE_ID_CORE_DOCUMENT: u64 = 38;
+pub const TYPE_ID_SCOPE: u64 = 39;
 
 /// Maximum reserved type ID for primitive types.
 /// User-defined variant `type_decl_id` values start at `TYPE_ID_RESERVED_MAX + 1` (100).
@@ -1086,6 +1087,14 @@ pub enum Value {
         span: crate::ast::Span,
         type_val: Arc<Value>,
     },
+    /// Opaque scope value for pipeline env passing between stages.
+    /// Contains slots (thunks) and a name-to-slot mapping. Not inspectable
+    /// as a Dict — use `builtin-scope-exports` to extract entries.
+    Scope {
+        slots: Arc<Vec<Arc<Thunk>>>,
+        names: Arc<IndexMap<String, u32>>,
+        type_val: Arc<Value>,
+    },
 }
 
 impl Clone for Value {
@@ -1324,6 +1333,15 @@ impl Clone for Value {
                 span: span.clone(),
                 type_val: Arc::clone(type_val),
             },
+            Value::Scope {
+                slots,
+                names,
+                type_val,
+            } => Value::Scope {
+                slots: Arc::clone(slots),
+                names: Arc::clone(names),
+                type_val: Arc::clone(type_val),
+            },
         }
     }
 }
@@ -1438,6 +1456,7 @@ impl Value {
             Value::Arena { .. } => TYPE_ID_ARENA,
             Value::TypeContext { .. } => TYPE_ID_TYPE_CONTEXT,
             Value::CoreDocument { .. } => TYPE_ID_CORE_DOCUMENT,
+            Value::Scope { .. } => TYPE_ID_SCOPE,
             Value::Variant { type_decl_id, .. } => *type_decl_id,
             Value::Annotated { inner, .. } => inner.type_id(),
         }
@@ -1486,6 +1505,7 @@ impl Value {
             Value::Annotated { inner, .. } => inner.type_name(),
             Value::TypeContext { .. } => "TypeContext",
             Value::CoreDocument { .. } => "CoreDocument",
+            Value::Scope { .. } => "Scope",
         }
     }
 
@@ -1520,6 +1540,7 @@ impl Value {
             Value::QuicDatagramHandle { .. } => Some("QuicDatagramHandle"),
             Value::Http2Session { .. } => Some("Http2Session"),
             Value::Http3Session { .. } => Some("Http3Session"),
+            Value::Scope { .. } => Some("Scope"),
             // All other values (Int, String, Float, Dict, Function,
             // Builtin, Variant, Bytes, Uri, Proxy, Annotated, etc.) are handled through
             // structural type checking or TyConDef constructor matching.
@@ -1590,6 +1611,7 @@ impl Value {
             Value::Document { type_val, .. } => type_val,
             Value::Expression { type_val, .. } => type_val,
             Value::CoreDocument { type_val, .. } => type_val,
+            Value::Scope { type_val, .. } => type_val,
             // Exceptions:
             Value::Builder(_) => unknown_type_val_ref(),
             Value::Annotated { inner, .. } => inner.type_val(),
@@ -1689,6 +1711,9 @@ impl fmt::Debug for Value {
             Value::TypeContext { .. } => write!(f, "TypeContext"),
             Value::CoreDocument { entries, .. } => {
                 write!(f, "CoreDocument({} entries)", entries.len())
+            }
+            Value::Scope { slots, .. } => {
+                write!(f, "Scope({} entries)", slots.len())
             }
         }
     }
@@ -1793,6 +1818,9 @@ impl fmt::Display for Value {
             Value::TypeContext { .. } => write!(f, "<TypeContext>"),
             Value::CoreDocument { entries, .. } => {
                 write!(f, "<core-document:{} entries>", entries.len())
+            }
+            Value::Scope { slots, .. } => {
+                write!(f, "<Scope: {} entries>", slots.len())
             }
         }
     }

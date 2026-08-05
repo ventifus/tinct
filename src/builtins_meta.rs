@@ -1837,6 +1837,7 @@ fn type_name(val: &Value) -> String {
         Value::Expression { .. } => "Expression",
         Value::Arena { .. } => "Arena",
         Value::CoreDocument { .. } => "CoreDocument",
+        Value::Scope { .. } => "Scope",
     }
     .to_string()
 }
@@ -2106,14 +2107,14 @@ fn compute_doc_span(
 
 /// `builtin-resolve`: Resolve a single `Value::Document` in-place.
 ///
-/// Takes 2 positional args: the document to resolve and a name-set dict.
+/// Takes 2 positional args: the document to resolve and a scope.
 ///
 /// **Arguments:**
 /// - arg0: `Value::Document` (only Document, not Program — error if Program)
-/// - arg1: Dict — name-set: `{name-a: 1, name-b: 1, ...}` (keys are in-scope names; values ignored)
-///   Names are extracted in insertion order and seeded as `Dispatch(0, i)` (i = 0..n-1)
-///   so that at runtime, `CoreExpr::Var { addr: Dispatch(0, i) }` resolves to
-///   `frame.group[i]` = the i-th env-dict thunk in `eval_core_document_exprs`.
+/// - arg1: `Value::Scope` — scope with name-to-slot mapping. Names are extracted in
+///   insertion order and seeded as `Dispatch(0, root_group_len + i)` (i = 0..n-1)
+///   so that at runtime, `CoreExpr::Var { addr: Dispatch(0, root_group_len + i) }` resolves to
+///   `frame.group[root_group_len + i]` = the i-th scope slot in `eval_core_document_exprs`.
 ///
 /// **Returns** `{doc: Document, diagnostics: Dict<Int, DiagnosticDict>}`.
 ///
@@ -2150,38 +2151,25 @@ pub(crate) fn builtin_resolve(
             .into());
         };
 
-        // arg1: Dict<String, Any> — name-set: keys are the in-scope names; values are ignored.
-        // Extract names in insertion order — the i-th name gets Dispatch(0, root_group_len + i) from the
-        // resolver, matching the position of that env-dict thunk in the initial_group passed to
-        // eval_core_document_exprs.
-        let name_set_val = args[1].require_value()?.clone();
-        let name_set_dict = match name_set_val {
-            Value::Dict { entries: d, .. } => d,
+        // arg1: Value::Scope — env scope with name-to-slot mapping.
+        // Names are extracted in insertion order from the scope's names map.
+        let scope_val = args[1].require_value()?.clone();
+        let scope_names = match scope_val {
+            Value::Scope { names, .. } => names,
             other => {
-                return Err(EvalError::internal(
-                    format!("name-set is not a Dict: {}", other.type_name()),
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-resolve env".to_string(),
+                    "Scope",
+                    other.type_name(),
                     call_span,
                 )
-                .into())
+                .into());
             }
         };
 
-        // Build the ordered name list from the name-set's string keys (insertion order).
-        // The i-th env-dict name gets Dispatch(0, root_group_len + i) in the resolver.
-        let mut env_names: Vec<String> = Vec::with_capacity(name_set_dict.len());
-        for (k, _v_thunk) in &name_set_dict {
-            let name = match k {
-                HashableValue::Str(s) => s,
-                other => {
-                    return Err(EvalError::internal(
-                        format!("name-set key is not a String: {}", other),
-                        call_span,
-                    )
-                    .into())
-                }
-            };
-            env_names.push(name.to_string());
-        }
+        // Build the ordered name list from the scope's names (insertion order).
+        // The i-th name gets Dispatch(0, root_group_len + i) in the resolver.
+        let env_names: Vec<String> = scope_names.keys().cloned().collect();
 
         // Seed the resolver with root_group names at their actual runtime slots.
         // root_group_resolver_map() returns (name, slot) where slot is the position
@@ -3523,23 +3511,168 @@ pub(crate) fn builtin_builtin_module(
     })
 }
 
-/// `builtin-eval`: Evaluate a `Value::CoreDocument` against an env-dict, returning the exports dict.
+/// `builtin-scope-extend`: Extend a `Value::Scope` with additional bindings from a `Value::Dict`.
+///
+/// Takes 2 positional args:
+/// - arg0: `Value::Scope` — the base scope to extend.
+/// - arg1: `Value::Dict` — additions: string-keyed entries to add or override.
+///
+/// For each string-keyed entry in `additions`:
+/// - If the name already exists in the scope, override the slot in-place.
+/// - If the name is new, append the thunk and record the name-to-slot mapping.
+///
+/// Returns a new `Value::Scope` with the merged slots and names.
+pub(crate) fn builtin_scope_extend(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-scope-extend", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // arg0: Value::Scope
+        let scope_val = args[0].require_value()?.clone();
+        let (scope_slots, scope_names) = match scope_val {
+            Value::Scope { slots, names, .. } => (slots, names),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-extend".to_string(),
+                    "Scope",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // arg1: Value::Dict — additions
+        let additions_val = args[1].require_value()?.clone();
+        let additions_map = match additions_val {
+            Value::Dict { entries: d, .. } => d,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-extend additions".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Clone the scope vectors for mutation.
+        let mut new_slots: Vec<Arc<Thunk>> = (*scope_slots).clone();
+        let mut new_names: IndexMap<String, u32> = (*scope_names).clone();
+
+        for (k, thunk) in &additions_map {
+            let name = match k {
+                HashableValue::Str(s) => s.to_string(),
+                _ => continue, // skip non-string keys
+            };
+            if let Some(&existing_slot) = new_names.get(&name) {
+                // Override existing slot
+                new_slots[existing_slot as usize] = Arc::clone(thunk);
+            } else {
+                // Append new entry
+                let slot = new_slots.len() as u32;
+                new_slots.push(Arc::clone(thunk));
+                new_names.insert(name, slot);
+            }
+        }
+
+        Ok(Arc::new(Thunk::value(
+            Value::Scope {
+                slots: Arc::new(new_slots),
+                names: Arc::new(new_names),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
+    })
+}
+
+/// `builtin-scope-exports`: Convert a `Value::Scope` to a `Value::Dict` exposing its named entries.
+///
+/// Takes 1 positional arg:
+/// - arg0: `Value::Scope`
+///
+/// Returns `Value::Dict` with string keys from the scope's name mapping and
+/// their corresponding thunks from the scope's slots.
+pub(crate) fn builtin_scope_exports(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-scope-exports", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // arg0: Value::Scope
+        let scope_val = args[0].require_value()?.clone();
+        let (scope_slots, scope_names) = match scope_val {
+            Value::Scope { slots, names, .. } => (slots, names),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-scope-exports".to_string(),
+                    "Scope",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        // Build Dict from scope names and slots.
+        let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> =
+            IndexMap::with_capacity(scope_names.len());
+        for (name, &slot) in scope_names.iter() {
+            dict_map.insert(
+                HashableValue::Str(Arc::from(name.as_str())),
+                Arc::clone(&scope_slots[slot as usize]),
+            );
+        }
+
+        Ok(Arc::new(Thunk::value(
+            Value::Dict {
+                entries: dict_map,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
+    })
+}
+
+/// `builtin-eval`: Evaluate a `Value::CoreDocument` against a `Value::Scope`, returning
+/// a `Value::Scope` containing the accumulated scope after evaluation.
 ///
 /// Takes 2 positional args:
 /// - arg0: `Value::CoreDocument` — fully lowered document (output of `builtin-lower`).
 ///   Passing `Value::Document` is a type error: call `builtin-lower` first.
-/// - arg1: `Value::Dict` — env-dict: accumulated environment mapping names to thunks (in
-///   insertion order). Values become the initial accumulated group for
-///   `eval_core_document_exprs`, enabling `Dispatch(_, i)` references into the env.
-///   The insertion order of the env-dict must match the name-set order passed to `builtin-resolve`
+/// - arg1: `Value::Scope` — accumulated environment with slots and name mapping.
+///   Slots become the initial accumulated group for `eval_core_document_exprs`,
+///   enabling `Dispatch(_, i)` references into the env.
+///   The slot order must match the name-set order passed to `builtin-resolve`
 ///   (i.e., the slot assignments from the resolver frame).
 ///
-/// Returns `Value::Dict` — the exports dict produced by the document's last expression.
+/// Returns `Value::Scope` — the accumulated scope after evaluation, including
+/// the result thunk as the last entry. The accumulated scope contains all
+/// intermediate dict entries and the final expression.
 /// Errors propagate via `EvalError` (raises on failure — no diagnostics wrapper).
 ///
 /// Accepts `Value::CoreDocument` (output of `builtin-lower`), not `Value::Document`.
-/// The env-dict protocol passes a `Dict<String, Arc<Thunk>>` as the second argument,
-/// replacing the old scope-id Int parameter.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -3558,7 +3691,7 @@ pub(crate) fn builtin_eval(
 
         // arg0: Value::CoreDocument — reject Value::Document with a descriptive type error.
         let doc_val = args[0].require_value()?.clone();
-        let (core_entries, doc_span) = match doc_val {
+        let (core_entries, _doc_span) = match doc_val {
             Value::CoreDocument { entries, span, .. } => (entries, span),
             Value::Document { .. } => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -3582,17 +3715,14 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // arg1: Value::Dict — env-dict: name → thunk.
-        // Extract thunks in insertion order; these follow root_group thunks in initial_group.
-        // The env-dict keys must be in the same insertion order as the name-set passed to
-        // builtin-resolve, which determines the LGM slot assignments (with root_group_len offset).
+        // arg1: Value::Scope — env scope with slots and name mapping.
         let env_val = args[1].require_value()?.clone();
-        let env_map = match env_val {
-            Value::Dict { entries: d, .. } => d,
+        let (scope_slots, scope_names) = match env_val {
+            Value::Scope { slots, names, .. } => (slots, names),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "builtin-eval env-dict".to_string(),
-                    "Dict",
+                    "builtin-eval env".to_string(),
+                    "Scope",
                     other.type_name(),
                     call_span,
                 )
@@ -3600,31 +3730,61 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // Build initial_group: prepend root_group thunks, then append env-dict thunks.
+        // Build initial_group: prepend root_group thunks, then append scope slots.
         // LGM slots 0..R-1 are root_group entries (builtins + capabilities).
-        // Env-dict entries follow at R..R+N-1, matching the resolver's root_group_len offset
+        // Scope entries follow at R..R+N-1, matching the resolver's root_group_len offset
         // assigned by builtin_resolve.
+        let root_group_len = ctx.root_group.len();
         let mut initial_group: Vec<Arc<Thunk>> = ctx.root_group.iter().map(Arc::clone).collect();
-        initial_group.extend(env_map.iter().filter_map(|(k, v)| {
-            if matches!(k, HashableValue::Str(_)) {
-                Some(Arc::clone(v))
-            } else {
-                None
-            }
-        }));
+        initial_group.extend(scope_slots.iter().map(Arc::clone));
 
-        // Evaluate the pre-lowered CoreExpr entries with the env-dict as the initial group.
+        // Build initial names with root_group_len offset applied.
+        let mut initial_names: IndexMap<String, u32> = IndexMap::with_capacity(scope_names.len());
+        for (name, &slot) in scope_names.iter() {
+            initial_names.insert(name.clone(), slot + root_group_len as u32);
+        }
+
+        // Evaluate the pre-lowered CoreExpr entries with the scope as the initial group.
         // Uses eval_core_document_exprs (not eval_document_exprs_with_env) to avoid calling
         // lower() on already-lowered expressions. Errors propagate directly — no diagnostics
         // wrapping.
-        let result_thunk =
-            crate::eval::eval_core_document_exprs(&core_entries[..], &ctx, initial_group).await?;
+        let (result_thunk, accumulated_spine, accumulated_names) =
+            crate::eval::eval_core_document_exprs(
+                &core_entries[..],
+                &ctx,
+                initial_group,
+                Some(initial_names),
+            )
+            .await?;
 
-        // Materialize the result to a Dict (the exports).
-        // The last expression in a document is the exports dict — force it so callers receive
-        // a concrete Value::Dict they can iterate to build the next env-dict.
-        let result_val = materialize(&result_thunk, Some(&doc_span), &ctx).await?;
-        Ok(Arc::new(Thunk::value(result_val, call_span)))
+        // Build the result Value::Scope from accumulated spine and names.
+        // Strip root_group prefix from the spine — scope slots are the entries
+        // after root_group. Adjust name slots accordingly.
+        let full_slots = &*accumulated_spine;
+        let scope_only_slots: Vec<Arc<Thunk>> = full_slots[root_group_len..].to_vec();
+
+        let mut result_names = accumulated_names.unwrap_or_default();
+        // Adjust slot indices to be relative to the scope (subtract root_group_len).
+        for slot in result_names.values_mut() {
+            *slot -= root_group_len as u32;
+        }
+
+        // Add the result thunk to the scope under the key "%".
+        // This preserves the pipeline convention: the result of evaluation
+        // is accessible as scope.% by the loader.
+        let result_slot = scope_only_slots.len() as u32;
+        let mut final_slots = scope_only_slots;
+        final_slots.push(result_thunk);
+        result_names.insert("%".to_string(), result_slot);
+
+        Ok(Arc::new(Thunk::value(
+            Value::Scope {
+                slots: Arc::new(final_slots),
+                names: Arc::new(result_names),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -5114,6 +5274,21 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         // builtin-current-env: zero-arg; returns the calling lexical environment.
         // needs_caller_env: true — only builtin that requires BuiltinArgs.caller_env_id to be Some.
         builtin!(@needs_caller_env, "builtin-current-env", builtin_current_env),
+        // ── Scope operations ─────────────────────────────────────────────────────────
+        builtin!(
+            "builtin-scope-extend",
+            builtin_scope_extend,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["scope", "additions"]
+        ),
+        builtin!(
+            "builtin-scope-exports",
+            builtin_scope_exports,
+            [Strictness::Seq],
+            1,
+            ["scope"]
+        ),
     ]
 }
 

@@ -501,7 +501,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_resolve,
             [Strictness::Seq, Strictness::Seq],
             2,
-            ["doc", "frames"]
+            ["doc", "scope"]
         ),
         // Pipeline stage lint primitive
         builtin!(
@@ -545,7 +545,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_eval,
             [Strictness::Seq, Strictness::Seq],
             2,
-            ["doc", "env-dict"]
+            ["doc", "scope"]
         ),
         builtin!(
             "builtin-variant-payload",
