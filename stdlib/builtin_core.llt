@@ -189,15 +189,13 @@
     value-type: Diagnostic]
 
   # Documents: auto-indexed collection of Document values (produced by builtin-program-docs).
-  # value-type is Top because TypeNode.Document (an opaque Rust type) cannot be used as a
-  # nested value-type in a TypeNode.Dict — typenode_value_to_type returns None for opaque
-  # TypeNode unit variants in that position. This is a permanent design constraint: opaque
-  # Rust types injected as unit variants cannot be represented as nested TypeNode value types.
+  # value-type uses TypeNode.Document now that typenode_value_to_type handles opaque
+  # TypeNode unit variants (mapping them to TypeValue.Repr with the Value discriminant).
   Documents: [TypeNode.Dict
     fields: []
     open: 1
     key-type: TypeNode.Int
-    value-type: TypeNode.Top]
+    value-type: TypeNode.Document]
 ]
 
 ---
