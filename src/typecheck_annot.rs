@@ -1659,6 +1659,20 @@ async fn resolve_type_head(
         return Ok(make_typevalue_var(&fresh));
     }
 
+    // Step 5: check tycon_env for runtime type declarations (e.g., Boolean: [type True False]).
+    // Annotations resolve in the type-stage env first, then fall back to runtime scope.
+    // This handles types declared in the same dict or an enclosing runtime scope.
+    if state.tycon_env.contains_key(name) {
+        if args.is_empty() {
+            return Ok(make_typevalue_op(name));
+        }
+        let mut result = make_typevalue_op(name);
+        for arg in args {
+            result = make_typevalue_app(result, Arc::clone(arg));
+        }
+        return Ok(result);
+    }
+
     // Not found in any scope — undefined type name.
     Err(Diagnostic::error(
         "undefined-type",
