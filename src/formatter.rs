@@ -5,6 +5,8 @@
 // The Rust `Formatter` struct was deleted — it was only ever used by the now-removed
 // `format_source` function that was dead code from `tinct fmt`'s perspective.
 
+use crate::expand;
+
 /// The variable name that formatter scripts use to receive the parsed AST dict.
 ///
 /// Formatter scripts access the parsed AST of the input source as `input-ast`.
@@ -50,8 +52,9 @@ pub async fn format_source_tinct(
     let formatter_parsed =
         parse(script_source, formatter_file).map_err(|e| format!("formatter parse error: {e}"))?;
 
-    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
+    // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
     let formatter_program = desugar::desugar_program_full(&formatter_parsed.program);
+    let formatter_program = expand::expand_program(&formatter_program);
 
     let ctx = EvalContext::new_empty();
 

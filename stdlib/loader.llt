@@ -259,7 +259,8 @@
             [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
             [parse-result:   [builtin-parse decl-bytes decl-path]]
             [desugared:      [builtin-desugar parse-result.program]]
-            [docs:           [builtin-program-docs desugared]]
+            [expanded:       [builtin-expand desugared]]
+            [docs:           [builtin-program-docs expanded]]
             # Typecheck each document in the declaration file using the seed env.
             # No eval — just type-check to populate TypeContext with builtin signatures.
             [reduce
@@ -350,7 +351,8 @@
                           0: [builtin-raise [make-diag [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]
                           ...: []]
                         [builtin-desugar parse-result.program]]]
-    [docs:          [builtin-program-docs desugared]]
+    [expanded:      [builtin-expand desugared]]
+    [docs:          [builtin-program-docs expanded]]
     # Seed env from extras dict (e.g., %prelude for prelude.llt).
     # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
     [seed-env: extras]
@@ -514,9 +516,10 @@
     [match [builtin-eq-int _pe 0]
       0: [builtin-raise [make-diag "parse error(s)"]]
       ...: []]
-    # Desugar + extract docs
+    # Desugar + expand + extract docs
     [desugared: [builtin-desugar parse-result.program]]
-    [docs:      [builtin-program-docs desugared]]
+    [expanded:  [builtin-expand desugared]]
+    [docs:      [builtin-program-docs expanded]]
     # mod-scope: module builtins for --- uses: headers declared in the file's first doc.
     # Extract the file-level uses list from the first doc's metadata and build the module
     # scope from it. When docs is empty, mod-scope is empty (no uses to inject).
@@ -539,9 +542,10 @@
     [match [builtin-eq-int _pe 0]
       0: [builtin-raise [make-diag "parse error(s)"]]
       ...: []]
-    # Desugar + extract docs
+    # Desugar + expand + extract docs
     [desugared: [builtin-desugar parse-result.program]]
-    [docs:      [builtin-program-docs desugared]]
+    [expanded:  [builtin-expand desugared]]
+    [docs:      [builtin-program-docs expanded]]
     # No file-level mod-scope for expressions.
     [mod-scope: []]
     # Per-document reduce.

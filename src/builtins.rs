@@ -610,6 +610,7 @@ mod tests {
         let parsed = crate::parser::parse(llt_src, test_file(llt_src))
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);

@@ -806,5 +806,9 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::LetDecl { .. } => "[let ...]",
         SurfaceExpression::Error(_) => "<parse error>",
         SurfaceExpression::Decl(_) => "declaration",
+        SurfaceExpression::UnitVariant { .. } => "UnitVariant",
+        SurfaceExpression::MakeVariant { .. } => "MakeVariant",
+        SurfaceExpression::TypeDecl { .. } => "TypeDecl",
+        SurfaceExpression::ReprDecl { .. } => "ReprDecl",
     }
 }

@@ -1003,6 +1003,33 @@ async fn infer_step(
         // silently return Unknown here to avoid spurious secondary diagnostics.
         SurfaceExpression::Error(_) => TypeCheckAction::Done(make_typevalue_unknown()),
 
+        // Expansion-produced variants: UnitVariant and MakeVariant should infer to their
+        // nominal type by looking up the tycon in tycon_env. TypeDecl and ReprDecl wrap
+        // an inner expression — recurse into it.
+        SurfaceExpression::UnitVariant { tycon, .. } => {
+            let tv = if state.tycon_env.contains_key(tycon.as_str()) {
+                crate::type_infer::make_typevalue_op(tycon)
+            } else {
+                make_typevalue_unknown()
+            };
+            TypeCheckAction::Done(tv)
+        }
+        SurfaceExpression::MakeVariant { tag, .. } => {
+            let tycon = tag.split('.').next().unwrap_or("");
+            let tv = if state.tycon_env.contains_key(tycon) {
+                crate::type_infer::make_typevalue_op(tycon)
+            } else {
+                make_typevalue_unknown()
+            };
+            TypeCheckAction::Done(tv)
+        }
+        SurfaceExpression::TypeDecl { inner, .. } => {
+            TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+        }
+        SurfaceExpression::ReprDecl { inner, .. } => {
+            TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+        }
+
         _ => {
             let msg = format!(
                 "unexpected {} in this context",
@@ -4306,6 +4333,17 @@ fn collect_dependencies(
                 }
             }
             SurfaceExpression::Error(_) => {}
+            // Expansion-produced variants
+            SurfaceExpression::UnitVariant { .. } => {}
+            SurfaceExpression::MakeVariant { payload, .. } => {
+                worklist.push((payload, Arc::clone(&locals)));
+            }
+            SurfaceExpression::TypeDecl { inner, .. } => {
+                worklist.push((inner, Arc::clone(&locals)));
+            }
+            SurfaceExpression::ReprDecl { inner, .. } => {
+                worklist.push((inner, Arc::clone(&locals)));
+            }
         }
     }
 
@@ -4697,7 +4735,9 @@ pub(crate) async fn run_typecheck_dict(
         if entry.node.key.is_none() {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                 if let SurfaceDeclaration::InstanceDecl {
-                    class_name: _, arms, ..
+                    class_name: _,
+                    arms,
+                    ..
                 } = decl.as_ref()
                 {
                     for (pattern, method_entries) in arms {

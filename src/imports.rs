@@ -151,6 +151,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             })?
             .program,
     );
+    let program = crate::expand::expand_program(&program);
 
     // Empty parent — builtin_core.llt is the source of truth. Primitives are hardcoded
     // in resolve_type_name; types declared within the file resolve via state.tycon_env.

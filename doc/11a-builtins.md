@@ -486,6 +486,7 @@ Low-level Rust builtins used by `loader.llt` to implement the document evaluatio
 |---------|------|-------------|
 | `builtin-parse` | `[Fn@Dict [Bytes String]]` | Parse source bytes to a raw SurfaceProgram; second arg is the file path (used in error spans); returns `{program: Program, diagnostics: Dict}` |
 | `builtin-desugar` | `[Fn@Program [Program]]` | Run desugaring on a SurfaceProgram (`$_` expansion, pipe lowering, etc.); returns desugared SurfaceProgram |
+| `builtin-expand` | `[Fn@Program [Program]]` | Expand declarations in a desugared SurfaceProgram (type decls, class decls, instance fan-out, etc.); returns expanded SurfaceProgram ready for resolve |
 | `builtin-program-docs` | `[Fn@Dict [Program]]` | Extract the list of SurfaceDocuments from a SurfaceProgram; returns an auto-indexed Dict of Documents |
 | `builtin-resolve` | `[Fn@Dict [Document Dict]]` | Resolve name references in a SurfaceDocument; second arg is a `Dict<String,1>` name-set (all visible names, values ignored); returns `{doc: Document, diagnostics: Dict, unreferenced: Dict<String,1>, doc-span: SpanDict}`. The name-set is built from the accumulated env dict via `env-to-name-set`. `unreferenced` lists env names never referenced by any VarRef in the document. |
 | `builtin-lower` | `[Fn@CoreDocument [Document]]` | Lower a resolved, type-checked SurfaceDocument to a CoreDocument; reads inline OnceLocks set by the resolver and type checker; returns a CoreDocument ready for `builtin-eval` |
@@ -524,6 +525,7 @@ Each document's exports are merged into the accumulated env for the next documen
 
 - `builtin-parse`: Type mismatch if first arg is not Bytes or second arg is not String; returns parse errors in `diagnostics` dict rather than raising
 - `builtin-desugar`: Type mismatch if arg is not a SurfaceProgram
+- `builtin-expand`: Type mismatch if arg is not a SurfaceProgram
 - `builtin-program-docs`: Type mismatch if arg is not a SurfaceProgram
 - `builtin-resolve`: Type mismatch if first arg is not Document or second arg is not Dict; resolution errors returned in `diagnostics` dict rather than raising
 - `builtin-lower`: Type mismatch if arg is not a resolved, type-checked Document; lowering errors recorded as `CoreExpr::Placeholder` sentinels in the output

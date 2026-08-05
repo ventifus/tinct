@@ -320,8 +320,7 @@ pub(crate) fn builtin_get(
                             map.keys().map(|k| k.to_string()).collect();
                         let mut err =
                             EvalError::key_not_found(&key_str, available_keys, target_span);
-                        err.spans
-                            .push((call_span, "accessed here".to_string()));
+                        err.spans.push((call_span, "accessed here".to_string()));
                         err.notes.push(format!(
                             "dict has {} entries, type_val: {}",
                             map.len(),
@@ -331,12 +330,7 @@ pub(crate) fn builtin_get(
                     }
                 }
             }
-            other => Err(EvalError::type_mismatch(
-                "Dict",
-                other.type_name(),
-                target_span,
-            )
-            .into()),
+            other => Err(EvalError::type_mismatch("Dict", other.type_name(), target_span).into()),
         }
     })
 }

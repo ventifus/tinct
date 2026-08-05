@@ -404,6 +404,20 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
                 desugar_surface(binding, depth);
             }
         }
+
+        SurfaceExpression::UnitVariant { .. } => {} // no children to recurse into
+        SurfaceExpression::MakeVariant { ref mut payload, .. } => {
+            desugar_surface(payload, depth);
+        }
+        SurfaceExpression::TypeDecl { ref mut inner, .. } => {
+            desugar_surface(inner, depth);
+        }
+        SurfaceExpression::ReprDecl { ref mut inner, ref mut is_pred, .. } => {
+            if let Some(is_pred_node) = is_pred {
+                desugar_surface(is_pred_node, depth);
+            }
+            desugar_surface(inner, depth);
+        }
     }
 }
 

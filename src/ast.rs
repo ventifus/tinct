@@ -414,6 +414,10 @@ impl fmt::Display for SurfaceExpression {
                 // Delegate to SurfaceDeclaration Display.
                 write!(f, "{}", decl)
             }
+            SurfaceExpression::UnitVariant { tycon, ctor, .. } => write!(f, "{tycon}.{ctor}"),
+            SurfaceExpression::MakeVariant { tag, .. } => write!(f, "MakeVariant({tag})"),
+            SurfaceExpression::TypeDecl { type_name, .. } => write!(f, "TypeDecl({type_name})"),
+            SurfaceExpression::ReprDecl { repr, .. } => write!(f, "ReprDecl({repr})"),
         }
     }
 }
@@ -804,6 +808,42 @@ pub enum SurfaceExpression {
     // declarations found inside dicts (Pass 0c). Evaluates to Placeholder at runtime.
     #[expr(skip)]
     Decl(Box<SurfaceDeclaration>),
+
+    /// Expanded unit variant value (produced by the expand stage, never by the parser).
+    /// Lowered 1:1 to CoreExpr::UnitVariant.
+    #[expr(skip)]
+    UnitVariant {
+        tycon: String,
+        ctor: String,
+        type_decl_id: u64,
+    },
+
+    /// Expanded payload variant constructor (produced by the expand stage, never by the parser).
+    /// Lowered 1:1 to CoreExpr::Variant.
+    #[expr(skip)]
+    MakeVariant {
+        tag: String,
+        payload: Arc<SurfaceNode>,
+        type_decl_id: u64,
+    },
+
+    /// Type declaration wrapper (produced by the expand stage, never by the parser).
+    /// Lowered 1:1 to CoreExpr::TypeDecl.
+    #[expr(skip)]
+    TypeDecl {
+        type_name: String,
+        type_decl_id: u64,
+        inner: Arc<SurfaceNode>,
+    },
+
+    /// Repr declaration wrapper (produced by the expand stage, never by the parser).
+    /// Lowered 1:1 to CoreExpr::ReprDecl.
+    #[expr(skip)]
+    ReprDecl {
+        repr: String,
+        is_pred: Option<Arc<SurfaceNode>>,
+        inner: Arc<SurfaceNode>,
+    },
 }
 
 /// A dict/list entry in a SurfaceExpression::Dict.

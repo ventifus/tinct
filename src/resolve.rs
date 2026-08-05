@@ -211,6 +211,32 @@ impl SurfaceResolver {
         self.scopes.push(scope);
     }
 
+    /// Enter a scope with pre-computed (name, slot) pairs.
+    ///
+    /// Unlike `enter_scope_with_offset` which assigns contiguous slots from a base offset,
+    /// this method accepts explicit slot positions for each name. Used when entries get
+    /// uniform sequential slot assignment (all entries, not just static-key ones), so
+    /// static key names may have non-contiguous slot positions.
+    fn enter_scope_with_slot_pairs(&mut self, pairs: &[(String, u32)], frame_kind: FrameKind) {
+        let mut scope: indexmap::IndexMap<String, VarAddr> =
+            indexmap::IndexMap::with_capacity(pairs.len());
+        for (name, slot) in pairs {
+            scope.insert(name.clone(), VarAddr::Dispatch(0, *slot));
+        }
+        let frame: indexmap::IndexMap<String, u32> = scope
+            .iter()
+            .filter_map(|(k, addr)| {
+                if let VarAddr::Dispatch(_, slot) = addr {
+                    Some((k.clone(), *slot))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.unified_frames.push((frame, frame_kind));
+        self.scopes.push(scope);
+    }
+
     /// Enter a function parameter scope: each param gets `Parameter(i)` as its VarAddr.
     fn enter_param_scope(&mut self, params: &[String]) {
         let mut scope: indexmap::IndexMap<String, VarAddr> =
@@ -577,8 +603,6 @@ impl SurfaceResolver {
             }
 
             SurfaceExpression::Dict(entries) => {
-                let static_keys = surface_dict_static_keys(entries);
-
                 // Walk key expressions in outer scope.
                 // Non-escaped VarRef keys (bare identifier keys like `x:`) are static
                 // name declarations, not variable references — suppress error recording.
@@ -597,65 +621,58 @@ impl SurfaceResolver {
                     }
                 }
 
-                // Enter the dict's letrec scope with the correct absolute slot base.
-                //
-                // At runtime, eval_dict_core builds extended_group = outer_frame.group ++ letrec_slots,
-                // placing this dict's entries at indices outer_frame.group.len()..outer_frame.group.len()+N.
-                // The resolver must assign LGM(base+i) for entry i so that LGM(slot) → frame.group[slot]
-                // resolves to the correct thunk. `accumulated_dict_offset` holds the value that
-                // outer_frame.group.len() will have at the eval_dict_core call site for this dict.
-                //
-                // This scope corresponds to a real runtime eval_dict_core frame boundary.
                 let base_offset = self.accumulated_dict_offset;
-                self.enter_scope_with_offset(&static_keys, base_offset, FrameKind::DictLetrec);
-                // Advance accumulated_dict_offset by this dict's key count so that any nested
-                // dicts inside this dict's values use the correct base (= outer_frame.group.len()
-                // at their eval_dict_core call site = base_offset + static_keys.len()).
-                self.accumulated_dict_offset = base_offset + static_keys.len() as u32;
 
-                // Populate assigned_slot on each SurfaceEntry.
-                //
-                // Replay the same iteration order as surface_dict_static_keys to determine
-                // which slot index each entry's outer key occupies. For entries with a static
-                // key, set assigned_slot to base_offset + slot_idx. InstanceDecl entries may
-                // also inject mangled binding names — advance slot_idx past those so that
-                // subsequent entries get the correct slot.
+                // Uniform slot assignment: every entry gets a real sequential slot.
+                // Assign slots BEFORE entering scope so we can collect the actual
+                // (name, slot) pairs for static-key entries. Static keys may have
+                // non-contiguous slot positions when non-static entries are interspersed.
+                let mut scope_pairs: Vec<(String, u32)> = Vec::new();
                 {
                     let mut slot_idx: u32 = 0;
                     for entry in entries.iter() {
-                        // Does this entry have a static outer key? (same predicate as
-                        // surface_dict_static_keys: VarRef with escaped=false, or StringLiteral)
-                        let has_static_key = entry.node.key.as_ref().map_or(false, |k| {
-                            matches!(
-                                &k.expr,
-                                SurfaceExpression::StringLiteral { .. }
-                                    | SurfaceExpression::VarRef { escaped: false, .. }
-                            )
-                        });
-                        if has_static_key {
-                            // First write wins: shared AST nodes may be visited multiple times.
-                            let _ = entry.node.assigned_slot.set(base_offset + slot_idx);
-                            slot_idx += 1;
-                        } else {
-                            let _ = entry.node.assigned_slot.set(u32::MAX);
+                        // Collect static key name → actual slot for scope entry.
+                        if let Some(key) = &entry.node.key {
+                            match &key.expr {
+                                SurfaceExpression::StringLiteral { content, .. } => {
+                                    scope_pairs.push((content.clone(), base_offset + slot_idx));
+                                }
+                                SurfaceExpression::VarRef {
+                                    name,
+                                    escaped: false,
+                                    ..
+                                } => {
+                                    scope_pairs.push((name.clone(), base_offset + slot_idx));
+                                }
+                                _ => {}
+                            }
                         }
-                        // Count mangled binding names from InstanceDecl (mirrors
-                        // surface_dict_static_keys exactly) to keep slot_idx in sync.
+                        // First write wins: shared AST nodes may be visited multiple times.
+                        let _ = entry.node.assigned_slot.set(base_offset + slot_idx);
+                        slot_idx += 1;
+                        // InstanceDecl method slots: advance slot_idx past method bindings
+                        // so subsequent entries get the correct slot.
                         if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                             if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } =
                                 decl.as_ref()
                             {
                                 for (_pattern, method_entries) in arms {
                                     for me in method_entries {
-                                        let has_method_key =
-                                            me.node.key.as_ref().map_or(false, |k| {
-                                                matches!(
-                                                    &k.expr,
-                                                    SurfaceExpression::StringLiteral { .. }
-                                                        | SurfaceExpression::VarRef { .. }
-                                                )
+                                        let method_name =
+                                            me.node.key.as_ref().and_then(|k| match &k.expr {
+                                                SurfaceExpression::StringLiteral {
+                                                    content,
+                                                    ..
+                                                } => Some(content.clone()),
+                                                SurfaceExpression::VarRef { name, .. } => {
+                                                    Some(name.clone())
+                                                }
+                                                _ => None,
                                             });
-                                        if has_method_key {
+                                        if let Some(name) = method_name {
+                                            if !scope_pairs.iter().any(|(n, _)| n == &name) {
+                                                scope_pairs.push((name, base_offset + slot_idx));
+                                            }
                                             let _ =
                                                 me.node.assigned_slot.set(base_offset + slot_idx);
                                             slot_idx += 1;
@@ -665,6 +682,18 @@ impl SurfaceResolver {
                             }
                         }
                     }
+
+                    // Enter the dict's letrec scope with actual slot positions.
+                    //
+                    // At runtime, eval_dict_core builds extended_group = outer_frame.group
+                    // ++ letrec_slots, placing ALL entries (not just static-key ones) at
+                    // sequential indices. The resolver assigns Dispatch(_, slot) using the
+                    // actual slot position of each static-key entry so that LGM(slot) →
+                    // frame.group[slot] resolves to the correct thunk.
+                    self.enter_scope_with_slot_pairs(&scope_pairs, FrameKind::DictLetrec);
+                    // Advance accumulated_dict_offset by the total slot count (all entries
+                    // + instance method slots) so nested dicts use the correct base.
+                    self.accumulated_dict_offset = base_offset + slot_idx;
                 }
 
                 // Phase 1b: two-pass scan for typeclass method injection.
@@ -851,93 +880,100 @@ impl SurfaceResolver {
                                 }
                             }
 
-                            // Use surface_dict_static_keys for scope entry — same as the Dict arm —
-                            // so that the scope frame matches what the evaluator sees (only
-                            // mangled binding slots for InstanceDecl, no plain method slots).
-                            let all_keys = surface_dict_static_keys(entries);
-                            if all_keys.is_empty() {
-                                // No static keys: no scope injection needed. Walk values normally.
-                                for entry in entries {
-                                    self.walk_surface_node(&entry.node.value);
-                                }
-                            } else {
-                                // Enter the per-body letrec scope for this intermediate dict.
-                                //
-                                // eval_dict_core IS called for each intermediate body dict (both at
-                                // document level and inside fn bodies via LetrecChainStep). This
-                                // creates a real runtime letrec frame.
-                                // At runtime, LetrecChainStep builds updated_frame.group = prior_frame.group
-                                // ++ this_body_thunks, placing body i's entries at indices
-                                // sequential_offset..sequential_offset+all_keys.len()-1 in the group.
-                                // The resolver must assign LGM(sequential_offset+j) for entry j so that
-                                // LGM(slot) → frame.group[slot] resolves to the correct thunk.
-                                self.enter_scope_with_offset(
-                                    &all_keys,
-                                    sequential_offset,
-                                    FrameKind::DictLetrec,
-                                );
-
-                                // Populate assigned_slot on each entry (same logic as Dict arm).
-                                {
-                                    let mut slot_idx: u32 = 0;
-                                    for entry in entries.iter() {
-                                        let has_static_key =
-                                            entry.node.key.as_ref().map_or(false, |k| {
-                                                matches!(
-                                                    &k.expr,
-                                                    SurfaceExpression::StringLiteral { .. }
-                                                        | SurfaceExpression::VarRef {
-                                                            escaped: false,
-                                                            ..
-                                                        }
-                                                )
-                                            });
-                                        if has_static_key {
-                                            let _ = entry
-                                                .node
-                                                .assigned_slot
-                                                .set(sequential_offset + slot_idx);
-                                            slot_idx += 1;
-                                        } else {
-                                            let _ = entry.node.assigned_slot.set(u32::MAX);
-                                        }
-                                        if let SurfaceExpression::Decl(decl) =
-                                            &entry.node.value.expr
-                                        {
-                                            if let crate::ast::SurfaceDeclaration::InstanceDecl {
-                                                arms,
+                            // Uniform slot assignment: assign sequential slots to ALL
+                            // entries and collect (name, slot) pairs for static-key
+                            // entries (same approach as the Dict arm).
+                            let mut scope_pairs: Vec<(String, u32)> = Vec::new();
+                            let total_slots;
+                            {
+                                let mut slot_idx: u32 = 0;
+                                for entry in entries.iter() {
+                                    if let Some(key) = &entry.node.key {
+                                        match &key.expr {
+                                            SurfaceExpression::StringLiteral {
+                                                content, ..
+                                            } => {
+                                                scope_pairs.push((
+                                                    content.clone(),
+                                                    sequential_offset + slot_idx,
+                                                ));
+                                            }
+                                            SurfaceExpression::VarRef {
+                                                name,
+                                                escaped: false,
                                                 ..
-                                            } = decl.as_ref()
-                                            {
-                                                for (_pattern, method_entries) in arms {
-                                                    for me in method_entries {
-                                                        let has_method_key =
-                                                            me.node.key.as_ref().map_or(
-                                                                false,
-                                                                |k| {
-                                                                    matches!(
-                                                                        &k.expr,
-                                                                        SurfaceExpression::StringLiteral {
-                                                                            ..
-                                                                        } | SurfaceExpression::VarRef {
-                                                                            ..
-                                                                        }
-                                                                    )
-                                                                },
-                                                            );
-                                                        if has_method_key {
-                                                            let _ = me
-                                                                .node
-                                                                .assigned_slot
-                                                                .set(sequential_offset + slot_idx);
-                                                            slot_idx += 1;
+                                            } => {
+                                                scope_pairs.push((
+                                                    name.clone(),
+                                                    sequential_offset + slot_idx,
+                                                ));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    let _ =
+                                        entry.node.assigned_slot.set(sequential_offset + slot_idx);
+                                    slot_idx += 1;
+                                    if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                                        if let crate::ast::SurfaceDeclaration::InstanceDecl {
+                                            arms,
+                                            ..
+                                        } = decl.as_ref()
+                                        {
+                                            for (_pattern, method_entries) in arms {
+                                                for me in method_entries {
+                                                    let method_name =
+                                                        me.node.key.as_ref().and_then(|k| match &k
+                                                            .expr
+                                                        {
+                                                            SurfaceExpression::StringLiteral {
+                                                                content,
+                                                                ..
+                                                            } => Some(content.clone()),
+                                                            SurfaceExpression::VarRef {
+                                                                name,
+                                                                ..
+                                                            } => Some(name.clone()),
+                                                            _ => None,
+                                                        });
+                                                    if let Some(name) = method_name {
+                                                        if !scope_pairs
+                                                            .iter()
+                                                            .any(|(n, _)| n == &name)
+                                                        {
+                                                            scope_pairs.push((
+                                                                name,
+                                                                sequential_offset + slot_idx,
+                                                            ));
                                                         }
+                                                        let _ = me
+                                                            .node
+                                                            .assigned_slot
+                                                            .set(sequential_offset + slot_idx);
+                                                        slot_idx += 1;
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
+                                total_slots = slot_idx;
+                            }
+
+                            if scope_pairs.is_empty() {
+                                // No static keys: no scope injection needed. Walk values normally.
+                                for entry in entries {
+                                    self.walk_surface_node(&entry.node.value);
+                                }
+                                // Still advance sequential_offset by total slots so nested
+                                // dicts in subsequent bodies use the correct base.
+                                sequential_offset += total_slots;
+                            } else {
+                                // Enter the per-body letrec scope with actual slot positions.
+                                self.enter_scope_with_slot_pairs(
+                                    &scope_pairs,
+                                    FrameKind::DictLetrec,
+                                );
 
                                 // Walk key annotations inside the letrec scope
                                 // (same as the Dict arm — annotations can reference siblings).
@@ -956,15 +992,11 @@ impl SurfaceResolver {
                                 }
 
                                 // Walk each entry's VALUE.
-                                // Set accumulated_dict_offset to sequential_offset + all_keys.len()
-                                // so that any nested dict literals inside this body's values see the
-                                // correct base offset for their own letrec scopes. At runtime, those
-                                // nested dicts are evaluated via eval_dict_core with outer_frame.group
-                                // = updated_frame.group (which has sequential_offset + all_keys.len()
-                                // entries).
+                                // Set accumulated_dict_offset to sequential_offset + total_slots
+                                // so that any nested dict literals inside this body's values see
+                                // the correct base offset for their own letrec scopes.
                                 let saved_seq_dict_offset = self.accumulated_dict_offset;
-                                self.accumulated_dict_offset =
-                                    sequential_offset + all_keys.len() as u32;
+                                self.accumulated_dict_offset = sequential_offset + total_slots;
 
                                 for entry in entries {
                                     self.walk_surface_node(&entry.node.value);
@@ -972,45 +1004,29 @@ impl SurfaceResolver {
 
                                 // Exit the per-body letrec scope and restore offset.
                                 self.exit_scope();
-                                // Restore accumulated_dict_offset. The FnSequentialBody scope
-                                // below does not create a new eval_dict_core frame, so
-                                // accumulated_dict_offset remains at saved_seq_dict_offset
-                                // for subsequent bodies (they use sequential_offset directly).
                                 self.accumulated_dict_offset = saved_seq_dict_offset;
 
                                 // Enter the Sequential scope (injected) so subsequent
                                 // bodies can reference this body's bindings.
-                                // Use cumulative offset so each body's LGM slots don't overlap
-                                // with prior bodies' slots in the LetrecChainStep accumulated group.
-                                //
-                                // ALWAYS use FnSequentialBody for the accumulated sequential scope
-                                // inside fn bodies. This scope is purely a name-availability
-                                // bookkeeping scope — NOT a separate eval_dict_core frame.
-                                // LetrecChainStep accumulates all body entries into a single flat
-                                // group. LGM(cumulative_slot) indexes into that group directly.
-                                // Sequential intermediate bodies (both document-level and
-                                // function-body) have the same semantics.
-                                self.enter_scope_with_offset(
-                                    &all_keys,
-                                    sequential_offset,
+                                // Use the same slot pairs so name→slot mapping is consistent.
+                                self.enter_scope_with_slot_pairs(
+                                    &scope_pairs,
                                     FrameKind::DictLetrec,
                                 );
-                                sequential_offset += all_keys.len() as u32;
+                                sequential_offset += total_slots;
                                 injected += 1;
                             }
-                        } else if let Some(keys) = surface_node_static_keys(e) {
+                        } else if let Some((pairs, total)) = surface_node_slot_pairs(e) {
                             // Non-dict node that nonetheless produces static keys
                             // (currently none, but keep the original fallback so the
                             // scope injection path stays correct for future cases).
                             self.walk_surface_node(e);
-                            if !keys.is_empty() {
-                                self.enter_scope_with_offset(
-                                    &keys,
-                                    sequential_offset,
-                                    FrameKind::DictLetrec,
-                                );
-                                sequential_offset += keys.len() as u32;
+                            if !pairs.is_empty() {
+                                self.enter_scope_with_slot_pairs(&pairs, FrameKind::DictLetrec);
+                                sequential_offset += total;
                                 injected += 1;
+                            } else {
+                                sequential_offset += total;
                             }
                         } else {
                             // Non-dict, non-key-producing intermediate body: walk normally.
@@ -1202,6 +1218,20 @@ impl SurfaceResolver {
                 _ => {}
             },
 
+            SurfaceExpression::UnitVariant { .. } => {} // no VarRefs to resolve
+            SurfaceExpression::MakeVariant { payload, .. } => {
+                self.walk_surface_node(payload);
+            }
+            SurfaceExpression::TypeDecl { inner, .. } => {
+                self.walk_surface_node(inner);
+            }
+            SurfaceExpression::ReprDecl { inner, is_pred, .. } => {
+                if let Some(is_pred_node) = is_pred {
+                    self.walk_surface_node(is_pred_node);
+                }
+                self.walk_surface_node(inner);
+            }
+
             // Terminals with no child expressions
             SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
@@ -1227,6 +1257,10 @@ impl SurfaceResolver {
     /// constructor names and type parameters. We surgically walk ONLY annotation values,
     /// at the current suppress_depth (no blanket suppression), so genuine errors in
     /// annotation bodies ARE reported while the type structure is left untouched.
+    /// Walk the body of a TypeAlias declaration, resolving VarRefs inside constructor
+    /// annotations. After expansion, TypeAlias declarations are replaced with TypeDecl
+    /// nodes, so this function is only needed for pre-expand ASTs (e.g., type-stage
+    /// documents or paths where the expander has not yet run).
     fn walk_type_alias_body(&mut self, body: &Arc<SurfaceNode>) {
         match &body.expr {
             SurfaceExpression::Dict(entries) => {
@@ -1337,6 +1371,9 @@ impl SurfaceResolver {
 
     fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
         match decl {
+            // After expansion, TypeAlias declarations are replaced with TypeDecl nodes.
+            // This arm is only reached for pre-expand ASTs (type-stage documents or
+            // paths where the expander has not yet run).
             SurfaceDeclaration::TypeAlias { body, .. } => self.walk_type_alias_body(body),
             SurfaceDeclaration::ClassDecl { .. } => {
                 // ClassDecl is entirely type-level: method signatures, determines, and the
@@ -1409,19 +1446,19 @@ impl SurfaceResolver {
                     // accumulated_dict_offset is restored to cumulative_offset by the Dict arm's
                     // save/restore logic after it exits the dict's letrec scope.
                     if !is_last_expr {
-                        if let Some(keys) = surface_node_static_keys(node) {
-                            if !keys.is_empty() {
-                                // Document-level sequential intermediate dict scope
-                                // with cumulative LGM(offset..offset+N-1) slots. Same semantics
-                                // as function-body sequential intermediates.
-                                // The frame is collected into unified_frames by enter_scope_with_offset.
-                                self.enter_scope_with_offset(
-                                    &keys,
-                                    cumulative_offset,
-                                    FrameKind::DocSequential,
-                                );
-                                cumulative_offset += keys.len() as u32;
+                        // Use slot pairs from the Dict arm's walk (assigned_slot already
+                        // set) so that scope name→slot mapping matches the actual slot
+                        // positions, and cumulative_offset advances by total slots (all
+                        // entries, not just static keys).
+                        if let Some((pairs, total)) = surface_node_slot_pairs(node) {
+                            if !pairs.is_empty() {
+                                // Document-level sequential intermediate dict scope.
+                                self.enter_scope_with_slot_pairs(&pairs, FrameKind::DocSequential);
+                                cumulative_offset += total;
                                 injected += 1;
+                            } else {
+                                // No static keys but entries exist: advance offset anyway.
+                                cumulative_offset += total;
                             }
                         }
                     }
@@ -2173,11 +2210,97 @@ pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec
     keys
 }
 
+/// Count the total number of slots consumed by entries in a dict.
+///
+/// Every entry gets one slot, plus InstanceDecl method keys each get an additional slot.
+/// This is the total group-vec growth for uniform slot assignment.
+fn surface_dict_total_slots(entries: &[Spanned<SurfaceEntry>]) -> u32 {
+    let mut count: u32 = 0;
+    for entry in entries {
+        count += 1;
+        if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+            if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
+                for (_pattern, method_entries) in arms {
+                    for me in method_entries {
+                        let has_key = me.node.key.as_ref().map_or(false, |k| {
+                            matches!(
+                                &k.expr,
+                                SurfaceExpression::StringLiteral { .. }
+                                    | SurfaceExpression::VarRef { .. }
+                            )
+                        });
+                        if has_key {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
 /// Extract static string-keyed names from an Arc<SurfaceNode> if it is a Dict.
-fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
-    match &node.expr {
-        SurfaceExpression::Dict(entries) => Some(surface_dict_static_keys(entries)),
-        _ => None,
+/// Compute (name, assigned_slot) pairs and total slot count from a Dict node.
+///
+/// Returns `None` for non-Dict nodes. The pairs contain only static-key entries
+/// (entries with StringLiteral or unescaped VarRef keys) mapped to their actual
+/// assigned_slot values. The total is the full slot count (all entries + instance methods).
+///
+/// Requires that assigned_slot has already been set on entries (i.e., the Dict arm's
+/// walk has already run).
+fn surface_node_slot_pairs(node: &Arc<SurfaceNode>) -> Option<(Vec<(String, u32)>, u32)> {
+    if let SurfaceExpression::Dict(entries) = &node.expr {
+        let total = surface_dict_total_slots(entries);
+        let mut pairs = Vec::new();
+        for entry in entries {
+            if let Some(&slot) = entry.node.assigned_slot.get() {
+                if let Some(key) = &entry.node.key {
+                    match &key.expr {
+                        SurfaceExpression::StringLiteral { content, .. } => {
+                            pairs.push((content.clone(), slot));
+                        }
+                        SurfaceExpression::VarRef {
+                            name,
+                            escaped: false,
+                            ..
+                        } => {
+                            pairs.push((name.clone(), slot));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // InstanceDecl method slots
+            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
+                    for (_pattern, method_entries) in arms {
+                        for me in method_entries {
+                            if let Some(&slot) = me.node.assigned_slot.get() {
+                                let method_name =
+                                    me.node.key.as_ref().and_then(|k| match &k.expr {
+                                        SurfaceExpression::StringLiteral { content, .. } => {
+                                            Some(content.clone())
+                                        }
+                                        SurfaceExpression::VarRef { name, .. } => {
+                                            Some(name.clone())
+                                        }
+                                        _ => None,
+                                    });
+                                if let Some(name) = method_name {
+                                    if !pairs.iter().any(|(n, _)| n == &name) {
+                                        pairs.push((name, slot));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Some((pairs, total))
+    } else {
+        None
     }
 }
 
@@ -2528,6 +2651,7 @@ mod tests {
     fn resolve_with_env_dict(src: &str, env_names: &[String]) -> Vec<String> {
         let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
         let program = crate::desugar::desugar_program_full(&output.program);
+        let program = crate::expand::expand_program(&program);
         let doc = &program.documents[0].node;
         let (_table, _diagnostics, unreferenced) =
             resolve_surface_document_with_env_dict(doc, env_names, 0);
@@ -2994,6 +3118,7 @@ mod tests {
         let output = crate::parser::parse("[result: src.input]", test_file("[result: src.input]"))
             .expect("parse failed");
         let program = crate::desugar::desugar_program_full(&output.program);
+        let program = crate::expand::expand_program(&program);
         let doc = &program.documents[0].node;
         let (accesses, dynamic) = super::collect_var_accesses(doc, "src");
         assert!(

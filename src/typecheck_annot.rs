@@ -3855,9 +3855,9 @@ pub(crate) async fn eval_type_stage_expr(
     // All type annotations are inline on AST nodes — no external tables needed.
 
     // Lower the SurfaceNode to CoreExpr, then wrap as a CoreExpr thunk for lazy evaluation.
-    // scope_frames is None here (no loader frames in type-stage context); lower() uses
-    // inline resolution coordinates written on nodes at definition time.
-    let (lowered, lower_diags) = crate::lower::lower(node, None);
+    // No loader frames in type-stage context; lower() uses inline resolution coordinates
+    // written on nodes at definition time.
+    let (lowered, lower_diags) = crate::lower::lower(node);
     {
         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
             .into_iter()

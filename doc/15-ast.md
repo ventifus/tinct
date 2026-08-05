@@ -12,6 +12,20 @@ Tinct uses a **hand-written iterative descent parser** composed of two phases:
 
 The hand-written parser provides precise control over error messages, whitespace sensitivity, and stack depth limits.
 
+## Processing Pipeline
+
+The Surface AST passes through several transformation stages before evaluation:
+
+1. **Parse** (`src/parser.rs`) — converts source text to `SurfaceProgram`
+2. **Desugar** (`src/desugar.rs`) — rewrites implicit lambda `_` syntax, processes escape sequences
+3. **Expand** (`src/expand.rs`) — expands type declarations into constructor dicts, fans out instance methods, resolves spread-dict syntax
+4. **Resolve** (`src/resolve.rs`) — assigns de Bruijn coordinates and slot indices to all entries
+5. **Lower** (`src/lower.rs`) — translates Surface AST to Core AST, eliminates Pipe nodes
+6. **Typecheck** (optional, `src/typecheck_cek.rs`) — infers types when requested
+7. **Evaluate** (`src/eval.rs`) — forces thunks and produces `Value` results
+
+The expand stage (added in S-1036) produces four SurfaceExpression variants that never appear in parser output: `UnitVariant`, `MakeVariant`, `TypeDecl`, and `ReprDecl`. The resolver sees all expanded entries and assigns slots uniformly.
+
 ## AST Node Types
 
 ### Top-Level Types (Surface AST)
@@ -72,6 +86,12 @@ enum SurfaceExpression {
     Field { expr: Option<Arc<SurfaceNode>>, field: DotKey, resolution: Resolution, field_slot: SlotAnnotation },
     Pipe { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
     // ... other variants (Sequential, Match, TypeAssert, Quote, Unquote, etc.)
+
+    // Expand-stage variants (produced by src/expand.rs, never by the parser):
+    UnitVariant { tycon: String, ctor: String, type_decl_id: u64 },
+    MakeVariant { tag: String, payload: Arc<SurfaceNode>, type_decl_id: u64 },
+    TypeDecl { type_name: String, type_decl_id: u64, inner: Arc<SurfaceNode> },
+    ReprDecl { repr: String, is_pred: Option<Arc<SurfaceNode>>, inner: Arc<SurfaceNode> },
 }
 
 /// A named argument in a SurfaceExpression::Call.
@@ -166,6 +186,20 @@ pub enum CoreExpr {
         slot: u32,
     },
 
+    // Variant constructors (produced by expand stage via TypeAlias expansion)
+    UnitVariant {
+        tycon: String,         // Type constructor name (e.g., "Color")
+        ctor: String,          // Constructor name (e.g., "Red")
+        type_decl_id: u64,     // Unique ID from the parent TypeDecl — used to look up
+                               // the type's identity Arc in ctx.type_identity_registry
+    },
+    Variant {
+        tag: String,           // Qualified tag (e.g., "Shape.Circle")
+        payload: Option<Arc<Spanned<CoreExpr>>>,
+        type_decl_id: u64,     // Same as UnitVariant — ensures variants from same type
+                               // share the same Arc identity for Arc::ptr_eq dispatch
+    },
+
     // No DotAccess variant — SurfaceExpression::Field is desugared to Call(field-get/slot-get)
     // by the lowering pass (lower.rs) before evaluation. The evaluator never sees a DotAccess node.
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
@@ -231,6 +265,10 @@ pub enum CoreExpr {
     // Arc::ptr_eq-based type dispatch in match_pattern.
     TypeDecl {
         type_name: String,
+        type_decl_id: u64,  // Unique ID assigned during expand stage; used to key
+                            // ctx.type_identity_registry so same-name types in nested
+                            // scopes get independent identities. All UnitVariant/Variant
+                            // nodes produced for this type carry this same ID.
         // Structural invariant: `inner` is always either:
         //   - CoreExpr::Dict  (plain [type Name ctor1 ctor2 ...] without a repr: wrapper), or
         //   - CoreExpr::ReprDecl { inner: Dict }  (when the type has an associated repr:

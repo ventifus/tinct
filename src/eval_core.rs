@@ -179,11 +179,7 @@ fn eval_quote_preprocess<'a>(
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::lower::lower_inner(
-                    inner,
-                    &mut Vec::new(),
-                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                );
+                let core = crate::lower::lower_inner(inner, &mut Vec::new());
                 let thunk = eval_core_expr(&core, &frame, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
@@ -207,11 +203,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in dict entry value position
                     if let SurfaceExpression::UnquoteSplice(inner) = &entry.node.value.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower_inner(
-                            inner,
-                            &mut Vec::new(),
-                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                        );
+                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
                         let thunk = eval_core_expr(&core, &frame, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -344,11 +336,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower_inner(
-                            inner,
-                            &mut Vec::new(),
-                            ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                        );
+                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
                         let thunk = eval_core_expr(&core, &frame, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -647,11 +635,7 @@ pub(crate) async fn extract_fn_annotation_extra(
             // Annotations like `as-type: [fn [let u] u]` are now evaluable.
             _ => {
                 // Lower SurfaceNode → CoreExpr (inline fields provide all needed type info).
-                let core_expr = crate::lower::lower_inner(
-                    &e.node.value,
-                    &mut Vec::new(),
-                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                );
+                let core_expr = crate::lower::lower_inner(&e.node.value, &mut Vec::new());
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
                 match eval_core_expr(&core_expr, frame, ctx).await {

@@ -312,6 +312,8 @@
   builtin-parse:          [fn@[program: Program  diagnostics: Diagnostics] [let src@Bytes path@String] ...]
   # desugar: desugar a Program (apply $_ transformation, pipe lowering, etc.).
   builtin-desugar:        [fn@Program  [let prog@Program] ...]
+  # expand: expand declarations in a desugared Program (type decls, class decls, etc.).
+  builtin-expand:         [fn@Program  [let prog@Program] ...]
   # resolve: resolve VarRef de Bruijn coords in a document against a scope.
   # scope: Scope — opaque scope with name-to-slot mapping for all visible names.
   # Returns {doc, diagnostics, unreferenced}.

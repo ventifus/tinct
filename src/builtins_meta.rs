@@ -3230,6 +3230,57 @@ pub(crate) fn builtin_desugar(
     })
 }
 
+/// `builtin-expand`: Expand a `Value::Program`.
+///
+/// Pure functional wrapper around `expand_program`. Takes 1 arg: Value::Program.
+/// Returns a new Value::Program with declaration expansion applied.
+pub(crate) fn builtin_expand(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-expand", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let program_val = args[0].require_value()?.clone();
+        let (program, resolutions) = match program_val {
+            Value::Program {
+                program,
+                resolutions,
+                ..
+            } => (program, resolutions),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-expand".to_string(),
+                    "Program",
+                    other.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        let expanded = crate::expand::expand_program(&program);
+
+        ok_val(
+            Value::Program {
+                program: std::sync::Arc::new(expanded),
+                resolutions,
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )
+    })
+}
+
 /// `builtin-program-docs`: Extract documents from a `Value::Program`.
 ///
 /// Thin wrapper to access `SurfaceProgram.documents`. Takes 1 arg: Value::Program
@@ -3922,7 +3973,8 @@ pub(crate) fn builtin_eval_macro_ast(
             )],
         });
 
-        // ── Step 4: Desugar + resolve ─────────────────────────────────────────
+        // ── Step 4: Desugar + expand + resolve ───────────────────────────────
+        let program = crate::expand::expand_program(&program);
         // Resolve with empty frames — ScopeArena was deleted; de Bruijn coordinates
         // resolve via MAX/MAX name-based lookup at eval time.
         let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
@@ -4037,10 +4089,9 @@ pub(crate) fn builtin_eval_types(
         }
 
         // Build integer-keyed Dict of CoreExpr thunks (one per expression, pre-lowered).
-        let scope_frames = ctx.scope_frames.as_ref().map(|v| v.as_slice());
         let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, node) in expression_nodes.into_iter().enumerate() {
-            let (lowered, lower_diags) = crate::lower::lower(&node, scope_frames);
+            let (lowered, lower_diags) = crate::lower::lower(&node);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()
@@ -4944,19 +4995,6 @@ pub(crate) fn builtin_cap_env_has(
 /// This replaces the lazy `UnevaluatedState::Surface` path: previously, lowering happened
 /// on-demand when a Surface thunk was first forced. With `builtin-lower`, lowering is a
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
-///
-/// The document's `resolver_frames` (stored on `Value::Document` by `builtin-resolve`)
-/// contain all scope frames (env_frame first, then Dict letrec and BlockBody frames in
-/// natural nesting order) and are passed as `scope_frames` to the lowering functions in
-/// `lower.rs`. This enables:
-///
-/// 1. `resolve_name_in_frames` (for builtin-raise and mangled instance names): searches all
-///    frames innermost-first to find each name's absolute LGM slot.
-///
-/// 2. Cross-dict method chaining: searches ancestor frames for the method name, skipping
-///    the current dict's own frame. `slot` is the absolute LGM slot — the only value used
-///    at runtime (depth is ignored by the evaluator and type checker resolves
-///    ClosureCapture by name).
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -4975,12 +5013,8 @@ pub(crate) fn builtin_lower(
 
         // arg0: Value::Document
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, doc_resolver_frames) = match doc_val {
-            Value::Document {
-                doc: d,
-                resolver_frames: f,
-                ..
-            } => (d, f),
+        let doc_arc = match doc_val {
+            Value::Document { doc: d, .. } => d,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
@@ -4992,19 +5026,6 @@ pub(crate) fn builtin_lower(
             }
         };
 
-        // resolver_frames already contains all scope frames (env_frame first, then Dict
-        // letrec and BlockBody frames in natural nesting order). Strip FrameKind for lower.rs
-        // which only needs the name→slot maps for de Bruijn coordinate resolution.
-        let scope_frames_plain: Vec<indexmap::IndexMap<String, u32>> = doc_resolver_frames
-            .iter()
-            .map(|(frame, _kind)| frame.clone())
-            .collect();
-        let scope_frames: Option<&[indexmap::IndexMap<String, u32>]> =
-            if !scope_frames_plain.is_empty() {
-                Some(scope_frames_plain.as_slice())
-            } else {
-                None
-            };
         let mut entries: Vec<(
             String,
             std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
@@ -5015,7 +5036,7 @@ pub(crate) fn builtin_lower(
                 crate::ast::SurfaceItem::Expr(node) => node,
                 crate::ast::SurfaceItem::Decl(_) => continue,
             };
-            let (core_spanned, lower_diags) = crate::lower::lower(node, scope_frames);
+            let (core_spanned, lower_diags) = crate::lower::lower(node);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()

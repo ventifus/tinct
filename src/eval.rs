@@ -107,8 +107,7 @@ pub(crate) async fn eval_document_exprs_with_env(
     let last_idx = expr_nodes.len() - 1;
 
     for (i, node) in expr_nodes.iter().enumerate() {
-        let (core_spanned, lower_diags) =
-            crate::lower::lower(node, ctx.scope_frames.as_ref().map(|v| v.as_slice()));
+        let (core_spanned, lower_diags) = crate::lower::lower(node);
         {
             let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                 .into_iter()
@@ -313,7 +312,7 @@ pub(crate) async fn eval_core_document_exprs(
 ///
 /// # Precondition
 ///
-/// **Pipeline invariant:** `desugar_program_full` →
+/// **Pipeline invariant:** `desugar_program_full` → `expand_program` →
 /// `resolve_surface_program` must be called before passing the program here —
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes use `TypeAssertCheck::Source` with the
@@ -593,9 +592,8 @@ pub struct EvalContext {
     /// (loader) program; `None` in bootstrap contexts and tests where `with_scope_frames()`
     /// was not called. Available in eval_materialize.rs thunk forcing via `thunk_ctx.scope_frames`.
     ///
-    /// Used by `lower()` at `eval_document_exprs_with_env` call sites to resolve
-    /// scope-frame-dependent names (e.g., builtin-dict-merge for spread dicts) to correct
-    /// De Bruijn coordinates.
+    /// Used by `call_to_match_by_name` for dispatch name lookup when resolving prelude names
+    /// during match arm dispatch.
     ///
     /// Propagated unchanged to all child contexts (with_cancel_token, with_explicit_cancel,
     /// with_timeout_ms) because scope frames are read-only after initialization.
@@ -2275,7 +2273,7 @@ mod tests {
         _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        let (core_expr, lower_diags) = crate::lower::lower(&node, None);
+        let (core_expr, lower_diags) = crate::lower::lower(&node);
         {
             let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                 .into_iter()
@@ -2315,6 +2313,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), node.span.clone())],
         });
+        let program = crate::expand::expand_program(&program);
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
@@ -3261,11 +3260,13 @@ mod tests {
         let z = rust_span!();
         let zz = z.clone();
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
+        let slot0 = std::sync::OnceLock::new();
+        let _ = slot0.set(0u32);
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(1.5))),
                 value: mk(SurfaceExpression::Int(42)),
-                assigned_slot: std::sync::OnceLock::new(),
+                assigned_slot: slot0,
             },
             z,
         )]));
@@ -3296,11 +3297,13 @@ mod tests {
         let z = rust_span!();
         let zz = z.clone();
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
+        let slot0 = std::sync::OnceLock::new();
+        let _ = slot0.set(0u32);
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(2.5))),
                 value: mk(SurfaceExpression::Int(1)),
-                assigned_slot: std::sync::OnceLock::new(),
+                assigned_slot: slot0,
             },
             z,
         )]));
@@ -5179,6 +5182,7 @@ mod tests {
         let test_file: Arc<str> = Arc::from(file!());
         let parsed = crate::parse(source, Arc::clone(&test_file)).expect("parse should succeed");
         let surface_program = crate::desugar::desugar_program_full(&parsed.program);
+        let surface_program = crate::expand::expand_program(&surface_program);
         // Resolve with the full root frame so dict sibling LGM slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) =
@@ -5797,6 +5801,7 @@ mod tests {
         let file: Arc<str> = Arc::from("<test>");
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse must succeed");
         let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
 
         // Seed resolver with root_group + % at slot root_group.len().
         let mut resolver_seed = ctx.root_group_resolver_map();
@@ -5905,6 +5910,7 @@ mod tests {
         let source = "[r: [match 42 [case [let v] v v] ...: 0]]";
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
         let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
@@ -5945,6 +5951,7 @@ mod tests {
         let source = "[r: [match 41 [case [let v] v [builtin-int-add v 1]] ...: 0]]";
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
         let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
@@ -5984,6 +5991,7 @@ mod tests {
         let source = r#"[r: [match "hello" [case [let v] 42 v] ...: 99]]"#;
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse");
         let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
@@ -6025,9 +6033,10 @@ mod tests {
         let file: Arc<str> = Arc::from("<test>");
         let source = r#"[build: [fn [let x] x.inner]] [result: [build [inner: 42]]]"#;
 
-        // Parse and desugar
+        // Parse, desugar, and expand
         let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse must succeed");
         let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
 
         // Resolve with root_group seed frame (as builtin-resolve does after B-637 fix).
         let root_map = ctx.root_group_resolver_map();
@@ -6047,9 +6056,6 @@ mod tests {
         );
 
         // Lower each expression item (same as builtin_lower does)
-        let scope_frames_data: Vec<indexmap::IndexMap<String, u32>> = vec![root_map.clone()];
-        let scope_frames_slice: Option<&[indexmap::IndexMap<String, u32>]> =
-            Some(scope_frames_data.as_slice());
         let mut core_entries: Vec<(
             String,
             std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
@@ -6060,7 +6066,7 @@ mod tests {
                 crate::ast::SurfaceItem::Expr(node) => node,
                 crate::ast::SurfaceItem::Decl(_) => continue,
             };
-            let (core_spanned, lower_diags) = crate::lower::lower(node, scope_frames_slice);
+            let (core_spanned, lower_diags) = crate::lower::lower(node);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()

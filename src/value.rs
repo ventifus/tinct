@@ -896,8 +896,8 @@ pub enum Value {
         /// Set to `unknown_type_val()` at construction sites that do not yet have
         /// a resolved TypeValue; wired up by the repr: protocol when it runs.
         type_val: Arc<Value>,
-        /// Stable numeric type declaration ID from the lowerer (T-2135).
-        /// Same as `lower::next_type_decl_id()` assigned to the enclosing `[type ...]` declaration.
+        /// Stable numeric type declaration ID from the expand stage (T-2135).
+        /// Same as `expand::next_type_decl_id()` assigned to the enclosing `[type ...]` declaration.
         /// 0 means "unknown" (construction sites without type_decl_id wiring, e.g. identity sentinel).
         /// Enables O(1) type identity checks in `type_id()` without traversing `type_val`.
         type_decl_id: u64,

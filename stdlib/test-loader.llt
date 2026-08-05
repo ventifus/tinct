@@ -312,7 +312,8 @@
                        [decl-bytes:   [read-file decl-handle [builtin-bytes]]]
                        [parse-result: [builtin-parse decl-bytes path]]
                        [desugared:    [builtin-desugar parse-result.program]]
-                       [docs:         [builtin-program-docs desugared]]
+                       [expanded:     [builtin-expand desugared]]
+                       [docs:         [builtin-program-docs expanded]]
                        [reduce
                          [fn [let acc doc]
                            [res: [builtin-resolve doc env]]
@@ -407,7 +408,8 @@
       0: [merge state [diagnostics: diags  stderr: err]]
       1: [call [fn [let]
            [desugared: [builtin-desugar r.program]]
-           [docs: [builtin-program-docs desugared]]
+           [expanded:  [builtin-expand desugared]]
+           [docs: [builtin-program-docs expanded]]
            [merge state [parsed: [program: r.program  documents: docs]  stderr: err]]]]]]
 
   # ── Stage: eval-program ───────────────────────────────────────────────────────

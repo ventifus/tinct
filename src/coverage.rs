@@ -576,6 +576,15 @@ pub fn ast_pattern_to_coverage(
             }
         }
 
+        // Expansion-produced variants: not valid in pattern position.
+        // TypeDecl/ReprDecl wrap an inner expression; MakeVariant constructs a
+        // variant value; UnitVariant is a unit constructor. None of these appear
+        // as user-written match patterns — treat as wildcard for coverage safety.
+        SurfaceExpression::UnitVariant { .. }
+        | SurfaceExpression::MakeVariant { .. }
+        | SurfaceExpression::TypeDecl { .. }
+        | SurfaceExpression::ReprDecl { .. } => CoveragePattern::Wildcard,
+
         // All other forms: Wildcard
         _ => CoveragePattern::Wildcard,
     }

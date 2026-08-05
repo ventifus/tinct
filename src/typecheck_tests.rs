@@ -1552,6 +1552,7 @@ async fn eval_collect_runtime_diags(
     let program = crate::desugar::desugar_program_full(&SurfaceProgram {
         documents: vec![crate::ast::Spanned::new(std::sync::Arc::new(doc), span)],
     });
+    let program = crate::expand::expand_program(&program);
     let ctx = crate::eval::EvalContext::new();
     let root_frame = ctx.root_group_resolver_map();
     let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);

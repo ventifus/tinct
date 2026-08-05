@@ -184,11 +184,7 @@ async fn eval_annotation_property_dict(
                 // Non-literal annotation values are lowered to CoreExpr and evaluated.
                 // This handles VarRefs (type names like Dict, String), fn expressions, and calls.
                 let mut lower_diags = Vec::new();
-                let core_expr = crate::lower::lower_inner(
-                    &entry.node.value,
-                    &mut lower_diags,
-                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                );
+                let core_expr = crate::lower::lower_inner(&entry.node.value, &mut lower_diags);
                 {
                     let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                         .into_iter()
@@ -340,14 +336,6 @@ pub(crate) async fn eval_dict_core(
     let mut has_non_literal = false;
 
     for entry in entries {
-        // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
-        // Must match resolve.rs Resolver::walk_expr Dict arm exactly — use the shared predicate.
-        let is_static_key = entry
-            .node
-            .key
-            .as_ref()
-            .is_some_and(|k| core_expr_is_static_key(&k.node));
-
         // Keys are evaluated in the parent frame (Key Isolation Invariant): key expressions
         // must not see letrec sibling bindings. Pass outer_frame so computed keys can
         // reference outer-scope ClosureCapture variables.
@@ -509,7 +497,8 @@ pub(crate) async fn eval_dict_core(
             ));
         }
 
-        if is_static_key && entry.node.assigned_slot != u32::MAX {
+        // Uniform slot assignment: every entry gets a real slot in scope_vec.
+        {
             let slot = entry.node.assigned_slot as usize;
             if slot < scope_vec.len() {
                 scope_vec[slot] = Arc::clone(&thunk);
@@ -693,6 +682,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span)],
         });
+        let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         crate::eval_surface_file(&program, ctx).await

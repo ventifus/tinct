@@ -425,75 +425,13 @@ pub(crate) async fn try_clause(
 /// "no matching clause" — they may have rejected due to type dispatch rather than arity,
 /// and `bind_args_thunks` on an arbitrary clause would give a misleading error.
 pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
-    for clause in ctx.clauses.iter() {
-        let result = try_clause(
-            clause,
-            ctx.positional,
-            ctx.named,
-            Arc::clone(&ctx.closure_env),
-            ctx.ctx,
-            &ctx.call_span,
-            ctx.caller_evidence.clone(),
-        )
-        .await?;
-        if let Some(frame) = result {
-            let thunk = Thunk::core_expr(
-                Arc::clone(&clause.body),
-                frame,
-                Arc::clone(ctx.ctx),
-                ctx.call_span.clone(),
-            );
-            return Ok(Arc::new(thunk));
-        }
-    }
-    // No clause matched.
-    // For single-clause functions, fall through to bind_args_thunks to produce a specific
-    // arity error (e.g. "missing argument for required parameter"). For multi-clause
-    // functions, clauses may have rejected due to type dispatch; use "no matching clause".
-    //
-    // Single-clause: try_clause may have rejected due to type guard (Step 2) rather than
-    // arity (Step 1). If bind_args_thunks also rejects, it produces the specific arity error.
-    // If bind_args_thunks succeeds (type was the only reason try_clause rejected), fall through
-    // to "no matching clause".
-    if ctx.clauses.len() == 1 {
-        let clause = &ctx.clauses[0];
-        let params: Vec<Param> = clause
-            .params
-            .iter()
-            .map(|p| Param {
-                name: p.node.name.clone(),
-                annotation: p.node.annotation.clone(),
-                variadic: p.node.variadic,
-                slot: p.node.slot,
-                resolved_type: p.node.resolved_type.clone(),
-            })
-            .collect();
-        match bind_args_thunks(
-            &params,
-            ctx.positional,
-            ctx.named,
-            Arc::clone(&ctx.closure_env),
-            ctx.ctx,
-            &ctx.call_span,
-            ctx.caller_evidence.clone(),
-        )
-        .await
-        {
-            Err(mut e) => {
-                e.set_arity_callee(ctx.call_span.name.clone());
-                return Err(e);
-            }
-            Ok(_) => {
-                // bind_args_thunks succeeded: try_clause rejected for type reasons only.
-                // Fall through to "no matching clause".
-            }
-        }
-    }
-    Err(EvalError::user_error(
-        "no matching clause for the given arguments".to_string(),
+    let (body, frame) = invoke_function_tco(ctx).await?;
+    Ok(Arc::new(Thunk::core_expr(
+        body,
+        frame,
+        Arc::clone(ctx.ctx),
         ctx.call_span.clone(),
-    )
-    .into())
+    )))
 }
 
 /// TCO variant of `invoke_function` that returns the body expression and call EvalFrame
@@ -554,11 +492,58 @@ pub(crate) async fn invoke_function_tco(
             }
         }
     }
-    Err(EvalError::user_error(
+    let mut err = EvalError::user_error(
         "no matching clause for the given arguments".to_string(),
         ctx.call_span.clone(),
-    )
-    .into())
+    );
+
+    // Note: arg count and named args provided.
+    let mut call_desc = format!("called with {} positional arg(s)", ctx.positional.len());
+    if let Some(named) = ctx.named {
+        if !named.is_empty() {
+            let keys: Vec<&str> = named.keys().map(|k| k.as_str()).collect();
+            call_desc.push_str(&format!(" and named arg(s): {}", keys.join(", ")));
+        }
+    }
+    err.notes.push(call_desc);
+
+    // Note: each clause's expected signature.
+    for (i, clause) in ctx.clauses.iter().enumerate() {
+        let params_desc: Vec<String> = clause
+            .params
+            .iter()
+            .map(|p| {
+                let name = &p.node.name;
+                match &p.node.resolved_type {
+                    Some(tv) if !is_typevalue_unknown(tv) => {
+                        format!("{name}@{tv}")
+                    }
+                    _ => name.clone(),
+                }
+            })
+            .collect();
+        let label = if ctx.clauses.len() == 1 {
+            "expected".to_string()
+        } else {
+            format!("clause {}", i + 1)
+        };
+        err.notes
+            .push(format!("{label}: ({})", params_desc.join(", ")));
+    }
+
+    // Secondary spans: point at each clause's definition.
+    for (i, clause) in ctx.clauses.iter().enumerate() {
+        if let Some(first_param) = clause.params.first() {
+            let label = if ctx.clauses.len() == 1 {
+                "defined here".to_string()
+            } else {
+                format!("clause {} defined here", i + 1)
+            };
+            err = err.with_secondary_span(first_param.span.clone(), label);
+        }
+    }
+
+    Err(err.into())
 }
 
 /// Validate function arguments, build a call-frame EvalFrame, and return it.
@@ -699,10 +684,7 @@ pub(crate) async fn bind_args_thunks(
                 param_slots[slot] = Some(Arc::clone(named_thunk));
             } else if let Some(default_node) = get_default(param) {
                 // Default param: lower and wrap as a CoreExpr thunk with empty frame.
-                let (lowered_default, lower_diags) = crate::lower::lower(
-                    &default_node,
-                    ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-                );
+                let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
                 {
                     let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                         .into_iter()
@@ -736,10 +718,7 @@ pub(crate) async fn bind_args_thunks(
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
             // Default param (no named args provided).
-            let (lowered_default, lower_diags) = crate::lower::lower(
-                &default_node,
-                ctx.scope_frames.as_ref().map(|v| v.as_slice()),
-            );
+            let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()

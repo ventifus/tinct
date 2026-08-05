@@ -3,8 +3,6 @@
 //! This module contains `invoke_proxy_handler`, extracted
 //! from `eval.rs` to keep that module focused on the core evaluation loop.
 
-
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -44,6 +42,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), span)],
         });
+        let program = crate::expand::expand_program(&program);
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);

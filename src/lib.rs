@@ -78,6 +78,8 @@ pub(crate) mod builtins_async;
 pub(crate) mod builtins_core;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
+// Declaration expansion (TypeAlias → constructor dict) — pre-resolve AST transformation.
+pub mod expand;
 // runtime-v2: lowering pass (SurfaceExpression → CoreExpr).
 pub(crate) mod lower;
 // runtime-v2: surface AST field extraction for match dispatch and dot-access.
@@ -179,6 +181,7 @@ pub async fn run_loader_pipeline(
         );
     }
     let loader_program = desugar::desugar_program_full(&loader_parsed.program);
+    let loader_program = expand::expand_program(&loader_program);
 
     // Resolve the loader program. Seeded from FlatEnv so that builtin names
     // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
@@ -477,8 +480,9 @@ pub async fn run_loader_pipeline(
 pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> desugar -> typecheck.
+    // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
+    let program = expand::expand_program(&program);
     let env_arc = imports::get_builtin_core_type_env().await;
     let ts_data = imports::get_builtin_core_type_stage_scope().await;
     let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
@@ -509,8 +513,9 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> desugar -> typecheck.
+    // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
+    let program = expand::expand_program(&program);
     // Type check the surface program.
     let env_arc = imports::get_builtin_core_type_env().await;
     let ts_data = imports::get_builtin_core_type_stage_scope().await;
@@ -1355,6 +1360,7 @@ mod tests {
                 .expect("parse should succeed")
                 .program,
         );
+        let program = expand::expand_program(&program);
         // T-1576: test path uses bootstrap mode (no arena yet).
         let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
         let (_type_errors, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(

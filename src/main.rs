@@ -2320,8 +2320,9 @@ async fn run_fmt(
         let output = parse(&source, Arc::clone(&sf_path))
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
-        // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
+        // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
+        let program = tinct::expand::expand_program(&program);
         let env_arc = tinct::get_builtin_core_type_env().await;
         let ts_data = tinct::get_builtin_core_type_stage_scope().await;
         let (diagnostics, _env, _tycon_env) = tinct::typecheck::typecheck_program_bootstrap(
