@@ -306,7 +306,10 @@ pub(crate) enum TypeCheckCont {
         /// Restored after AfterBlock fires so that nested blocks do not corrupt
         /// the outer block's liveness graph.
         saved_use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
-        /// Saved state.current_binding from the enclosing block.
+        /// Saved state.current_binding from the enclosing block. Also used by the merge
+        /// step: closure_captures are merged as use_def[saved_current_binding → captured]
+        /// edges in the restored use_def graph, so the enclosing entry's liveness propagates
+        /// to all bindings captured from inside this block.
         saved_current_binding: Option<BindingId>,
         /// Saved state.narrowing_map from before this block's narrowings were applied.
         /// Restored after AfterBlock fires so narrowings from one arm don't leak into others.
@@ -315,6 +318,8 @@ pub(crate) enum TypeCheckCont {
         /// Saved state.current_parameter_frame from before this block.
         /// Restored after AfterBlock fires so the enclosing function/arm frame is recovered.
         saved_parameter_frame: Option<Arc<RwLock<Env>>>,
+        /// Saved state.closure_captures from before this block.
+        saved_closure_captures: Vec<BindingId>,
     },
 
     /// Inferred the inner expression of a TypeAssert — validate against expected TypeValue.
@@ -634,6 +639,7 @@ async fn infer_step(
             // Sequentials do not corrupt the outer Sequential's liveness graph.
             let saved_use_def = std::mem::take(&mut state.use_def);
             let saved_current_binding = state.current_binding.take();
+            let saved_closure_captures = std::mem::take(&mut state.closure_captures);
 
             for (_i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
@@ -837,6 +843,7 @@ async fn infer_step(
                 saved_current_binding,
                 saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
                 saved_parameter_frame: state.current_parameter_frame.clone(),
+                saved_closure_captures,
             });
             TypeCheckAction::Eval(Arc::clone(last), current_env)
         }
@@ -1424,6 +1431,7 @@ async fn apply_cont(
                         saved_current_binding: state.current_binding.take(),
                         saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
                         saved_parameter_frame,
+                        saved_closure_captures: std::mem::take(&mut state.closure_captures),
                     });
                     // Apply this arm's narrowings AFTER the take so they're active during body eval.
                     if !guard_narrowings.is_empty() {
@@ -1513,6 +1521,7 @@ async fn apply_cont(
                             saved_current_binding: state.current_binding.take(),
                             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
                             saved_parameter_frame,
+                            saved_closure_captures: std::mem::take(&mut state.closure_captures),
                         });
                         if !guard_narrowings.is_empty() {
                             typecheck_narrow::apply_narrowings(&arm_env, &guard_narrowings, state);
@@ -1645,10 +1654,11 @@ async fn apply_cont(
         TypeCheckCont::AfterBlock {
             binding_envs,
             pre_final_refs,
-            saved_use_def,
+            mut saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
             saved_parameter_frame,
+            saved_closure_captures,
         } => {
             // Step 1: Seed the live set with names newly marked by the final expression.
             // Names in pre_final_refs were already referenced before the final expression
@@ -1721,6 +1731,41 @@ async fn apply_cont(
                 }
             }
 
+            // Step 4: Merge closure captures into the outer use_def graph.
+            // Take fn-body captures, restore parent captures.
+            let fn_captures =
+                std::mem::replace(&mut state.closure_captures, saved_closure_captures);
+            // Merge captures as use_def[saved_current_binding → captured] so the
+            // enclosing entry's liveness propagates to its captures via BFS.
+            // saved_current_binding is the entry whose value expression was being
+            // evaluated when this block started — the correct source for the edge.
+            if let Some(ref binder) = saved_current_binding {
+                for cap in &fn_captures {
+                    saved_use_def
+                        .entry(binder.clone())
+                        .or_default()
+                        .insert(cap.clone());
+                }
+            }
+            // Propagate outer-scope captures: any capture whose definition is NOT
+            // in this block's binding_envs belongs to an even-outer scope and must
+            // bubble up through the (now-restored) state.closure_captures.
+            for cap in fn_captures {
+                let belongs_locally = binding_envs.iter().any(|frame| {
+                    let guard = frame.read().unwrap();
+                    guard
+                        .slot_index
+                        .get(&cap.name)
+                        .and_then(|&pos| guard.slots.get(pos))
+                        .and_then(|e| e.as_ref())
+                        .and_then(|(_, slot)| slot.definition_span.as_ref())
+                        .map_or(false, |span| *span == cap.def_span)
+                });
+                if !belongs_locally {
+                    state.closure_captures.push(cap);
+                }
+            }
+
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
@@ -1771,19 +1816,21 @@ async fn infer_var_ref(
                     let slot_scheme = frame.read().unwrap().get_scheme_at(0, *i);
                     if slot_scheme.is_some() {
                         frame.write().unwrap().mark_slot_referenced(0, *i);
-                        if let (Some(ref binder), Some(ref def_span)) =
-                            (&state.current_binding, &dep_def_span)
-                        {
+                        if let Some(ref def_span) = dep_def_span {
                             let dep_id = BindingId {
                                 def_span: def_span.clone(),
                                 name: name.to_string(),
                             };
-                            if *binder != dep_id {
-                                state
-                                    .use_def
-                                    .entry(binder.clone())
-                                    .or_default()
-                                    .insert(dep_id);
+                            if let Some(ref binder) = state.current_binding {
+                                if *binder != dep_id {
+                                    state
+                                        .use_def
+                                        .entry(binder.clone())
+                                        .or_default()
+                                        .insert(dep_id);
+                                }
+                            } else {
+                                state.closure_captures.push(dep_id);
                             }
                         }
                         if let Some(ref def_span) = dep_def_span {
@@ -1821,7 +1868,27 @@ async fn infer_var_ref(
                 // when a name is used inside a function but defined in an outer function.
                 // The type checker has no separate closure capture env; look up by name
                 // in the env parent chain, which includes the outer function's scope.
-                env.read().unwrap().get_scheme(name)
+                let scheme = env.read().unwrap().get_scheme(name);
+                if scheme.is_some() {
+                    env.write().unwrap().mark_referenced_by_name(name);
+                    if let Some(def_span) = Env::find_def_span_by_name(env, name) {
+                        let dep_id = BindingId {
+                            def_span,
+                            name: name.to_string(),
+                        };
+                        state.closure_captures.push(dep_id.clone());
+                        if let Some(ref binder) = state.current_binding {
+                            if *binder != dep_id {
+                                state
+                                    .use_def
+                                    .entry(binder.clone())
+                                    .or_default()
+                                    .insert(dep_id);
+                            }
+                        }
+                    }
+                }
+                scheme
             }
             crate::ast::VarAddr::EffectPerform { slot } => {
                 // Typeclass method call — resolved at runtime by scanning the accumulated group
@@ -1944,28 +2011,24 @@ async fn infer_var_ref(
                     env.write()
                         .unwrap()
                         .mark_slot_referenced(resolver_level, slot);
-                    if let (Some(ref binder), Some(ref def_span)) =
-                        (&state.current_binding, &dep_def_span)
-                    {
+                    if let Some(ref def_span) = dep_def_span {
                         let dep_id = BindingId {
                             def_span: def_span.clone(),
                             name: name.to_string(),
                         };
-                        if *binder != dep_id {
-                            state
-                                .use_def
-                                .entry(binder.clone())
-                                .or_default()
-                                .insert(dep_id);
-                        }
-                    }
-                    if let Some(ref def_span) = dep_def_span {
-                        let bid = BindingId {
-                            def_span: def_span.clone(),
-                            name: name.to_string(),
-                        };
-                        if let Some(narrowed) = state.narrowing_map.get(&bid) {
+                        if let Some(narrowed) = state.narrowing_map.get(&dep_id) {
                             return Arc::clone(narrowed);
+                        }
+                        if let Some(ref binder) = state.current_binding {
+                            if *binder != dep_id {
+                                state
+                                    .use_def
+                                    .entry(binder.clone())
+                                    .or_default()
+                                    .insert(dep_id);
+                            }
+                        } else {
+                            state.closure_captures.push(dep_id);
                         }
                     }
                     slot_scheme
@@ -1990,19 +2053,21 @@ async fn infer_var_ref(
         let scheme = { env.read().unwrap().get_scheme(name) };
         if scheme.is_some() {
             env.write().unwrap().mark_referenced_by_name(name);
-            let dep_def_span = Env::find_def_span_by_name(env, name);
-            if let (Some(ref binder), Some(ref def_span)) = (&state.current_binding, &dep_def_span)
-            {
+            if let Some(def_span) = Env::find_def_span_by_name(env, name) {
                 let dep_id = BindingId {
-                    def_span: def_span.clone(),
+                    def_span,
                     name: name.to_string(),
                 };
-                if *binder != dep_id {
-                    state
-                        .use_def
-                        .entry(binder.clone())
-                        .or_default()
-                        .insert(dep_id);
+                if let Some(ref binder) = state.current_binding {
+                    if *binder != dep_id {
+                        state
+                            .use_def
+                            .entry(binder.clone())
+                            .or_default()
+                            .insert(dep_id);
+                    }
+                } else {
+                    state.closure_captures.push(dep_id);
                 }
             }
         }
@@ -2049,9 +2114,15 @@ async fn infer_var_ref(
     } else {
         // If the resolver successfully resolved this variable, the variable
         // genuinely exists in scope — the type checker simply doesn't have its type.
-        // Return Unknown (gradual typing) rather than a false "undefined variable" diagnostic.
+        // Emit a warning and return Unknown (gradual typing) rather than a false
+        // "undefined variable" diagnostic.
         if let crate::ast::SurfaceExpression::VarRef { resolution, .. } = &node.expr {
             if let Some(Some(_)) = resolution.get() {
+                errors.push(Diagnostic::warn(
+                    "untyped-binding",
+                    format!("no type declaration for '{}'", name),
+                    node.span.clone(),
+                ));
                 return make_typevalue_unknown();
             }
         }
@@ -3594,6 +3665,7 @@ async fn infer_fn_push_cont(
         saved_current_binding: state.current_binding.take(),
         saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
         saved_parameter_frame,
+        saved_closure_captures: std::mem::take(&mut state.closure_captures),
     });
 
     // Evaluate body iteratively via the CEK loop.
@@ -4721,7 +4793,10 @@ pub(crate) async fn run_typecheck_dict(
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
             if let SurfaceExpression::TypeDecl {
-                type_name, params, inner, ..
+                type_name,
+                params,
+                inner,
+                ..
             } = &entry.node.value.expr
             {
                 // Extract the inner Dict entries, unwrapping ReprDecl if present.
@@ -4806,19 +4881,22 @@ pub(crate) async fn run_typecheck_dict(
                     // variables in the body resolve to fresh unification vars.
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                     for (param_name, _param_ann) in params {
-                        let fresh = state.fresh_type_var_with(
-                            Some(param_name.as_str()),
-                            None,
-                            "Type",
-                            &inner.span,
-                        ).0;
+                        let fresh = state
+                            .fresh_type_var_with(
+                                Some(param_name.as_str()),
+                                None,
+                                "Type",
+                                &inner.span,
+                            )
+                            .0;
                         alias_ann_map.insert(param_name.clone(), fresh);
                     }
                     let mut ann_map_for_body = alias_ann_map.clone();
 
                     match &inner.expr {
                         SurfaceExpression::Dict(body_entries) => {
-                            let mut ann_map_opt: Option<&mut HashMap<String, String>> = Some(&mut ann_map_for_body);
+                            let mut ann_map_opt: Option<&mut HashMap<String, String>> =
+                                Some(&mut ann_map_for_body);
                             let mut row_m: Option<&mut HashMap<String, String>> = None;
                             match super::typecheck_annot::resolve_type_dict(
                                 body_entries,
@@ -5499,6 +5577,29 @@ pub(crate) async fn run_typecheck_dict(
                             map.insert(key, fallback_ty);
                         }
                     }
+                }
+            } else {
+                // Computed-key entry: type-check the value to resolve VarRefs for
+                // liveness tracking, but don't insert into field_types (no static name).
+                if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
+                    let (_ty, _schemes, _referenced, mut nested_errs) = Box::pin(
+                        run_typecheck_dict(nested_entries, &scc_env, state, type_map, None),
+                    )
+                    .await;
+                    errors.append(&mut nested_errs);
+                } else {
+                    let mut local_errors = Vec::new();
+                    let mut local_stack = Vec::new();
+                    let _value_ty = Box::pin(run_typecheck(
+                        &entry.node.value,
+                        &scc_env,
+                        state,
+                        &mut local_errors,
+                        type_map,
+                        &mut local_stack,
+                    ))
+                    .await;
+                    errors.append(&mut local_errors);
                 }
             }
         }
