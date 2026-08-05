@@ -917,8 +917,8 @@ async fn infer_step(
         // ===== Decl — call declaration helpers directly =====
         SurfaceExpression::Decl(decl_box) => {
             // Call infer_class_decl_from_surface and infer_instance_decl_from_surface directly
-            // now that they are pub(crate). TypeAlias declarations in expression position have
-            // no runtime type (alias body validation occurs in Pass 2 of run_typecheck_dict).
+            // now that they are pub(crate). After expansion (S-1036), TypeAlias becomes TypeDecl
+            // and ClassDecl/InstanceDecl are replaced; these arms handle any surviving Decl nodes.
             let result: Result<TypeValue, Vec<Diagnostic>> = match decl_box.as_ref() {
                 SurfaceDeclaration::ClassDecl {
                     name,
@@ -977,11 +977,6 @@ async fn infer_step(
                         resolved_class_decl_id.set(cd.class_decl_id);
                     }
                     r
-                }
-                SurfaceDeclaration::TypeAlias { .. } => {
-                    // Type alias declarations in expression position have no runtime type.
-                    // Alias body validation occurs in Pass 2 of run_typecheck_dict.
-                    Ok(make_typevalue_top())
                 }
                 _ => Err(vec![Diagnostic::error(
                     "type-error",
@@ -3727,36 +3722,6 @@ async fn setup_match_arm_env(
 
 // ===== Inline helper: Match exhaustiveness checking =====
 
-/// Qualify NominalVariant ctor tags in a TypeValue body with a type name prefix.
-fn qualify_typevalue_body(body: &TypeValue, qualify_tag: &impl Fn(&str) -> String) -> TypeValue {
-    match typevalue_ctor(body) {
-        Some(TV_NOMINAL_VARIANT) => {
-            if let Some((_, ctor)) = typevalue_nominal_variant_tag(body) {
-                let qtag = qualify_tag(&ctor);
-                let (new_tycon, new_ctor) = qtag.split_once('.').unwrap_or(("", qtag.as_str()));
-                let fields = typevalue_record_fields_pub(body);
-                make_typevalue_nominal_variant(
-                    new_tycon,
-                    new_ctor,
-                    make_typevalue_record(fields, None),
-                )
-            } else {
-                Arc::clone(body)
-            }
-        }
-        Some(TV_UNION) => {
-            let members = typevalue_extract_members_pub(body)
-                .expect("invariant: TV_UNION TypeValue must have extractable members");
-            let qualified: Vec<TypeValue> = members
-                .into_iter()
-                .map(|m| qualify_typevalue_body(&m, qualify_tag))
-                .collect();
-            typevalue_normalize_union(qualified)
-        }
-        _ => Arc::clone(body),
-    }
-}
-
 /// Extract the (tag, arity) constructor list from a TypeValue ADT body.
 fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
     match typevalue_ctor(body) {
@@ -4394,34 +4359,6 @@ pub(crate) fn type_contains_typevar(ty: &TypeValue, name: &str) -> bool {
     }
 }
 
-/// Convert a literal surface expression to a runtime `Value`.
-///
-/// Returns `Some(Value)` for Int, U64, Float, and StringLiteral expressions.
-/// Returns `None` for any other expression (not a compile-time constant).
-///
-/// Used by Pass 2 type alias registration to populate `TyConDef.constructor_constants`
-/// from `name: literal` entries in variant constructor declarations.
-fn literal_expr_to_value(expr: &SurfaceExpression) -> Option<crate::value::Value> {
-    match expr {
-        SurfaceExpression::Int(n) => Some(crate::value::Value::Int {
-            n: *n,
-            type_val: crate::value::unknown_type_val(),
-        }),
-        SurfaceExpression::U64(n) => Some(crate::value::Value::U64 {
-            n: *n,
-            type_val: crate::value::unknown_type_val(),
-        }),
-        SurfaceExpression::Float(f) => Some(crate::value::Value::Float {
-            n: *f,
-            type_val: crate::value::unknown_type_val(),
-        }),
-        SurfaceExpression::StringLiteral { content, .. } => {
-            Some(crate::value::string_val(content.as_str()))
-        }
-        _ => None,
-    }
-}
-
 /// Build the constructor dict value type for an ADT.
 ///
 /// For ADT types (Union of NominalVariants or single NominalVariant), produces a Dict
@@ -4613,10 +4550,7 @@ pub(crate) async fn run_typecheck_dict(
             type_map,
         )
         .await;
-        let is_alias = matches!(
-            &entry.node.value.expr,
-            SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::TypeAlias { .. })
-        );
+        let is_alias = matches!(&entry.node.value.expr, SurfaceExpression::TypeDecl { .. });
         let is_static_key = entry.node.key.as_ref().is_some_and(|k| {
             matches!(
                 &k.expr,
@@ -4779,199 +4713,143 @@ pub(crate) async fn run_typecheck_dict(
         }
     }
 
-    // Pass 2: Register type aliases (before SCC processing)
+    // Pass 2: Register type declarations (before SCC processing).
+    //
+    // After expansion (S-1036), TypeAlias declarations become SurfaceExpression::TypeDecl
+    // wrapping a Dict of UnitVariant/MakeVariant constructor entries. Extract constructor
+    // information from the expanded form and register TyConDef in tycon_env.
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
-            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
-                    let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-                    for (param_name, param_ann) in params {
-                        let param_span = param_ann
-                            .as_ref()
-                            .map(|a| a.span.clone())
-                            .unwrap_or_else(|| entry.span.clone());
-                        let fresh = state
-                            .fresh_type_var_with(
-                                Some(param_name.as_str()),
-                                None,
-                                "Type",
-                                &param_span,
-                            )
-                            .0;
-                        alias_ann_map.insert(param_name.clone(), fresh.clone());
+            if let SurfaceExpression::TypeDecl {
+                type_name, inner, ..
+            } = &entry.node.value.expr
+            {
+                // Extract the inner Dict entries, unwrapping ReprDecl if present.
+                // TypeDecl inner is either:
+                //   - Dict(entries) — type without repr metadata
+                //   - ReprDecl { inner: Dict(entries) } — builtin type with repr
+                let inner_entries: &[Spanned<SurfaceEntry>] = match &inner.expr {
+                    SurfaceExpression::Dict(entries) => entries,
+                    SurfaceExpression::ReprDecl {
+                        inner: repr_inner, ..
+                    } => match &repr_inner.expr {
+                        SurfaceExpression::Dict(entries) => entries,
+                        _ => &[],
+                    },
+                    _ => &[],
+                };
+
+                // Unwrap annotation wrappers (Call to builtin-make-annotated) to
+                // reach the underlying UnitVariant or Fn expression.
+                fn unwrap_annotated(expr: &SurfaceExpression) -> &SurfaceExpression {
+                    if let SurfaceExpression::Call { func, args, .. } = expr {
+                        if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                            if name == "builtin-make-annotated" && !args.is_empty() {
+                                return &args[0].expr;
+                            }
+                        }
                     }
+                    expr
+                }
 
-                    let alias_name = key_name.as_deref().unwrap_or("");
-                    let mut alias_constraints: Vec<Arc<crate::value::Value>> = Vec::new();
-                    let mut ann_map_for_body = alias_ann_map.clone();
-                    let resolved_body: TypeValue = match &body.expr {
-                        SurfaceExpression::Dict(entries) => {
-                            let mut ann_map_opt =
-                                Some(&mut ann_map_for_body as &mut HashMap<String, String>);
-                            let mut row_m: Option<&mut HashMap<String, String>> = None;
-                            let dict_result = super::typecheck_annot::resolve_type_dict(
-                                entries,
-                                body.span.clone(),
-                                &mut *state,
-                                &mut alias_constraints,
-                                &mut ann_map_opt,
-                                &mut row_m,
-                                super::typecheck_annot::TypeDictCtx {
-                                    type_params_scope: None,
-                                    tycon_name: alias_name,
-                                },
-                            )
-                            .await;
-                            match dict_result {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    errors.push(e);
-                                    // Type alias body resolution failed: fresh TypeVar
-                                    state.fresh_type_var(&body.span)
-                                }
-                            }
-                        }
-                        _ => {
-                            match super::typecheck_annot::resolve_type_expr(
-                                body,
-                                state,
-                                &mut alias_constraints,
-                                &mut Some(&mut ann_map_for_body),
-                                &mut None,
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    errors.push(e);
-                                    // Type alias body resolution failed: fresh TypeVar
-                                    state.fresh_type_var(&body.span)
-                                }
-                            }
-                        }
-                    };
+                // Build NominalVariant TypeValues from the expanded constructor entries.
+                let mut variant_members: Vec<TypeValue> = Vec::new();
 
-                    // Qualify constructor tags with the alias name.
-                    let qualify_tag = |tag: &str| -> String {
-                        if alias_name.is_empty() || tag.contains('.') {
-                            tag.to_string()
-                        } else {
-                            format!("{}.{}", alias_name, tag)
+                for inner_entry in inner_entries {
+                    let value_expr = unwrap_annotated(&inner_entry.node.value.expr);
+
+                    match value_expr {
+                        // Unit constructor: UnitVariant { tycon, ctor }
+                        SurfaceExpression::UnitVariant { tycon, ctor, .. } => {
+                            let fields_tv = make_typevalue_record(indexmap::IndexMap::new(), None);
+                            variant_members
+                                .push(make_typevalue_nominal_variant(tycon, ctor, fields_tv));
                         }
-                    };
-                    let qualified_body = qualify_typevalue_body(&resolved_body, &qualify_tag);
-                    let constructors = extract_typevalue_constructors(&qualified_body);
-                    // Collect constructor_constants from literal-valued named args in the
-                    // body AST. For each variant entry in the type body that is a
-                    // Call with an uppercase head, named_args whose values are literals
-                    // (Int/U64/Float/StringLiteral) become constants stored in TyConDef.
-                    //
-                    // This is the producer side of constructor_constants — the consumer
-                    // (field access on Variant and find-by) reads from this map at runtime.
-                    //
-                    // Only Dict bodies can carry constants (non-Dict bodies resolve to a
-                    // single variant or primitive type with no named args).
-                    let constructor_constants: indexmap::IndexMap<
-                        String,
-                        indexmap::IndexMap<String, crate::value::Value>,
-                    > = if let SurfaceExpression::Dict(body_entries) = &body.expr {
-                        let mut map: indexmap::IndexMap<
-                            String,
-                            indexmap::IndexMap<String, crate::value::Value>,
-                        > = indexmap::IndexMap::new();
-                        for body_entry in body_entries {
-                            // Each body entry is a positional dict entry (key = None)
-                            // whose value is either:
-                            //   - Call { func: VarRef(UpperName), named_args: [...], ... }
-                            //     → variant with possibly-literal named args
-                            //   - VarRef(UpperName) → unit variant, no named args
-                            // We only care about the Call case.
-                            if let SurfaceExpression::Call {
-                                func, named_args, ..
-                            } = &body_entry.node.value.expr
-                            {
-                                if let SurfaceExpression::VarRef {
-                                    name: ctor_name, ..
-                                } = &func.expr
-                                {
-                                    if crate::eval::is_constructor_name(ctor_name) {
-                                        let mut constants: indexmap::IndexMap<
-                                            String,
-                                            crate::value::Value,
-                                        > = indexmap::IndexMap::new();
-                                        for na in named_args {
-                                            if let Some(val) =
-                                                literal_expr_to_value(&na.node.value.expr)
-                                            {
-                                                constants.insert(na.node.name.clone(), val);
-                                            }
-                                        }
-                                        if !constants.is_empty() {
-                                            let qualified_tag = qualify_tag(ctor_name);
-                                            map.insert(qualified_tag, constants);
-                                        }
+                        // Payload constructor: Fn { params, body: MakeVariant { tag, .. } }
+                        SurfaceExpression::Fn { params, body, .. } => {
+                            let body_expr = unwrap_annotated(&body.expr);
+                            if let SurfaceExpression::MakeVariant { tag, .. } = body_expr {
+                                let parts: Vec<&str> = tag.splitn(2, '.').collect();
+                                let (tycon_part, ctor_part) = if parts.len() == 2 {
+                                    (parts[0], parts[1])
+                                } else {
+                                    ("", tag.as_str())
+                                };
+                                let mut field_map: indexmap::IndexMap<String, TypeValue> =
+                                    indexmap::IndexMap::new();
+                                for p in params {
+                                    if !p.node.variadic {
+                                        let field_ty = state.fresh_type_var(&p.span);
+                                        field_map.insert(p.node.name.clone(), field_ty);
                                     }
                                 }
+                                let fields_tv = make_typevalue_record(field_map, None);
+                                variant_members.push(make_typevalue_nominal_variant(
+                                    tycon_part, ctor_part, fields_tv,
+                                ));
                             }
                         }
-                        map
-                    } else {
-                        indexmap::IndexMap::new()
-                    };
+                        _ => {} // skip non-constructor entries
+                    }
+                }
 
-                    let param_names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
-                    let tycon_def = std::sync::Arc::new(TyConDef {
-                        params: param_names,
-                        body: qualified_body.clone(),
-                        constraints: Vec::new(),
-                        variance: Vec::new(),
-                        constructors,
-                        builtin_type: None,
-                        annotation: None,
-                        field_annotations: indexmap::IndexMap::new(),
-                        constructor_constants,
-                        definition_span: Some(entry.span.clone()),
-                    });
-                    let alias_ty = qualified_body;
+                // Build the type body: union of constructors, or Op for no-constructor types.
+                let body_tv = if variant_members.is_empty() {
+                    make_typevalue_op(type_name)
+                } else {
+                    typevalue_normalize_union(variant_members)
+                };
 
-                    if let Some(name) = key_name {
-                        dict_env
-                            .write()
-                            .unwrap()
-                            .insert_tycon_def(name.clone(), std::sync::Arc::clone(&tycon_def));
-                        state.tycon_env.entry(name.clone()).or_insert(tycon_def);
-                        // Wire type declarations into type_stage_scope so
-                        // resolve_type_head can find user-declared types via the
-                        // scope chain. or_insert preserves type-stage entries
-                        // (type-stage has priority over runtime-declared types).
-                        if state.type_stage_scope.is_empty() {
-                            state
-                                .type_stage_scope
-                                .push(std::collections::HashMap::new());
-                        }
-                        state.type_stage_scope[0]
-                            .entry(name.clone())
-                            .or_insert_with(|| make_typevalue_op(&name));
-                        if params.is_empty() {
-                            let value_scheme_ty = adt_value_type(&alias_ty);
-                            let ctor_fields = typevalue_record_fields_pub(&value_scheme_ty);
-                            for (ctor_name, ctor_tv) in ctor_fields {
-                                ctor_schemes.insert(ctor_name, ctor_tv);
-                            }
-                            {
-                                let mut env_write = dict_env.write().unwrap();
-                                let slot =
-                                    super::find_slot_in_frames(&state.resolver_frames, &name)
-                                        .unwrap_or_else(|| env_write.slots.len());
-                                env_write.insert_at_slot(
-                                    slot,
-                                    name.clone(),
-                                    Arc::clone(&value_scheme_ty),
-                                    None,
-                                );
-                            }
-                        }
+                let constructors = extract_typevalue_constructors(&body_tv);
+
+                let tycon_def = std::sync::Arc::new(TyConDef {
+                    params: Vec::new(),
+                    body: body_tv.clone(),
+                    constraints: Vec::new(),
+                    variance: Vec::new(),
+                    constructors,
+                    builtin_type: None,
+                    annotation: None,
+                    field_annotations: indexmap::IndexMap::new(),
+                    constructor_constants: indexmap::IndexMap::new(),
+                    definition_span: Some(entry.span.clone()),
+                });
+
+                if let Some(name) = key_name {
+                    dict_env
+                        .write()
+                        .unwrap()
+                        .insert_tycon_def(name.clone(), std::sync::Arc::clone(&tycon_def));
+                    state.tycon_env.entry(name.clone()).or_insert(tycon_def);
+                    // Wire type declarations into type_stage_scope so
+                    // resolve_type_head can find user-declared types via the
+                    // scope chain. or_insert preserves type-stage entries
+                    // (type-stage has priority over runtime-declared types).
+                    if state.type_stage_scope.is_empty() {
+                        state
+                            .type_stage_scope
+                            .push(std::collections::HashMap::new());
+                    }
+                    state.type_stage_scope[0]
+                        .entry(name.clone())
+                        .or_insert_with(|| make_typevalue_op(name));
+                    // TypeDecl does not carry params — treat as zero-arity for
+                    // constructor scheme registration.
+                    let value_scheme_ty = adt_value_type(&body_tv);
+                    let ctor_fields = typevalue_record_fields_pub(&value_scheme_ty);
+                    for (ctor_name, ctor_tv) in ctor_fields {
+                        ctor_schemes.insert(ctor_name, ctor_tv);
+                    }
+                    {
+                        let mut env_write = dict_env.write().unwrap();
+                        let slot = super::find_slot_in_frames(&state.resolver_frames, name)
+                            .unwrap_or_else(|| env_write.slots.len());
+                        env_write.insert_at_slot(
+                            slot,
+                            name.clone(),
+                            Arc::clone(&value_scheme_ty),
+                            None,
+                        );
                     }
                 }
             }
@@ -5618,9 +5496,9 @@ pub(crate) async fn run_typecheck_dict(
             let entry = &entries[idx];
             let (ref key_name, is_alias, _) = key_entries[idx];
 
-            // TypeAlias entries have their correct schemes already registered in Pass 2.
+            // TypeDecl entries have their correct schemes already registered in Pass 2.
             // Skipping here prevents field_types["TypeName"] (which holds the inferred
-            // value type, not the alias type) from overwriting the correct Pass 2 scheme.
+            // value type, not the type declaration type) from overwriting the correct Pass 2 scheme.
             if is_alias {
                 continue;
             }
@@ -5826,7 +5704,7 @@ pub(crate) async fn run_typecheck_dict(
         }
     }
 
-    // Re-apply zero-arity TypeAlias schemes from state.tycon_env.
+    // Re-apply zero-arity TypeDecl schemes from state.tycon_env.
     for (key_name, is_alias, _) in &key_entries {
         if *is_alias {
             if let Some(name) = key_name {
