@@ -3360,16 +3360,12 @@ pub(crate) fn builtin_doc_expressions(
 
 /// `builtin-doc-meta`: Evaluate document header metadata.
 ///
-/// Evaluates the header values of a document. Takes 2 args:
+/// Evaluates the header values of a document. Takes 1 arg:
 /// - arg0: Value::Document
-/// - arg1: Dict — the accumulated env dict (env-dict protocol, T-1775)
 ///
-/// Header values are almost always literals (stage: "type", pragma: ["no-prelude"]),
-/// so the env is not needed for evaluation.  The argument is accepted and type-checked
-/// but the env dict is not injected into the evaluation context — header evaluation
-/// always runs with an empty initial_group so that non-literal header expressions
-/// still evaluate in an isolated scope without accidentally resolving runtime names
-/// from the caller's env.
+/// Header values are literals (stage: "type", pragma: ["no-prelude"]),
+/// so no env injection is needed. Header evaluation runs with an empty
+/// initial_group in an isolated scope.
 ///
 /// Returns Dict {key: evaluated-value, ...}.
 /// Returns empty Dict if header is empty.
@@ -3385,8 +3381,8 @@ pub(crate) fn builtin_doc_meta(
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-doc-meta", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
         let doc_val = args[0].require_value()?.clone();
@@ -3402,23 +3398,6 @@ pub(crate) fn builtin_doc_meta(
                 .into());
             }
         };
-
-        // arg1: env-dict (T-1775 protocol) — must be Dict.
-        // The value is accepted but not used for header evaluation — doc headers contain
-        // literal values (strings, lists of strings) that do not require name resolution.
-        let env_val = args[1].require_value()?.clone();
-        match &env_val {
-            Value::Dict { .. } => {}
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-doc-meta".to_string(),
-                    "Dict",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        }
 
         // Evaluate each header SurfaceNode value with an empty accumulated group.
         // Header values are literals — no env injection needed.

@@ -572,9 +572,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-doc-meta",
             builtin_doc_meta,
-            [Strictness::Seq, Strictness::Seq],
+            [Strictness::Seq],
             0,
-            ["doc", "env"]
+            ["doc"]
         ),
         builtin!(
             "builtin-doc-expressions",

@@ -2405,7 +2405,7 @@ Named document sections (--- name: "foo") accumulate as %foo bindings in env.
   [docs: [program-docs prog]]
   [state: [reduce
     [fn [let st doc]
-      [meta:     [builtin-doc-meta doc st.env]]
+      [meta:     [builtin-doc-meta doc]]
       [uses:     [uses-scope [get-or [] "uses" meta]]]
       [doc-env:  [dict-merge st.env [dict-merge uses [%: st.percent]]]]
       [name-set: [env-to-name-set doc-env]]

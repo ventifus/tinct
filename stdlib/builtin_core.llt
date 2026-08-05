@@ -336,9 +336,9 @@
   builtin-lint-pipeline-docs: [fn@Dict [let docs@Dict pipeline-input: p] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Documents [let prog@Program] ...]
-  # doc-meta: evaluate a document's --- header with env dict, returning the result dict.
-  # env: flat Dict<String, thunk> — same accumulated env passed to builtin-eval.
-  builtin-doc-meta:          [fn@Dict     [let doc@Document env@Dict] ...]
+  # doc-meta: evaluate a document's --- header, returning the result dict.
+  # Header values are literals — no env injection needed.
+  builtin-doc-meta:          [fn@Dict     [let doc@Document] ...]
   # doc-expressions: return auto-indexed dict of Expr-variant values from a document's expression items.
   # Decl items (type declarations, class/instance declarations, etc.) are skipped.
   builtin-doc-expressions:   [fn@Dict     [let doc@Document] ...]

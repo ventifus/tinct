@@ -291,7 +291,7 @@
   # sufficient for annotation resolution. The repr: types serve the runtime
   # type_val mechanism only.
   _fundamental-base-tc: [builtin-make-type-ctx]
-  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc []]] 0]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc [builtin-empty-scope]]] 0]
     0: _fundamental-base-tc
     ...: _fundamental-base-tc]
 
@@ -355,9 +355,9 @@
     # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
     [seed-env: extras]
     # Per-document reduce fn: unified for type-stage and runtime passes.
-    # acc is {env: Dict  tc: TypeContext}.
+    # acc is {env: Scope  tc: TypeContext}.
     [eval-doc: [fn [let acc doc]
-      [meta:     [builtin-doc-meta doc acc.env]]
+      [meta:     [builtin-doc-meta doc]]
       [uses:     [uses-scope [get-or [] "uses" meta] acc.tc acc.env]]
       [doc-env:  [builtin-scope-extend acc.env uses]]
       [res:      [builtin-resolve doc doc-env]]
@@ -382,7 +382,7 @@
     # Split documents by stage using reduce (filter is not available before prelude loads).
     [split: [reduce
       [fn [let acc doc]
-        [meta: [builtin-doc-meta doc seed-env]]
+        [meta: [builtin-doc-meta doc]]
         [stage: [get-or "runtime" "stage" meta]]
         [match [builtin-eq-string stage "type"]
           0: [ts: [merge acc.ts [make-entry [builtin-dict-length acc.ts] doc]]  rt: acc.rt]
@@ -390,7 +390,7 @@
       [ts: []  rt: []]
       docs]]
     # Pass 1: evaluate type-stage documents to build ts env.
-    [ts-acc: [reduce eval-doc [env: seed-env  tc: fundamental-tc] split.ts]]
+    [ts-acc: [reduce eval-doc [env: [builtin-scope-extend [builtin-empty-scope] seed-env]  tc: fundamental-tc] split.ts]]
     # Wire ts env into the TypeContext so type-stage functions are visible
     # during type-checking of runtime documents.
     [tc: [builtin-tc-update-type-stage-env ts-acc.tc ts-acc.env]]
@@ -479,7 +479,7 @@
     [all-exports: [builtin-scope-exports eval-scope]]
     [evaled: [builtin-dict-get "%" all-exports]]
     # Extract document metadata for caps validation and named-section bookkeeping.
-    [meta: [builtin-doc-meta doc full-env]]
+    [meta: [builtin-doc-meta doc]]
     # Validate --- caps: declarations. Each declared cap must be present in full-env.
     [caps-list: [get-or [] "caps" meta]]
     [_caps: [reduce [fn [let _ cap-name]
@@ -521,7 +521,7 @@
     # Extract the file-level uses list from the first doc's metadata and build the module
     # scope from it. When docs is empty, mod-scope is empty (no uses to inject).
     [first-meta: [if [builtin-int-gt [builtin-dict-length docs] 0]
-                   [builtin-doc-meta [get 0 docs] prelude-env]
+                   [builtin-doc-meta [get 0 docs]]
                    []]]
     [mod-scope: [uses-scope [get-or [] "uses" first-meta] tc prelude-env]]
     # Per-document reduce: each doc gets its own eval-document-runtime call.
