@@ -4721,7 +4721,7 @@ pub(crate) async fn run_typecheck_dict(
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
             if let SurfaceExpression::TypeDecl {
-                type_name, inner, ..
+                type_name, params, inner, ..
             } = &entry.node.value.expr
             {
                 // Extract the inner Dict entries, unwrapping ReprDecl if present.
@@ -4793,9 +4793,73 @@ pub(crate) async fn run_typecheck_dict(
                     }
                 }
 
-                // Build the type body: union of constructors, or Op for no-constructor types.
+                // Build the type body: union of constructors, or resolve as a type
+                // expression for structural aliases (no constructors).
                 let body_tv = if variant_members.is_empty() {
-                    make_typevalue_op(type_name)
+                    // Structural alias: the inner is the original type body expression
+                    // (e.g., [_@k: v] for a uniform-column dict alias). Resolve it as
+                    // a type expression using the same path the old TypeAlias handler used.
+                    let alias_name = type_name.as_str();
+                    let mut alias_constraints: Vec<Arc<crate::value::Value>> = Vec::new();
+
+                    // Create annotation map from type params so that type
+                    // variables in the body resolve to fresh unification vars.
+                    let mut alias_ann_map: HashMap<String, String> = HashMap::new();
+                    for (param_name, _param_ann) in params {
+                        let fresh = state.fresh_type_var_with(
+                            Some(param_name.as_str()),
+                            None,
+                            "Type",
+                            &inner.span,
+                        ).0;
+                        alias_ann_map.insert(param_name.clone(), fresh);
+                    }
+                    let mut ann_map_for_body = alias_ann_map.clone();
+
+                    match &inner.expr {
+                        SurfaceExpression::Dict(body_entries) => {
+                            let mut ann_map_opt: Option<&mut HashMap<String, String>> = Some(&mut ann_map_for_body);
+                            let mut row_m: Option<&mut HashMap<String, String>> = None;
+                            match super::typecheck_annot::resolve_type_dict(
+                                body_entries,
+                                inner.span.clone(),
+                                &mut *state,
+                                &mut alias_constraints,
+                                &mut ann_map_opt,
+                                &mut row_m,
+                                super::typecheck_annot::TypeDictCtx {
+                                    type_params_scope: None,
+                                    tycon_name: alias_name,
+                                },
+                            )
+                            .await
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    errors.push(e);
+                                    state.fresh_type_var(&inner.span)
+                                }
+                            }
+                        }
+                        _ => {
+                            match super::typecheck_annot::resolve_type_expr(
+                                inner,
+                                state,
+                                &mut alias_constraints,
+                                &mut Some(&mut ann_map_for_body),
+                                &mut None,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    errors.push(e);
+                                    state.fresh_type_var(&inner.span)
+                                }
+                            }
+                        }
+                    }
                 } else {
                     typevalue_normalize_union(variant_members)
                 };
@@ -4803,7 +4867,7 @@ pub(crate) async fn run_typecheck_dict(
                 let constructors = extract_typevalue_constructors(&body_tv);
 
                 let tycon_def = std::sync::Arc::new(TyConDef {
-                    params: Vec::new(),
+                    params: params.iter().map(|(n, _)| n.clone()).collect(),
                     body: body_tv.clone(),
                     constraints: Vec::new(),
                     variance: Vec::new(),
@@ -4833,8 +4897,7 @@ pub(crate) async fn run_typecheck_dict(
                     state.type_stage_scope[0]
                         .entry(name.clone())
                         .or_insert_with(|| make_typevalue_op(name));
-                    // TypeDecl does not carry params — treat as zero-arity for
-                    // constructor scheme registration.
+                    // Use params from TypeDecl for constructor scheme registration.
                     let value_scheme_ty = adt_value_type(&body_tv);
                     let ctor_fields = typevalue_record_fields_pub(&value_scheme_ty);
                     for (ctor_name, ctor_tv) in ctor_fields {

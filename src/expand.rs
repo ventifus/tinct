@@ -373,7 +373,7 @@ fn expand_single_dict_entry(entry: Spanned<SurfaceEntry>, out: &mut Vec<Spanned<
 /// Expand a `TypeAlias` declaration into an equivalent `SurfaceExpression`.
 ///
 /// Produces a tree of surface-level AST nodes:
-/// - Outer: `TypeDecl { type_name, type_decl_id, inner }` (when type_name is available)
+/// - Outer: `TypeDecl { type_name, type_decl_id, params, inner }` (when type_name is available)
 /// - Middle: `ReprDecl { repr, inner }` (when `repr:` metadata is present)
 /// - Inner: `Dict` of constructor entries
 ///
@@ -385,7 +385,7 @@ fn expand_single_dict_entry(entry: Spanned<SurfaceEntry>, out: &mut Vec<Spanned<
 /// `builtin-make-annotated` (as a VarRef, resolved later by the resolver).
 fn expand_type_alias(
     type_name_opt: Option<String>,
-    _params: &[(String, Option<Spanned<Annotation>>)],
+    params: &[(String, Option<Spanned<Annotation>>)],
     body: &Arc<SurfaceNode>,
     span: &Span,
 ) -> SurfaceExpression {
@@ -584,6 +584,7 @@ fn expand_type_alias(
         Some(type_name) => SurfaceExpression::TypeDecl {
             type_name,
             type_decl_id,
+            params: params.to_vec(),
             inner: Arc::new(SurfaceNode::new(inner_expr, span.clone())),
         },
         None => inner_expr,

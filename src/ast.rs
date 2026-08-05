@@ -416,7 +416,14 @@ impl fmt::Display for SurfaceExpression {
             }
             SurfaceExpression::UnitVariant { tycon, ctor, .. } => write!(f, "{tycon}.{ctor}"),
             SurfaceExpression::MakeVariant { tag, .. } => write!(f, "MakeVariant({tag})"),
-            SurfaceExpression::TypeDecl { type_name, .. } => write!(f, "TypeDecl({type_name})"),
+            SurfaceExpression::TypeDecl { type_name, params, .. } => {
+                if params.is_empty() {
+                    write!(f, "TypeDecl({type_name})")
+                } else {
+                    let param_names: Vec<&str> = params.iter().map(|(n, _)| n.as_str()).collect();
+                    write!(f, "TypeDecl({type_name} [{}])", param_names.join(" "))
+                }
+            }
             SurfaceExpression::ReprDecl { repr, .. } => write!(f, "ReprDecl({repr})"),
         }
     }
@@ -833,6 +840,7 @@ pub enum SurfaceExpression {
     TypeDecl {
         type_name: String,
         type_decl_id: u64,
+        params: Vec<(String, Option<Spanned<Annotation>>)>,
         inner: Arc<SurfaceNode>,
     },
 

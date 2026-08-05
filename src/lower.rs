@@ -846,6 +846,7 @@ fn lower_expr(
         SurfaceExpression::TypeDecl {
             type_name,
             type_decl_id,
+            params: _,
             inner,
         } => CoreExpr::TypeDecl {
             type_name: type_name.clone(),
