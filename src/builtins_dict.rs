@@ -308,14 +308,26 @@ pub(crate) fn builtin_get(
         let target_span = thunk1.span.clone();
 
         match target_val {
-            Value::Dict { entries: map, .. } => {
+            Value::Dict {
+                entries: map,
+                type_val,
+            } => {
                 let key_str = key.to_string();
                 match map.get(&key) {
                     Some(thunk) => Ok(Arc::clone(thunk)),
                     None => {
                         let available_keys: Vec<String> =
                             map.keys().map(|k| k.to_string()).collect();
-                        Err(EvalError::key_not_found(&key_str, available_keys, target_span).into())
+                        let mut err =
+                            EvalError::key_not_found(&key_str, available_keys, target_span);
+                        err.spans
+                            .push((call_span, "accessed here".to_string()));
+                        err.notes.push(format!(
+                            "dict has {} entries, type_val: {}",
+                            map.len(),
+                            type_val.type_name()
+                        ));
+                        Err(err.into())
                     }
                 }
             }
