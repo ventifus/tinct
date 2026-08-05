@@ -708,16 +708,7 @@ impl EvalContext {
     ///
     /// Called once per root context (`new_empty`, `new_with_options`). Child contexts share the same Arc.
     fn build_root_group_builtins() -> Arc<Vec<Arc<Thunk>>> {
-        let all_builtins: Vec<crate::value::BuiltinDef> = crate::builtins_core::core_builtins()
-            .into_iter()
-            .chain(crate::builtins_meta::meta_builtins())
-            .chain(crate::builtins_string::string_builtins())
-            .chain(crate::builtins_async::async_builtins())
-            .chain(crate::builtins_math::math_builtins())
-            .chain(crate::builtins_io::io_builtins())
-            .chain(crate::builtins_net::net_builtins())
-            .chain(crate::builtins_datetime::datetime_builtins())
-            .collect();
+        let all_builtins: Vec<crate::value::BuiltinDef> = crate::builtins_core::core_builtins();
         let group: Vec<Arc<Thunk>> = all_builtins
             .into_iter()
             .map(|def| {
