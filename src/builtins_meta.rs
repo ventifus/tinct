@@ -2167,17 +2167,10 @@ pub(crate) fn builtin_resolve(
             }
         };
 
-        // Build the ordered name list from the scope's names (insertion order).
-        // The i-th name gets Dispatch(0, root_group_len + i) in the resolver.
-        let env_names: Vec<String> = scope_names.keys().cloned().collect();
-
-        // Seed the resolver with root_group names at their actual runtime slots.
-        // root_group_resolver_map() returns (name, slot) where slot is the position
-        // in EvalContext.root_group. These names (builtins like builtin-dict-get)
-        // need correct resolution for Field.resolution and other scope lookups.
-        // Env-dict names follow at offset root_group.len() in the accumulated_group.
-        let root_map = ctx.root_group_resolver_map();
-        let root_group_len = ctx.root_group.len() as u32;
+        // The scope's names map IS the resolver's seed frame. No transformation.
+        let scope_frame: IndexMap<String, u32> = scope_names.as_ref().clone();
+        let env_names: Vec<String> = Vec::new();
+        let root_group_len = scope_frame.len() as u32;
 
         // Use the classes-aware resolver so that any typeclass method names (e.g., `+`, `<`)
         // in the resolved document emit VarAddr::EffectPerform instead of plain Dispatch.
@@ -2210,7 +2203,7 @@ pub(crate) fn builtin_resolve(
         let (_resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
                 &doc_arc,
-                &[root_map],
+                &[scope_frame],
                 &env_names,
                 root_group_len,
                 class_methods,
@@ -3511,6 +3504,32 @@ pub(crate) fn builtin_builtin_module(
     })
 }
 
+/// `builtin-empty-scope`: Return an empty `Value::Scope` with no entries.
+pub(crate) fn builtin_empty_scope(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-empty-scope", named.as_ref(), call_span.clone())?;
+        if !args.is_empty() {
+            return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
+        }
+        Ok(Arc::new(Thunk::value(
+            Value::Scope {
+                slots: Arc::new(Vec::new()),
+                names: Arc::new(IndexMap::new()),
+                type_val: crate::value::unknown_type_val(),
+            },
+            call_span,
+        )))
+    })
+}
+
 /// `builtin-scope-extend`: Extend a `Value::Scope` with additional bindings from a `Value::Dict`.
 ///
 /// Takes 2 positional args:
@@ -3730,19 +3749,9 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // Build initial_group: prepend root_group thunks, then append scope slots.
-        // LGM slots 0..R-1 are root_group entries (builtins + capabilities).
-        // Scope entries follow at R..R+N-1, matching the resolver's root_group_len offset
-        // assigned by builtin_resolve.
-        let root_group_len = ctx.root_group.len();
-        let mut initial_group: Vec<Arc<Thunk>> = ctx.root_group.iter().map(Arc::clone).collect();
-        initial_group.extend(scope_slots.iter().map(Arc::clone));
-
-        // Build initial names with root_group_len offset applied.
-        let mut initial_names: IndexMap<String, u32> = IndexMap::with_capacity(scope_names.len());
-        for (name, &slot) in scope_names.iter() {
-            initial_names.insert(name.clone(), slot + root_group_len as u32);
-        }
+        // The scope's slots ARE the initial_group. No transformation.
+        let initial_group: Vec<Arc<Thunk>> = scope_slots.as_ref().clone();
+        let initial_names: IndexMap<String, u32> = scope_names.as_ref().clone();
 
         // Evaluate the pre-lowered CoreExpr entries with the scope as the initial group.
         // Uses eval_core_document_exprs (not eval_document_exprs_with_env) to avoid calling
@@ -3757,23 +3766,15 @@ pub(crate) fn builtin_eval(
             )
             .await?;
 
-        // Build the result Value::Scope from accumulated spine and names.
-        // Strip root_group prefix from the spine — scope slots are the entries
-        // after root_group. Adjust name slots accordingly.
-        let full_slots = &*accumulated_spine;
-        let scope_only_slots: Vec<Arc<Thunk>> = full_slots[root_group_len..].to_vec();
-
+        // Build the result Value::Scope from the accumulated spine and names.
+        // The scope includes root_group entries at their original positions —
+        // no stripping, no reindexing. Slot numbering is absolute.
         let mut result_names = accumulated_names.unwrap_or_default();
-        // Adjust slot indices to be relative to the scope (subtract root_group_len).
-        for slot in result_names.values_mut() {
-            *slot -= root_group_len as u32;
-        }
 
-        // Add the result thunk to the scope under the key "%".
-        // This preserves the pipeline convention: the result of evaluation
-        // is accessible as scope.% by the loader.
-        let result_slot = scope_only_slots.len() as u32;
-        let mut final_slots = scope_only_slots;
+        // Add the result thunk under "%".
+        let full_slots_vec = accumulated_spine.as_ref().clone();
+        let result_slot = full_slots_vec.len() as u32;
+        let mut final_slots = full_slots_vec;
         final_slots.push(result_thunk);
         result_names.insert("%".to_string(), result_slot);
 
@@ -5275,6 +5276,7 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         // needs_caller_env: true — only builtin that requires BuiltinArgs.caller_env_id to be Some.
         builtin!(@needs_caller_env, "builtin-current-env", builtin_current_env),
         // ── Scope operations ─────────────────────────────────────────────────────────
+        builtin!("builtin-empty-scope", builtin_empty_scope),
         builtin!(
             "builtin-scope-extend",
             builtin_scope_extend,

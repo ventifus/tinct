@@ -74,6 +74,8 @@
   builtin-sequential:        [fn@Any     [let x@Any] ...]
 
   # ── Scope operations ──────────────────────────────────────────────────────
+  # empty-scope: return an empty Scope with no entries.
+  builtin-empty-scope:       [fn@Scope   [let] ...]
   # scope-extend: extend a Scope with additional Dict entries.
   builtin-scope-extend:      [fn@Scope   [let scope@Scope additions@Dict] ...]
   # scope-exports: convert a Scope to a Dict exposing its named entries.
