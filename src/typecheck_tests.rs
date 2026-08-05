@@ -165,9 +165,10 @@ fn surf_ann_entry_tc(
 async fn doc_tycon_env(
     input: &str,
 ) -> std::collections::HashMap<String, Arc<crate::type_def::TyConDef>> {
-    let program = crate::desugar::desugar_surface_program(
+    let desugared = crate::desugar::desugar_surface_program(
         &crate::parse(input, test_file(input)).unwrap().program,
     );
+    let program = crate::expand::expand_program(&desugared);
 
     let arc_env = crate::imports::get_builtin_core_type_env().await;
     let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(

@@ -560,16 +560,23 @@ fn expand_type_alias(
         ));
     }
 
-    let inner_dict = SurfaceExpression::Dict(surface_entries);
+    // When no constructors were extracted, the body is a structural type alias
+    // (e.g., [type [let k v] [_@k: v]]). Preserve the original body — it IS the
+    // type definition. The type-stage evaluator and type checker handle it directly.
+    let inner = if surface_entries.is_empty() {
+        body.expr.clone()
+    } else {
+        SurfaceExpression::Dict(surface_entries)
+    };
 
-    // If the body had `repr:` metadata, wrap the constructor dict in ReprDecl.
+    // If the body had `repr:` metadata, wrap in ReprDecl.
     let inner_expr = match repr_opt {
         Some(repr) => SurfaceExpression::ReprDecl {
             repr,
             is_pred: is_pred_opt,
-            inner: Arc::new(SurfaceNode::new(inner_dict, span.clone())),
+            inner: Arc::new(SurfaceNode::new(inner, span.clone())),
         },
-        None => inner_dict,
+        None => inner,
     };
 
     // Wrap in TypeDecl when a type name is available.
