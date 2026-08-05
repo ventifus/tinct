@@ -388,31 +388,17 @@ pub async fn run_loader_pipeline(
     // Wire the TyConEnv from the typecheck pass into the eval context so that
     // value_matches_type and TypeAssert error messages can look up TyCon definitions.
     eval_ctx_with_frames.set_tycon_env(loader_tycon_env);
-    // Emit ALL diagnostics (errors and warnings). Never drop any.
-    // Only type-assertion errors are fatal in the init program.
-    //
-    // The init program (loader.llt) bootstraps the runtime — it loads prelude as its first
-    // action. By design, type-checking the init program runs before prelude is available,
-    // so the type-checker cannot resolve prelude-only names (>>, if, get, etc.) used in
-    // loader.llt's runtime documents. This produces spurious "resolver-slot-miss" and
-    // "type-error" (undefined variable, arity mismatch, cannot unify) diagnostics that are
-    // inherent to the bootstrap architecture — not actionable errors.
-    //
-    // The one error kind that IS actionable here: "type-assertion" — a TypeAssert annotation
-    // [@ Type expr] that failed means the init program's runtime behavior differs from its
-    // declared type, which would be a genuine bug regardless of prelude availability.
-    //
-    // All other error-level diagnostics are logged (above) but do not abort execution.
-    let mut has_fatal = false;
+    // Emit all diagnostics. Any error is fatal.
+    let mut has_errors = false;
     for diag in &loader_diagnostics {
         eprintln!("{}", format_diagnostic(diag, init_source, init_path));
-        if diag.level == crate::error::DiagnosticLevel::Err && diag.kind == "type-assertion" {
-            has_fatal = true;
+        if diag.level == crate::error::DiagnosticLevel::Err {
+            has_errors = true;
         }
     }
-    if has_fatal {
+    if has_errors {
         return Err(format!(
-            "{init_path}: fatal type assertion error in init program — cannot proceed"
+            "{init_path}: type error in init program — cannot proceed"
         ));
     }
 
