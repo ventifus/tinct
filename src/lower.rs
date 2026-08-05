@@ -501,7 +501,7 @@ fn lower_expr(
                                 CoreEntry {
                                     key,
                                     value,
-                                    assigned_slot: se.node.assigned_slot.get().copied(),
+                                    assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                                 },
                                 se.span.clone(),
                             ));
@@ -618,7 +618,7 @@ fn lower_expr(
                                         CoreEntry {
                                             key,
                                             value,
-                                            assigned_slot: se.node.assigned_slot.get().copied(),
+                                            assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                                         },
                                         se.span.clone(),
                                     ));
@@ -663,7 +663,7 @@ fn lower_expr(
                                             CoreEntry {
                                                 key,
                                                 value,
-                                                assigned_slot: me.node.assigned_slot.get().copied(),
+                                                assigned_slot: me.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                                             },
                                             me.span.clone(),
                                         ));
@@ -694,7 +694,7 @@ fn lower_expr(
                                 CoreEntry {
                                     key,
                                     value,
-                                    assigned_slot: se.node.assigned_slot.get().copied(),
+                                    assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                                 },
                                 se.span.clone(),
                             ));
@@ -725,7 +725,7 @@ fn lower_expr(
                                     CoreEntry {
                                         key,
                                         value,
-                                        assigned_slot: se.node.assigned_slot.get().copied(),
+                                        assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                                     },
                                     se.span.clone(),
                                 ));
@@ -800,7 +800,7 @@ fn lower_expr(
                         CoreEntry {
                             key,
                             value,
-                            assigned_slot: se.node.assigned_slot.get().copied(),
+                            assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                         },
                         se.span.clone(),
                     ));
@@ -1230,7 +1230,7 @@ fn lower_expr(
                             CoreEntry {
                                 key,
                                 value,
-                                assigned_slot: me.node.assigned_slot.get().copied(),
+                                assigned_slot: me.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                             },
                             syn_span.clone(),
                         ));
@@ -1784,7 +1784,7 @@ fn build_field_annotations_core_entry(
                 CoreEntry {
                     key: role_key,
                     value: role_value,
-                    assigned_slot: None,
+                    assigned_slot: u32::MAX,
                 },
                 span.clone(),
             );
@@ -1798,7 +1798,7 @@ fn build_field_annotations_core_entry(
                 CoreEntry {
                     key,
                     value: inner_dict,
-                    assigned_slot: None,
+                    assigned_slot: u32::MAX,
                 },
                 span.clone(),
             )
@@ -1814,7 +1814,7 @@ fn build_field_annotations_core_entry(
         CoreEntry {
             key,
             value: field_ann_dict,
-            assigned_slot: None,
+            assigned_slot: u32::MAX,
         },
         span.clone(),
     ))
@@ -1903,7 +1903,7 @@ fn lower_type_alias_to_constructor_dict(
                             CoreEntry {
                                 key,
                                 value,
-                                assigned_slot: se.node.assigned_slot.get().copied(),
+                                assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                             },
                             se.span.clone(),
                         )
@@ -1990,7 +1990,7 @@ fn lower_type_alias_to_constructor_dict(
                         CoreEntry {
                             key,
                             value,
-                            assigned_slot: None,
+                            assigned_slot: u32::MAX,
                         },
                         syn_span.clone(),
                     )
@@ -2059,7 +2059,7 @@ fn lower_type_alias_to_constructor_dict(
                             CoreEntry {
                                 key,
                                 value,
-                                assigned_slot: se.node.assigned_slot.get().copied(),
+                                assigned_slot: se.node.assigned_slot.get().copied().expect("resolver must set assigned_slot"),
                             },
                             se.span.clone(),
                         ));
@@ -2100,7 +2100,7 @@ fn lower_type_alias_to_constructor_dict(
             CoreEntry {
                 key,
                 value,
-                assigned_slot: None,
+                assigned_slot: u32::MAX,
             },
             syn_span.clone(),
         ));

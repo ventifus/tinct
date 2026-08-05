@@ -636,6 +636,8 @@ impl SurfaceResolver {
                             // First write wins: shared AST nodes may be visited multiple times.
                             let _ = entry.node.assigned_slot.set(base_offset + slot_idx);
                             slot_idx += 1;
+                        } else {
+                            let _ = entry.node.assigned_slot.set(u32::MAX);
                         }
                         // Count mangled binding names from InstanceDecl (mirrors
                         // surface_dict_static_keys exactly) to keep slot_idx in sync.
@@ -896,6 +898,8 @@ impl SurfaceResolver {
                                                 .assigned_slot
                                                 .set(sequential_offset + slot_idx);
                                             slot_idx += 1;
+                                        } else {
+                                            let _ = entry.node.assigned_slot.set(u32::MAX);
                                         }
                                         if let SurfaceExpression::Decl(decl) =
                                             &entry.node.value.expr

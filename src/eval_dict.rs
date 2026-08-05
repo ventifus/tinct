@@ -509,35 +509,27 @@ pub(crate) async fn eval_dict_core(
             ));
         }
 
-        if is_static_key {
-            if let Some(slot) = entry.node.assigned_slot {
-                let slot = slot as usize;
-                if slot < scope_vec.len() {
-                    scope_vec[slot] = Arc::clone(&thunk);
-                } else {
-                    // Gaps in scope_vec can occur when the resolver assigns non-sequential slots
-                    // (e.g., slot 0 for entry 'a', slot 2 for entry 'c' if slot 1 is reserved for
-                    // a parent-scope binding that is later overridden). Fill gaps with empty dicts
-                    // to maintain slot indexing invariant: scope_vec[N] must exist for all N < len.
-                    // Gap entries are never accessed by correct code — they exist only to preserve
-                    // the direct-indexing property (VarAddr::Dispatch(_, slot) -> scope_vec[slot]).
-                    scope_vec.resize_with(slot + 1, || {
-                        Arc::new(Thunk::value(
-                            Value::Dict {
-                                entries: IndexMap::new(),
-                                type_val: crate::value::unknown_type_val(),
-                            },
-                            crate::rust_span!(),
-                        ))
-                    });
-                    scope_vec[slot] = Arc::clone(&thunk);
-                }
+        if is_static_key && entry.node.assigned_slot != u32::MAX {
+            let slot = entry.node.assigned_slot as usize;
+            if slot < scope_vec.len() {
+                scope_vec[slot] = Arc::clone(&thunk);
             } else {
-                // Defensive fallback: static-key entries without assigned_slot should not occur
-                // after resolve (resolver always assigns slots to static keys), but may happen
-                // for programmatically constructed CoreEntry bypassing the resolver pipeline.
-                // Append at end of scope_vec to avoid leaving the entry unmapped.
-                scope_vec.push(Arc::clone(&thunk));
+                // Gaps in scope_vec can occur when the resolver assigns non-sequential slots
+                // (e.g., slot 0 for entry 'a', slot 2 for entry 'c' if slot 1 is reserved for
+                // a parent-scope binding that is later overridden). Fill gaps with empty dicts
+                // to maintain slot indexing invariant: scope_vec[N] must exist for all N < len.
+                // Gap entries are never accessed by correct code — they exist only to preserve
+                // the direct-indexing property (VarAddr::Dispatch(_, slot) -> scope_vec[slot]).
+                scope_vec.resize_with(slot + 1, || {
+                    Arc::new(Thunk::value(
+                        Value::Dict {
+                            entries: IndexMap::new(),
+                            type_val: crate::value::unknown_type_val(),
+                        },
+                        crate::rust_span!(),
+                    ))
+                });
+                scope_vec[slot] = Arc::clone(&thunk);
             }
         }
         // Track all non-literal thunks (both static and computed key) for frame patching.

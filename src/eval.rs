@@ -2622,7 +2622,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: None,
+                    assigned_slot: 0,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -2699,6 +2699,10 @@ mod tests {
         // The evaluator (eval_dict_core) must detect the duplicate key and return E030.
         let z = rust_span!();
         let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, z.clone()));
+        let slot0 = std::sync::OnceLock::new();
+        let _ = slot0.set(0u32);
+        let slot1 = std::sync::OnceLock::new();
+        let _ = slot1.set(1u32);
         let node = mk(SurfaceExpression::Dict(vec![
             Spanned::new(
                 SurfaceEntry {
@@ -2708,7 +2712,7 @@ mod tests {
                         content: "x".into(),
                     })),
                     value: mk(SurfaceExpression::Int(1)),
-                    assigned_slot: std::sync::OnceLock::new(),
+                    assigned_slot: slot0,
                 },
                 z.clone(),
             ),
@@ -2720,7 +2724,7 @@ mod tests {
                         content: "x".into(),
                     })),
                     value: mk(SurfaceExpression::Int(2)),
-                    assigned_slot: std::sync::OnceLock::new(),
+                    assigned_slot: slot1,
                 },
                 z.clone(),
             ),
@@ -3194,7 +3198,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: None,
+                    assigned_slot: 0,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -3462,7 +3466,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: None,
+                    assigned_slot: 0,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -3567,7 +3571,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: None,
+                    assigned_slot: 0,
                 },
                 test_span(1, 1, 1, 15),
             )]),
@@ -3756,7 +3760,7 @@ mod tests {
                                     CoreExpr::Str("Alice".into()),
                                     span.clone(),
                                 )),
-                                assigned_slot: None,
+                                assigned_slot: 0,
                             },
                             span.clone(),
                         ),
@@ -3767,7 +3771,7 @@ mod tests {
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(CoreExpr::Int(30), span.clone())),
-                                assigned_slot: None,
+                                assigned_slot: 1,
                             },
                             span.clone(),
                         ),
@@ -3818,7 +3822,7 @@ mod tests {
                                 CoreExpr::Str("Alice".into()),
                                 span.clone(),
                             )),
-                            assigned_slot: None,
+                            assigned_slot: 0,
                         },
                         span.clone(),
                     )]),
@@ -3864,7 +3868,7 @@ mod tests {
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(CoreExpr::Int(1), span.clone())),
-                                assigned_slot: None,
+                                assigned_slot: 0,
                             },
                             span.clone(),
                         ),
@@ -3875,7 +3879,7 @@ mod tests {
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(CoreExpr::Int(2), span.clone())),
-                                assigned_slot: None,
+                                assigned_slot: 1,
                             },
                             span.clone(),
                         ),
@@ -3925,7 +3929,7 @@ mod tests {
                                 span.clone(),
                             ))),
                             value: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                            assigned_slot: None,
+                            assigned_slot: 0,
                         },
                         span.clone(),
                     )]),

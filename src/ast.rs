@@ -1521,8 +1521,9 @@ pub struct CoreEntry {
     pub key: Option<Arc<Spanned<CoreExpr>>>,
     pub value: Arc<Spanned<CoreExpr>>,
     /// Slot index assigned by the resolver, copied from `SurfaceEntry::assigned_slot`
-    /// during lowering. `None` for entries without a resolver-assigned slot.
-    pub assigned_slot: Option<u32>,
+    /// during lowering. Every entry must have a slot — the resolver is the single
+    /// source of truth for slot assignments.
+    pub assigned_slot: u32,
 }
 
 /// A named argument in a CoreExpr::Call.
