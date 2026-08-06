@@ -629,9 +629,9 @@ pub async fn unify(
                 Err(Diagnostic::error(
                     "type-error",
                     format!(
-                        "cannot unify {:?} with {:?}",
-                        repr_a.as_deref().unwrap_or("?"),
-                        repr_b.as_deref().unwrap_or("?")
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
                     ),
                     span,
                 ))
@@ -648,9 +648,9 @@ pub async fn unify(
                 Err(Diagnostic::error(
                     "type-error",
                     format!(
-                        "cannot unify type operator {:?} with {:?}",
-                        name_a.as_deref().unwrap_or("?"),
-                        name_b.as_deref().unwrap_or("?")
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
                     ),
                     span,
                 ))
@@ -666,7 +666,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    format!("cannot unify integer literals {:?} and {:?}", va, vb),
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -679,7 +683,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify integer literal with non-Int type",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -690,7 +698,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify integer literal with non-Int type",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -704,7 +716,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    format!("cannot unify string literals {:?} and {:?}", va, vb),
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -716,7 +732,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify string literal with non-Str type",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -727,7 +747,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify string literal with non-Str type",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -742,7 +766,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    format!("cannot unify float literals {:?} and {:?}", va, vb),
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -755,7 +783,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify FloatLiteral with non-Float repr type",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -766,7 +798,11 @@ pub async fn unify(
             } else {
                 Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify non-Float repr type with FloatLiteral",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ))
             }
@@ -831,9 +867,11 @@ pub async fn unify(
                 return Err(Diagnostic::error(
                     "type-error",
                     format!(
-                        "cannot unify union types with different numbers of members ({} vs {})",
+                        "cannot unify {} with {}: union member count differs ({} vs {})",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
                         members_a.len(),
-                        members_b.len()
+                        members_b.len(),
                     ),
                     span,
                 ));
@@ -1107,7 +1145,11 @@ pub async fn unify(
             if members.is_empty() {
                 return Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify with empty union (Never)",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ));
             }
@@ -1144,17 +1186,13 @@ pub async fn unify(
             }
             Err(Diagnostic::error(
                 "type-error",
-                format!("cannot unify {} with {}", ctor_a.unwrap_or("?"), TV_UNION),
+                format!(
+                    "cannot unify {} with {}",
+                    crate::eval::format_type_for_assert(&a),
+                    crate::eval::format_type_for_assert(&b),
+                ),
                 span,
-            )
-            .with_note(format!(
-                "actual:   {}",
-                crate::eval::format_type_for_assert(&a)
             ))
-            .with_note(format!(
-                "expected: {}",
-                crate::eval::format_type_for_assert(&b)
-            )))
         }
 
         // C-Var1 symmetric: Union vs concrete — symmetric version of the above.
@@ -1169,7 +1207,11 @@ pub async fn unify(
             if members.is_empty() {
                 return Err(Diagnostic::error(
                     "type-error",
-                    "cannot unify empty union (Never) with type",
+                    format!(
+                        "cannot unify {} with {}",
+                        crate::eval::format_type_for_assert(&a),
+                        crate::eval::format_type_for_assert(&b),
+                    ),
                     span,
                 ));
             }
@@ -1205,19 +1247,12 @@ pub async fn unify(
             Err(Diagnostic::error(
                 "type-error",
                 format!(
-                    "cannot unify TypeValue.Union with {}",
-                    ctor_b.unwrap_or("?")
+                    "cannot unify {} with {}",
+                    crate::eval::format_type_for_assert(&a),
+                    crate::eval::format_type_for_assert(&b),
                 ),
                 span,
-            )
-            .with_note(format!(
-                "actual:   {}",
-                crate::eval::format_type_for_assert(&a)
             ))
-            .with_note(format!(
-                "expected: {}",
-                crate::eval::format_type_for_assert(&b)
-            )))
         }
 
         // C-Var2: Intersection vs concrete — try to unify each intersection member with the
@@ -1268,19 +1303,12 @@ pub async fn unify(
             Err(Diagnostic::error(
                 "type-error",
                 format!(
-                    "cannot unify TypeValue.Inter with {}",
-                    ctor_b.unwrap_or("?")
+                    "cannot unify {} with {}",
+                    crate::eval::format_type_for_assert(&a),
+                    crate::eval::format_type_for_assert(&b),
                 ),
                 span,
-            )
-            .with_note(format!(
-                "actual:   {}",
-                crate::eval::format_type_for_assert(&a)
             ))
-            .with_note(format!(
-                "expected: {}",
-                crate::eval::format_type_for_assert(&b)
-            )))
         }
 
         // Cross-ctor mismatch: type error.
