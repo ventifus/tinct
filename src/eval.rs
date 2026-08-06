@@ -4297,7 +4297,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val()
+        
             },
             &top_tv,
             &ctx,
@@ -4322,7 +4322,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val()
+        
             },
             &var_tv,
             &ctx,
@@ -4463,7 +4463,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val()
+        
             },
             &tycon,
             &ctx
@@ -5634,7 +5634,7 @@ mod tests {
                 source: Arc::from("wildcard"),
                 start: 0,
                 end: 8,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "plain-dict 'coords' must NOT match Color.Red (unknown_type_val); got: {r1_val:?}"
         );
@@ -5648,7 +5648,7 @@ mod tests {
                 source: Arc::from("type-matched"),
                 start: 0,
                 end: 12,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "type-ctor-dict 'Color' must match Variant Color.Red; got: {r2_val:?}"
         );
@@ -5681,7 +5681,7 @@ mod tests {
                 source: Arc::from("matched"),
                 start: 0,
                 end: 7,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "Color arm must match Color.Red via sentinel; got: {r_val:?}"
         );
@@ -5718,7 +5718,7 @@ mod tests {
                 source: Arc::from("correct"),
                 start: 0,
                 end: 7,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "shadowed plain dict must NOT match Color.Red; got: {r_val:?}"
         );
@@ -5752,7 +5752,7 @@ mod tests {
                 source: Arc::from("alias-matched"),
                 start: 0,
                 end: 13,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "alias dict must match Color.Red via ptr_eq; got: {r_val:?}"
         );
@@ -5814,7 +5814,7 @@ mod tests {
                 source: Arc::from("outer-match"),
                 start: 0,
                 end: 11,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "outer Color.Red must match outer Color arm even after inner TypeDecl evaluation; got: {ro_val:?}"
         );

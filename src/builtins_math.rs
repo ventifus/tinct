@@ -1907,7 +1907,7 @@ mod tests {
             peek_value(&t),
             Some(Value::Int {
                 n: 7,
-                type_val: crate::value::unknown_type_val()
+        
             })
         );
     }
@@ -1944,7 +1944,7 @@ mod tests {
             peek_value(&t),
             Some(Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             })
         );
     }

@@ -136,10 +136,10 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
     );
     let payload = Value::Dict {
         entries,
-        type_val: crate::value::unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: crate::value::unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_APP),
         payload: Some(Arc::new(crate::value::Thunk::value(

@@ -240,7 +240,7 @@ async fn eval_annotation_property_dict(
 
     Ok(Value::Dict {
         entries: dict_map,
-        type_val: crate::value::unknown_type_val(),
+
     })
 }
 
@@ -745,7 +745,7 @@ mod tests {
             x_val,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "x must be 42"
         );
@@ -753,7 +753,7 @@ mod tests {
             y_val,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "y must equal x (letrec sibling scope)"
         );
@@ -798,7 +798,7 @@ mod tests {
             v_val,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "v must be Int(42), not the value of k"
         );

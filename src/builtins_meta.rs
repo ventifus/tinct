@@ -5442,7 +5442,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "expected caller_env_id as Int(42)"
         );

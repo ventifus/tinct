@@ -1267,7 +1267,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "CoreExpr::Int(42) must evaluate to Int(42)"
         );
@@ -1338,7 +1338,7 @@ mod tests {
             val,
             Value::Int {
                 n: 77,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "CoreExpr::Var with VarAddr::Dispatch(0, 0) must resolve to the injected Int(77)"
         );

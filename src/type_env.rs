@@ -375,7 +375,7 @@ pub fn generalize_tv_with_meta(
     // Build constraints dict: empty (future work: include typeclass constraints).
     let constraints_dict = Value::Dict {
         entries: indexmap::IndexMap::new(),
-        type_val: crate::value::unknown_type_val(),
+,
     };
 
     // Build narrowings dict: { 0: TypeValue | [], 1: TypeValue | [], ... }
@@ -452,7 +452,7 @@ pub fn generalize_tv_with_meta(
     };
 
     Arc::new(Value::Variant {
-        type_val: crate::value::unknown_type_val(),
+,
         type_decl_id: 0,
         ctor: Arc::from(TV_SCHEME),
         payload: Some(Arc::new(crate::value::Thunk::value(

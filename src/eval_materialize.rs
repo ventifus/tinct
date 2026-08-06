@@ -4077,7 +4077,7 @@ mod tests {
             result.unwrap(),
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             }
         );
 
@@ -4090,7 +4090,7 @@ mod tests {
             peeked,
             &Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "Cached value should be Int(42)"
         );
@@ -4109,7 +4109,7 @@ mod tests {
             result2.unwrap(),
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             }
         );
     }
@@ -4285,7 +4285,7 @@ mod tests {
             result.unwrap(),
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             }
         );
 
@@ -4298,7 +4298,7 @@ mod tests {
             peeked,
             &Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "after successful validation, thunk should be Materialized(Int(42))"
         );
@@ -4344,7 +4344,7 @@ mod tests {
             result.unwrap(),
             Value::Int {
                 n: 99,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "default expression should yield 99 (from caller's env)"
         );
@@ -4358,7 +4358,7 @@ mod tests {
             peeked,
             &Value::Int {
                 n: 99,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "after default fallback, thunk should be Materialized(Int(99))"
         );
@@ -4616,7 +4616,7 @@ mod tests {
             result.unwrap(),
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "dummy builtin must succeed with both args pre-materialized"
         );
@@ -4762,7 +4762,7 @@ mod cek_lifecycle_tests {
             peeked,
             &Value::Int {
                 n: 99,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "Thunk::value must start Materialized"
         );
@@ -4777,7 +4777,7 @@ mod cek_lifecycle_tests {
                     v,
                     Value::Int {
                         n: 99,
-                        type_val: crate::value::unknown_type_val()
+                
                     },
                     "expected the materialized value Int(99)"
                 );

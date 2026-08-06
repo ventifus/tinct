@@ -84,7 +84,7 @@ mod tests {
             result_val,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+        
             },
             "d.a must return Int(1) when d = {{a: 1}}"
         );

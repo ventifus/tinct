@@ -433,7 +433,7 @@ async fn test_union_type_assert_success() {
     assert!(crate::eval::value_matches_type(
         &crate::value::Value::Int {
             n: 42,
-            type_val: crate::value::unknown_type_val()
+    
         },
         &union_tv,
         &ctx,
@@ -450,7 +450,7 @@ async fn test_union_type_assert_failure_float() {
     assert!(!crate::eval::value_matches_type(
         &crate::value::Value::Float {
             n: 1.0,
-            type_val: crate::value::unknown_type_val()
+    
         },
         &union_tv,
         &ctx,
@@ -570,7 +570,7 @@ async fn test_normalize_intersection_unknown_is_identity() {
         inter.as_ref()
             != &crate::value::Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_val: crate::value::unknown_type_val()
+        
             },
         "normalize_intersection must not return empty dict"
     );

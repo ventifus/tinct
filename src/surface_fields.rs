@@ -46,7 +46,7 @@ pub fn surface_node_get_field(
     // null sentinel — returned for absent optional fields and unrecognized fields
     let null = || Value::Dict {
         entries: indexmap::IndexMap::new(),
-        type_val: crate::value::unknown_type_val(),
+
     };
     let expr_variant =
         |n: &Arc<SurfaceNode>| crate::surface_convert::surface_node_to_expr_variant(n, ctx);
@@ -199,7 +199,7 @@ fn nodes_to_list_dict(
     }
     Value::Dict {
         entries: map,
-        type_val: crate::value::unknown_type_val(),
+
     }
 }
 
@@ -255,7 +255,7 @@ fn surface_entries_to_list_dict(
     }
     Value::Dict {
         entries: map,
-        type_val: crate::value::unknown_type_val(),
+
     }
 }
 
@@ -297,7 +297,7 @@ fn named_args_to_list_dict(
     }
     Value::Dict {
         entries: map,
-        type_val: crate::value::unknown_type_val(),
+
     }
 }
 
@@ -349,7 +349,7 @@ fn params_to_list_dict(
     }
     Value::Dict {
         entries: map,
-        type_val: crate::value::unknown_type_val(),
+
     }
 }
 
@@ -401,7 +401,7 @@ fn match_arms_to_list_dict(
     }
     Value::Dict {
         entries: map,
-        type_val: crate::value::unknown_type_val(),
+
     }
 }
 
@@ -690,7 +690,7 @@ fn annotation_inner_to_value(
     };
 
     Value::Variant {
-        type_val: crate::value::unknown_type_val(),
+
         type_decl_id: 0,
         ctor: format!("{}.{}", tycon, ctor).into(),
         payload: Some(Arc::new(Thunk::value(
@@ -775,7 +775,7 @@ pub fn span_to_value(
 
     Value::Dict {
         entries: map,
-        type_val: crate::value::unknown_type_val(),
+
     }
 }
 

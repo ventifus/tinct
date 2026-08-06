@@ -1380,11 +1380,11 @@ pub(crate) fn make_variant_with_payload(
 ) -> Value {
     let payload_val = Value::Dict {
         entries: payload,
-        type_val: crate::value::unknown_type_val(),
+
     };
     let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
     Value::Variant {
-        type_val: crate::value::unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(tag),
         payload: Some(payload_thunk),
@@ -1393,7 +1393,7 @@ pub(crate) fn make_variant_with_payload(
 
 pub(crate) fn make_unit_variant(tag: &str) -> Value {
     Value::Variant {
-        type_val: crate::value::unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(tag),
         payload: None,
@@ -2823,7 +2823,7 @@ mod tests {
                     peek_value(&version_thunk),
                     Some(Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val()
+                
                     })
                 );
             }
