@@ -748,25 +748,9 @@ pub(crate) fn eval_core_expr<'a>(
                 payload,
                 type_decl_id,
             } => {
-                let type_val = if *type_decl_id == 0 {
-                    crate::value::unknown_type_val()
-                } else {
-                    ctx.type_identity_registry
-                        .lock()
-                        .map_err(|e| {
-                            EvalError::internal(
-                                format!("type_identity_registry mutex poisoned: {e}"),
-                                span.clone(),
-                            )
-                        })?
-                        .get(type_decl_id)
-                        .map(Arc::clone)
-                        .unwrap_or_else(crate::value::unknown_type_val)
-                };
                 match payload {
                     None => Ok(Arc::new(Thunk::value(
                         Value::Variant {
-                            type_val,
                             type_decl_id: *type_decl_id,
                             ctor: Arc::from(tag.as_str()),
                             payload: None,
@@ -778,7 +762,6 @@ pub(crate) fn eval_core_expr<'a>(
                         let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
                         Ok(Arc::new(Thunk::value(
                             Value::Variant {
-                                type_val,
                                 type_decl_id: *type_decl_id,
                                 ctor: Arc::from(tag.as_str()),
                                 payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
@@ -798,24 +781,8 @@ pub(crate) fn eval_core_expr<'a>(
                 ctor,
                 type_decl_id,
             } => {
-                let type_val = if *type_decl_id == 0 {
-                    crate::value::unknown_type_val()
-                } else {
-                    ctx.type_identity_registry
-                        .lock()
-                        .map_err(|e| {
-                            EvalError::internal(
-                                format!("type_identity_registry mutex poisoned: {e}"),
-                                span.clone(),
-                            )
-                        })?
-                        .get(type_decl_id)
-                        .map(Arc::clone)
-                        .unwrap_or_else(crate::value::unknown_type_val)
-                };
                 Ok(Arc::new(Thunk::value(
                     Value::Variant {
-                        type_val,
                         type_decl_id: *type_decl_id,
                         ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
                         payload: None,
@@ -971,10 +938,6 @@ pub(crate) fn eval_core_expr<'a>(
                         clauses: Arc::new(clauses.clone()),
                         closure_env: Arc::new(closure_env_vec),
                         annotation,
-                        type_val: resolved_fn_type
-                            .as_ref()
-                            .map(Arc::clone)
-                            .unwrap_or_else(crate::value::unknown_type_val),
                     },
                     span.clone(),
                 ));
@@ -1147,31 +1110,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // Evaluate the inner constructor dict (or ReprDecl wrapping a dict).
                 let inner_thunk = eval_core_expr(inner, frame, ctx).await?;
 
-                // Materialize the dict to stamp type_val. This is a necessary strictness
-                // point: we need the Value::Dict to replace its type_val field. The dict's
-                // entries (constructor thunks) are NOT materialized — they remain as
-                // Arc<Thunk> inside the IndexMap. Only the container structure is extracted.
-                let inner_val = materialize(&inner_thunk, Some(&span), ctx).await?;
-
-                // Stamp the type identity on the constructor dict's type_val.
-                let stamped_val = match inner_val {
-                    Value::Dict { entries, .. } => Value::Dict {
-                        entries,
-                        type_val: Arc::clone(&type_id),
-                    },
-                    other => {
-                        return Err(EvalError::internal(
-                            format!(
-                                "CoreExpr::TypeDecl: inner expression evaluated to non-Dict value: {}",
-                                other.type_name()
-                            ),
-                            span.clone(),
-                        )
-                        .into());
-                    }
-                };
-
-                Ok(Arc::new(Thunk::value(stamped_val, span.clone())))
+                Ok(inner_thunk)
             }
 
             // ReprDecl: evaluate the inner constructor dict, register in ctx.repr_registry,
