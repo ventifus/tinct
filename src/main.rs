@@ -1996,7 +1996,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             type_val: tinct::unknown_type_val(),
                         });
                         Value::Variant {
-                            type_val: unknown_type_val(),
+                
                             type_decl_id: 0,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
@@ -2032,7 +2032,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             type_val: tinct::unknown_type_val(),
                         });
                         Value::Variant {
-                            type_val: unknown_type_val(),
+                
                             type_decl_id: 0,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
@@ -2051,7 +2051,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         type_val: tinct::unknown_type_val(),
                     });
                     Value::Variant {
-                        type_val: unknown_type_val(),
+            
                         type_decl_id: 0,
                         ctor: Arc::from("ProgramItem.Expr"),
                         payload: Some(payload_id),
@@ -2095,7 +2095,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             HashableValue::Str("strict".into()),
             mk_thunk(Value::Int {
                 n: if strict { 1 } else { 0 },
-                type_val: unknown_type_val(),
+    
             }),
         );
 

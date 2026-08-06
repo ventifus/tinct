@@ -619,11 +619,11 @@ pub(crate) async fn extract_fn_annotation_extra(
             crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
             crate::ast::SurfaceExpression::Int(n) => Value::Int {
                 n: *n,
-                type_val: crate::value::unknown_type_val(),
+
             },
             crate::ast::SurfaceExpression::Float(f) => Value::Float {
                 n: *f,
-                type_val: crate::value::unknown_type_val(),
+
             },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
@@ -670,21 +670,21 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(
                 Value::Int {
                     n: *n,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 span.clone(),
             ))),
             CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(
                 Value::U64 {
                     n: *n,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 span.clone(),
             ))),
             CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(
                 Value::Float {
                     n: *f,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 span.clone(),
             ))),
@@ -1082,7 +1082,7 @@ pub(crate) fn eval_core_expr<'a>(
                 Ok(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: dict,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     span.clone(),
                 )))
@@ -1122,7 +1122,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // self-describing in debug output. Its own type_val is unknown_type_val() —
                 // the identity is not itself typed (it is the identity, not a user value).
                 let type_id: Arc<Value> = Arc::new(Value::Variant {
-                    type_val: crate::value::unknown_type_val(),
+    
                     type_decl_id: 0, // Identity sentinel — not a user-constructed variant.
                     ctor: Arc::from(type_name.as_str()),
                     payload: None,
@@ -1305,7 +1305,7 @@ mod tests {
         let known_thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 77,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         ));

@@ -538,7 +538,7 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
             } else {
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 }
             }
         }),
@@ -1109,11 +1109,11 @@ async fn dispatch_state(
                     // Empty sequential: return empty dict
                     thunk.settle(Ok(Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     }));
                     return Action::Continue(Ok(Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     }));
                 }
 
@@ -1446,7 +1446,7 @@ pub(crate) async fn apply_cont(
                                         Arc::new(Thunk::value(
                                             Value::Int {
                                                 n: caller_env_id as i64,
-                                                type_val: crate::value::unknown_type_val(),
+                                
                                             },
                                             call_span.clone(),
                                         )),
@@ -1821,7 +1821,7 @@ pub(crate) async fn apply_cont(
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict {
                                         entries: new_entries,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     };
                                     thunk.settle(Ok(guarded_value.clone()));
                                     Action::Continue(Ok(guarded_value))
@@ -2289,7 +2289,7 @@ pub(crate) async fn apply_cont(
                                 Ok(new_entries) => {
                                     let wrapped = Value::Dict {
                                         entries: new_entries,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     };
                                     return Action::Continue(Ok(wrapped));
                                 }
@@ -4260,7 +4260,7 @@ mod tests {
         let inner = Arc::new(Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         ));
@@ -4379,7 +4379,7 @@ mod tests {
         let inner = Arc::new(Thunk::value(
             Value::Float {
                 n: 1.0,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         ));
@@ -4571,7 +4571,7 @@ mod tests {
                 Ok(Arc::new(Thunk::value(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     span,
                 )))
@@ -4704,7 +4704,7 @@ mod cek_lifecycle_tests {
         let thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 7,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         ));
@@ -4749,7 +4749,7 @@ mod cek_lifecycle_tests {
         let thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 99,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         ));
@@ -5013,7 +5013,7 @@ fn force_dict_tree_impl<'a>(
                 }
                 Ok(Value::Dict {
                     entries: new_map,
-                    type_val: crate::value::unknown_type_val(),
+    
                 })
             }
             Value::Variant {

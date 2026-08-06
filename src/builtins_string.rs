@@ -141,7 +141,7 @@ pub(crate) fn builtin_str_length(
         ok_val(
             Value::Int {
                 n: len_i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -173,7 +173,7 @@ pub(crate) fn builtin_str_byte_count(
         ok_val(
             Value::Int {
                 n: s.len() as i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -221,7 +221,7 @@ pub(crate) fn builtin_str_has_nth_byte(
         ok_val(
             Value::Int {
                 n: if idx >= 0 && idx < len { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -274,7 +274,7 @@ pub(crate) fn builtin_str_nth_byte(
         ok_val(
             Value::Int {
                 n: byte,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -407,7 +407,7 @@ pub(crate) fn builtin_str_slice(
                 source: input_source,
                 start: byte_start,
                 end: byte_end,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -459,7 +459,7 @@ pub(crate) fn builtin_str_has_nth(
             return ok_val(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -474,7 +474,7 @@ pub(crate) fn builtin_str_has_nth(
         ok_val(
             Value::Int {
                 n: exists,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -540,7 +540,7 @@ pub(crate) fn builtin_str_nth_char(
                         source,
                         start: str_start + byte_start,
                         end: str_start + byte_end,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -597,7 +597,7 @@ pub(crate) fn builtin_char_code(
             ok_val(
                 Value::Int {
                     n: ch as u32 as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )
@@ -747,7 +747,7 @@ pub(crate) fn builtin_str_index_of(
         ok_val(
             Value::Int {
                 n: index,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -997,7 +997,7 @@ pub(crate) fn builtin_regex_match(
             Ok(re) => ok_val(
                 Value::Int {
                     n: if re.is_match(&haystack) { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),

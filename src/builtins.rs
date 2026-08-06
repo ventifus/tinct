@@ -182,7 +182,7 @@ pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<A
         ok_val(
             Value::Float {
                 n: val,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span,
         )
@@ -308,7 +308,7 @@ fn float_to_int_builtin(
             ok_val(
                 Value::Int {
                     n: checked_f64_to_i64(name, op(f), call_span.clone())?,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )
@@ -395,7 +395,7 @@ pub(crate) fn builtin_to_int(
             Ok(n) => ok_val(
                 Value::Int {
                     n,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -435,7 +435,7 @@ pub(crate) fn builtin_to_float(
             Ok(f) if f.is_finite() => ok_val(
                 Value::Float {
                     n: f,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -469,7 +469,7 @@ pub(crate) fn builtin_proxy(
         Ok(Arc::new(Thunk::value(
             Value::Proxy {
                 handler: Arc::clone(&args[0]),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -654,7 +654,7 @@ mod tests {
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             test_span(1, 1, 1, 5),
         ))
@@ -672,7 +672,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -699,7 +699,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: -7,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -726,7 +726,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -753,7 +753,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 3.7,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -781,7 +781,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -3.2,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -808,7 +808,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 5.0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -835,7 +835,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.9999999,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -862,7 +862,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::NAN,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -884,7 +884,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::INFINITY,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -910,7 +910,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::NEG_INFINITY,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -976,7 +976,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1023,14 +1023,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -1059,7 +1059,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -1068,7 +1068,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 3.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1094,7 +1094,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 1e19,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1120,7 +1120,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -1e19,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1146,7 +1146,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1173,7 +1173,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: -7,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1201,7 +1201,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 0.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1229,7 +1229,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -0.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1256,7 +1256,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.4,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1283,7 +1283,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.6,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1311,7 +1311,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -2.4,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1339,7 +1339,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -2.6,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1366,7 +1366,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 1.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1393,7 +1393,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -1.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1420,7 +1420,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 5.0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1447,7 +1447,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::NAN,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1469,7 +1469,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::INFINITY,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1495,7 +1495,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::NEG_INFINITY,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1582,14 +1582,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -1616,7 +1616,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 1e19,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1642,7 +1642,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: -1e19,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1832,7 +1832,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1863,7 +1863,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1889,7 +1889,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 1.0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -1915,7 +1915,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2250,7 +2250,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2276,7 +2276,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2302,7 +2302,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2457,7 +2457,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2514,7 +2514,7 @@ mod tests {
             HashableValue::Str("notes".into()),
             thunk(Value::Dict {
                 entries: notes,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let err = run(builtin_raise(BuiltinArgs {
@@ -2561,7 +2561,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2670,7 +2670,7 @@ mod tests {
                 ok_val(
                     Value::Int {
                         n: 99,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     rust_span!(),
                 )
@@ -2816,7 +2816,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2851,7 +2851,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2913,7 +2913,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -2977,7 +2977,7 @@ mod tests {
                 ok_val(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     rust_span!(),
                 )
@@ -3026,7 +3026,7 @@ mod tests {
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: Arc::from("Color.Red"),
                 payload: None,
@@ -3147,7 +3147,7 @@ mod tests {
             HashableValue::Str("age".into()),
             thunk(Value::Int {
                 n: 30,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict = thunk_dict(map, &ctx);
@@ -3232,21 +3232,21 @@ mod tests {
             HashableValue::Str("z".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("m".into()),
             thunk(Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict = thunk_dict(map, &ctx);
@@ -3305,21 +3305,21 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("b".into()),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("c".into()),
             thunk(Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict = thunk_dict(map, &ctx);
@@ -3487,7 +3487,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -3898,7 +3898,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -3934,7 +3934,7 @@ mod tests {
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -3965,7 +3965,7 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -3997,7 +3997,7 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: 2.5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -4057,7 +4057,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4093,7 +4093,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4102,7 +4102,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -4130,7 +4130,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4161,7 +4161,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4196,7 +4196,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 99,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4206,14 +4206,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4242,7 +4242,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4252,14 +4252,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4288,7 +4288,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4298,14 +4298,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4334,7 +4334,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4344,14 +4344,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4380,7 +4380,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4390,14 +4390,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4426,7 +4426,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4436,14 +4436,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4472,7 +4472,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4484,7 +4484,7 @@ mod tests {
                     HashableValue::Str("a".into()),
                     thunk(Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 m
@@ -4517,7 +4517,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4527,7 +4527,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: map,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -4555,7 +4555,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -4613,14 +4613,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4651,14 +4651,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 3.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4687,14 +4687,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 1.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4723,14 +4723,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: -10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4759,14 +4759,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4795,7 +4795,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4824,7 +4824,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -4851,14 +4851,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: i64::MAX,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4886,14 +4886,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: i64::MIN,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4921,14 +4921,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4957,14 +4957,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 10.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 3.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -4993,14 +4993,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5029,14 +5029,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5084,7 +5084,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -5111,7 +5111,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5141,14 +5141,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 4,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5177,14 +5177,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 3.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5213,14 +5213,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 42,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5249,14 +5249,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: -3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 4,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5285,14 +5285,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 42,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: -1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5321,14 +5321,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: i64::MAX,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5356,14 +5356,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 1e308,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 1e308,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5392,14 +5392,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: f64::INFINITY,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: f64::INFINITY,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5427,14 +5427,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 1e308,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 10.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5466,14 +5466,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: f64::INFINITY,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: f64::INFINITY,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5501,14 +5501,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5536,14 +5536,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5569,14 +5569,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 3.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5604,14 +5604,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 7.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5640,14 +5640,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5681,14 +5681,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 10.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 0.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5717,14 +5717,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 0.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5752,14 +5752,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: -0.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 1.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5788,14 +5788,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5824,14 +5824,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 6,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5861,14 +5861,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5897,14 +5897,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 2.71,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5933,14 +5933,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: f64::NAN,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: f64::NAN,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -5969,14 +5969,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: -0.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 0.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6053,7 +6053,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -6080,14 +6080,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6116,14 +6116,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6152,14 +6152,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6188,14 +6188,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 3.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6322,14 +6322,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 3.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6358,14 +6358,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: 2.5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6393,7 +6393,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6423,14 +6423,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6460,14 +6460,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6497,14 +6497,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6534,14 +6534,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6570,14 +6570,14 @@ mod tests {
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6600,7 +6600,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -6627,14 +6627,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: -10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: -5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6663,14 +6663,14 @@ mod tests {
                 alloc(
                     Value::Float {
                         n: f64::NAN,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Float {
                         n: 1.0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6719,21 +6719,21 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("b".into()),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("c".into()),
             thunk(Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict_val = thunk_dict(map, &ctx);
@@ -6743,7 +6743,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6795,7 +6795,7 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict_val = thunk_dict(map, &ctx);
@@ -6805,7 +6805,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6833,7 +6833,7 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict_val = thunk_dict(map, &ctx);
@@ -6843,7 +6843,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: -5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6871,14 +6871,14 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("b".into()),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let dict_val = thunk_dict(map, &ctx);
@@ -6888,7 +6888,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 10,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6918,7 +6918,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6941,7 +6941,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -6964,7 +6964,7 @@ mod tests {
             args: vec![alloc(
                 Value::Int {
                     n: 5,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             )],
@@ -6985,7 +6985,7 @@ mod tests {
         let xs = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             &ctx,
         );
@@ -6994,7 +6994,7 @@ mod tests {
             HashableValue::Int(0),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let ys = thunk_dict(ys_map, &ctx);
@@ -7035,21 +7035,21 @@ mod tests {
             HashableValue::Int(0),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         xs_map.insert(
             HashableValue::Int(1),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let xs = thunk_dict(xs_map, &ctx);
         let ys = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             &ctx,
         );
@@ -7097,14 +7097,14 @@ mod tests {
             HashableValue::Int(0),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         xs_map.insert(
             HashableValue::Int(1),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let xs = thunk_dict(xs_map, &ctx);
@@ -7114,14 +7114,14 @@ mod tests {
             HashableValue::Int(0),
             thunk(Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         ys_map.insert(
             HashableValue::Int(1),
             thunk(Value::Int {
                 n: 4,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let ys = thunk_dict(ys_map, &ctx);
@@ -7180,7 +7180,7 @@ mod tests {
         let ctx = test_ctx();
         let xs = alloc(
             Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: Arc::from("Color.Red"),
                 payload: None,
@@ -7190,7 +7190,7 @@ mod tests {
         let ys = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             &ctx,
         );
@@ -7223,14 +7223,14 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         dict1.insert(
             HashableValue::Str("b".into()),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
 
@@ -7239,14 +7239,14 @@ mod tests {
             HashableValue::Str("c".into()),
             thunk(Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         dict2.insert(
             HashableValue::Str("d".into()),
             thunk(Value::Int {
                 n: 4,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
 
@@ -7304,7 +7304,7 @@ mod tests {
         let xs = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             &ctx,
         ); // empty dict
@@ -7313,7 +7313,7 @@ mod tests {
             HashableValue::Int(0),
             thunk(Value::Int {
                 n: 99,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let ys = thunk_dict(ys_map, &ctx);
@@ -7352,7 +7352,7 @@ mod tests {
         let handler = alloc(
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val(),
+
             },
             &ctx,
         );
@@ -7410,14 +7410,14 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7442,21 +7442,21 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7485,7 +7485,7 @@ mod tests {
             alloc(
                 Value::Int {
                     n: 42,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 &ctx,
             ),
@@ -7554,21 +7554,21 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 10,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("b".into()),
             thunk(Value::Int {
                 n: 20,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("c".into()),
             thunk(Value::Int {
                 n: 30,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let result = mat(builtin_dict_nth(BuiltinArgs {
@@ -7577,7 +7577,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7608,7 +7608,7 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 10,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let result = run(builtin_dict_nth(BuiltinArgs {
@@ -7617,7 +7617,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7643,14 +7643,14 @@ mod tests {
             HashableValue::Str("foo".into()),
             thunk(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("bar".into()),
             thunk(Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let result = mat(builtin_dict_key_nth(BuiltinArgs {
@@ -7659,7 +7659,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7682,7 +7682,7 @@ mod tests {
             HashableValue::Str("x".into()),
             thunk(Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let result = mat(builtin_dict_kv_nth(BuiltinArgs {
@@ -7691,7 +7691,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7724,7 +7724,7 @@ mod tests {
                 alloc(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     &ctx,
                 ),
@@ -7748,14 +7748,14 @@ mod tests {
             HashableValue::Str("a".into()),
             thunk(Value::Int {
                 n: 10,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         map.insert(
             HashableValue::Str("b".into()),
             thunk(Value::Int {
                 n: 20,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         let result = run(builtin_get(BuiltinArgs {

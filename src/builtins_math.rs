@@ -129,7 +129,7 @@ pub(crate) fn builtin_eq_int(
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
                 Value::Int {
                     n: if a == b { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -168,7 +168,7 @@ pub(crate) fn builtin_eq_float(
             (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => ok_val(
                 Value::Int {
                     n: if a == b { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -222,7 +222,7 @@ pub(crate) fn builtin_eq_string(
                 ok_val(
                     Value::Int {
                         n: if eq { 1 } else { 0 },
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -268,7 +268,7 @@ pub(crate) fn builtin_lt(
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
                 Value::Int {
                     n: if a < b { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -304,7 +304,7 @@ pub(crate) fn builtin_float_lt(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x < y { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -353,7 +353,7 @@ pub(crate) fn builtin_str_lt(
             ) => ok_val(
                 Value::Int {
                     n: if sa[*sta..*ea] < sb[*stb..*eb] { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -409,7 +409,7 @@ pub(crate) fn builtin_lte(
                 } else {
                     1
                 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -528,7 +528,7 @@ pub(crate) fn builtin_sqrt(
         ok_val(
             Value::Float {
                 n: val.sqrt(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -553,7 +553,7 @@ pub(crate) fn builtin_log(
         ok_val(
             Value::Float {
                 n: val.ln(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -757,7 +757,7 @@ pub(crate) fn builtin_nan_check(
         ok_val(
             Value::Int {
                 n: if val.is_nan() { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -781,7 +781,7 @@ pub(crate) fn builtin_inf_check(
         ok_val(
             Value::Int {
                 n: if val.is_infinite() { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -805,7 +805,7 @@ pub(crate) fn builtin_finite_check(
         ok_val(
             Value::Int {
                 n: if val.is_finite() { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -875,7 +875,7 @@ pub(crate) fn builtin_band(
         ok_val(
             Value::Int {
                 n: a & b,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -899,7 +899,7 @@ pub(crate) fn builtin_bor(
         ok_val(
             Value::Int {
                 n: a | b,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -923,7 +923,7 @@ pub(crate) fn builtin_bxor(
         ok_val(
             Value::Int {
                 n: a ^ b,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -959,7 +959,7 @@ pub(crate) fn builtin_shl(
             return ok_val(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -968,7 +968,7 @@ pub(crate) fn builtin_shl(
         ok_val(
             Value::Int {
                 n: value << bits,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1004,7 +1004,7 @@ pub(crate) fn builtin_shr(
             return ok_val(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -1015,7 +1015,7 @@ pub(crate) fn builtin_shr(
         ok_val(
             Value::Int {
                 n: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1049,14 +1049,14 @@ pub(crate) fn builtin_float(
             Value::Int { n, .. } => ok_val(
                 Value::Float {
                     n: n as f64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
             Value::Float { n: f, .. } => ok_val(
                 Value::Float {
                     n: f,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1099,7 +1099,7 @@ pub(crate) fn builtin_int_add(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: r,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span.clone(),
                     ))
@@ -1172,7 +1172,7 @@ pub(crate) fn builtin_int_to_float(
                 ok_val(
                     Value::Float {
                         n: n as f64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1225,7 +1225,7 @@ pub(crate) fn builtin_float_to_int(
                 ok_val(
                     Value::Int {
                         n: n.trunc() as i64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1259,7 +1259,7 @@ pub(crate) fn builtin_int_sub(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: r,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span.clone(),
                     ))
@@ -1332,7 +1332,7 @@ pub(crate) fn builtin_int_mul(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: r,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span.clone(),
                     ))
@@ -1405,7 +1405,7 @@ pub(crate) fn builtin_int_gt(
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x > y { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1440,7 +1440,7 @@ pub(crate) fn builtin_float_gt(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x > y { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1488,7 +1488,7 @@ pub(crate) fn builtin_str_gt(
             ) => ok_val(
                 Value::Int {
                     n: if sa[*sta..*ea] > sb[*stb..*eb] { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1523,7 +1523,7 @@ pub(crate) fn builtin_int_gte(
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x >= y { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1558,7 +1558,7 @@ pub(crate) fn builtin_float_gte(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x >= y { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1606,7 +1606,7 @@ pub(crate) fn builtin_str_gte(
             ) => ok_val(
                 Value::Int {
                     n: if sa[*sta..*ea] >= sb[*stb..*eb] { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1833,7 +1833,7 @@ mod tests {
                 &ctx,
                 Value::Int {
                     n: MAX_SAFE_INT,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             )],
             named: no_named(),
@@ -1858,7 +1858,7 @@ mod tests {
                 &ctx,
                 Value::Int {
                     n: MAX_SAFE_INT + 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             )],
             named: no_named(),
@@ -1885,14 +1885,14 @@ mod tests {
                     &ctx,
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                 ),
                 alloc(
                     &ctx,
                     Value::Int {
                         n: 4,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                 ),
             ],
@@ -1922,14 +1922,14 @@ mod tests {
                     &ctx,
                     Value::Int {
                         n: 6,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                 ),
                 alloc(
                     &ctx,
                     Value::Int {
                         n: 7,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                 ),
             ],

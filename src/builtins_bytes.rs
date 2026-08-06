@@ -151,7 +151,7 @@ pub(crate) fn builtin_bytes_find(
             return ok_val(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -170,7 +170,7 @@ pub(crate) fn builtin_bytes_find(
         ok_val(
             Value::Int {
                 n: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -406,7 +406,7 @@ pub(crate) fn builtin_bytes_equal(
         ok_val(
             Value::Int {
                 n: if bytes1 == bytes2 { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -492,7 +492,7 @@ pub(crate) fn builtin_ct_equal(
             return ok_val(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -503,7 +503,7 @@ pub(crate) fn builtin_ct_equal(
         ok_val(
             Value::Int {
                 n: if result.into() { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -739,7 +739,7 @@ pub(crate) fn builtin_bytes_get(
         ok_val(
             Value::Int {
                 n: byte_val,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -819,7 +819,7 @@ pub(crate) fn builtin_bytes_to_int(
         ok_val(
             Value::Int {
                 n,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -959,7 +959,7 @@ pub(crate) fn builtin_bytes_slice(
                 source,
                 start: new_start,
                 end: new_end,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )

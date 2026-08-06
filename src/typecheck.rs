@@ -493,7 +493,7 @@ fn make_typevalue_record(
     }
     let fields_dict_val = Value::Dict {
         entries: fields_entries,
-        type_val: unknown_type_val(),
+
     };
     // tail: None → closed record → RowTail.Closed variant
     let tail_val = tail
@@ -512,10 +512,10 @@ fn make_typevalue_record(
     );
     let payload_dict = Value::Dict {
         entries: payload_entries,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(Thunk::value(payload_dict, crate::rust_span!()))),

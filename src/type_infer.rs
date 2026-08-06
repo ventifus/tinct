@@ -264,7 +264,7 @@ pub fn make_typevalue_fn_with_flags(
                 Arc::new(crate::value::Thunk::value(
                     crate::value::Value::Int {
                         n: req_count as i64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     crate::rust_span!(),
                 )),
@@ -667,7 +667,7 @@ pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
         Arc::new(crate::value::Thunk::value(
             crate::value::Value::Int {
                 n: depth,
-                type_val: crate::value::unknown_type_val(),
+
             },
             crate::rust_span!(),
         )),

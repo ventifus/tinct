@@ -95,7 +95,7 @@ fn serialize_diagnostic(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
                 entries: ss,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
     }
@@ -143,7 +143,7 @@ fn serialize_diagnostic(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
                 entries: frame,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
     }
@@ -177,7 +177,7 @@ fn serialize_diagnostic(
             Some(b) => string_val(b),
             None => crate::value::Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         }),
     );
@@ -391,7 +391,7 @@ pub(crate) fn builtin_try(
                 ok_val(
                     Value::Dict {
                         entries: map,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -431,7 +431,7 @@ pub(crate) fn builtin_try(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
                             entries: ss,
-                            type_val: crate::value::unknown_type_val(),
+            
                         }),
                     );
                 }
@@ -439,7 +439,7 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("secondary-spans".into()),
                     mk(Value::Dict {
                         entries: secondary,
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -450,14 +450,14 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("notes".into()),
                     mk(Value::Dict {
                         entries: notes_dict,
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 w.insert(
                     HashableValue::Str("help".into()),
                     mk(Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 // call-stack: [{label, span}] from EvalError.stack
@@ -476,7 +476,7 @@ pub(crate) fn builtin_try(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
                             entries: fd,
-                            type_val: crate::value::unknown_type_val(),
+            
                         }),
                     );
                 }
@@ -484,7 +484,7 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("call-stack".into()),
                     mk(Value::Dict {
                         entries: stack,
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 // macro-expand: {name, span} or {}
@@ -494,12 +494,12 @@ pub(crate) fn builtin_try(
                     me.insert(HashableValue::Str("span".into()), mk_span(span));
                     Value::Dict {
                         entries: me,
-                        type_val: crate::value::unknown_type_val(),
+        
                     }
                 } else {
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     }
                 };
                 w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -507,13 +507,13 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("blame".into()),
                     mk(Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: w,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -645,7 +645,7 @@ pub(crate) fn builtin_macro_injects(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -685,7 +685,7 @@ pub(crate) fn builtin_decimal(
                     Ok(d) => ok_val(
                         Value::Decimal {
                             n: d,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span,
                     ),
@@ -699,7 +699,7 @@ pub(crate) fn builtin_decimal(
             Value::Int { n, .. } => ok_val(
                 Value::Decimal {
                     n: rust_decimal::Decimal::from(n),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -731,7 +731,7 @@ pub(crate) fn builtin_big_int(
             Value::Int { n, .. } => ok_val(
                 Value::BigInt {
                     n: num_bigint::BigInt::from(n),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -746,7 +746,7 @@ pub(crate) fn builtin_big_int(
                     Ok(n) => ok_val(
                         Value::BigInt {
                             n,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span,
                     ),
@@ -833,7 +833,7 @@ pub(crate) fn builtin_is_variant(
         ok_val(
             Value::Int {
                 n: if is_variant { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -895,7 +895,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )));
@@ -914,7 +914,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )));
@@ -940,7 +940,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )));
@@ -966,7 +966,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )));
@@ -999,7 +999,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )));
@@ -1063,7 +1063,7 @@ pub(crate) fn builtin_ast_of(
                 None => Arc::new(crate::value::Thunk::value(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )),
@@ -1097,7 +1097,7 @@ pub(crate) fn builtin_ast_of(
                     Ok(Arc::new(crate::value::Thunk::value(
                         Value::Dict {
                             entries: param_dict,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span.clone(),
                     )))
@@ -1114,7 +1114,7 @@ pub(crate) fn builtin_ast_of(
                 Arc::new(Thunk::value(
                     Value::Dict {
                         entries: params_dict,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )),
@@ -1123,7 +1123,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 Value::Dict {
                     entries: dict,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )));
@@ -1380,7 +1380,7 @@ pub(crate) fn builtin_span_of(
                                 } else {
                                     Value::Dict {
                                         entries: IndexMap::new(),
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     }
                                 };
 
@@ -1391,34 +1391,34 @@ pub(crate) fn builtin_span_of(
                                     HashableValue::Str("start-line".into()),
                                     mk(Value::Int {
                                         n: sl,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     }),
                                 );
                                 w.insert(
                                     HashableValue::Str("start-col".into()),
                                     mk(Value::Int {
                                         n: sc,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     }),
                                 );
                                 w.insert(
                                     HashableValue::Str("end-line".into()),
                                     mk(Value::Int {
                                         n: el,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     }),
                                 );
                                 w.insert(
                                     HashableValue::Str("end-col".into()),
                                     mk(Value::Int {
                                         n: ec,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     }),
                                 );
                                 return ok_val(
                                     Value::Dict {
                                         entries: w,
-                                        type_val: crate::value::unknown_type_val(),
+                        
                                     },
                                     call_span,
                                 );
@@ -1433,7 +1433,7 @@ pub(crate) fn builtin_span_of(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1604,7 +1604,7 @@ pub(crate) fn builtin_var_resolution(
             None => ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1629,13 +1629,13 @@ pub(crate) fn builtin_var_resolution(
                     HashableValue::Str("index".into()),
                     mk(Value::Int {
                         n: index_val,
-                        type_val: crate::value::unknown_type_val(),
+        
                     }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: result,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1718,7 +1718,7 @@ pub(crate) fn builtin_annotation_of(
                 ok_val(
                     Value::Dict {
                         entries,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1733,7 +1733,7 @@ pub(crate) fn builtin_annotation_of(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -2048,7 +2048,7 @@ pub(crate) fn builtin_parse(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }),
             );
         }
@@ -2073,13 +2073,13 @@ pub(crate) fn builtin_parse(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: errors_dict,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -2226,7 +2226,7 @@ pub(crate) fn builtin_resolve(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }),
             );
         }
@@ -2239,7 +2239,7 @@ pub(crate) fn builtin_resolve(
                 HashableValue::Str(name.as_str().into()),
                 mk(Value::Int {
                     n: 1,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }),
             );
         }
@@ -2255,28 +2255,28 @@ pub(crate) fn builtin_resolve(
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
                 resolver_frames: Arc::new(dispatcher_frames),
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         result_dict.insert(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: diagnostics_dict,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         result_dict.insert(
             HashableValue::Str("unreferenced".into()),
             mk(Value::Dict {
                 entries: unreferenced_dict,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         result_dict.insert(HashableValue::Str("doc-span".into()), mk_span(&doc_span));
         ok_val(
             Value::Dict {
                 entries: result_dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2407,7 +2407,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }),
             );
         }
@@ -2415,7 +2415,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
         ok_val(
             Value::Dict {
                 entries: diagnostics_dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2737,7 +2737,7 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }),
             );
         }
@@ -2748,20 +2748,20 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Document {
                 doc: doc_arc,
                 resolver_frames,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         result.insert(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: diagnostics_dict,
-                type_val: crate::value::unknown_type_val(),
+
             }),
         );
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2809,7 +2809,7 @@ pub(crate) fn builtin_get_type_context(
                 ok_val(
                     Value::TypeContext {
                         ctx: Arc::new(Mutex::new(tc_clone)),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -2887,7 +2887,7 @@ pub(crate) fn builtin_make_type_ctx(
         ok_val(
             Value::TypeContext {
                 ctx: Arc::new(Mutex::new(tc)),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2928,7 +2928,7 @@ pub(crate) fn builtin_fork_type_ctx(
                 ok_val(
                     Value::TypeContext {
                         ctx: Arc::new(Mutex::new(child_data)),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -3082,7 +3082,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         ok_val(
             Value::TypeContext {
                 ctx: tc_arc,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3171,7 +3171,7 @@ pub(crate) fn builtin_program(
             Value::Program {
                 program: std::sync::Arc::new(surface_program),
                 resolutions: std::sync::Arc::new(Default::default()),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3222,7 +3222,7 @@ pub(crate) fn builtin_desugar(
             Value::Program {
                 program: std::sync::Arc::new(desugared),
                 resolutions,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3273,7 +3273,7 @@ pub(crate) fn builtin_expand(
             Value::Program {
                 program: std::sync::Arc::new(expanded),
                 resolutions,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3327,7 +3327,7 @@ pub(crate) fn builtin_program_docs(
                 Value::Document {
                     doc: doc_arc,
                     resolver_frames: Arc::new(Vec::new()),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             ));
@@ -3336,7 +3336,7 @@ pub(crate) fn builtin_program_docs(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3401,7 +3401,7 @@ pub(crate) fn builtin_doc_expressions(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3465,7 +3465,7 @@ pub(crate) fn builtin_doc_meta(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -3510,7 +3510,7 @@ pub(crate) fn builtin_builtin_module(
                     let builtin_thunk = Arc::new(Thunk::value(
                         Value::Builtin {
                             def,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span.clone().with_name(Arc::clone(&name_arc)),
                     ));
@@ -3519,7 +3519,7 @@ pub(crate) fn builtin_builtin_module(
                 ok_val(
                     Value::Dict {
                         entries: dict_map,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -3552,7 +3552,7 @@ pub(crate) fn builtin_empty_scope(
             Value::Scope {
                 slots: Arc::new(Vec::new()),
                 names: Arc::new(IndexMap::new()),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -3639,7 +3639,7 @@ pub(crate) fn builtin_scope_extend(
             Value::Scope {
                 slots: Arc::new(new_slots),
                 names: Arc::new(new_names),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -3696,7 +3696,7 @@ pub(crate) fn builtin_scope_exports(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: dict_map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -3811,7 +3811,7 @@ pub(crate) fn builtin_eval(
             Value::Scope {
                 slots: Arc::new(final_slots),
                 names: Arc::new(result_names),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -3850,7 +3850,7 @@ pub(crate) fn builtin_variant_payload(
             Value::Variant { payload: None, .. } => ok_val(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -3894,7 +3894,7 @@ pub(crate) fn builtin_current_env(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: env_id as i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -4125,7 +4125,7 @@ pub(crate) fn builtin_eval_types(
         ok_val(
             Value::Dict {
                 entries: result_dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -4548,7 +4548,7 @@ pub(crate) fn builtin_is_contractive(
         ok_val(
             Value::Int {
                 n: if result { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -4855,7 +4855,7 @@ pub(crate) fn builtin_ast_to_program(
             Value::Program {
                 program: std::sync::Arc::new(program),
                 resolutions: Arc::new(Default::default()),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -4972,7 +4972,7 @@ pub(crate) fn builtin_cap_env_has(
         ok_val(
             Value::Int {
                 n: if found { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -5079,7 +5079,7 @@ pub(crate) fn builtin_lower(
             Value::CoreDocument {
                 entries: std::sync::Arc::new(entries),
                 span,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -5397,14 +5397,14 @@ mod tests {
             inner: Box::new(variant),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             }),
         };
         let outer_annotated = Value::Annotated {
             inner: Box::new(inner_annotated),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             }),
         };
         let ctx = test_ctx();
@@ -5456,7 +5456,7 @@ mod tests {
         let result = run(builtin_current_env(BuiltinArgs {
             args: vec![thunk_id(Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             })],
             named: no_named(),
             call_span: call_span(),
@@ -5483,11 +5483,11 @@ mod tests {
         let annotated = Value::Annotated {
             inner: Box::new(Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val(),
+
             }),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             }),
         };
         let ctx = test_ctx();

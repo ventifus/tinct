@@ -1798,7 +1798,7 @@ async fn infer_var_ref(
                             // VarDecl payload: empty dict (instantiate_scheme_tv only reads var names from keys).
                             let empty_dict = Value::Dict {
                                 entries: IndexMap::new(),
-                                type_val: crate::value::unknown_type_val(),
+                
                             };
                             vars_entries.insert(
                                 var_key,
@@ -1810,7 +1810,7 @@ async fn infer_var_ref(
                         }
                         let vars_dict = Value::Dict {
                             entries: vars_entries,
-                            type_val: crate::value::unknown_type_val(),
+            
                         };
                         let vars_thunk =
                             Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!()));
@@ -1818,7 +1818,7 @@ async fn infer_var_ref(
                         // Build constraints dict: empty (no constraints for method signatures).
                         let constraints_dict = Value::Dict {
                             entries: IndexMap::new(),
-                            type_val: crate::value::unknown_type_val(),
+            
                         };
                         let constraints_thunk = Arc::new(crate::value::Thunk::value(
                             constraints_dict,
@@ -1843,7 +1843,7 @@ async fn infer_var_ref(
                             .insert(HashableValue::Str(Arc::from(FIELD_BODY)), body_thunk);
                         let scheme_payload = Value::Dict {
                             entries: scheme_payload_entries,
-                            type_val: crate::value::unknown_type_val(),
+            
                         };
                         let scheme_payload_thunk = Arc::new(crate::value::Thunk::value(
                             scheme_payload,
@@ -1852,7 +1852,7 @@ async fn infer_var_ref(
 
                         // Build the TypeValue.Scheme variant.
                         let scheme = Arc::new(Value::Variant {
-                            type_val: crate::value::unknown_type_val(),
+            
                             type_decl_id: 0,
                             ctor: Arc::from(TV_SCHEME),
                             payload: Some(scheme_payload_thunk),

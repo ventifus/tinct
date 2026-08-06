@@ -1437,7 +1437,7 @@ pub fn string_val(s: &str) -> Value {
         source: Arc::from(s),
         start: 0,
         end: s.len(),
-        type_val: unknown_type_val(),
+
     }
 }
 
@@ -1447,7 +1447,7 @@ pub fn bytes_val(data: &[u8]) -> Value {
         source: Arc::from(data),
         start: 0,
         end: data.len(),
-        type_val: unknown_type_val(),
+
     }
 }
 
@@ -2593,7 +2593,7 @@ mod tests {
         let thunk = Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val(),
+    
             },
             span,
         );
@@ -2619,7 +2619,7 @@ mod tests {
 
         thunk.settle(Ok(Value::Int {
             n: 1,
-            type_val: unknown_type_val(),
+
         }));
 
         assert_eq!(
@@ -2658,12 +2658,12 @@ mod tests {
 
         thunk.settle(Ok(Value::Int {
             n: 1,
-            type_val: unknown_type_val(),
+
         }));
         // Second settle should be no-op (OnceCell ignores duplicate set)
         thunk.settle(Ok(Value::Int {
             n: 999,
-            type_val: unknown_type_val(),
+
         }));
 
         assert_eq!(
@@ -2717,7 +2717,7 @@ mod tests {
         // Settle with success first.
         thunk.settle(Ok(Value::Int {
             n: 42,
-            type_val: unknown_type_val(),
+
         }));
 
         // Attempt to settle with error — must be a no-op.
@@ -2818,7 +2818,7 @@ mod tests {
         let thunk = Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val(),
+    
             },
             span,
         );
@@ -3128,7 +3128,7 @@ mod groupspine_tests {
         Arc::new(Thunk::value(
             Value::Int {
                 n,
-                type_val: unknown_type_val(),
+    
             },
             crate::rust_span!(),
         ))

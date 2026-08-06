@@ -170,7 +170,7 @@ pub fn surface_node_get_field(
             if let SurfaceDeclaration::TypeAlias { params, .. } = decl.as_ref() {
                 Value::Int {
                     n: params.len() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }
             } else {
                 null()
@@ -223,7 +223,7 @@ fn surface_entries_to_list_dict(
         let key_val = entry.node.key.as_ref().map_or_else(
             || Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             |k| crate::surface_convert::surface_node_to_expr_variant(k, ctx),
         );
@@ -245,7 +245,7 @@ fn surface_entries_to_list_dict(
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 entry.span.clone(),
             ))),
@@ -287,7 +287,7 @@ fn named_args_to_list_dict(
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 na.span.clone(),
             ))),
@@ -320,7 +320,7 @@ fn params_to_list_dict(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: if p.node.variadic { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 p.span.clone(),
             )),
@@ -339,7 +339,7 @@ fn params_to_list_dict(
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 p.span.clone(),
             ))),
@@ -371,7 +371,7 @@ fn match_arms_to_list_dict(
         let guard_val = arm.guard.as_ref().map_or_else(
             || Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             |g| crate::surface_convert::surface_node_to_expr_variant(g, ctx),
         );
@@ -393,7 +393,7 @@ fn match_arms_to_list_dict(
         let thunk = Arc::new(Thunk::value(
             Value::Dict {
                 entries: arm_dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         ));
@@ -421,13 +421,13 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                 Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: "DotKey.Ident".into(),
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: payload_dict,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     span,
                 ))),
@@ -440,19 +440,19 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                 Arc::new(Thunk::value(
                     Value::Int {
                         n: *index,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     span.clone(),
                 )),
             );
             Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: "DotKey.Index".into(),
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: payload_dict,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     span,
                 ))),
@@ -546,13 +546,13 @@ fn annotation_inner_to_value(
                             )),
                         );
                         Value::Variant {
-                            type_val: crate::value::unknown_type_val(),
+            
                             type_decl_id: 0,
                             ctor: "Annotation.Annotated".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 pos_entry.span.clone(),
                             ))),
@@ -575,13 +575,13 @@ fn annotation_inner_to_value(
                             Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
                         );
                         Value::Variant {
-                            type_val: crate::value::unknown_type_val(),
+            
                             type_decl_id: 0,
                             ctor: "Annotation.Simple".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 pos_entry.span.clone(),
                             ))),
@@ -598,13 +598,13 @@ fn annotation_inner_to_value(
                             Arc::new(Thunk::value(string_val(&text), pos_entry.span.clone())),
                         );
                         Value::Variant {
-                            type_val: crate::value::unknown_type_val(),
+            
                             type_decl_id: 0,
                             ctor: "Annotation.Unknown".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 pos_entry.span.clone(),
                             ))),
@@ -621,7 +621,7 @@ fn annotation_inner_to_value(
                 Arc::new(Thunk::value(
                     Value::Dict {
                         entries: parts_map,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     span.clone(),
                 )),
@@ -696,7 +696,7 @@ fn annotation_inner_to_value(
         payload: Some(Arc::new(Thunk::value(
             Value::Dict {
                 entries: payload_map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span,
         ))),
@@ -737,7 +737,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_line as i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )),
@@ -747,7 +747,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_col as i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )),
@@ -757,7 +757,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_line as i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )),
@@ -767,7 +767,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_col as i64,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )),

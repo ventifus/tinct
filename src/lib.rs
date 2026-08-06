@@ -1310,7 +1310,7 @@ mod tests {
         let handler_thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val(),
+
             },
             test_span(1, 1, 1, 1),
         ));

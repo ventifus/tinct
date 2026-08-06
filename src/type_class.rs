@@ -89,7 +89,7 @@ fn string_value(s: &str) -> Value {
         source,
         start: 0,
         end,
-        type_val: unknown_type_val(),
+
     }
 }
 
@@ -99,7 +99,7 @@ fn single_field_dict(key: &str, value: Value) -> Value {
     entries.insert(HashableValue::Str(Arc::from(key)), settled_thunk(value));
     Value::Dict {
         entries,
-        type_val: unknown_type_val(),
+
     }
 }
 
@@ -110,7 +110,7 @@ fn two_field_dict(key1: &str, val1: Value, key2: &str, val2: Value) -> Value {
     entries.insert(HashableValue::Str(Arc::from(key2)), settled_thunk(val2));
     Value::Dict {
         entries,
-        type_val: unknown_type_val(),
+
     }
 }
 
@@ -119,7 +119,7 @@ fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
     Value::Variant {
         ctor: Arc::from(ctor),
         payload: payload.map(|p| settled_thunk(p)),
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
     }
 }
@@ -164,7 +164,7 @@ pub fn make_constraint_decl(class_tv: TypeValue, args: Vec<TypeValue>) -> TypeVa
     }
     let args_dict = Value::Dict {
         entries: args_entries,
-        type_val: unknown_type_val(),
+
     };
 
     let class_val = arc_into_value(class_tv);
@@ -836,7 +836,7 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
             Some(Arc::new(Value::Variant {
                 ctor: Arc::from(tn_ctor),
                 payload: None,
-                type_val: unknown_type_val(),
+    
                 type_decl_id: 0,
             }))
         }
@@ -848,19 +848,19 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
         Some(TV_UNKNOWN) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_UNKNOWN),
             payload: None,
-            type_val: unknown_type_val(),
+
             type_decl_id: 0,
         })),
         Some(TV_TOP) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_TOP),
             payload: None,
-            type_val: unknown_type_val(),
+
             type_decl_id: 0,
         })),
         Some(TV_NEVER) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_NEVER),
             payload: None,
-            type_val: unknown_type_val(),
+
             type_decl_id: 0,
         })),
         _ => None, // Compound types not yet converted — extend as needed.

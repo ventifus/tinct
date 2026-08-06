@@ -165,15 +165,15 @@ async fn eval_annotation_property_dict(
             }
             SurfaceExpression::Int(n) => Value::Int {
                 n: *n,
-                type_val: crate::value::unknown_type_val(),
+
             },
             SurfaceExpression::U64(n) => Value::U64 {
                 n: *n,
-                type_val: crate::value::unknown_type_val(),
+
             },
             SurfaceExpression::Float(f) => Value::Float {
                 n: *f,
-                type_val: crate::value::unknown_type_val(),
+
             },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
@@ -377,7 +377,7 @@ pub(crate) async fn eval_dict_core(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: *n,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         entry_span,
                     )),
@@ -387,7 +387,7 @@ pub(crate) async fn eval_dict_core(
                     Arc::new(Thunk::value(
                         Value::BigInt {
                             n: num_bigint::BigInt::from(*n),
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         entry_span,
                     )),
@@ -397,7 +397,7 @@ pub(crate) async fn eval_dict_core(
                     Arc::new(Thunk::value(
                         Value::Float {
                             n: *f,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         entry_span,
                     )),
@@ -513,7 +513,7 @@ pub(crate) async fn eval_dict_core(
                     Arc::new(Thunk::value(
                         Value::Dict {
                             entries: IndexMap::new(),
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         crate::rust_span!(),
                     ))

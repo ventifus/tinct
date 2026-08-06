@@ -58,7 +58,7 @@ thread_local! {
     static EMPTY_DICT_THUNK: Arc<Thunk> = Arc::new(Thunk::value(
         Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         rust_span!(),
     ));
@@ -82,7 +82,7 @@ pub(crate) async fn eval_document_exprs_with_env(
         return Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             rust_span!(),
         )));
@@ -236,7 +236,7 @@ pub(crate) async fn eval_core_document_exprs(
             Arc::new(Thunk::value(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 rust_span!(),
             )),
@@ -715,7 +715,7 @@ impl EvalContext {
                 Arc::new(Thunk::value(
                     crate::value::Value::Builtin {
                         def,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     crate::rust_span!(),
                 ))
@@ -767,7 +767,7 @@ impl EvalContext {
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             }),
             repr_registry,
             is_predicates,
@@ -812,7 +812,7 @@ impl EvalContext {
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             }),
             repr_registry,
             is_predicates,
@@ -4338,7 +4338,7 @@ mod tests {
         let handler = Arc::new(Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val(),
+    
             },
             span,
         ));
@@ -4784,7 +4784,7 @@ mod tests {
             Arc::new(Thunk::value(
                 Value::Int {
                     n: 1,
-                    type_val: unknown_type_val(),
+        
                 },
                 span.clone(),
             )),
@@ -4794,7 +4794,7 @@ mod tests {
             Arc::new(Thunk::value(
                 Value::Int {
                     n: 99,
-                    type_val: unknown_type_val(),
+        
                 },
                 span,
             )),
@@ -4971,7 +4971,7 @@ mod tests {
         let thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val(),
+    
             },
             span,
         ));
@@ -5007,7 +5007,7 @@ mod tests {
         let inner = Arc::new(Thunk::value(
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val(),
+    
             },
             span.clone(),
         ));
@@ -5520,7 +5520,7 @@ mod tests {
                 source: Arc::from("hit"),
                 start: 0,
                 end: 3,
-                type_val: crate::value::unknown_type_val(),
+
             },
             "pin pattern $x=42 should match scrutinee 42; got: {r_val:?}"
         );
@@ -5553,7 +5553,7 @@ mod tests {
                 source: Arc::from("miss"),
                 start: 0,
                 end: 4,
-                type_val: crate::value::unknown_type_val(),
+
             },
             "pin pattern $x=42 should NOT match scrutinee 99; got: {r_val:?}"
         );
@@ -5599,7 +5599,7 @@ mod tests {
                 source: Arc::from("is-color"),
                 start: 0,
                 end: 8,
-                type_val: crate::value::unknown_type_val(),
+
             },
             "Color arm (type-ctor dict) must match Color.Red; plain-dict arm must not fire; got: {r1_val:?}"
         );
@@ -5842,7 +5842,7 @@ mod tests {
         let input_thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 777,
-                type_val: unknown_type_val(),
+    
             },
             rust_span!(),
         ));

@@ -241,7 +241,7 @@ pub fn apply_typevalue_renaming(
                             // Reconstruct the Variant with the new payload dict.
                             let new_payload_dict = Value::Dict {
                                 entries: new_entries,
-                                type_val: crate::value::unknown_type_val(),
+                
                             };
                             Arc::new(Value::Variant {
                                 type_val: Arc::clone(type_val),
@@ -335,7 +335,7 @@ pub fn generalize_tv_with_meta(
                             source: Arc::from(var_name.as_str()),
                             start: 0,
                             end: var_name.len(),
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         crate::rust_span!(),
                     )),
@@ -349,11 +349,11 @@ pub fn generalize_tv_with_meta(
                 );
                 Value::Dict {
                     entries: d,
-                    type_val: crate::value::unknown_type_val(),
+    
                 }
             };
             let var_decl = Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: Arc::from(TV_VAR_DECL),
                 payload: Some(Arc::new(crate::value::Thunk::value(
@@ -389,7 +389,7 @@ pub fn generalize_tv_with_meta(
                 Some(tv) => tv.as_ref().clone(),
                 None => Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             };
             narrowing_entries.insert(
@@ -438,7 +438,7 @@ pub fn generalize_tv_with_meta(
                 source: Arc::from(doc_str),
                 start: 0,
                 end: doc_str.len(),
-                type_val: crate::value::unknown_type_val(),
+
             };
             entries.insert(
                 HashableValue::Str(Arc::from(FIELD_DOC)),
@@ -566,7 +566,7 @@ mod typevalue_scheme_tests {
                             source: Arc::from("a"),
                             start: 0,
                             end: 1,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         crate::rust_span!(),
                     )),

@@ -123,7 +123,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
             }
             Value::Dict {
                 entries: map,
-                type_val: crate::value::unknown_type_val(),
+
             }
         }
         HashableValue::Variant { tag, payload } => {
@@ -133,7 +133,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
                 Arc::new(Thunk::value(val, rust_span!()))
             });
             Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: tag.clone(),
                 payload: payload_thunk,
@@ -188,7 +188,7 @@ pub(crate) fn builtin_keys(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -231,7 +231,7 @@ pub(crate) fn builtin_length(
                 ok_val(
                     Value::Int {
                         n: len_i64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -247,7 +247,7 @@ pub(crate) fn builtin_length(
                 ok_val(
                     Value::Int {
                         n: len_i64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -264,7 +264,7 @@ pub(crate) fn builtin_length(
                 ok_val(
                     Value::Int {
                         n: map.len() as i64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -378,7 +378,7 @@ pub(crate) fn builtin_has_key(
         ok_val(
             Value::Int {
                 n: exists,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -435,7 +435,7 @@ pub(crate) fn builtin_dict_has_nth(
                 return ok_val(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 );
@@ -445,7 +445,7 @@ pub(crate) fn builtin_dict_has_nth(
         ok_val(
             Value::Int {
                 n: exists,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -561,7 +561,7 @@ pub(crate) fn builtin_dict_has_key_nth(
                 return ok_val(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 );
@@ -571,7 +571,7 @@ pub(crate) fn builtin_dict_has_key_nth(
         ok_val(
             Value::Int {
                 n: exists,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -689,7 +689,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
                 return ok_val(
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 );
@@ -699,7 +699,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
         ok_val(
             Value::Int {
                 n: exists,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -758,7 +758,7 @@ pub(crate) fn builtin_dict_kv_nth(
                 ok_val(
                     Value::Dict {
                         entries: kv,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -941,7 +941,7 @@ pub(crate) fn builtin_build_dict(
                 ok_val(
                     Value::Dict {
                         entries: result,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1213,7 +1213,7 @@ pub(crate) fn builtin_builder_finish(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1263,7 +1263,7 @@ pub(crate) fn builtin_builder_snapshot(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1342,7 +1342,7 @@ pub(crate) fn builtin_builder_has(
         ok_val(
             Value::Int {
                 n: if has { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1661,7 +1661,7 @@ pub(crate) fn builtin_dict_merge(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1713,7 +1713,7 @@ pub(crate) fn builtin_take(
             return ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -1731,7 +1731,7 @@ pub(crate) fn builtin_take(
                 ok_val(
                     Value::Dict {
                         entries: taken,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1801,7 +1801,7 @@ pub(crate) fn builtin_drop(
                 ok_val(
                     Value::Dict {
                         entries: dropped,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1885,7 +1885,7 @@ pub(crate) fn builtin_concat(
                         ok_val(
                             Value::Dict {
                                 entries: result,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )

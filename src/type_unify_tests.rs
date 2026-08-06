@@ -71,7 +71,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     }
     let params_dict = Value::Dict {
         entries: params_entries,
-        type_val: unknown_type_val(),
+
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -87,10 +87,10 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: pe,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_FN),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -112,7 +112,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     }
     let fields_dict = Value::Dict {
         entries: field_entries,
-        type_val: unknown_type_val(),
+
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -124,17 +124,17 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: unknown_type_val(),
+    
             },
             crate::rust_span!(),
         )),
     );
     let payload = Value::Dict {
         entries: pe,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -156,7 +156,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     }
     let fields_dict = Value::Dict {
         entries: field_entries,
-        type_val: unknown_type_val(),
+
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -172,10 +172,10 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     );
     let payload = Value::Dict {
         entries: pe,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -197,7 +197,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let members_dict = Value::Dict {
         entries,
-        type_val: unknown_type_val(),
+
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -206,10 +206,10 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: pe,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -3448,10 +3448,10 @@ fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Ar
     }
     let payload = Value::Dict {
         entries,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(RT_UNIFORM),
         payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),

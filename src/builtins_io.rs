@@ -136,7 +136,7 @@ pub(crate) fn builtin_emit(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -230,7 +230,7 @@ pub(crate) fn builtin_env_has(
             return ok_val(
                 Value::Int {
                     n: 0,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -241,7 +241,7 @@ pub(crate) fn builtin_env_has(
         ok_val(
             Value::Int {
                 n: if present { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -308,7 +308,7 @@ pub(crate) fn builtin_narrow(
                 Value::DirCap {
                     dir: narrowed,
                     perms: perms.clone(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )
@@ -466,7 +466,7 @@ pub(crate) fn builtin_narrow(
                 Value::DirCap {
                     dir: dir.try_clone().expect("dir try_clone"),
                     perms: narrowed_perms,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )
@@ -539,7 +539,7 @@ pub(crate) fn builtin_revocable(
                 inner: dir,
                 perms,
                 revoked,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -576,7 +576,7 @@ pub(crate) fn builtin_revoke_cap(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -659,7 +659,7 @@ pub(crate) fn builtin_write(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -777,7 +777,7 @@ pub(crate) fn builtin_write_atomic(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -904,7 +904,7 @@ pub(crate) fn builtin_list_dir(
                 ok_val(
                     Value::Int {
                         n: metadata.len() as i64,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )?,
@@ -915,7 +915,7 @@ pub(crate) fn builtin_list_dir(
                     ok_val(
                         Value::Int {
                             n: mtime_secs,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span.clone(),
                     )?,
@@ -924,7 +924,7 @@ pub(crate) fn builtin_list_dir(
 
             entry_values.push(Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             });
         }
 
@@ -939,7 +939,7 @@ pub(crate) fn builtin_list_dir(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1046,7 +1046,7 @@ pub(crate) fn builtin_stat(
             ok_val(
                 Value::Int {
                     n: metadata.len() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1057,7 +1057,7 @@ pub(crate) fn builtin_stat(
                 ok_val(
                     Value::Int {
                         n: mtime_secs,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )?,
@@ -1068,7 +1068,7 @@ pub(crate) fn builtin_stat(
             ok_val(
                 Value::Int {
                     n: mode,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1078,7 +1078,7 @@ pub(crate) fn builtin_stat(
             ok_val(
                 Value::Int {
                     n: if metadata.is_dir() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1088,7 +1088,7 @@ pub(crate) fn builtin_stat(
             ok_val(
                 Value::Int {
                     n: if metadata.is_file() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1098,7 +1098,7 @@ pub(crate) fn builtin_stat(
             ok_val(
                 Value::Int {
                     n: if metadata.is_symlink() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1107,7 +1107,7 @@ pub(crate) fn builtin_stat(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1163,7 +1163,7 @@ pub(crate) fn builtin_exists(
         ok_val(
             Value::Int {
                 n: if exists { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1275,7 +1275,7 @@ pub(crate) fn builtin_stat_symlink(
             ok_val(
                 Value::Int {
                     n: metadata.len() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1286,7 +1286,7 @@ pub(crate) fn builtin_stat_symlink(
                 ok_val(
                     Value::Int {
                         n: mtime_secs,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )?,
@@ -1297,7 +1297,7 @@ pub(crate) fn builtin_stat_symlink(
             ok_val(
                 Value::Int {
                     n: mode,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1307,7 +1307,7 @@ pub(crate) fn builtin_stat_symlink(
             ok_val(
                 Value::Int {
                     n: if metadata.is_dir() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1317,7 +1317,7 @@ pub(crate) fn builtin_stat_symlink(
             ok_val(
                 Value::Int {
                     n: if metadata.is_file() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1327,7 +1327,7 @@ pub(crate) fn builtin_stat_symlink(
             ok_val(
                 Value::Int {
                     n: if metadata.is_symlink() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -1336,7 +1336,7 @@ pub(crate) fn builtin_stat_symlink(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1410,7 +1410,7 @@ pub(crate) fn builtin_copy_file(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1512,7 +1512,7 @@ pub(crate) fn builtin_symlink(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1611,7 +1611,7 @@ pub(crate) fn builtin_set_permissions(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1683,7 +1683,7 @@ pub(crate) fn builtin_get_xattr(
                         source: Arc::from(value.as_slice()),
                         start: 0,
                         end: len,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1693,7 +1693,7 @@ pub(crate) fn builtin_get_xattr(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1819,7 +1819,7 @@ pub(crate) fn builtin_set_xattr(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1908,7 +1908,7 @@ pub(crate) fn builtin_remove_xattr(
             Ok(()) => ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -1917,7 +1917,7 @@ pub(crate) fn builtin_remove_xattr(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -2026,7 +2026,7 @@ pub(crate) fn builtin_list_xattrs(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2095,7 +2095,7 @@ pub(crate) fn builtin_make_dir(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2156,7 +2156,7 @@ pub(crate) fn builtin_remove(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2217,7 +2217,7 @@ pub(crate) fn builtin_rename(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2275,7 +2275,7 @@ pub(crate) fn builtin_link(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2504,7 +2504,7 @@ pub(crate) fn builtin_file_open(
         ok_val(
             Value::File {
                 inner: Arc::new(Mutex::new(file)),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2596,7 +2596,7 @@ pub(crate) fn builtin_file_read(
                 source: Arc::from(buf),
                 start: 0,
                 end: len,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2707,7 +2707,7 @@ pub(crate) fn builtin_file_flush(
         ok_val(
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2745,7 +2745,7 @@ pub(crate) fn builtin_file_close(
                 ok_val(
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -2835,7 +2835,7 @@ pub(crate) fn builtin_file_seek(
         ok_val(
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2977,7 +2977,7 @@ pub(crate) fn builtin_read_stdin(
                 source: Arc::from(buf),
                 start: 0,
                 end: len,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )

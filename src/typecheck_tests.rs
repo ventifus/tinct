@@ -116,7 +116,7 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let members_dict = Value::Dict {
         entries,
-        type_val: unknown_type_val(),
+
     };
     let mut payload_entries = indexmap::IndexMap::new();
     payload_entries.insert(
@@ -125,10 +125,10 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: payload_entries,
-        type_val: unknown_type_val(),
+
     };
     Arc::new(Value::Variant {
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -714,7 +714,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         );
         let members = Value::Dict {
             entries,
-            type_val: unknown_type_val(),
+
         };
         let mut pe = indexmap::IndexMap::new();
         pe.insert(
@@ -723,10 +723,10 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         );
         let payload = Value::Dict {
             entries: pe,
-            type_val: unknown_type_val(),
+
         };
         Arc::new(Value::Variant {
-            type_val: unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_INTER),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
@@ -776,10 +776,10 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
         );
         let payload = Value::Dict {
             entries: pe,
-            type_val: unknown_type_val(),
+
         };
         Arc::new(Value::Variant {
-            type_val: unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_RECURSIVE),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
@@ -1299,7 +1299,7 @@ async fn test_typenode_float_literal_arm_conversion() {
     // payload = { "value": Value::Float { n: 2.718 } }
     let float_val = Value::Float {
         n: 2.718_f64,
-        type_val: unknown_type_val(),
+
     };
     let payload_dict = Value::Dict {
         entries: {
@@ -1310,7 +1310,7 @@ async fn test_typenode_float_literal_arm_conversion() {
             );
             m
         },
-        type_val: unknown_type_val(),
+
     };
     let typenode_float_literal = Value::Variant {
         ctor: Arc::from("TypeNode.FloatLiteral"),
@@ -1318,7 +1318,7 @@ async fn test_typenode_float_literal_arm_conversion() {
             payload_dict,
             crate::rust_span!(),
         ))),
-        type_val: unknown_type_val(),
+
         type_decl_id: 0,
     };
 

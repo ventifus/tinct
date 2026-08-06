@@ -876,7 +876,7 @@ pub(crate) async fn bind_args_thunks(
             param_slots[slot] = Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: dict,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )));
@@ -889,7 +889,7 @@ pub(crate) async fn bind_args_thunks(
             let rest_thunk = Arc::new(Thunk::value(
                 Value::Dict {
                     entries: rest_dict,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             ));

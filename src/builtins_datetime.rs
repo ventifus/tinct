@@ -55,7 +55,7 @@ pub fn builtin_parse_timestamp(
         Ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -122,7 +122,7 @@ pub fn builtin_timestamp_to_unix(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: seconds,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -162,7 +162,7 @@ pub fn builtin_unix_to_timestamp(
         Ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -200,7 +200,7 @@ pub fn builtin_now(
         Ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -233,7 +233,7 @@ pub fn builtin_fixed_clock(
         Ok(Arc::new(Thunk::value(
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -290,7 +290,7 @@ pub fn builtin_timestamp_add(
         Ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts: result_ts,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -340,7 +340,7 @@ pub fn builtin_timestamp_diff(
         Ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos: result,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -386,7 +386,7 @@ pub fn builtin_timestamp_lt(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 < t2 { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -432,7 +432,7 @@ pub fn builtin_timestamp_gt(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 > t2 { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -478,7 +478,7 @@ pub fn builtin_timestamp_eq(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 == t2 { 1 } else { 0 },
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -515,7 +515,7 @@ pub fn builtin_timestamp_year(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: year,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -552,7 +552,7 @@ pub fn builtin_timestamp_month(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: month,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -589,7 +589,7 @@ pub fn builtin_timestamp_day(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: day,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -626,7 +626,7 @@ pub fn builtin_timestamp_hour(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: hour,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -663,7 +663,7 @@ pub fn builtin_timestamp_minute(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: minute,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -700,7 +700,7 @@ pub fn builtin_timestamp_second(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: second,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -739,7 +739,7 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.year() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -749,7 +749,7 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.month() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -759,7 +759,7 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.day() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -769,7 +769,7 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.hour() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -779,7 +779,7 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.minute() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -789,7 +789,7 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.second() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -798,7 +798,7 @@ pub fn builtin_timestamp_parts(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -827,7 +827,7 @@ pub fn builtin_duration_nanos(
         Ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -867,7 +867,7 @@ pub fn builtin_timestamp_nanos(
         Ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -905,7 +905,7 @@ pub fn builtin_duration_seconds(
         Ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -944,7 +944,7 @@ pub fn builtin_duration_minutes(
         Ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -978,7 +978,7 @@ pub fn builtin_duration_hours(
         Ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -1012,7 +1012,7 @@ pub fn builtin_duration_days(
         Ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -1048,7 +1048,7 @@ pub fn builtin_duration_to_seconds(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: seconds,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -1082,7 +1082,7 @@ pub fn builtin_duration_to_nanos(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: nanos,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -1149,7 +1149,7 @@ pub fn builtin_load_tz(
         Ok(Arc::new(Thunk::value(
             Value::Timezone {
                 tz: Arc::new(tz),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -1200,7 +1200,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.year() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1210,7 +1210,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.month() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1220,7 +1220,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.day() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1230,7 +1230,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.hour() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1240,7 +1240,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.minute() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1250,7 +1250,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.second() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1260,7 +1260,7 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.offset().seconds() as i64,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )),
@@ -1276,7 +1276,7 @@ pub fn builtin_timestamp_in_tz(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))
@@ -1389,7 +1389,7 @@ pub fn builtin_local_to_timestamp(
         Ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )))

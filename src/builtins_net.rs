@@ -651,7 +651,7 @@ pub(crate) fn builtin_quic_session(
         ok_val(
             Value::QuicSession {
                 conn: Arc::new(connection),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -729,7 +729,7 @@ pub(crate) fn builtin_quic_open_datagram(
         ok_val(
             Value::QuicDatagramHandle {
                 conn,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -828,7 +828,7 @@ pub(crate) fn builtin_http2_session(
             Value::Http2Session {
                 client: Arc::new(client),
                 base_url,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -973,7 +973,7 @@ pub(crate) fn builtin_http3_session(
                     send_request,
                     _driver: driver_handle,
                 })),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1203,7 +1203,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
         ok_val(
             Value::Int {
                 n: status,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )?,
@@ -1213,7 +1213,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
         ok_val(
             Value::Dict {
                 entries: headers_map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )?,
@@ -1369,7 +1369,7 @@ fn http_request_h3(
         ok_val(
             Value::Int {
                 n: status,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )?,
@@ -1379,7 +1379,7 @@ fn http_request_h3(
         ok_val(
             Value::Dict {
                 entries: headers_map,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )?,
@@ -1707,7 +1707,7 @@ fn icmp_ping_impl(
         ok_val(
             Value::Int {
                 n: latency_ms,
-                type_val: crate::value::unknown_type_val(),
+
             },
             span.clone(),
         )?,
@@ -1815,7 +1815,7 @@ pub(crate) fn builtin_send_datagram(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -1866,7 +1866,7 @@ pub(crate) fn builtin_recv_datagram(
                 source: Arc::from(buf.as_slice()),
                 start: 0,
                 end: data_len,
-                type_val: crate::value::unknown_type_val(),
+
             };
             let mut dict = IndexMap::new();
             dict.insert(
@@ -1876,7 +1876,7 @@ pub(crate) fn builtin_recv_datagram(
             ok_val(
                 Value::Dict {
                     entries: dict,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )
@@ -1953,7 +1953,7 @@ pub(crate) fn builtin_uri(
             let username = if parsed.username().is_empty() {
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 }
             } else {
                 string_val(parsed.username())
@@ -1968,7 +1968,7 @@ pub(crate) fn builtin_uri(
                 Some(pw) => string_val(pw),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             };
             dict.insert(
@@ -1981,7 +1981,7 @@ pub(crate) fn builtin_uri(
                 Some(h) => string_val(h),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             };
             dict.insert(
@@ -1993,11 +1993,11 @@ pub(crate) fn builtin_uri(
             let port = match parsed.port() {
                 Some(p) => Value::Int {
                     n: i64::from(p),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             };
             dict.insert(
@@ -2016,7 +2016,7 @@ pub(crate) fn builtin_uri(
                 Some(q) => string_val(q),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             };
             dict.insert(
@@ -2029,7 +2029,7 @@ pub(crate) fn builtin_uri(
                 Some(f) => string_val(f),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
             };
             dict.insert(
@@ -2040,7 +2040,7 @@ pub(crate) fn builtin_uri(
             return ok_val(
                 Value::Dict {
                     entries: dict,
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             );
@@ -2073,7 +2073,7 @@ pub(crate) fn builtin_uri(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )?,
@@ -2095,7 +2095,7 @@ pub(crate) fn builtin_uri(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span.clone(),
                 )?,
@@ -2105,7 +2105,7 @@ pub(crate) fn builtin_uri(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2165,7 +2165,7 @@ pub(crate) fn builtin_url(
         let username = if parsed.username().is_empty() {
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             }
         } else {
             string_val(parsed.username())
@@ -2180,7 +2180,7 @@ pub(crate) fn builtin_url(
             Some(pw) => string_val(pw),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         };
         dict.insert(
@@ -2205,7 +2205,7 @@ pub(crate) fn builtin_url(
             ok_val(
                 Value::Int {
                     n: i64::from(port),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span.clone(),
             )?,
@@ -2227,7 +2227,7 @@ pub(crate) fn builtin_url(
             Some(q) => string_val(q),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         };
         dict.insert(
@@ -2240,7 +2240,7 @@ pub(crate) fn builtin_url(
             Some(f) => string_val(f),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         };
         dict.insert(
@@ -2251,7 +2251,7 @@ pub(crate) fn builtin_url(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2353,7 +2353,7 @@ pub(crate) fn builtin_urn(
             Some(r) => string_val(r),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         };
         dict.insert(
@@ -2366,7 +2366,7 @@ pub(crate) fn builtin_urn(
             Some(q) => string_val(q),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         };
         dict.insert(
@@ -2379,7 +2379,7 @@ pub(crate) fn builtin_urn(
             Some(f) => string_val(f),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
         };
         dict.insert(
@@ -2390,7 +2390,7 @@ pub(crate) fn builtin_urn(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )

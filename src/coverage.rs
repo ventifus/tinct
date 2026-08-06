@@ -1399,7 +1399,7 @@ mod tests {
             Arc::new(Thunk::value(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 crate::rust_span!(),
             )),

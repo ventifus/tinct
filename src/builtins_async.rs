@@ -220,7 +220,7 @@ pub(crate) fn builtin_task(
                 state: Arc::new(tokio::sync::Mutex::new(crate::value::TaskState::Pending(
                     handle,
                 ))),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -269,7 +269,7 @@ pub(crate) fn builtin_await(
                     &mut *guard,
                     crate::value::TaskState::Done(Ok(Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
@@ -350,7 +350,7 @@ pub(crate) fn builtin_channel(
                 ok_val(
                     Value::Channel {
                         inner: Arc::new(channel_inner),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -415,7 +415,7 @@ pub(crate) fn builtin_send(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -439,7 +439,7 @@ pub(crate) fn builtin_send(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -472,7 +472,7 @@ pub(crate) fn builtin_send(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -533,7 +533,7 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                type_val: crate::value::unknown_type_val(),
+                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -569,13 +569,13 @@ pub(crate) fn builtin_recv(
                         let count_thunk = Arc::new(Thunk::value(
                             Value::Int {
                                 n: n as i64,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span.clone(),
                         ));
                         ok_val(
                             Value::Variant {
-                                type_val: crate::value::unknown_type_val(),
+                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Lagged.Lagged"),
                                 payload: Some(count_thunk),
@@ -587,7 +587,7 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                type_val: crate::value::unknown_type_val(),
+                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -632,7 +632,7 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                                type_val: crate::value::unknown_type_val(),
+                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -703,7 +703,7 @@ pub(crate) fn builtin_broadcast_channel(
                 ok_val(
                     Value::BroadcastChannel {
                         inner: Arc::new(channel_inner),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -764,14 +764,14 @@ pub(crate) fn builtin_oneshot_channel(
         let sender_thunk = Arc::new(Thunk::value(
             Value::OneshotSender {
                 inner: Arc::new(sender_inner),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span.clone(),
         ));
         let receiver_thunk = Arc::new(Thunk::value(
             Value::OneshotReceiver {
                 inner: Arc::new(receiver_inner),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span.clone(),
         ));
@@ -781,7 +781,7 @@ pub(crate) fn builtin_oneshot_channel(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -824,7 +824,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Dict {
                                 entries: IndexMap::new(),
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -833,7 +833,7 @@ pub(crate) fn builtin_try_send(
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                                type_val: crate::value::unknown_type_val(),
+                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Full.Full"),
                                 payload: None,
@@ -845,7 +845,7 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                                type_val: crate::value::unknown_type_val(),
+                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -894,7 +894,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -902,7 +902,7 @@ pub(crate) fn builtin_try_recv(
                         return ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         );
@@ -919,7 +919,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -931,7 +931,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -939,7 +939,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -951,7 +951,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -959,7 +959,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1012,7 +1012,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1024,7 +1024,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -1032,7 +1032,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1045,7 +1045,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -1053,7 +1053,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1065,7 +1065,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -1073,7 +1073,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1128,7 +1128,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -1136,7 +1136,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         return ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         );
@@ -1151,7 +1151,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         Arc::new(Thunk::value(
                             Value::Dict {
                                 entries: IndexMap::new(),
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span.clone(),
                         )),
@@ -1159,7 +1159,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                     return ok_val(
                         Value::Dict {
                             entries: map,
-                            type_val: crate::value::unknown_type_val(),
+            
                         },
                         call_span,
                     );
@@ -1177,7 +1177,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1191,7 +1191,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -1199,7 +1199,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1212,7 +1212,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                 },
                                 call_span.clone(),
                             )),
@@ -1220,7 +1220,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_val: crate::value::unknown_type_val(),
+                
                             },
                             call_span,
                         )
@@ -1269,7 +1269,7 @@ pub(crate) fn builtin_yield(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1406,7 +1406,7 @@ pub(crate) fn builtin_signal_channel(
                                     break;
                                 }
                                 match tx_clone.try_send(Value::Variant {
-                                    type_val: crate::value::unknown_type_val(),
+                    
                                     type_decl_id: 0,
                                     ctor: Arc::from(sig_name.as_str()),
                                     payload: None,
@@ -1436,7 +1436,7 @@ pub(crate) fn builtin_signal_channel(
             ok_val(
                 Value::Channel {
                     inner: Arc::new(channel_inner),
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             )
@@ -1556,7 +1556,7 @@ pub(crate) fn builtin_timer_channel(
                         // Full is expected (last-tick-wins, capacity=1); Closed means consumer dropped.
                         match tx_clone.try_send(Value::Timestamp {
                             ts: now_ts,
-                            type_val: crate::value::unknown_type_val(),
+            
                         }) {
                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -1580,7 +1580,7 @@ pub(crate) fn builtin_timer_channel(
         ok_val(
             Value::Channel {
                 inner: Arc::new(channel_inner),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1729,7 +1729,7 @@ pub(crate) fn builtin_watch_channel(
                                             // Full is expected (last-write-wins, capacity=1); Closed means consumer dropped.
                                             match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                                type_val: crate::value::unknown_type_val(),
+                                
                                             }) {
                                                 Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1740,7 +1740,7 @@ pub(crate) fn builtin_watch_channel(
                                         // File appeared — treat as a change
                                         match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                                type_val: crate::value::unknown_type_val(),
+                                
                                             }) {
                                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1754,7 +1754,7 @@ pub(crate) fn builtin_watch_channel(
                                 if last_modified.is_some() {
                                     match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                                type_val: crate::value::unknown_type_val(),
+                                
                                             }) {
                                         Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1789,7 +1789,7 @@ pub(crate) fn builtin_watch_channel(
         ok_val(
             Value::Channel {
                 inner: Arc::new(channel_inner),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1839,7 +1839,7 @@ pub(crate) fn builtin_context(
         ok_val(
             Value::Context {
                 token,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -1918,14 +1918,14 @@ pub(crate) fn builtin_with_cancel(
         let payload_thunk = Arc::new(Thunk::value(
             Value::Dict {
                 entries: payload_dict,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span.clone(),
         ));
 
         ok_val(
             Value::Variant {
-                type_val: crate::value::unknown_type_val(),
+
                 type_decl_id: 0,
                 ctor: Arc::from("CancelHandle.CancelHandle"),
                 payload: Some(payload_thunk),
@@ -2023,7 +2023,7 @@ pub(crate) fn builtin_with_timeout(
         ok_val(
             Value::Context {
                 token: child_token,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2129,7 +2129,7 @@ pub(crate) fn builtin_with_deadline(
         ok_val(
             Value::Context {
                 token: child_token,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2163,7 +2163,7 @@ pub(crate) fn builtin_cancelled_q(
             Value::Context { token, .. } => ok_val(
                 Value::Int {
                     n: if token.is_cancelled() { 1 } else { 0 },
-                    type_val: crate::value::unknown_type_val(),
+    
                 },
                 call_span,
             ),
@@ -2206,7 +2206,7 @@ pub(crate) fn builtin_cancel_task(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
@@ -2261,7 +2261,7 @@ pub(crate) fn builtin_cancel_root(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2347,7 +2347,7 @@ pub(crate) fn builtin_drain(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2444,7 +2444,7 @@ pub(crate) fn builtin_non_cancellable(
         ok_val(
             Value::Context {
                 token,
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2559,7 +2559,7 @@ pub(crate) fn builtin_reactive_cell(
         ok_val(
             Value::ReactiveCell {
                 inner: Arc::new(cell_inner),
-                type_val: crate::value::unknown_type_val(),
+
             },
             call_span,
         )
@@ -2649,7 +2649,7 @@ pub(crate) fn builtin_cell_set(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_val: crate::value::unknown_type_val(),
+        
                     },
                     call_span,
                 )
