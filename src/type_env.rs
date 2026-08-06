@@ -368,7 +368,7 @@ pub fn generalize_tv_with_meta(
         }
         Value::Dict {
             entries,
-            type_val: crate::value::unknown_type_val(),
+
         }
     };
 
@@ -399,7 +399,7 @@ pub fn generalize_tv_with_meta(
         }
         Some(Value::Dict {
             entries: narrowing_entries,
-            type_val: crate::value::unknown_type_val(),
+
         })
     };
 
@@ -447,7 +447,7 @@ pub fn generalize_tv_with_meta(
         }
         Value::Dict {
             entries,
-            type_val: crate::value::unknown_type_val(),
+
         }
     };
 
@@ -580,10 +580,10 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-            type_val: crate::value::unknown_type_val(),
+
         };
         let var_decl = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_VAR_DECL),
             payload: Some(Arc::new(crate::value::Thunk::value(
@@ -601,11 +601,11 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-            type_val: crate::value::unknown_type_val(),
+
         };
         let constraints_dict = Value::Dict {
             entries: indexmap::IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         };
         let body_var = make_typevar_value("a"); // body is TypeValue.Var{name:"a"}
 
@@ -632,11 +632,11 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-            type_val: crate::value::unknown_type_val(),
+
         };
 
         let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_SCHEME),
             payload: Some(Arc::new(crate::value::Thunk::value(

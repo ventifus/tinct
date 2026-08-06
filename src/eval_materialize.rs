@@ -547,34 +547,34 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
         HashableValue::Str("start-line".into()),
         mk(Value::Int {
             n: span.start_line as i64,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
     w.insert(
         HashableValue::Str("start-col".into()),
         mk(Value::Int {
             n: span.start_col as i64,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
     w.insert(
         HashableValue::Str("end-line".into()),
         mk(Value::Int {
             n: span.end_line as i64,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
     w.insert(
         HashableValue::Str("end-col".into()),
         mk(Value::Int {
             n: span.end_col as i64,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
     Arc::new(Thunk::value(
         Value::Dict {
             entries: w,
-            type_val: crate::value::unknown_type_val(),
+
         },
         call_span.clone(),
     ))

@@ -1228,7 +1228,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     ok_val(
         Value::Dict {
             entries: inner,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )
@@ -1394,7 +1394,7 @@ fn http_request_h3(
     ok_val(
         Value::Dict {
             entries: inner,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )
@@ -1715,7 +1715,7 @@ fn icmp_ping_impl(
     ok_val(
         Value::Dict {
             entries: result,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )

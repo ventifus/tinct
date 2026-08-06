@@ -1387,7 +1387,7 @@ mod tests {
         }
         let fields_dict = Value::Dict {
             entries: field_entries,
-            type_val: crate::value::unknown_type_val(),
+
         };
         let mut payload_entries = indexmap::IndexMap::new();
         payload_entries.insert(
@@ -1406,10 +1406,10 @@ mod tests {
         );
         let payload = Value::Dict {
             entries: payload_entries,
-            type_val: crate::value::unknown_type_val(),
+
         };
         Arc::new(Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(crate::value::Thunk::value(
@@ -1465,7 +1465,7 @@ mod tests {
         // TypeValue.Fn types cannot be expressed as a finite constructor set.
         // from_union must return None rather than a partial (unsound) signature.
         let fn_tv = Arc::new(Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_FN),
             payload: None,

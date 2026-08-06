@@ -1781,7 +1781,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         "a".to_string(),
         Arc::new(Value::Dict {
             entries: IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         }),
     )];
 

@@ -103,7 +103,7 @@ fn serialize_diagnostic(
         HashableValue::Str("secondary-spans".into()),
         mk(crate::value::Value::Dict {
             entries: secondary,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
 
@@ -116,7 +116,7 @@ fn serialize_diagnostic(
         HashableValue::Str("notes".into()),
         mk(crate::value::Value::Dict {
             entries: notes_dict,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
 
@@ -129,7 +129,7 @@ fn serialize_diagnostic(
         HashableValue::Str("help".into()),
         mk(crate::value::Value::Dict {
             entries: help_dict,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
 
@@ -151,7 +151,7 @@ fn serialize_diagnostic(
         HashableValue::Str("call-stack".into()),
         mk(crate::value::Value::Dict {
             entries: call_stack_dict,
-            type_val: crate::value::unknown_type_val(),
+
         }),
     );
 
@@ -160,12 +160,12 @@ fn serialize_diagnostic(
         let inner_entries = serialize_diagnostic(inner, call_span);
         crate::value::Value::Dict {
             entries: inner_entries,
-            type_val: crate::value::unknown_type_val(),
+
         }
     } else {
         crate::value::Value::Dict {
             entries: IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         }
     };
     w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -2063,7 +2063,7 @@ pub(crate) fn builtin_parse(
         let program_value = Value::Program {
             program: std::sync::Arc::new(surface_program),
             resolutions: std::sync::Arc::new(Default::default()),
-            type_val: crate::value::unknown_type_val(),
+
         };
 
         // Return {program: Value::Program, diagnostics: integer-keyed Dict of diagnostic dicts}.
@@ -5330,7 +5330,7 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
@@ -5355,14 +5355,14 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("SimpleType.Leaf"),
             payload: None,
         };
         let annotation = Value::Dict {
             entries: IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         };
         let annotated = Value::Annotated {
             inner: Box::new(variant),
@@ -5388,7 +5388,7 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,

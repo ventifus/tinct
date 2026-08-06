@@ -602,7 +602,7 @@ pub(crate) async fn eval_dict_core(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict_map,
-            type_val: crate::value::unknown_type_val(),
+
         },
         dict_span.clone(),
     )))

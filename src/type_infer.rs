@@ -77,7 +77,7 @@ pub fn make_typevalue_nominal(id: u64) -> TypeValue {
         FIELD_ID,
         crate::value::Value::U64 {
             n: id,
-            type_val: crate::value::unknown_type_val(),
+
         },
     )]);
     Arc::new(crate::value::Value::Variant {
@@ -121,7 +121,7 @@ pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
         FIELD_VALUE,
         crate::value::Value::Int {
             n,
-            type_val: crate::value::unknown_type_val(),
+
         },
     )]);
     Arc::new(crate::value::Value::Variant {
@@ -155,7 +155,7 @@ pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
         FIELD_VALUE,
         crate::value::Value::Float {
             n: f,
-            type_val: crate::value::unknown_type_val(),
+
         },
     )]);
     Arc::new(crate::value::Value::Variant {
@@ -274,7 +274,7 @@ pub fn make_typevalue_fn_with_flags(
     if variadic {
         // Store "variadic: true" as a unit Variant with ctor BOOL_TRUE ("true").
         let true_variant = crate::value::Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(BOOL_TRUE),
             payload: None,
@@ -310,7 +310,7 @@ pub fn make_typevalue_fn_with_flags(
         }
         let tv_dict = crate::value::Value::Dict {
             entries: tv_entries,
-            type_val: crate::value::unknown_type_val(),
+
         };
         payload_entries.insert(
             HashableValue::Str(Arc::from(FIELD_TYPED_VARIADICS)),
@@ -1955,11 +1955,11 @@ impl InferenceContext {
 
         let payload_dict = crate::value::Value::Dict {
             entries: payload_entries,
-            type_val: crate::value::unknown_type_val(),
+
         };
 
         Arc::new(crate::value::Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(crate::value::Thunk::value(

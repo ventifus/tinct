@@ -108,7 +108,7 @@ fn inject_span_into_expr_variant(
         );
         Value::Dict {
             entries: d,
-            type_val: crate::value::unknown_type_val(),
+
         }
     };
 
@@ -323,7 +323,7 @@ pub fn core_expr_to_expr_value(
     let null_thunk = || {
         mk(Value::Dict {
             entries: IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         })
     };
 
@@ -1086,7 +1086,7 @@ pub(crate) fn alloc_bool(b: bool, span: &Span, _ctx: &Arc<crate::eval::EvalConte
     Arc::new(Thunk::value(
         Value::Int {
             n: if b { 1 } else { 0 },
-            type_val: crate::value::unknown_type_val(),
+
         },
         span.clone(),
     ))
@@ -1096,7 +1096,7 @@ pub(crate) fn alloc_int(n: i64, span: &Span, _ctx: &Arc<crate::eval::EvalContext
     Arc::new(Thunk::value(
         Value::Int {
             n,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span.clone(),
     ))
@@ -1106,7 +1106,7 @@ pub(crate) fn alloc_u64(n: u64, span: &Span, _ctx: &Arc<crate::eval::EvalContext
     Arc::new(Thunk::value(
         Value::U64 {
             n,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span.clone(),
     ))
@@ -1116,7 +1116,7 @@ pub(crate) fn alloc_float(f: f64, span: &Span, _ctx: &Arc<crate::eval::EvalConte
     Arc::new(Thunk::value(
         Value::Float {
             n: f,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span.clone(),
     ))
@@ -1164,7 +1164,7 @@ pub(crate) fn alloc_child_list(
     Arc::new(Thunk::value(
         Value::Dict {
             entries: map,
-            type_val: crate::value::unknown_type_val(),
+
         },
         rust_span!(),
     ))
@@ -1201,7 +1201,7 @@ pub(crate) fn alloc_entry_list(
         ));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
@@ -1212,7 +1212,7 @@ pub(crate) fn alloc_entry_list(
     Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         },
         rust_span!(),
     ))
@@ -1257,7 +1257,7 @@ pub(crate) fn alloc_named_arg_list(
     Arc::new(Thunk::value(
         Value::Dict {
             entries: na_map,
-            type_val: crate::value::unknown_type_val(),
+
         },
         rust_span!(),
     ))
@@ -1311,7 +1311,7 @@ pub(crate) fn alloc_param_list(
     Arc::new(Thunk::value(
         Value::Dict {
             entries: params_map,
-            type_val: crate::value::unknown_type_val(),
+
         },
         rust_span!(),
     ))
@@ -1349,7 +1349,7 @@ pub(crate) fn alloc_string_opt(
         Some(name) => string_val(name),
         None => Value::Dict {
             entries: IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         },
     };
     Arc::new(Thunk::value(val, rust_span!()))
@@ -1993,7 +1993,7 @@ pub fn surface_program_to_dict(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: root,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )))
@@ -2083,7 +2083,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )))
@@ -2102,7 +2102,7 @@ pub(crate) fn list_to_thunk_id(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )))
@@ -2193,7 +2193,7 @@ fn surface_document_to_thunk_id(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span,
     )))
@@ -2525,13 +2525,13 @@ fn surface_decl_to_thunk_id(
     let payload = Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         },
         span.clone(),
     ));
     Ok(Arc::new(Thunk::value(
         Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(variant_tag),
             payload: Some(payload),
@@ -2704,7 +2704,7 @@ fn alloc_entry_list_with_opts(
         ));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
@@ -2715,7 +2715,7 @@ fn alloc_entry_list_with_opts(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         },
         rust_span!(),
     )))

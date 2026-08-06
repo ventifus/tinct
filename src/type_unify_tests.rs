@@ -3180,7 +3180,7 @@ async fn test_rowvar_occurs_check() {
         );
         let fields_dict = Value::Dict {
             entries: fields,
-            type_val: crate::value::unknown_type_val(),
+
         };
         let mut payload_entries = IndexMap::new();
         payload_entries.insert(
@@ -3193,10 +3193,10 @@ async fn test_rowvar_occurs_check() {
         );
         let payload = Value::Dict {
             entries: payload_entries,
-            type_val: crate::value::unknown_type_val(),
+
         };
         Arc::new(Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),

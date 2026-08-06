@@ -286,7 +286,7 @@ impl SpanRecord {
 
         Value::Dict {
             entries,
-            type_val: crate::value::unknown_type_val(),
+
         }
     }
 }
@@ -510,7 +510,7 @@ impl ProfilingCollector {
         }
         Value::Dict {
             entries: dict,
-            type_val: crate::value::unknown_type_val(),
+
         }
     }
 }

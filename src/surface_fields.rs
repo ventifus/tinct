@@ -58,19 +58,19 @@ pub fn surface_node_get_field(
         // --- IntLiteral ---
         (SurfaceExpression::Int(n), "value") => Value::Int {
             n: *n,
-            type_val: crate::value::unknown_type_val(),
+
         },
 
         // --- U64Literal ---
         (SurfaceExpression::U64(n), "value") => Value::U64 {
             n: *n,
-            type_val: crate::value::unknown_type_val(),
+
         },
 
         // --- FloatLiteral ---
         (SurfaceExpression::Float(n), "value") => Value::Float {
             n: *n,
-            type_val: crate::value::unknown_type_val(),
+
         },
 
         // --- StringLiteral ---
@@ -80,7 +80,7 @@ pub fn surface_node_get_field(
         (SurfaceExpression::VarRef { name, .. }, "name") => string_val(name),
         (SurfaceExpression::VarRef { escaped, .. }, "escaped") => Value::Int {
             n: if *escaped { 1 } else { 0 },
-            type_val: crate::value::unknown_type_val(),
+
         },
 
         // --- DotAccess ---
@@ -114,7 +114,7 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::Call { implied, .. }, "implied") => Value::Int {
             n: if *implied { 1 } else { 0 },
-            type_val: crate::value::unknown_type_val(),
+
         },
 
         // --- Fn ---
@@ -125,7 +125,7 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::Int {
             n: if *desugared { 1 } else { 0 },
-            type_val: crate::value::unknown_type_val(),
+
         },
 
         // --- TypeAssert ---
@@ -239,7 +239,7 @@ fn surface_entries_to_list_dict(
             Arc::new(Thunk::value(val_val, entry.span.clone())),
         );
         let entry_variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: "Expr.Entry".into(),
             payload: Some(Arc::new(Thunk::value(
@@ -281,7 +281,7 @@ fn named_args_to_list_dict(
             )),
         );
         let na_variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: "Expr.NamedArg".into(),
             payload: Some(Arc::new(Thunk::value(
@@ -333,7 +333,7 @@ fn params_to_list_dict(
             Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
         let p_variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: "Expr.Parameter".into(),
             payload: Some(Arc::new(Thunk::value(
@@ -711,7 +711,7 @@ pub fn annotation_opt_to_value(
         Some(a) => annotation_to_value(a, ctx),
         None => Value::Dict {
             entries: indexmap::IndexMap::new(),
-            type_val: crate::value::unknown_type_val(),
+
         },
     }
 }

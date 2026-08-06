@@ -1896,11 +1896,11 @@ pub(crate) fn builtin_with_cancel(
         // See doc/08-evaluation.md §Cancellation Primitives for the spec deviation rationale.
         let child_ctx_val = Value::Context {
             token: child_token,
-            type_val: crate::value::unknown_type_val(),
+
         };
         let cancel_val = Value::Context {
             token: cancel_token,
-            type_val: crate::value::unknown_type_val(),
+
         };
 
         // Build the payload dict with the same structure as before

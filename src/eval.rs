@@ -4344,7 +4344,7 @@ mod tests {
         ));
         let proxy_val = Value::Proxy {
             handler,
-            type_val: crate::value::unknown_type_val(),
+
         };
 
         // Unknown (ground of Proxy) is consistent with anything.
@@ -4515,7 +4515,7 @@ mod tests {
         let tycon = make_typevalue_nominal(TEST_ID_COLOR);
         // Variant with matching tycon matches
         let red = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
@@ -4523,7 +4523,7 @@ mod tests {
         assert!(value_matches_type(&red, &tycon, &ctx));
         // Variant with different tycon does not match
         let wrong = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
@@ -4613,7 +4613,7 @@ mod tests {
         let tycon = make_typevalue_nominal(TEST_ID_COLOR);
 
         let color_red = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
@@ -4624,7 +4624,7 @@ mod tests {
         );
 
         let color_green = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Green"),
             payload: None,
@@ -4635,7 +4635,7 @@ mod tests {
         );
 
         let other = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
@@ -4677,7 +4677,7 @@ mod tests {
             "String is a primitive type"
         );
         let color_variant = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,

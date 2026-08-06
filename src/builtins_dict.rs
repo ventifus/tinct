@@ -108,11 +108,11 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
     match hv {
         HashableValue::Int(n) => Value::Int {
             n: *n,
-            type_val: crate::value::unknown_type_val(),
+
         },
         HashableValue::Float(bits) => Value::Float {
             n: f64::from_bits(*bits),
-            type_val: crate::value::unknown_type_val(),
+
         },
         HashableValue::Str(s) => string_val(s),
         HashableValue::Dict(pairs) => {

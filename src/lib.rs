@@ -1240,7 +1240,7 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
@@ -1259,13 +1259,13 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
         let green_val = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("Color.Green"),
             payload: None,
@@ -1290,7 +1290,7 @@ mod tests {
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-            type_val: crate::value::unknown_type_val(),
+
             type_decl_id: 0,
             ctor: Arc::from("MyBool.Yes"),
             payload: None,
@@ -1316,7 +1316,7 @@ mod tests {
         ));
         let proxy = Value::Proxy {
             handler: handler_thunk,
-            type_val: crate::value::unknown_type_val(),
+
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await
