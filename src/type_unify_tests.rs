@@ -1096,6 +1096,7 @@ async fn test_variance_is_copy() {
 #[tokio::test]
 async fn test_tycondef_construction() {
     let def = TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -1119,6 +1120,7 @@ async fn test_tycondef_construction() {
 #[tokio::test]
 async fn test_tycondef_multi_variance() {
     let def = TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string(), "b".to_string()],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -1140,6 +1142,7 @@ async fn test_tycondef_multi_variance() {
 #[tokio::test]
 async fn test_tycondef_builtin_type() {
     let def = TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -1451,6 +1454,7 @@ async fn test_variance_clone() {
 #[tokio::test]
 async fn test_tycondef_partialeq() {
     let def1 = TyConDef {
+        type_decl_id: 0,
         params: vec![],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -1463,6 +1467,7 @@ async fn test_tycondef_partialeq() {
         definition_span: None,
     };
     let def2 = TyConDef {
+        type_decl_id: 0,
         params: vec![],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -1481,6 +1486,7 @@ async fn test_tycondef_partialeq() {
 #[tokio::test]
 async fn test_tycondef_partialeq_different_variance() {
     let def1 = TyConDef {
+        type_decl_id: 0,
         params: vec![],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -1493,6 +1499,7 @@ async fn test_tycondef_partialeq_different_variance() {
         definition_span: None,
     };
     let def2 = TyConDef {
+        type_decl_id: 0,
         params: vec![],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -2145,6 +2152,7 @@ async fn test_constrain_app_covariant_arg() {
     // type_unify.rs, which calls unify(Int, x). The unify U-VAR-LEVEL arm binds x=Int
     // in ctx.subst. This verifies the C-App covariant path produces a concrete binding.
     let cov_def = Arc::new(TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: crate::value::unknown_type_val(),
         constraints: vec![],
@@ -2804,6 +2812,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     // AliasA body = TypeVar("a") -- expands to its argument.
     let body_a = make_typevar_value("a");
     let def_a = Arc::new(TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: Arc::new(body_a.as_ref().clone()),
         constraints: vec![],
@@ -2819,6 +2828,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     // AliasB body = TypeVar("a") -- same structure.
     let body_b = make_typevar_value("a");
     let def_b = Arc::new(TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: Arc::new(body_b.as_ref().clone()),
         constraints: vec![],
@@ -2866,6 +2876,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
 
     // AliasA body = Repr(Int) -- constant body.
     let def_a = Arc::new(TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: Arc::clone(&int_tv),
         constraints: vec![],
@@ -2880,6 +2891,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
 
     // AliasB body = Repr(String) -- different constant body.
     let def_b = Arc::new(TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: Arc::clone(&str_tv),
         constraints: vec![],
@@ -2924,6 +2936,7 @@ async fn test_unify_tycon_expand_one_op_not_registered_fails() {
 
     // Register only "KnownAlias".
     let def = Arc::new(TyConDef {
+        type_decl_id: 0,
         params: vec!["a".to_string()],
         body: Arc::clone(&int_tv),
         constraints: vec![],

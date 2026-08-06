@@ -37,6 +37,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ast::{SurfaceExpression, SurfaceNode};
+#[allow(unused_imports)]
 use std::sync::Arc;
 use crate::type_tags::*;
 use crate::value::Value;

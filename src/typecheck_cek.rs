@@ -4685,6 +4685,7 @@ pub(crate) async fn run_typecheck_dict(
         if *is_alias {
             if let SurfaceExpression::TypeDecl {
                 type_name,
+                type_decl_id: ast_type_decl_id,
                 params,
                 inner,
                 ..
@@ -4844,6 +4845,7 @@ pub(crate) async fn run_typecheck_dict(
                 let constructors = extract_typevalue_constructors(&body_tv);
 
                 let tycon_def = std::sync::Arc::new(TyConDef {
+                    type_decl_id: *ast_type_decl_id,
                     params: params.iter().map(|(n, _)| n.clone()).collect(),
                     body: body_tv.clone(),
                     constraints: Vec::new(),
@@ -4857,6 +4859,8 @@ pub(crate) async fn run_typecheck_dict(
                 });
 
                 if let Some(name) = key_name {
+                    state.type_name_to_id.insert(name.clone(), *ast_type_decl_id);
+                    state.type_display_names.insert(*ast_type_decl_id, name.clone());
                     dict_env
                         .write()
                         .unwrap()

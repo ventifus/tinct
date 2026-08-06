@@ -385,6 +385,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     for discriminant in opaque_tycon_names {
         tycon_env.entry(discriminant.clone()).or_insert_with(|| {
             std::sync::Arc::new(TyConDef {
+                type_decl_id: crate::value::type_id_for_name(&discriminant).unwrap_or(0),
                 params: vec![],
                 body: crate::value::unknown_type_val(),
                 constraints: vec![],

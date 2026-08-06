@@ -747,12 +747,14 @@ pub fn is_atom_subtype(
             if sub_id == sup_id {
                 return true;
             }
-            // Different ids — check if sup is a structural alias that sub satisfies.
+            // Different ids — check if sup is a TyCon that aliases or wraps sub's type.
             // Bridge: look up by display name since tycon_env is still string-keyed.
             let sup_name = ctx.type_display_names.get(&sup_id);
             match sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
                 Some(def) => {
-                    if !def.constructors.is_empty() {
+                    if let Some(ref builtin_disc) = def.builtin_type {
+                        crate::value::type_id_for_name(builtin_disc) == Some(sub_id)
+                    } else if !def.constructors.is_empty() {
                         false
                     } else {
                         is_subtype_bas_with_sigma(sub, &def.body, ctx, sigma, depth + 1)

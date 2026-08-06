@@ -798,7 +798,12 @@ pub(crate) fn builtin_type_of(
             &ctx,
             call_span.clone(),
         )?;
-        Ok(Arc::new(Thunk::value(val.type_val().as_ref().clone(), call_span)))
+        let type_tv = if crate::eval_call::is_typevalue_unknown(val.type_val()) {
+            crate::type_infer::make_typevalue_nominal(val.type_id())
+        } else {
+            Arc::clone(val.type_val())
+        };
+        Ok(Arc::new(Thunk::value(type_tv.as_ref().clone(), call_span)))
     })
 }
 

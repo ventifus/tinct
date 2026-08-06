@@ -89,6 +89,9 @@ pub enum Variance {
 /// During bootstrap (before repr wiring), `body` is `crate::value::unknown_type_val()`.
 #[derive(Debug, Clone)]
 pub struct TyConDef {
+    /// Unique type declaration identity. Assigned by the expander (≥100 for user types)
+    /// or from reserved constants (1-39 for primitives). Used by TypeValue.Nominal(id).
+    pub type_decl_id: u64,
     /// Type parameter names (e.g., ["a", "k", "v"]). Empty for zero-parameter types.
     pub params: Vec<String>,
 
@@ -168,6 +171,7 @@ impl TyConDef {
     /// resolved TypeValue for the type (e.g., a TypeValue.Union of NominalVariants).
     pub fn new_with_body(_name: impl Into<String>, body: Arc<crate::value::Value>) -> Self {
         Self {
+            type_decl_id: 0,
             params: vec![],
             body,
             constraints: vec![],
@@ -187,6 +191,7 @@ impl TyConDef {
     /// `unknown_type_val()` (opaque until instantiated with type arguments).
     pub fn new_parameterized(arity: usize) -> Self {
         Self {
+            type_decl_id: 0,
             params: (0..arity).map(|i| format!("a{i}")).collect(),
             body: crate::value::unknown_type_val(),
             constraints: vec![],
