@@ -240,7 +240,7 @@ async fn eval_annotation_property_dict(
 
     Ok(Value::Dict {
         entries: dict_map,
-
+        type_decl_id: 0,
     })
 }
 
