@@ -1530,6 +1530,30 @@ async fn test_trace_level_zero_no_trace_diagnostic() {
 }
 
 // ============================================================================
+// S-1037: closure-captured bindings must not produce false-positive lost-binding
+// ============================================================================
+
+/// A binding referenced only from inside a nested fn body (ClosureCapture) must NOT
+/// produce a lost-binding warning. Before S-1037, ClosureCapture marks landed on
+/// scc_env (a clone) and were lost; now they land on dict_env directly.
+#[tokio::test]
+async fn test_closure_captured_binding_no_lost_binding_warning() {
+    // `a` is an intermediate binding used only by the nested fn via ClosureCapture.
+    // The final expression calls the fn, which uses `a`. No warning should fire.
+    let diags =
+        typecheck_collect_diags("[call [fn [let x] [a: [+ x 1]] [f: [fn [] a]] [f]] 10]").await;
+    let lost = diags
+        .iter()
+        .filter(|d| d.kind == "lost-binding")
+        .collect::<Vec<_>>();
+    assert!(
+        lost.is_empty(),
+        "closure-captured binding should not produce lost-binding warning; got: {:?}",
+        lost
+    );
+}
+
+// ============================================================================
 // S-1023 fix-review: trace annotation — runtime phase emits trace-call/trace-return
 // ============================================================================
 

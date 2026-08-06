@@ -1319,33 +1319,41 @@ pub fn typevalue_nominal_variant_has_fields(v: &TypeValue) -> bool {
 /// for structural deduplication.
 fn values_structurally_eq(a: &crate::value::Value, b: &crate::value::Value) -> bool {
     match (a, b) {
-        (crate::value::Value::Int { n: na, .. }, crate::value::Value::Int { n: nb, .. }) => na == nb,
+        (crate::value::Value::Int { n: na, .. }, crate::value::Value::Int { n: nb, .. }) => {
+            na == nb
+        }
         (crate::value::Value::Float { n: na, .. }, crate::value::Value::Float { n: nb, .. }) => {
             na.to_bits() == nb.to_bits()
         }
         (
-            crate::value::Value::String { source: sa, start: s1, end: e1, .. },
-            crate::value::Value::String { source: sb, start: s2, end: e2, .. },
+            crate::value::Value::String {
+                source: sa,
+                start: s1,
+                end: e1,
+                ..
+            },
+            crate::value::Value::String {
+                source: sb,
+                start: s2,
+                end: e2,
+                ..
+            },
         ) => sa[*s1..*e1] == sb[*s2..*e2],
         (
             crate::value::Value::Variant { ctor: ca, .. },
             crate::value::Value::Variant { ctor: cb, .. },
-        ) => {
-            ca.as_ref() == cb.as_ref()
-                && typevalue_eq(&Arc::new(a.clone()), &Arc::new(b.clone()))
-        }
+        ) => ca.as_ref() == cb.as_ref() && typevalue_eq(&Arc::new(a.clone()), &Arc::new(b.clone())),
         (
             crate::value::Value::Dict { entries: ea, .. },
             crate::value::Value::Dict { entries: eb, .. },
         ) => {
             ea.len() == eb.len()
                 && ea.iter().all(|(k, va)| {
-                    eb.get(k).map_or(false, |vb| {
-                        match (va.peek_result(), vb.peek_result()) {
+                    eb.get(k)
+                        .map_or(false, |vb| match (va.peek_result(), vb.peek_result()) {
                             (Some(Ok(va)), Some(Ok(vb))) => values_structurally_eq(va, vb),
                             _ => false,
-                        }
-                    })
+                        })
                 })
         }
         _ => false,
@@ -1386,20 +1394,21 @@ pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
         ) if ca.as_ref() == cb.as_ref() => {
             // Recursively compare payload dicts.
             match (pa.peek_result(), pb.peek_result()) {
-                (Some(Ok(crate::value::Value::Dict { entries: ea, .. })),
-                 Some(Ok(crate::value::Value::Dict { entries: eb, .. }))) => {
+                (
+                    Some(Ok(crate::value::Value::Dict { entries: ea, .. })),
+                    Some(Ok(crate::value::Value::Dict { entries: eb, .. })),
+                ) => {
                     if ea.len() != eb.len() {
                         return false;
                     }
                     ea.iter().all(|(k, va)| {
-                        eb.get(k).map_or(false, |vb| {
-                            match (va.peek_result(), vb.peek_result()) {
+                        eb.get(k)
+                            .map_or(false, |vb| match (va.peek_result(), vb.peek_result()) {
                                 (Some(Ok(val_a)), Some(Ok(val_b))) => {
                                     values_structurally_eq(val_a, val_b)
                                 }
                                 _ => false,
-                            }
-                        })
+                            })
                     })
                 }
                 _ => false,

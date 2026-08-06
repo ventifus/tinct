@@ -13,7 +13,6 @@
 //! (annotation resolution, async unify) directly. The CEK loop eliminates recursive
 //! calls to `run_typecheck` itself, not all async behavior.
 
-use crate::typecheck::find_slot_in_frames;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -126,7 +125,17 @@ pub(crate) async fn run_fd_improvement_fixpoint(
             .await
             {
                 Ok(()) => {}
-                Err(e) => errors.push(e),
+                Err(mut e) => {
+                    e = e.with_note(format!(
+                        "expected (FD-determined target): {}",
+                        crate::eval::format_type_for_assert(&target)
+                    ));
+                    e = e.with_note(format!(
+                        "actual (FD-computed type):        {}",
+                        crate::eval::format_type_for_assert(&computed)
+                    ));
+                    errors.push(e);
+                }
             }
             state.constraints = local_constraints;
         }
@@ -701,7 +710,7 @@ async fn infer_step(
                         })
                         .unwrap_or(sequential_slot_offset);
 
-                    let (_, schemes, referenced, mut dict_errs) = run_typecheck_dict(
+                    let (_, _schemes, body_dict_env, mut dict_errs) = run_typecheck_dict(
                         entries,
                         &current_env,
                         state,
@@ -711,84 +720,13 @@ async fn infer_step(
                     .await;
                     errors.append(&mut dict_errs);
 
-                    // Build a span map from the entries: name → entry.span.
-                    // Used to populate definition_span on slot entries for liveness tracking.
-                    // Only static VarRef/StringLiteral keys have known spans; other keys
-                    // get Unknown at the resolver slot with no definition_span (not tracked).
-                    let mut entry_spans: std::collections::HashMap<String, crate::ast::Span> =
-                        std::collections::HashMap::new();
-                    for e in entries.iter() {
-                        if let Some(ref key_node) = e.node.key {
-                            let key_name = match &key_node.expr {
-                                SurfaceExpression::VarRef { name: n, .. } => Some(n.clone()),
-                                SurfaceExpression::StringLiteral { content, .. } => {
-                                    Some(content.clone())
-                                }
-                                _ => None,
-                            };
-                            if let Some(n) = key_name {
-                                entry_spans.insert(n, e.span.clone());
-                            }
-                        }
+                    if doc_initial_offset.is_none() && body_slot_base_pre > sequential_slot_offset {
+                        doc_initial_offset = Some(body_slot_base_pre - sequential_slot_offset);
                     }
 
-                    // Reuse the static_keys and body_slot_base computed before run_typecheck_dict.
-                    // These are the same values — static_keys_pre/body_slot_base_pre were computed
-                    // above with the correct disambiguation logic for sequential position.
-                    let static_keys = static_keys_pre;
-                    let body_slot_base: u32 = body_slot_base_pre;
-                    // Record doc_initial_offset from body 0's base (for subsequent bodies).
-                    if doc_initial_offset.is_none() && body_slot_base > sequential_slot_offset {
-                        doc_initial_offset = Some(body_slot_base - sequential_slot_offset);
-                    }
-
-                    // Extend env with schemes (preserving let-polymorphism).
-                    // Insert into SLOTS at the resolver-assigned slot indices so that
-                    // get_scheme_at(depth, slot) finds them via slot-based lookup.
-                    // Liveness data (definition_span, referenced) lives on slot entries.
-                    // Propagate referenced state from the sub-run: run_typecheck_dict creates
-                    // fresh EnvSlots, losing the `referenced` flag set during its internal CEK run.
-                    // Re-apply from the returned set to prevent false lost-binding diagnostics.
-                    let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
-                    for (j, key_name) in static_keys.iter().enumerate() {
-                        let slot_idx = (body_slot_base + j as u32) as usize;
-                        if let Some(scheme) = schemes.get(key_name.as_str()) {
-                            let span = entry_spans.get(key_name.as_str()).cloned();
-                            new_env_inner.insert_at_slot(
-                                slot_idx,
-                                key_name.clone(),
-                                scheme.clone(),
-                                span.clone(),
-                            );
-                            if referenced.contains(key_name.as_str()) {
-                                // Mark referenced on the slot entry directly.
-                                new_env_inner.mark_slot_referenced(0, slot_idx as u32);
-                            }
-                        } else {
-                            // Scheme not returned by run_typecheck_dict for this key — insert
-                            // Unknown at the resolver-assigned slot so slot lookup succeeds.
-                            let unknown_tv = make_typevalue_unknown();
-                            let span = entry_spans.get(key_name.as_str()).cloned();
-                            new_env_inner.insert_at_slot(
-                                slot_idx,
-                                key_name.clone(),
-                                unknown_tv,
-                                span,
-                            );
-                        }
-                    }
-                    // Any schemes not in static_keys (e.g. injected constructor schemes) go to slots.
-                    // Use resolver-assigned slot if available; otherwise append at end.
-                    for (name, scheme) in &schemes {
-                        if !static_keys.contains(name) {
-                            let slot = find_slot_in_frames(&state.resolver_frames, name)
-                                .unwrap_or_else(|| new_env_inner.slots.len());
-                            new_env_inner.insert_at_slot(slot, name.clone(), scheme.clone(), None);
-                        }
-                    }
-                    // Advance the cumulative slot counter by this body's static key count.
-                    sequential_slot_offset += static_keys.len() as u32;
-                    current_env = Arc::new(RwLock::new(new_env_inner));
+                    // Use dict_env directly as the Sequential env frame. No copying.
+                    sequential_slot_offset += static_keys_pre.len() as u32;
+                    current_env = body_dict_env;
                     // Track the intermediate env frame for lost-binding detection.
                     // The frame is captured AFTER inserting schemes so the handler
                     // iterates the correct slot entries.
@@ -1782,7 +1720,7 @@ async fn apply_cont(
         // not an intermediate scope-chain body. The returned record type carries the full
         // structural type information.
         TypeCheckCont::DictPassZero { entries, env } => {
-            let (record_type, _schemes, _referenced, mut dict_errs) =
+            let (record_type, _schemes, _nested_dict_env, mut dict_errs) =
                 Box::pin(run_typecheck_dict(&entries, &env, state, type_map, None)).await;
             errors.append(&mut dict_errs);
             TypeCheckAction::Done(record_type)
@@ -4573,9 +4511,9 @@ pub(crate) async fn entry_key_name(
 /// - `schemes` is an `IndexMap<String, Arc<Value>>` of per-entry generalized schemes (needed
 ///   by `process_document` for cross-document scoping and by `Sequential` for
 ///   let-polymorphism across multi-body function steps)
-/// - `referenced` is a `HashSet<String>` of names that were actually referenced during the
-///   internal CEK run (collected from dict_env.slots). Callers that propagate schemes into a
-///   fresh env frame must also propagate this set to avoid lost-binding false positives.
+/// - `dict_env` is the env frame created for this dict, containing all entries at their
+///   resolver-assigned slots with schemes, definition_spans, and referenced flags. The
+///   Sequential handler uses this frame directly in the env chain — no copying needed.
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
@@ -4592,7 +4530,7 @@ pub(crate) async fn run_typecheck_dict(
 ) -> (
     TypeValue,
     indexmap::IndexMap<String, TypeValue>,
-    std::collections::HashSet<String>,
+    Arc<RwLock<Env>>,
     Vec<Diagnostic>,
 ) {
     // Level management: save enclosing level, increment for dict body
@@ -4746,10 +4684,7 @@ pub(crate) async fn run_typecheck_dict(
                     ..
                 } = decl.as_ref()
                 {
-                    for (pattern, method_entries) in arms {
-                        let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
-                        let _type_args: Vec<&str> =
-                            dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                    for (_pattern, method_entries) in arms {
                         for me in method_entries {
                             let method_name = match me.node.key.as_ref() {
                                 Some(k) => match &k.expr {
@@ -5410,9 +5345,6 @@ pub(crate) async fn run_typecheck_dict(
             }
         }
 
-        // Clone dict_env for within-SCC isolation.
-        let scc_env = Arc::new(RwLock::new(dict_env.read().unwrap().clone()));
-
         // Pass 3_i: Infer values and unify with bound type vars for this SCC.
         for &idx in &scc.indices {
             let entry = &entries[idx];
@@ -5443,7 +5375,7 @@ pub(crate) async fn run_typecheck_dict(
                 // through all entries at all depths — no save/restore needed. The BFS in
                 // AfterBlock traverses the chain transitively.
                 // Span-keyed: entry.span is the source location of this binding's declaration,
-                // stable across dict_env/scc_env/new_env_inner Arc allocations.
+                // stable across dict_env Arc allocations.
                 let current_entry_id = BindingId {
                     def_span: entry.span.clone(),
                     name: name.clone(),
@@ -5461,8 +5393,8 @@ pub(crate) async fn run_typecheck_dict(
                 // For nested Dict values, call run_typecheck_dict directly to capture schemes.
                 let value_ty =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                        let (ty, _schemes, _referenced, mut nested_errs) = Box::pin(
-                            run_typecheck_dict(nested_entries, &scc_env, state, type_map, None),
+                        let (ty, _schemes, _nested_dict_env, mut nested_errs) = Box::pin(
+                            run_typecheck_dict(nested_entries, &dict_env, state, type_map, None),
                         )
                         .await;
                         errors.append(&mut nested_errs);
@@ -5472,7 +5404,7 @@ pub(crate) async fn run_typecheck_dict(
                         let mut local_stack = Vec::new();
                         let ty = Box::pin(run_typecheck(
                             &entry.node.value,
-                            &scc_env,
+                            &dict_env,
                             state,
                             &mut local_errors,
                             type_map,
@@ -5582,22 +5514,22 @@ pub(crate) async fn run_typecheck_dict(
                 // Computed-key entry: type-check the value to resolve VarRefs for
                 // liveness tracking, but don't insert into field_types (no static name).
                 if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                    let (_ty, _schemes, _referenced, mut nested_errs) = Box::pin(
-                        run_typecheck_dict(nested_entries, &scc_env, state, type_map, None),
+                    let (_ty, _schemes, _nested_dict_env, mut nested_errs) = Box::pin(
+                        run_typecheck_dict(nested_entries, &dict_env, state, type_map, None),
                     )
                     .await;
                     errors.append(&mut nested_errs);
                 } else {
                     let mut local_errors = Vec::new();
                     let mut local_stack = Vec::new();
-                    let _value_ty = Box::pin(run_typecheck(
+                    typecheck_for_errors(
                         &entry.node.value,
-                        &scc_env,
+                        &dict_env,
                         state,
                         &mut local_errors,
                         type_map,
                         &mut local_stack,
-                    ))
+                    )
                     .await;
                     errors.append(&mut local_errors);
                 }
@@ -5904,9 +5836,24 @@ pub(crate) async fn run_typecheck_dict(
             }
         }
     }
-    // Merge in ADT constructor schemes collected in Pass 2.
+    // Merge ADT constructor schemes into dict_env so the frame has all entries.
     for (name, scheme) in ctor_schemes {
-        schemes.entry(name).or_insert(scheme);
+        schemes
+            .entry(name.clone())
+            .or_insert_with(|| scheme.clone());
+        if !dict_env
+            .read()
+            .unwrap()
+            .slot_index
+            .contains_key(name.as_str())
+        {
+            let slot = super::find_slot_in_frames(&state.resolver_frames, &name)
+                .unwrap_or_else(|| dict_env.read().unwrap().slots.len());
+            dict_env
+                .write()
+                .unwrap()
+                .insert_at_slot(slot, name, scheme, None);
+        }
     }
 
     // Restore enclosing level
@@ -5934,29 +5881,7 @@ pub(crate) async fn run_typecheck_dict(
     };
     let record_type = make_typevalue_record(resolved_field_types.clone(), tail_value);
 
-    // Collect referenced names from the internal dict env before returning.
-    // The Sequential arm creates fresh EnvSlots when building new_env_inner, losing the
-    // `referenced` flag set during our internal CEK run. Return the set so callers can
-    // re-apply it and avoid false lost-binding diagnostics on names actually used inside
-    // the sub-dict.
-    let referenced: std::collections::HashSet<String> = {
-        let dict_env_guard = dict_env.read().unwrap();
-        dict_env_guard
-            .slots
-            .iter()
-            .filter_map(|entry| {
-                entry.as_ref().and_then(|(name, slot)| {
-                    if slot.referenced {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .collect()
-    };
-
-    (record_type, schemes, referenced, errors)
+    (record_type, schemes, dict_env, errors)
 }
 
 #[cfg(test)]

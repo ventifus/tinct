@@ -668,7 +668,7 @@ pub(crate) async fn process_document(
 ///
 /// Map a resolved TypeValue (Arc<Value>) to the dispatch tag string used in instance dispatch.
 ///
-/// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
+/// This mapping must match the dispatch tag extraction logic, which reads `@Annotation`
 /// names from instance arm patterns.  Annotations are written as `@Integer`, `@Float`,
 /// `@String`, `@Bytes`, `@SomeType`.
 ///
@@ -1047,7 +1047,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
         // Extract type tags for instance binding name generation.
         // Only concrete uppercase type names contribute to the binding name — TypeVars and
-        // Unknown are filtered out (same semantics as lower.rs:extract_dispatch_tags).
+        // Unknown are filtered out.
         let type_args: Vec<String> = pattern_types
             .iter()
             .filter_map(type_to_dispatch_tag)

@@ -24,7 +24,6 @@ use crate::ast::{
 };
 use crate::error::Diagnostic;
 use crate::eval_call::is_typevalue_unknown;
-use crate::expand::annotation_dispatch_tag;
 use crate::rust_span;
 use crate::type_infer::{make_typevalue_fn_with_flags, make_typevalue_unknown};
 
@@ -1137,53 +1136,6 @@ fn lower_let_decl_binding(
         _ => lower_expr(arc, &arc.expr, diagnostics),
     };
     Spanned::new(core_expr, span)
-}
-
-/// Extract dispatch type tags from an instance arm pattern like `[let a@Int b@Float c]`.
-///
-/// Returns one `Option<String>` per binding:
-/// - `Some("Int")` if the binding has a concrete uppercase type annotation
-/// - `None` if unannotated or annotated with a TypeVar/complex annotation
-///
-/// Used by instance binding name generation in lower.rs to build the type_args for each arm.
-/// Only `Some(_)` tags contribute to the binding name; trailing None entries (like the
-/// return-type param `c` in Addable) are harmlessly ignored.
-pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>> {
-    let bindings = match arm_pattern {
-        SurfaceExpression::LetDecl { bindings } => bindings,
-        _ => return vec![],
-    };
-    bindings
-        .iter()
-        .filter(|binding| {
-            // Skip `bind: [a b c]` entries — these declare TypeVars for the instance pattern,
-            // not class type parameter positions.
-            //
-            // `bind: [a]` inside [let ...] parses as a VarRef named "bind" with a PropertyDict
-            // annotation (via the LetDecl `:` mechanism). ANY VarRef named "bind" with a
-            // PropertyDict annotation is the TypeVar declaration — skip it.
-            if let SurfaceExpression::VarRef {
-                name, annotation, ..
-            } = &binding.expr
-            {
-                if name.as_str() == "bind" {
-                    if let Some(ann) = annotation {
-                        if matches!(ann.node, crate::ast::Annotation::PropertyDict(_)) {
-                            return false; // Filter out bind: TypeVar declaration
-                        }
-                    }
-                }
-            }
-            true
-        })
-        .map(|binding_spanned| match &binding_spanned.expr {
-            SurfaceExpression::VarRef {
-                annotation: Some(ann),
-                ..
-            } => annotation_dispatch_tag(&ann.node),
-            _ => None,
-        })
-        .collect()
 }
 
 #[cfg(test)]
