@@ -1286,17 +1286,13 @@ pub async fn unify(
         // Cross-ctor mismatch: type error.
         (Some(ca), Some(cb)) if ca != cb => Err(Diagnostic::error(
             "type-error",
-            format!("cannot unify {} with {}", ca, cb),
+            format!(
+                "cannot unify {} with {}",
+                crate::eval::format_type_for_assert(&a),
+                crate::eval::format_type_for_assert(&b),
+            ),
             span,
-        )
-        .with_note(format!(
-            "{}",
-            crate::eval::format_type_for_assert(&a)
-        ))
-        .with_note(format!(
-            "{}",
-            crate::eval::format_type_for_assert(&b)
-        ))),
+        )),
 
         // Unknown ctor (unsettled thunks, etc.): conservative accept.
         _ => Ok(()),
