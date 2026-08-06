@@ -1586,14 +1586,16 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                                                         .and_then(|t| t.peek_result())
                                                         .and_then(|r| r.ok())
                                                         .map(|v| format_type_for_assert(&Arc::new(v.clone())));
-                                                    // If there are named fields, show them
-                                                    // with ... tail; otherwise show [Dict K V].
-                                                    if !parts.is_empty() {
-                                                        // Named fields + uniform tail
-                                                        return format!("[{}  ...]", parts.join("  "));
-                                                    }
                                                     let kt_str = kt.as_deref().unwrap_or("?");
                                                     let vt_str = vt.as_deref().unwrap_or("?");
+                                                    // If there are named fields, show
+                                                    // [Dict K V  field: T  ...].
+                                                    if !parts.is_empty() {
+                                                        return format!(
+                                                            "[Dict {} {}  {}  ...]",
+                                                            kt_str, vt_str, parts.join("  ")
+                                                        );
+                                                    }
                                                     // [Dict Top Top] is just Dict
                                                     if kt_str == "Top" && vt_str == "Top" {
                                                         return "Dict".to_string();
