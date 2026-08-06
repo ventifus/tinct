@@ -602,13 +602,13 @@
   eval-docs: [fn [let base-env@Scope state@[stderr: Dict  parsed: [documents: Dict]]]
     [test-state: [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] [reduce
       [fn [let s@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] doc]
-        [env:     [builtin-dict-get "env"         s]]
-        [prev:    [builtin-dict-get "last-result" s]]
-        [tc:      [builtin-dict-get "tc"          s]]
-        [err:     [builtin-dict-get "stderr"      s]]
-        [diags:   [@Dict    [builtin-dict-get "diagnostics" s]]]
-        [idx:     [@Integer [builtin-dict-get "doc-index"   s]]]
-        [history: [builtin-dict-get "doc-results" s]]
+        [env:     [@Scope       [builtin-dict-get "env"         s]]]
+        [prev:    [@Dict        [builtin-dict-get "last-result" s]]]
+        [tc:      [@TypeContext [builtin-dict-get "tc"          s]]]
+        [err:     [@Dict        [builtin-dict-get "stderr"      s]]]
+        [diags:   [@Dict        [builtin-dict-get "diagnostics" s]]]
+        [idx:     [@Integer     [builtin-dict-get "doc-index"   s]]]
+        [history: [@Dict        [builtin-dict-get "doc-results" s]]]
         # Short-circuit: if a previous doc already has errors, skip remaining docs.
         [match [builtin-eq-int [count-errors diags] 0]
           0: s

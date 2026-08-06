@@ -742,16 +742,6 @@ Note: Takes a list of [condition result] pairs. Returns the first result where c
   [cond-impl 0]]
 
 
-get: [fn@[bind: [c k v]  return: v  constraint: [$Indexable c k v]  doc: """
-Get value by key. For typed containers (Dict, List, Map, Bytes), the Indexable FD
-resolver (FieldType) fires when c and k are ground, producing the precise field type.
-
-Example: [get "b" [a: 1  b: 2]] => 2
-Example: [get 0 ["x" "y" "z"]] => "x"
-
-Note: Positional signature is Key → Collection → v (curried for pipeline composition).
-"""] [let k@k c@c]
-  [builtin-dict-get k c]]
 
 find-by@[doc: """
 Reverse-lookup in a type dict: find the first variant whose named field equals a value.
