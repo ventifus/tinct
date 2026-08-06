@@ -1579,9 +1579,14 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                                                         &HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)),
                                                     ) {
                                                         if let Some(Ok(vt)) = vt_thunk.peek_result() {
+                                                            let vt_str = format_type_for_assert(&Arc::new(vt.clone()));
+                                                            // [_: Top ...] is just [...] (any dict)
+                                                            if vt_str == "Top" {
+                                                                return "  ...".to_string();
+                                                            }
                                                             return format!(
                                                                 "  _: {}  ...",
-                                                                format_type_for_assert(&Arc::new(vt.clone()))
+                                                                vt_str
                                                             );
                                                         }
                                                     }
