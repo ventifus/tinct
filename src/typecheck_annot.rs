@@ -16,8 +16,8 @@ use crate::type_infer::{
     make_rowtail_uniform, make_rowtail_uniform_with_key_type, make_typevalue_app,
     make_typevalue_float_lit, make_typevalue_fn, make_typevalue_fn_with_flags,
     make_typevalue_int_lit, make_typevalue_negation, make_typevalue_never,
-    make_typevalue_nominal_variant, make_typevalue_op, make_typevalue_record,
-    make_typevalue_recursive, make_typevalue_repr, make_typevalue_str_lit, make_typevalue_top,
+    make_typevalue_nominal_variant, make_typevalue_nominal, make_typevalue_record,
+    make_typevalue_recursive, make_typevalue_str_lit, make_typevalue_top,
     make_typevalue_unknown, make_typevalue_var, typevalue_normalize_intersection,
     typevalue_normalize_union, typevalue_normalize_union_ctx,
 };
@@ -1364,7 +1364,7 @@ fn extract_constraint_class_name_tv(cv: &TypeValue) -> Option<String> {
             ctor: c_ctor,
             payload: Some(inner_thunk),
             ..
-        }) if c_ctor.as_ref() == TV_OP => match inner_thunk.peek_result()? {
+        }) if c_ctor.as_ref() == TV_NOMINAL => match inner_thunk.peek_result()? {
             Ok(Value::Dict { entries: inner, .. }) => {
                 let name_thunk = inner.get(&HashableValue::Str(Arc::from(FIELD_NAME)))?;
                 match name_thunk.peek_result()? {
@@ -1566,7 +1566,7 @@ async fn resolve_type_head(
             // application of this constructor" (Seq of any element type).
             // This enables annotation-based narrowing for parameterized types
             // without requiring a type argument.
-            return Ok(make_typevalue_op(name));
+            return Ok(make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)));
         }
         if let Some(eval_ctx) = &state.eval_ctx {
             match crate::type_normalize::evaluate_resolver_with_thunk(thunk, args, eval_ctx).await {
@@ -1618,21 +1618,21 @@ async fn resolve_type_head(
                 ));
             }
             let a_type = Arc::clone(&args[0]);
-            // Check if a_type is a TypeValue.Op (kind-mismatch: cannot apply Op to Op)
-            if crate::type_infer::typevalue_is_op(&a_type) {
-                let op_name = crate::type_infer::typevalue_op_name(&a_type)
+            if crate::type_infer::typevalue_ctor(&a_type) == Some(crate::type_tags::TV_NOMINAL) {
+                let op_id = crate::type_infer::typevalue_nominal_id(&a_type)
+                    .map(|id| id.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string());
                 return Err(Diagnostic::error(
                     "type-error",
                     format!(
                         "kind mismatch: type constructor `{name}` cannot be \
-                         applied to another type constructor `{op_name}`; \
+                         applied to another type constructor `{op_id}`; \
                          use a concrete type instead"
                     ),
                     span,
                 ));
             }
-            return Ok(make_typevalue_app(make_typevalue_op(name), a_type));
+            return Ok(make_typevalue_app(make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)), a_type));
         }
         let level = state.ctx.current_level;
         let (fresh, _fresh_ty) =
@@ -1664,9 +1664,9 @@ async fn resolve_type_head(
     // This handles types declared in the same dict or an enclosing runtime scope.
     if state.tycon_env.contains_key(name) {
         if args.is_empty() {
-            return Ok(make_typevalue_op(name));
+            return Ok(make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)));
         }
-        let mut result = make_typevalue_op(name);
+        let mut result = make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
         for arg in args {
             result = make_typevalue_app(result, Arc::clone(arg));
         }
@@ -2047,7 +2047,7 @@ pub(crate) async fn resolve_type_expr(
                 if let Some(def) = state.tycon_env.get(name).cloned() {
                     let arity = def.arity();
                     if arity > 0 {
-                        let mut result = make_typevalue_op(name);
+                        let mut result = make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
                         let arg_count = std::cmp::min(arity, args.len());
                         for arg_node in args.iter().take(arg_count) {
                             let arg = Box::pin(resolve_type_expr(
@@ -3176,11 +3176,11 @@ pub(crate) async fn typenode_value_to_type(
                     // Primitive leaf types — no payload, direct mapping to TypeValue.Repr variants.
                     // These appear as field values in TypeNode.Dict payloads (e.g., the
                     // "fields" dict of a Dict TypeNode) and as union/intersection members.
-                    TN_BARE_INT => Ok(Some(make_typevalue_repr(REPR_INT))),
-                    TN_BARE_FLOAT => Ok(Some(make_typevalue_repr(REPR_FLOAT))),
-                    TN_BARE_STRING => Ok(Some(make_typevalue_repr(REPR_STRING))),
-                    TN_BARE_BYTES => Ok(Some(make_typevalue_repr(REPR_BYTES))),
-                    TN_BARE_PROXY => Ok(Some(make_typevalue_repr(REPR_PROXY))),
+                    TN_BARE_INT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_INT))),
+                    TN_BARE_FLOAT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))),
+                    TN_BARE_STRING => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))),
+                    TN_BARE_BYTES => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES))),
+                    TN_BARE_PROXY => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_PROXY))),
                     // Any callable — variadic function with zero required fixed params and unknown
                     // return type. Variadic=true means any number of arguments is accepted; the
                     // arity check skips the "too many arguments" path for variadic functions.
@@ -3411,7 +3411,7 @@ pub(crate) async fn typenode_value_to_type(
                         // Not found in the type-stage scope — treat as an opaque TyCon.
                         // This is correct for types declared in the runtime section (e.g., Color,
                         // BuilderHandle) that are not yet in the type-stage scope chain.
-                        Ok(Some(make_typevalue_op(&name)))
+                        Ok(Some(make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0))))
                     }
 
                     // ── TypeApplication ───────────────────────────────────────────────────
@@ -3657,7 +3657,7 @@ pub(crate) async fn typenode_value_to_type(
                 }
                 if all_match {
                     match prefix {
-                        Some(name) => Ok(Some(make_typevalue_op(&name))),
+                        Some(name) => Ok(Some(make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0)))),
                         None => {
                             // all_match = true but no Variant entries — all entries are
                             // Functions/Builtins (payload constructors). This is an ADT
@@ -3665,21 +3665,21 @@ pub(crate) async fn typenode_value_to_type(
                             // settled entries. Treat as the plain Dict type rather than
                             // returning Ok(None) which would fall through to as_type_dispatch
                             // and produce a confusing "unrecognized value" error.
-                            Ok(Some(make_typevalue_repr(REPR_DICT)))
+                            Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT)))
                         }
                     }
                 } else {
                     // Not an ADT-constructor dict — this is a plain dict value in TypeNode
                     // position (e.g., the Dict from the TypeNode type-stage scope when some
                     // thunks are unsettled). Treat as the plain Dict type.
-                    Ok(Some(make_typevalue_repr(REPR_DICT)))
+                    Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT)))
                 }
             }
 
             // Empty Value::Dict in TypeNode position — treat as the plain Dict type.
             // This covers the case where an empty dict is the result of type-stage evaluation
             // for an @Dict annotation.
-            Value::Dict { .. } => Ok(Some(make_typevalue_repr(REPR_DICT))),
+            Value::Dict { .. } => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))),
 
             // Not a recognizable TypeNode or ADT value.
             _ => Ok(None),

@@ -207,53 +207,6 @@ fn payload_members(payload: &Value) -> Vec<Arc<Value>> {
     indexed.into_iter().map(|(_, v)| v).collect()
 }
 
-// ---------------------------------------------------------------------------
-// Repr discriminant helpers
-// ---------------------------------------------------------------------------
-
-/// Map a TyConDef `builtin_type` discriminant string (e.g. `"Int"`, `"Str"`, `"Float"`)
-/// to its corresponding `TypeValue.Repr` payload string (e.g. `REPR_INT`, `REPR_STRING`).
-///
-/// These short discriminant names are registered by `build_builtin_core_envs_inner` in
-/// `imports.rs` and are the canonical names in `TyConDef.builtin_type`. The REPR_* constants
-/// are the full Rust variant discriminant strings stored in `TypeValue.Repr { repr: String }`.
-///
-/// Returns `None` for unrecognized discriminant strings (conservative: not a known builtin repr).
-fn repr_disc_to_repr_string(disc: &str) -> Option<&'static str> {
-    match disc {
-        OP_INT => Some(REPR_INT),
-        OP_U64 => Some(REPR_U64),
-        OP_STR => Some(REPR_STRING),
-        OP_FLOAT => Some(REPR_FLOAT),
-        OP_BYTES => Some(REPR_BYTES),
-        OP_DICT => Some(REPR_DICT),
-        OP_FN | OP_FUNCTION => Some(REPR_FUNCTION),
-        OP_FILE => Some(REPR_FILE),
-        OP_DIR_CAP => Some(REPR_DIR_CAP),
-        OP_NET_CAP => Some(REPR_NET_CAP),
-        OP_TASK => Some(REPR_TASK),
-        OP_CHANNEL => Some(REPR_CHANNEL),
-        OP_CONTEXT => Some(REPR_CONTEXT),
-        OP_REACTIVE_CELL => Some(REPR_REACTIVE_CELL),
-        OP_CLOCK_CAP => Some(REPR_CLOCK_CAP),
-        OP_TIMEZONE => Some(REPR_TIMEZONE),
-        OP_TIMESTAMP => Some(REPR_TIMESTAMP),
-        OP_DURATION => Some(REPR_DURATION),
-        OP_DECIMAL => Some(REPR_DECIMAL),
-        OP_BIG_INT => Some(REPR_BIGINT),
-        OP_QUIC_SESSION => Some(REPR_QUIC_SESSION),
-        OP_QUIC_DATAGRAM_HANDLE => Some(REPR_QUIC_DATAGRAM_HANDLE),
-        OP_HTTP2_SESSION => Some(REPR_HTTP2_SESSION),
-        OP_HTTP3_SESSION => Some(REPR_HTTP3_SESSION),
-        OP_URI | OP_URN => Some(REPR_URI),
-        OP_PROGRAM => Some(REPR_PROGRAM),
-        OP_DOCUMENT => Some(REPR_DOCUMENT),
-        OP_TYPE_CONTEXT => Some(REPR_TYPE_CONTEXT),
-        // BuilderHandle (Value::Builder) is intentionally excluded: it is a transient
-        // accumulator with no valid repr string (eval_core.rs: is_valid_repr_string returns false).
-        _ => None,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // TypeValue construction helpers
@@ -379,18 +332,11 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
     let payload = typevalue_payload(tv);
 
     match ctor {
-        // Leaf atoms with string payload
-        TV_REPR => {
-            let repr = payload
-                .and_then(|p| payload_string_field(p, FIELD_REPR))
-                .unwrap_or("?");
-            format!("Repr({repr})")
-        }
-        TV_OP => {
-            let name = payload
-                .and_then(|p| payload_string_field(p, FIELD_NAME))
-                .unwrap_or("?");
-            format!("Op({name})")
+        TV_NOMINAL => {
+            let id = crate::type_infer::typevalue_nominal_id(tv)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            format!("Nominal({id})")
         }
         TV_VAR => {
             let name = payload
@@ -718,27 +664,15 @@ pub fn is_atom_subtype(
         // TypeValue.Var: inference variable — conservative true (defers to constraint solver)
         (Some(TV_VAR), _) | (_, Some(TV_VAR)) => true,
 
-        // Literal promotions: IntLit <: Int, StrLit <: Str, FloatLit <: Float
-        (Some(TV_INT_LIT), Some(TV_REPR)) => {
-            if let Some(payload) = typevalue_payload(sup) {
-                payload_string_field(payload, FIELD_REPR) == Some(REPR_INT)
-            } else {
-                false
-            }
+        // Literal promotions: IntLit <: Nominal(INT), StrLit <: Nominal(STRING), FloatLit <: Nominal(FLOAT)
+        (Some(TV_INT_LIT), Some(TV_NOMINAL)) => {
+            crate::type_infer::typevalue_nominal_id(sup) == Some(crate::value::TYPE_ID_INT)
         }
-        (Some(TV_STR_LIT), Some(TV_REPR)) => {
-            if let Some(payload) = typevalue_payload(sup) {
-                payload_string_field(payload, FIELD_REPR) == Some(REPR_STRING)
-            } else {
-                false
-            }
+        (Some(TV_STR_LIT), Some(TV_NOMINAL)) => {
+            crate::type_infer::typevalue_nominal_id(sup) == Some(crate::value::TYPE_ID_STRING)
         }
-        (Some(TV_FLOAT_LIT), Some(TV_REPR)) => {
-            if let Some(payload) = typevalue_payload(sup) {
-                payload_string_field(payload, FIELD_REPR) == Some(REPR_FLOAT)
-            } else {
-                false
-            }
+        (Some(TV_FLOAT_LIT), Some(TV_NOMINAL)) => {
+            crate::type_infer::typevalue_nominal_id(sup) == Some(crate::value::TYPE_ID_FLOAT)
         }
 
         // Different IntLits: not subtypes of each other
@@ -760,11 +694,6 @@ pub fn is_atom_subtype(
         // App: variance-directed
         (Some(TV_APP), Some(TV_APP)) => is_app_subtype(sub, sup, ctx, depth, sigma),
 
-        // Repr: same repr string = subtype
-        (Some(TV_REPR), Some(TV_REPR)) => typevalue_structurally_equal(sub, sup, ctx, depth, sigma),
-
-        // Op (type constructor): nominal equality
-        (Some(TV_OP), Some(TV_OP)) => typevalue_structurally_equal(sub, sup, ctx, depth, sigma),
 
         // Recursive: coinductive (S-Assum/S-Exp)
         (Some(TV_RECURSIVE), Some(TV_RECURSIVE)) => {
@@ -790,7 +719,7 @@ pub fn is_atom_subtype(
         // is a subtype of the TyCon iff it is a subtype of the TyCon's union body.
         // If the TyCon is not found (empty env or unknown name), fall back to tycon-name
         // string comparison, which is correct when the variant was constructed from that TyCon.
-        (Some(TV_NOMINAL_VARIANT), Some(TV_OP)) => {
+        (Some(TV_NOMINAL_VARIANT), Some(TV_NOMINAL)) => {
             let sub_tycon = typevalue_payload(sub)
                 .and_then(|p| payload_string_field(p, FIELD_TYCON).map(String::from));
             let sup_name = typevalue_payload(sup)
@@ -804,37 +733,28 @@ pub fn is_atom_subtype(
             }
         }
 
-        // Repr vs TyCon (Op): check whether the TyCon's builtin_type corresponds to the repr string.
-        //
-        // This covers runtime TypeAssert cases like `Repr("Value::Int") <: Op("Integer")` —
-        // the TyConDef for "Integer" has builtin_type = "Int", and the repr map maps "Int" back
-        // to "Value::Int". The discriminant strings stored in TyConDef.builtin_type are the
-        // short names ("Int", "Str", "Float", etc.) which map to REPR_* constants via
-        // repr_disc_to_repr_string. This is the single authoritative TyCon→Repr dispatch path.
-        (Some(TV_REPR), Some(TV_OP)) => {
-            let sub_repr =
-                match typevalue_payload(sub).and_then(|p| payload_string_field(p, FIELD_REPR)) {
-                    Some(r) => r,
-                    None => return false,
-                };
-            let sup_name = match typevalue_payload(sup)
-                .and_then(|p| payload_string_field(p, FIELD_NAME).map(String::from))
-            {
-                Some(n) => n,
+        // Nominal(id) vs Nominal(id): identity-based comparison.
+        // Same id = same type. Different ids = check TyCon body for structural aliases.
+        (Some(TV_NOMINAL), Some(TV_NOMINAL)) => {
+            let sub_id = match crate::type_infer::typevalue_nominal_id(sub) {
+                Some(id) => id,
                 None => return false,
             };
-            // Look up TyCon definition. If missing, conservative false.
-            match ctx.tycon_env.get(sup_name.as_str()) {
+            let sup_id = match crate::type_infer::typevalue_nominal_id(sup) {
+                Some(id) => id,
+                None => return false,
+            };
+            if sub_id == sup_id {
+                return true;
+            }
+            // Different ids — check if sup is a structural alias that sub satisfies.
+            // Bridge: look up by display name since tycon_env is still string-keyed.
+            let sup_name = ctx.type_display_names.get(&sup_id);
+            match sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
                 Some(def) => {
-                    if let Some(ref builtin_disc) = def.builtin_type {
-                        // Map TyConDef discriminant string (e.g. "Int") to REPR_* constant.
-                        repr_disc_to_repr_string(builtin_disc) == Some(sub_repr)
-                    } else if !def.constructors.is_empty() {
-                        // Nominal ADT TyCon: Repr cannot be a subtype of a nominal ADT.
+                    if !def.constructors.is_empty() {
                         false
                     } else {
-                        // TyCon without builtin_type and without constructors — structural alias;
-                        // unfold the body and recurse, threading sigma for coinductive correctness.
                         is_subtype_bas_with_sigma(sub, &def.body, ctx, sigma, depth + 1)
                     }
                 }
@@ -843,12 +763,12 @@ pub fn is_atom_subtype(
         }
 
         // Repr vs App(TyCon, _): extract the root TyCon name, dispatch on its builtin_type.
-        (Some(TV_REPR), Some(TV_APP)) => {
+        (Some(TV_NOMINAL), Some(TV_APP)) => {
             // For a parameterized TyCon (e.g., App(Seq, Int)), the value-level type is
-            // determined by the root TyCon, not the argument. Extract op (must be TV_OP).
+            // determined by the root TyCon, not the argument. Extract op (must be TV_NOMINAL).
             let op_tv = typevalue_payload(sup).and_then(|p| payload_typevalue_field(p, FIELD_OP));
             match op_tv {
-                Some(op) if typevalue_ctor(&op) == Some(TV_OP) => {
+                Some(op) if typevalue_ctor(&op) == Some(TV_NOMINAL) => {
                     is_atom_subtype(sub, &op, ctx, depth + 1, sigma)
                 }
                 _ => false,
@@ -877,11 +797,8 @@ fn typevalue_structurally_equal(
         (Some(sp), Some(pp)) => {
             // Compare string fields only (simple equality for Repr, Op, IntLit, StrLit, Var)
             match (typevalue_ctor(sub), typevalue_ctor(sup)) {
-                (Some(TV_REPR), _) => {
-                    payload_string_field(sp, FIELD_REPR) == payload_string_field(pp, FIELD_REPR)
-                }
-                (Some(TV_OP), _) => {
-                    payload_string_field(sp, FIELD_NAME) == payload_string_field(pp, FIELD_NAME)
+                (Some(TV_NOMINAL), _) => {
+                    crate::type_infer::typevalue_nominal_id(sub) == crate::type_infer::typevalue_nominal_id(sup)
                 }
                 (Some(TV_VAR), _) => {
                     payload_string_field(sp, FIELD_NAME) == payload_string_field(pp, FIELD_NAME)
@@ -1270,7 +1187,7 @@ fn is_record_subtype(
 /// as left-spine curried applications, and the n-th parameter is applied at depth n.
 fn app_spine_root_and_depth(op: &Arc<Value>) -> Option<(String, usize)> {
     match typevalue_ctor(op) {
-        Some(TV_OP) => {
+        Some(TV_NOMINAL) => {
             // Root of the spine: this is the TyCon itself.
             let name = typevalue_payload(op)
                 .and_then(|p| payload_string_field(p, FIELD_NAME))
@@ -1751,7 +1668,7 @@ pub(crate) fn substitute_recursive_ref(
             }
             Arc::clone(tv)
         }
-        // Atoms with no TypeValue sub-fields: TV_VAR, TV_UNKNOWN, TV_REPR, TV_OP,
+        // Atoms with no TypeValue sub-fields: TV_VAR, TV_UNKNOWN, TV_NOMINAL, TV_NOMINAL,
         // TV_INT_LIT, TV_STR_LIT, TV_FLOAT_LIT, TV_PHANTOM, TV_SCHEME.
         // TV_SCHEME and TV_PHANTOM are invariant-excluded from Recursive bodies
         // by the type checker — TV_SCHEME is a top-level quantifier that never
@@ -1897,14 +1814,12 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
         // TypeValue.Var: conservative — not disjoint from anything (unresolved)
         (Some(TV_VAR), _) | (_, Some(TV_VAR)) => false,
 
-        // Different Repr values: disjoint (Int and Str, Str and Bytes, etc.)
-        (Some(TV_REPR), Some(TV_REPR)) => {
-            let a_repr = typevalue_payload(a)
-                .and_then(|p| payload_string_field(p, FIELD_REPR).map(String::from));
-            let b_repr = typevalue_payload(b)
-                .and_then(|p| payload_string_field(p, FIELD_REPR).map(String::from));
-            match (a_repr, b_repr) {
-                (Some(ar), Some(br)) => ar != br,
+        // Different Nominal types: disjoint (different ids)
+        (Some(TV_NOMINAL), Some(TV_NOMINAL)) => {
+            let a_id = crate::type_infer::typevalue_nominal_id(a);
+            let b_id = crate::type_infer::typevalue_nominal_id(b);
+            match (a_id, b_id) {
+                (Some(ai), Some(bi)) => ai != bi,
                 _ => false,
             }
         }
@@ -1931,49 +1846,40 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
             }
         }
 
-        // StrLit vs Repr: disjoint iff the Repr is not Value::String.
-        // StrLit values are strings — they can only overlap with Repr("Value::String").
-        (Some(TV_STR_LIT), Some(TV_REPR)) => {
-            let repr = typevalue_payload(b).and_then(|p| payload_string_field(p, FIELD_REPR));
-            repr != Some(REPR_STRING)
+        // StrLit vs Nominal: disjoint iff the Nominal is not String.
+        (Some(TV_STR_LIT), Some(TV_NOMINAL)) => {
+            crate::type_infer::typevalue_nominal_id(b) != Some(crate::value::TYPE_ID_STRING)
         }
-        (Some(TV_REPR), Some(TV_STR_LIT)) => {
-            let repr = typevalue_payload(a).and_then(|p| payload_string_field(p, FIELD_REPR));
-            repr != Some(REPR_STRING)
+        (Some(TV_NOMINAL), Some(TV_STR_LIT)) => {
+            crate::type_infer::typevalue_nominal_id(a) != Some(crate::value::TYPE_ID_STRING)
         }
 
-        // IntLit vs Repr: disjoint iff the Repr is not Value::Int.
-        // IntLit values are integers — they can only overlap with Repr("Value::Int").
-        (Some(TV_INT_LIT), Some(TV_REPR)) => {
-            let repr = typevalue_payload(b).and_then(|p| payload_string_field(p, FIELD_REPR));
-            repr != Some(REPR_INT)
+        // IntLit vs Nominal: disjoint iff the Nominal is not Int.
+        (Some(TV_INT_LIT), Some(TV_NOMINAL)) => {
+            crate::type_infer::typevalue_nominal_id(b) != Some(crate::value::TYPE_ID_INT)
         }
-        (Some(TV_REPR), Some(TV_INT_LIT)) => {
-            let repr = typevalue_payload(a).and_then(|p| payload_string_field(p, FIELD_REPR));
-            repr != Some(REPR_INT)
+        (Some(TV_NOMINAL), Some(TV_INT_LIT)) => {
+            crate::type_infer::typevalue_nominal_id(a) != Some(crate::value::TYPE_ID_INT)
         }
 
-        // FloatLit vs Repr: disjoint iff the Repr is not Value::Float.
-        (Some(TV_FLOAT_LIT), Some(TV_REPR)) => {
-            let repr = typevalue_payload(b).and_then(|p| payload_string_field(p, FIELD_REPR));
-            repr != Some(REPR_FLOAT)
+        // FloatLit vs Nominal: disjoint iff the Nominal is not Float.
+        (Some(TV_FLOAT_LIT), Some(TV_NOMINAL)) => {
+            crate::type_infer::typevalue_nominal_id(b) != Some(crate::value::TYPE_ID_FLOAT)
         }
-        (Some(TV_REPR), Some(TV_FLOAT_LIT)) => {
-            let repr = typevalue_payload(a).and_then(|p| payload_string_field(p, FIELD_REPR));
-            repr != Some(REPR_FLOAT)
+        (Some(TV_NOMINAL), Some(TV_FLOAT_LIT)) => {
+            crate::type_infer::typevalue_nominal_id(a) != Some(crate::value::TYPE_ID_FLOAT)
         }
 
-        // Repr vs everything else (except Var and the literal types handled above): disjoint
-        (Some(TV_REPR), Some(other)) | (Some(other), Some(TV_REPR))
+        // Nominal vs everything else (except Var and the literal types handled above): disjoint
+        (Some(TV_NOMINAL), Some(other)) | (Some(other), Some(TV_NOMINAL))
             if other != TV_VAR
                 && other != TV_INT_LIT
                 && other != TV_STR_LIT
                 && other != TV_FLOAT_LIT =>
         {
             match other {
-                // Record/Fn/App/NominalVariant/Recursive are disjoint from Repr primitives
                 TV_RECORD | TV_FN | TV_APP | TV_NOMINAL_VARIANT | TV_RECURSIVE => true,
-                _ => false, // Conservative
+                _ => false,
             }
         }
 
@@ -1997,8 +1903,8 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
         }
 
         // NominalVariant vs Repr/Record/Fn: disjoint
-        (Some(TV_NOMINAL_VARIANT), Some(TV_REPR))
-        | (Some(TV_REPR), Some(TV_NOMINAL_VARIANT))
+        (Some(TV_NOMINAL_VARIANT), Some(TV_NOMINAL))
+        | (Some(TV_NOMINAL), Some(TV_NOMINAL_VARIANT))
         | (Some(TV_NOMINAL_VARIANT), Some(TV_RECORD))
         | (Some(TV_RECORD), Some(TV_NOMINAL_VARIANT))
         | (Some(TV_NOMINAL_VARIANT), Some(TV_FN))
@@ -2017,20 +1923,8 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
             }
         }
 
-        // Op: different names → disjoint
-        (Some(TV_OP), Some(TV_OP)) => {
-            let a_name = typevalue_payload(a)
-                .and_then(|p| payload_string_field(p, FIELD_NAME).map(String::from));
-            let b_name = typevalue_payload(b)
-                .and_then(|p| payload_string_field(p, FIELD_NAME).map(String::from));
-            match (a_name, b_name) {
-                (Some(an), Some(bn)) => an != bn,
-                _ => false,
-            }
-        }
-
-        // Fn vs Op: disjoint
-        (Some(TV_FN), Some(TV_OP)) | (Some(TV_OP), Some(TV_FN)) => true,
+        // Fn vs Nominal: disjoint
+        (Some(TV_FN), Some(TV_NOMINAL)) | (Some(TV_NOMINAL), Some(TV_FN)) => true,
 
         // Fn vs App: disjoint. A function type (TV_FN) and a type-constructor application
         // (TV_APP) are distinct structural forms — no value can inhabit both simultaneously.
@@ -2318,13 +2212,13 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         return true;
     }
 
-    // TV_OP sub vs TV_APP sup: Op("Seq") is the erased form of App(Op("Seq"), ?).
+    // TV_NOMINAL sub vs TV_APP sup: Op("Seq") is the erased form of App(Op("Seq"), ?).
     // Consistent if the App's op is consistent with the Op (same type constructor).
     // Sub has no arg information → gradual with respect to any App arg.
     //
     // Example: Seq.Cons has ground type Op("Seq"); annotation [Seq a] is App(Op("Seq"), Var(a)).
     // Op("Seq") ~<: App(Op("Seq"), Var(a)): op matches, arg is gradual → true.
-    if matches!(sub_ctor, Some(TV_OP)) && matches!(sup_ctor, Some(TV_APP)) {
+    if matches!(sub_ctor, Some(TV_NOMINAL)) && matches!(sup_ctor, Some(TV_APP)) {
         if let Some(sup_payload) = typevalue_payload(sup) {
             if let Some(sup_op_tv) = payload_typevalue_field(sup_payload, FIELD_OP) {
                 // Check op consistency: Op("Seq") ~<: Op("Seq") → true; Op("Seq") ~<: Op("List") → false
@@ -2484,7 +2378,7 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
     // Repr/Repr, Op/Op, IntLit/IntLit, StrLit/StrLit, FloatLit/FloatLit.
     if sub_ctor == sup_ctor {
         match sub_ctor {
-            Some(TV_REPR) | Some(TV_OP) | Some(TV_INT_LIT) | Some(TV_STR_LIT)
+            Some(TV_NOMINAL) | Some(TV_INT_LIT) | Some(TV_STR_LIT)
             | Some(TV_FLOAT_LIT) | Some(TV_NOMINAL_VARIANT) => {
                 return is_subtype_bas(sub, sup, ctx);
             }
@@ -2501,16 +2395,11 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
     //   Op/Repr — opaque type vs repr
     if matches!(
         (sub_ctor, sup_ctor),
-        (Some(TV_REPR), Some(TV_OP))
-            | (Some(TV_REPR), Some(TV_APP))
-            | (Some(TV_NOMINAL_VARIANT), Some(TV_OP))
-            | (Some(TV_INT_LIT), Some(TV_REPR))
-            | (Some(TV_STR_LIT), Some(TV_REPR))
-            | (Some(TV_FLOAT_LIT), Some(TV_REPR))
-            | (Some(TV_INT_LIT), Some(TV_OP))
-            | (Some(TV_STR_LIT), Some(TV_OP))
-            | (Some(TV_FLOAT_LIT), Some(TV_OP))
-            | (Some(TV_OP), Some(TV_REPR))
+        (Some(TV_NOMINAL), Some(TV_APP))
+            | (Some(TV_NOMINAL_VARIANT), Some(TV_NOMINAL))
+            | (Some(TV_INT_LIT), Some(TV_NOMINAL))
+            | (Some(TV_STR_LIT), Some(TV_NOMINAL))
+            | (Some(TV_FLOAT_LIT), Some(TV_NOMINAL))
     ) {
         return is_subtype_bas(sub, sup, ctx);
     }
@@ -2536,20 +2425,8 @@ mod tests {
         InferenceContext::new()
     }
 
-    fn make_repr(repr: &str) -> Arc<Value> {
-        let span = bas_span();
-        let mut fields = IndexMap::new();
-        fields.insert(
-            FIELD_REPR.to_string(),
-            Arc::new(Value::String {
-                source: Arc::from(repr),
-                start: 0,
-                end: repr.len(),
-                type_val: unknown_type_val(),
-            }),
-        );
-        let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_REPR, payload_thunk)
+    fn make_nominal(id: u64) -> Arc<Value> {
+        crate::type_infer::make_typevalue_nominal(id)
     }
 
     fn make_top() -> Arc<Value> {
@@ -2582,23 +2459,23 @@ mod tests {
     #[test]
     fn test_is_subtype_bas_repr_same() {
         let ctx = empty_ctx();
-        let int1 = make_repr(REPR_INT);
-        let int2 = make_repr(REPR_INT);
+        let int1 = make_nominal(crate::value::TYPE_ID_INT);
+        let int2 = make_nominal(crate::value::TYPE_ID_INT);
         assert!(is_subtype_bas(&int1, &int2, &ctx));
     }
 
     #[test]
     fn test_is_subtype_bas_repr_different() {
         let ctx = empty_ctx();
-        let int = make_repr(REPR_INT);
-        let str_ = make_repr(REPR_STRING);
+        let int = make_nominal(crate::value::TYPE_ID_INT);
+        let str_ = make_nominal(crate::value::TYPE_ID_STRING);
         assert!(!is_subtype_bas(&int, &str_, &ctx));
     }
 
     #[test]
     fn test_is_subtype_bas_never_subtype_of_int() {
         let ctx = empty_ctx();
-        let int = make_repr(REPR_INT);
+        let int = make_nominal(crate::value::TYPE_ID_INT);
         let never = make_never();
         assert!(is_subtype_bas(&never, &int, &ctx));
     }
@@ -2606,7 +2483,7 @@ mod tests {
     #[test]
     fn test_is_subtype_bas_int_subtype_of_top() {
         let ctx = empty_ctx();
-        let int = make_repr(REPR_INT);
+        let int = make_nominal(crate::value::TYPE_ID_INT);
         let top = make_top();
         assert!(is_subtype_bas(&int, &top, &ctx));
     }
@@ -2614,7 +2491,7 @@ mod tests {
     #[test]
     fn test_is_subtype_bas_unknown_not_subtype() {
         let ctx = empty_ctx();
-        let int = make_repr(REPR_INT);
+        let int = make_nominal(crate::value::TYPE_ID_INT);
         let unknown = make_unknown();
         assert!(!is_subtype_bas(&unknown, &int, &ctx));
         assert!(!is_subtype_bas(&int, &unknown, &ctx));
@@ -2756,7 +2633,7 @@ mod tests {
     fn test_int_lit_subtype_of_int_repr() {
         let ctx = empty_ctx();
         let lit = make_int_lit(42);
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         assert!(
             is_subtype_bas(&lit, &int_repr, &ctx),
             "IntLit(42) must be a subtype of Repr(Int)"
@@ -2768,7 +2645,7 @@ mod tests {
     fn test_int_lit_not_subtype_of_str_repr() {
         let ctx = empty_ctx();
         let lit = make_int_lit(42);
-        let str_repr = make_repr(REPR_STRING);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         assert!(
             !is_subtype_bas(&lit, &str_repr, &ctx),
             "IntLit(42) must NOT be a subtype of Repr(String)"
@@ -2780,7 +2657,7 @@ mod tests {
     fn test_str_lit_subtype_of_str_repr() {
         let ctx = empty_ctx();
         let lit = make_str_lit("hello");
-        let str_repr = make_repr(REPR_STRING);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         assert!(
             is_subtype_bas(&lit, &str_repr, &ctx),
             "StrLit must be a subtype of Repr(String)"
@@ -2796,7 +2673,7 @@ mod tests {
     fn test_str_lit_not_disjoint_from_repr_string() {
         let ctx = empty_ctx();
         let lit = make_str_lit("hi");
-        let str_repr = make_repr(REPR_STRING);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         assert!(
             !atoms_are_disjoint(&lit, &str_repr, &ctx),
             "StrLit and Repr(String) must NOT be disjoint"
@@ -2808,7 +2685,7 @@ mod tests {
     fn test_str_lit_disjoint_from_repr_int() {
         let ctx = empty_ctx();
         let lit = make_str_lit("hi");
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         assert!(
             atoms_are_disjoint(&lit, &int_repr, &ctx),
             "StrLit and Repr(Int) must be disjoint"
@@ -2820,7 +2697,7 @@ mod tests {
     fn test_int_lit_not_disjoint_from_repr_int() {
         let ctx = empty_ctx();
         let lit = make_int_lit(42);
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         assert!(
             !atoms_are_disjoint(&lit, &int_repr, &ctx),
             "IntLit and Repr(Int) must NOT be disjoint"
@@ -2832,7 +2709,7 @@ mod tests {
     fn test_int_lit_disjoint_from_repr_string() {
         let ctx = empty_ctx();
         let lit = make_int_lit(42);
-        let str_repr = make_repr(REPR_STRING);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         assert!(
             atoms_are_disjoint(&lit, &str_repr, &ctx),
             "IntLit and Repr(String) must be disjoint"
@@ -2844,7 +2721,7 @@ mod tests {
     fn test_float_lit_not_disjoint_from_repr_float() {
         let ctx = empty_ctx();
         let lit = make_float_lit(3.14);
-        let float_repr = make_repr(REPR_FLOAT);
+        let float_repr = make_nominal(crate::value::TYPE_ID_FLOAT);
         assert!(
             !atoms_are_disjoint(&lit, &float_repr, &ctx),
             "FloatLit and Repr(Float) must NOT be disjoint"
@@ -2856,7 +2733,7 @@ mod tests {
     fn test_float_lit_disjoint_from_repr_int() {
         let ctx = empty_ctx();
         let lit = make_float_lit(3.14);
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         assert!(
             atoms_are_disjoint(&lit, &int_repr, &ctx),
             "FloatLit and Repr(Int) must be disjoint"
@@ -2907,8 +2784,8 @@ mod tests {
     #[test]
     fn test_conjunction_emptiness_disjoint_positives() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         // is_subtype_bas(Int, String) should be false (disjoint positives mean intersection empty)
         assert!(
             !is_subtype_bas(&int_repr, &str_repr, &ctx),
@@ -2930,8 +2807,8 @@ mod tests {
     #[test]
     fn test_conjunction_emptiness_subsumed_by_negative() {
         let ctx = empty_ctx();
-        let int1 = make_repr(REPR_INT);
-        let int2 = make_repr(REPR_INT);
+        let int1 = make_nominal(crate::value::TYPE_ID_INT);
+        let int2 = make_nominal(crate::value::TYPE_ID_INT);
         let mut sigma = std::collections::HashSet::new();
         let conj = vec![
             SignedAtom::Pos(Arc::clone(&int1)),
@@ -2974,9 +2851,9 @@ mod tests {
         // If the sigma from checking one conjunction leaked into the next, a
         // spurious coinductive hypothesis from C1 could make C2 vacuously true.
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
-        let float_repr = make_repr(REPR_FLOAT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
+        let float_repr = make_nominal(crate::value::TYPE_ID_FLOAT);
 
         // Int <: Top (trivially true, no sigma needed)
         assert!(is_subtype_bas(&int_repr, &make_top(), &ctx), "Int <: Top");
@@ -3028,7 +2905,7 @@ mod tests {
 
         // Build: mu.X.(Int | X)
         //   body = Union(Int, RecursiveRef(0))
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         let recursive_ref = make_recursive_ref(0);
         let body = make_union(vec![Arc::clone(&int_repr), Arc::clone(&recursive_ref)]);
         let mu_type = make_recursive(body);
@@ -3065,8 +2942,8 @@ mod tests {
     #[test]
     fn test_structural_fingerprint_stability() {
         // Build two identical mu.X.(Int | {x: X}) from scratch
-        let int_repr_1 = make_repr(REPR_INT);
-        let int_repr_2 = make_repr(REPR_INT);
+        let int_repr_1 = make_nominal(crate::value::TYPE_ID_INT);
+        let int_repr_2 = make_nominal(crate::value::TYPE_ID_INT);
         let rec_ref_1 = make_recursive_ref(0);
         let rec_ref_2 = make_recursive_ref(0);
         let record_1 = make_record(vec![("x", rec_ref_1)]);
@@ -3088,7 +2965,7 @@ mod tests {
         );
 
         // Verify different types produce different fingerprints
-        let str_repr = make_repr(REPR_STRING);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let body_diff = make_union(vec![
             str_repr,
             make_record(vec![("x", make_recursive_ref(0))]),
@@ -3112,7 +2989,7 @@ mod tests {
         let ctx = empty_ctx();
 
         // Build {x: mu.X.(Int | X)} — two separate allocations
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         let body_a = make_union(vec![Arc::clone(&int_repr), make_recursive_ref(0)]);
         let mu_a = make_recursive(body_a);
         let rec_a = make_record(vec![("x", mu_a)]);
@@ -3138,44 +3015,20 @@ mod tests {
     /// distribute returns Top (inhabited), causing is_subtype to return false (conservative).
     #[test]
     fn test_b467_distribute_respects_limit() {
-        // Build 33 repr types. Cross-product of two 33-element RDNFs = 33*33 = 1089 > 1024.
-        let repr_strs = [
-            REPR_INT,
-            REPR_STRING,
-            REPR_FLOAT,
-            REPR_PROXY, // REPR_BOOL excluded: Value::Bool is a phantom (no runtime variant)
-            REPR_BYTES,
-            REPR_DICT,
-            REPR_FUNCTION,
-            REPR_FILE,
-            REPR_DIR_CAP,
-            REPR_NET_CAP,
-            REPR_TASK,
-            REPR_CHANNEL,
-            REPR_CONTEXT,
-            REPR_REACTIVE_CELL,
-            REPR_CLOCK_CAP,
-            REPR_TIMEZONE,
-            REPR_TIMESTAMP,
-            REPR_DURATION,
-            REPR_DECIMAL,
-            REPR_BIGINT,
-            REPR_QUIC_SESSION,
-            REPR_QUIC_DATAGRAM_HANDLE,
-            REPR_HTTP2_SESSION,
-            REPR_HTTP3_SESSION,
-            REPR_URI,
-            REPR_PROGRAM,
-            REPR_DOCUMENT,
-            REPR_TYPE_CONTEXT,
-            // Duplicate some to reach 33
-            REPR_INT,
-            REPR_STRING,
-            REPR_FLOAT,
-            REPR_ARENA, // REPR_BOOL excluded: Value::Bool is a phantom (no runtime variant)
-            REPR_BYTES,
+        use crate::value::*;
+        let type_ids: Vec<u64> = vec![
+            TYPE_ID_INT, TYPE_ID_STRING, TYPE_ID_FLOAT, TYPE_ID_PROXY,
+            TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_FILE,
+            TYPE_ID_DIRCAP, TYPE_ID_NETCAP, TYPE_ID_TASK, TYPE_ID_CHANNEL,
+            TYPE_ID_CONTEXT, TYPE_ID_REACTIVE_CELL, TYPE_ID_CLOCKCAP,
+            TYPE_ID_TIMEZONE, TYPE_ID_TIMESTAMP, TYPE_ID_DURATION,
+            TYPE_ID_DECIMAL, TYPE_ID_BIGINT, TYPE_ID_QUIC_SESSION,
+            TYPE_ID_QUIC_DATAGRAM_HANDLE, TYPE_ID_HTTP2_SESSION,
+            TYPE_ID_HTTP3_SESSION, TYPE_ID_URI, TYPE_ID_PROGRAM,
+            TYPE_ID_DOCUMENT, TYPE_ID_TYPE_CONTEXT,
+            TYPE_ID_INT, TYPE_ID_STRING, TYPE_ID_FLOAT, TYPE_ID_ARENA, TYPE_ID_BYTES,
         ];
-        let members: Vec<Arc<Value>> = repr_strs.iter().map(|r| make_repr(r)).collect();
+        let members: Vec<Arc<Value>> = type_ids.iter().map(|id| make_nominal(*id)).collect();
         let union_a = to_rdnf(&make_union(members.clone()));
         let union_b = to_rdnf(&make_union(members));
         // Cross product: 33 * 33 = 1089 > MAX_RDNF_CONJUNCTIONS (1024)
@@ -3201,10 +3054,10 @@ mod tests {
     #[test]
     fn test_b467_distribute_within_limit() {
         // Union([A, B]) & Union([C, D]) → 4 conjunctions (2×2), well within 1024 limit.
-        let a = make_repr(REPR_INT);
-        let b = make_repr(REPR_STRING);
-        let c = make_repr(REPR_FLOAT);
-        let d = make_repr(REPR_BYTES);
+        let a = make_nominal(crate::value::TYPE_ID_INT);
+        let b = make_nominal(crate::value::TYPE_ID_STRING);
+        let c = make_nominal(crate::value::TYPE_ID_FLOAT);
+        let d = make_nominal(crate::value::TYPE_ID_BYTES);
         let union1 = to_rdnf(&make_union(vec![Arc::clone(&a), Arc::clone(&b)]));
         let union2 = to_rdnf(&make_union(vec![Arc::clone(&c), Arc::clone(&d)]));
         let result = distribute(&union1, &union2);
@@ -3231,10 +3084,10 @@ mod tests {
         // We use is_subtype_bas rather than distribute directly to test end-to-end
         // behavior including the safety valve.
         let reprs: Vec<Arc<Value>> = vec![
-            make_repr(REPR_INT),
-            make_repr(REPR_STRING),
-            make_repr(REPR_FLOAT),
-            make_repr(REPR_BYTES),
+            make_nominal(crate::value::TYPE_ID_INT),
+            make_nominal(crate::value::TYPE_ID_STRING),
+            make_nominal(crate::value::TYPE_ID_FLOAT),
+            make_nominal(crate::value::TYPE_ID_BYTES),
         ];
         let big_union = make_union(reprs);
         let ctx = empty_ctx();
@@ -3244,7 +3097,7 @@ mod tests {
             "any type must be subtype of Top"
         );
         assert!(
-            is_subtype_bas(&make_repr(REPR_INT), &big_union, &ctx),
+            is_subtype_bas(&make_nominal(crate::value::TYPE_ID_INT), &big_union, &ctx),
             "Int must be subtype of union containing Int"
         );
     }
@@ -3261,7 +3114,7 @@ mod tests {
     #[test]
     fn test_fn_subtype_contravariant_params() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         let int_lit = make_int_lit(42);
         let top = make_top();
         // sub: Fn(Int) -> Top
@@ -3279,8 +3132,8 @@ mod tests {
     #[test]
     fn test_fn_subtype_covariant_return_fails() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let top = make_top();
         // sub: Fn(Top) -> Int
         let sub = make_fn(vec![Arc::clone(&top)], Arc::clone(&int_repr));
@@ -3300,7 +3153,7 @@ mod tests {
     #[test]
     fn test_record_subtype_width() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         // sub has extra field y
         let sub = make_record(vec![
             ("x", Arc::clone(&int_repr)),
@@ -3319,7 +3172,7 @@ mod tests {
     #[test]
     fn test_record_subtype_missing_field_fails() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         let sub = make_record(vec![("x", Arc::clone(&int_repr))]);
         let sup = make_record(vec![
             ("x", Arc::clone(&int_repr)),
@@ -3342,8 +3195,8 @@ mod tests {
     #[test]
     fn test_is_fn_subtype_basic_covariant_return() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let top = make_top();
         // sub: Fn(Int) -> Str
         let sub = make_fn(vec![Arc::clone(&int_repr)], Arc::clone(&str_repr));
@@ -3364,8 +3217,8 @@ mod tests {
     #[test]
     fn test_is_fn_subtype_basic_contravariant_params() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let top = make_top();
         // sub: Fn(Top) -> Int  (accepts anything as param)
         let sub = make_fn(vec![Arc::clone(&top)], Arc::clone(&int_repr));
@@ -3386,8 +3239,8 @@ mod tests {
     #[test]
     fn test_is_fn_subtype_arity_mismatch() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         // sub: Fn(Int, Str) -> Int  — 2 params
         let sub = make_fn(
             vec![Arc::clone(&int_repr), Arc::clone(&str_repr)],
@@ -3410,8 +3263,8 @@ mod tests {
     #[test]
     fn test_is_record_subtype_width_subtyping() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         // sub: {x: Int, y: Str}
         let sub = make_record(vec![
             ("x", Arc::clone(&int_repr)),
@@ -3433,8 +3286,8 @@ mod tests {
     #[test]
     fn test_is_record_subtype_field_type_mismatch() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         // sub: {x: Int}
         let sub = make_record(vec![("x", Arc::clone(&int_repr))]);
         // sup: {x: Str}
@@ -3452,8 +3305,8 @@ mod tests {
     #[test]
     fn test_is_record_subtype_missing_field() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         // sub: {x: Int}
         let sub = make_record(vec![("x", Arc::clone(&int_repr))]);
         // sup: {x: Int, y: Str}
@@ -3492,9 +3345,9 @@ mod tests {
         let ctx = empty_ctx();
         // Two distinct Arc allocations for the same Repr(Int) type —
         // ptr_eq does NOT fire, so the RDNF / is_atom_subtype path is taken.
-        let int_a = make_repr(REPR_INT);
-        let int_b = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_a = make_nominal(crate::value::TYPE_ID_INT);
+        let int_b = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
 
         // Confirm these are distinct Arcs (if ptr_eq, the test loses its meaning).
         assert!(
@@ -3545,7 +3398,7 @@ mod tests {
     #[test]
     fn test_depth_guard_fires_in_is_atom_subtype() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         let mut sigma = std::collections::HashSet::new();
 
         // At depth == MAX_ATOM_SUBTYPE_DEPTH the guard must fire and return false.
@@ -3597,8 +3450,8 @@ mod tests {
     #[test]
     fn test_union_subtype_member() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let union = make_union(vec![Arc::clone(&int_repr), Arc::clone(&str_repr)]);
         assert!(
             is_subtype_bas(&int_repr, &union, &ctx),
@@ -3610,8 +3463,8 @@ mod tests {
     #[test]
     fn test_union_not_subtype_of_member() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let union = make_union(vec![Arc::clone(&int_repr), Arc::clone(&str_repr)]);
         assert!(
             !is_subtype_bas(&union, &int_repr, &ctx),
@@ -3624,8 +3477,8 @@ mod tests {
     #[test]
     fn test_inter_disjoint_is_empty() {
         let ctx = empty_ctx();
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let inter = make_inter(vec![Arc::clone(&int_repr), Arc::clone(&str_repr)]);
         let never = make_never();
         assert!(
@@ -3672,8 +3525,8 @@ mod tests {
     /// After substituting depth=0 with Repr("Value::String"), the arg becomes Repr.
     #[test]
     fn test_substitute_recursive_ref_tv_app_arg() {
-        let int_repr = make_repr(REPR_INT);
-        let str_repr = make_repr(REPR_STRING);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
+        let str_repr = make_nominal(crate::value::TYPE_ID_STRING);
         let rec_ref = make_recursive_ref(0);
 
         // Build App(int_repr, rec_ref)
@@ -3696,8 +3549,8 @@ mod tests {
             .expect("result TV_APP payload must have 'arg' field");
         assert_eq!(
             typevalue_ctor(&got_arg),
-            Some(TV_REPR),
-            "substituted arg must be TV_REPR (the replacement), not RecursiveRef"
+            Some(TV_NOMINAL),
+            "substituted arg must be TV_NOMINAL (the replacement), not RecursiveRef"
         );
     }
 
@@ -3707,7 +3560,7 @@ mod tests {
     /// After substituting depth=0 with Repr("Value::Int"), the field type becomes Int.
     #[test]
     fn test_substitute_recursive_ref_tv_nominal_variant_fields() {
-        let int_repr = make_repr(REPR_INT);
+        let int_repr = make_nominal(crate::value::TYPE_ID_INT);
         let rec_ref = make_recursive_ref(0);
 
         // Build a Record with one field "r" whose type is RecursiveRef{depth:0}
@@ -3747,8 +3600,8 @@ mod tests {
             .clone();
         assert_eq!(
             typevalue_ctor(&got_r),
-            Some(TV_REPR),
-            "substituted 'r' field must be TV_REPR (int_repr), not RecursiveRef"
+            Some(TV_NOMINAL),
+            "substituted 'r' field must be TV_NOMINAL (int_repr), not RecursiveRef"
         );
     }
 }

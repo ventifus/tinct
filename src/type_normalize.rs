@@ -154,7 +154,7 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
 /// Parallel to `typenode_leaf_to_type` but returns TypeValue instead of Type.
 pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
     use crate::type_infer::{
-        make_typevalue_never, make_typevalue_op, make_typevalue_repr, make_typevalue_top,
+        make_typevalue_never, make_typevalue_nominal, make_typevalue_top,
         make_typevalue_unknown,
     };
     let tag = match val {
@@ -162,10 +162,10 @@ pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
         _ => return None,
     };
     match tag.as_str() {
-        TN_INT => Some(make_typevalue_repr(REPR_INT)),
-        TN_FLOAT => Some(make_typevalue_repr(REPR_FLOAT)),
-        TN_STRING => Some(make_typevalue_repr(REPR_STRING)),
-        TN_BYTES => Some(make_typevalue_repr(REPR_BYTES)),
+        TN_INT => Some(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
+        TN_FLOAT => Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT)),
+        TN_STRING => Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING)),
+        TN_BYTES => Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES)),
         TN_NEVER => Some(make_typevalue_never()),
         TN_UNKNOWN => Some(make_typevalue_unknown()),
         TN_TOP => Some(make_typevalue_top()),
@@ -174,32 +174,31 @@ pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
             let fields: indexmap::IndexMap<String, Arc<Value>> = indexmap::IndexMap::new();
             Some(crate::typecheck::make_typevalue_record_pub(fields, None))
         }
-        // Opaque builtin types — each maps to TypeValue.Op
-        TN_PROGRAM => Some(make_typevalue_op(OP_PROGRAM)),
-        TN_DOCUMENT => Some(make_typevalue_op(OP_DOCUMENT)),
-        TN_CORE_DOCUMENT => Some(make_typevalue_op(OP_CORE_DOCUMENT)),
-        TN_TYPE_CONTEXT => Some(make_typevalue_op(OP_TYPE_CONTEXT)),
-        TN_DIR_CAP => Some(make_typevalue_op(OP_DIR_CAP)),
-        TN_NET_CAP => Some(make_typevalue_op(OP_NET_CAP)),
-        TN_HANDLE => Some(make_typevalue_op(OP_HANDLE)),
-        TN_FILE => Some(make_typevalue_op(OP_FILE)),
-        TN_BUILDER_HANDLE => Some(make_typevalue_op(OP_BUILDER_HANDLE)),
-        TN_TASK => Some(make_typevalue_op(OP_TASK)),
-        TN_CHANNEL => Some(make_typevalue_op(OP_CHANNEL)),
-        TN_CONTEXT => Some(make_typevalue_op(OP_CONTEXT)),
-        TN_REACTIVE_CELL => Some(make_typevalue_op(OP_REACTIVE_CELL)),
-        TN_CLOCK_CAP => Some(make_typevalue_op(OP_CLOCK_CAP)),
-        TN_TIMEZONE => Some(make_typevalue_op(OP_TIMEZONE)),
-        TN_TIMESTAMP => Some(make_typevalue_op(OP_TIMESTAMP)),
-        TN_DURATION => Some(make_typevalue_op(OP_DURATION)),
-        TN_DECIMAL => Some(make_typevalue_op(OP_DECIMAL)),
-        TN_BIG_INT => Some(make_typevalue_op(OP_BIG_INT)),
-        TN_QUIC_SESSION => Some(make_typevalue_op(OP_QUIC_SESSION)),
-        TN_QUIC_DATAGRAM_HANDLE => Some(make_typevalue_op(OP_QUIC_DATAGRAM_HANDLE)),
-        TN_HTTP2_SESSION => Some(make_typevalue_op(OP_HTTP2_SESSION)),
-        TN_HTTP3_SESSION => Some(make_typevalue_op(OP_HTTP3_SESSION)),
-        TN_URI => Some(make_typevalue_op(OP_URI)),
-        TN_URN => Some(make_typevalue_op(OP_URN)),
+        TN_PROGRAM => Some(make_typevalue_nominal(crate::value::TYPE_ID_PROGRAM)),
+        TN_DOCUMENT => Some(make_typevalue_nominal(crate::value::TYPE_ID_DOCUMENT)),
+        TN_CORE_DOCUMENT => Some(make_typevalue_nominal(crate::value::TYPE_ID_CORE_DOCUMENT)),
+        TN_TYPE_CONTEXT => Some(make_typevalue_nominal(crate::value::TYPE_ID_TYPE_CONTEXT)),
+        TN_DIR_CAP => Some(make_typevalue_nominal(crate::value::TYPE_ID_DIRCAP)),
+        TN_NET_CAP => Some(make_typevalue_nominal(crate::value::TYPE_ID_NETCAP)),
+        TN_HANDLE => Some(make_typevalue_nominal(crate::value::TYPE_ID_FILE)),
+        TN_FILE => Some(make_typevalue_nominal(crate::value::TYPE_ID_FILE)),
+        TN_BUILDER_HANDLE => Some(make_typevalue_nominal(crate::value::TYPE_ID_BUILDER)),
+        TN_TASK => Some(make_typevalue_nominal(crate::value::TYPE_ID_TASK)),
+        TN_CHANNEL => Some(make_typevalue_nominal(crate::value::TYPE_ID_CHANNEL)),
+        TN_CONTEXT => Some(make_typevalue_nominal(crate::value::TYPE_ID_CONTEXT)),
+        TN_REACTIVE_CELL => Some(make_typevalue_nominal(crate::value::TYPE_ID_REACTIVE_CELL)),
+        TN_CLOCK_CAP => Some(make_typevalue_nominal(crate::value::TYPE_ID_CLOCKCAP)),
+        TN_TIMEZONE => Some(make_typevalue_nominal(crate::value::TYPE_ID_TIMEZONE)),
+        TN_TIMESTAMP => Some(make_typevalue_nominal(crate::value::TYPE_ID_TIMESTAMP)),
+        TN_DURATION => Some(make_typevalue_nominal(crate::value::TYPE_ID_DURATION)),
+        TN_DECIMAL => Some(make_typevalue_nominal(crate::value::TYPE_ID_DECIMAL)),
+        TN_BIG_INT => Some(make_typevalue_nominal(crate::value::TYPE_ID_BIGINT)),
+        TN_QUIC_SESSION => Some(make_typevalue_nominal(crate::value::TYPE_ID_QUIC_SESSION)),
+        TN_QUIC_DATAGRAM_HANDLE => Some(make_typevalue_nominal(crate::value::TYPE_ID_QUIC_DATAGRAM_HANDLE)),
+        TN_HTTP2_SESSION => Some(make_typevalue_nominal(crate::value::TYPE_ID_HTTP2_SESSION)),
+        TN_HTTP3_SESSION => Some(make_typevalue_nominal(crate::value::TYPE_ID_HTTP3_SESSION)),
+        TN_URI => Some(make_typevalue_nominal(crate::value::TYPE_ID_URI)),
+        TN_URN => Some(make_typevalue_nominal(crate::value::TYPE_ID_URI)),
         _ => None,
     }
 }

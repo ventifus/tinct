@@ -4,20 +4,33 @@
 
 use super::{constrain, process_deferred_equalities, unify};
 use crate::type_tags::*;
-// resolve_has_field, MAX_RESOLVE_HAS_FIELD_DEPTH, promote_literal_for_constrained_var: deleted
-// promote_literal_for_constrained_var deleted — test removed
 
 use crate::rust_span;
 use std::sync::Arc;
-// ConstraintArg deleted in S-1003.
 use crate::type_def::{TyConDef, Variance};
 use crate::type_infer::{
-    make_typevalue_op, make_typevalue_repr, make_typevalue_unknown, make_typevar_value,
+    make_typevalue_nominal, make_typevalue_unknown, make_typevar_value,
 };
 use crate::types::InferState;
 // Constraint deleted in S-1003 — constraints are Vec<Arc<Value>> ConstraintDecls.
 // Kind deleted in S-1003 — kind is now Arc<Value> (TypeValue.Op{name}).
 use crate::value::{unknown_type_val, Value};
+
+const TEST_ID_BOOL: u64 = 1000;
+const TEST_ID_SEQ: u64 = 1001;
+const TEST_ID_COLOR: u64 = 1002;
+const TEST_ID_SHAPE: u64 = 1003;
+const TEST_ID_FOO: u64 = 1004;
+const TEST_ID_F: u64 = 1005;
+const TEST_ID_COVF: u64 = 1006;
+const TEST_ID_LIST: u64 = 1007;
+const TEST_ID_ALIAS: u64 = 1008;
+const TEST_ID_ALIAS_A: u64 = 1009;
+const TEST_ID_ALIAS_B: u64 = 1010;
+const TEST_ID_KNOWN_ALIAS: u64 = 1011;
+const TEST_ID_UNKNOWN_OP: u64 = 1012;
+const TEST_ID_HANDLE: u64 = 1013;
+const TEST_ID_EMPTY: u64 = 1014;
 
 /// Check if a TypeVar is bound in the InferenceContext. Returns Some(bound_value) if bound,
 /// None if the TypeVar is still free (unbound).
@@ -214,8 +227,8 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
 /// Verify constructibility and correct TV_RECORD ctor tag.
 #[tokio::test]
 async fn test_types_are_disjoint_single_field_records() {
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let rec1 = make_record_tv(vec![("x", int_tv)]);
     let rec2 = make_record_tv(vec![("y", str_tv)]);
 
@@ -249,8 +262,8 @@ async fn test_types_are_disjoint_single_field_records() {
 /// or fail (concrete type mismatch). Verifies the record structure and ctor tag.
 #[tokio::test]
 async fn test_types_are_not_disjoint_same_key_records() {
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let rec1 = make_record_tv(vec![("x", int_tv)]);
     let rec2 = make_record_tv(vec![("x", str_tv)]);
     assert!(
@@ -275,10 +288,10 @@ async fn test_types_are_not_disjoint_same_key_records() {
 /// Task 3c: Multi-field records with all-different keys: constrain fails (missing fields).
 #[tokio::test]
 async fn test_types_are_not_disjoint_multi_field_records() {
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let bool_tv = make_typevalue_op("TestBool");
-    let float_tv = make_typevalue_repr(REPR_FLOAT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let bool_tv = make_typevalue_nominal(TEST_ID_BOOL);
+    let float_tv = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
     let rec1 = make_record_tv(vec![("x", int_tv), ("a", bool_tv)]);
     let rec2 = make_record_tv(vec![("y", str_tv), ("b", float_tv)]);
     assert!(
@@ -330,9 +343,9 @@ async fn test_union_vs_union_with_typevars_defers() {
     state.set_level("b".to_string(), 0);
 
     // Union([Repr(Int), Var(a)]) ~ Union([Repr(String), Var(b)])
-    let lhs = make_union_tv(vec![make_typevalue_repr(REPR_INT), make_typevar_value("a")]);
+    let lhs = make_union_tv(vec![make_typevalue_nominal(crate::value::TYPE_ID_INT), make_typevar_value("a")]);
     let rhs = make_union_tv(vec![
-        make_typevalue_repr(REPR_STRING),
+        make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         make_typevar_value("b"),
     ]);
 
@@ -365,8 +378,8 @@ async fn test_union_vs_union_concrete_no_deferral() {
     let span = rust_span!();
 
     // Union([Repr(Int)]) ~ Union([Repr(Int)]) — concrete, no TypeVars
-    let lhs = make_union_tv(vec![make_typevalue_repr(REPR_INT)]);
-    let rhs = make_union_tv(vec![make_typevalue_repr(REPR_INT)]);
+    let lhs = make_union_tv(vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)]);
+    let rhs = make_union_tv(vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)]);
 
     // This falls through to the generic _ => Err arm (no C-Var1 match either),
     // not the deferral arm. Deferred_equalities should remain empty.
@@ -395,7 +408,7 @@ async fn test_unify_type_var_occurs_in_type_stage_app() {
     let type_var_a = make_typevar_value("a");
     // TypeValue.App { op: TypeValue.Op{name:"F"}, arg: TypeVar("a") }
     let type_stage_app_f_a =
-        crate::type_normalize::make_typevalue_app(make_typevalue_op("F"), make_typevar_value("a"));
+        crate::type_normalize::make_typevalue_app(make_typevalue_nominal(TEST_ID_F), make_typevar_value("a"));
 
     let result = unify_sync(
         &type_var_a,
@@ -434,8 +447,8 @@ async fn test_unify_variadic_zero_with_concrete_arity() {
     // Arity mismatch (0 vs 1) with both non-variadic → Err.
     let any_function = make_fn_tv(vec![], make_typevalue_unknown());
     let concrete_fn = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("TestBool"),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(TEST_ID_BOOL),
     );
 
     let result = unify_sync(
@@ -469,7 +482,7 @@ async fn test_unify_variadic_zero_with_zero_non_variadic() {
     // Unknown is consistent with everything (gradual typing) → both constraints succeed.
     // Overall: Ok.
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
-    let zero_fn = make_fn_tv(vec![], make_typevalue_repr(REPR_INT));
+    let zero_fn = make_fn_tv(vec![], make_typevalue_nominal(crate::value::TYPE_ID_INT));
     let result = unify_sync(&any_fn, &zero_fn, &mut state.ctx, &mut Vec::new(), span).await;
     assert!(
         result.is_ok(),
@@ -487,11 +500,11 @@ async fn test_unify_variadic_zero_with_multi_param() {
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let multi_fn = make_fn_tv(
         vec![
-            make_typevalue_repr(REPR_INT),
-            make_typevalue_repr(REPR_STRING),
-            make_typevalue_op("TestBool"),
+            make_typevalue_nominal(crate::value::TYPE_ID_INT),
+            make_typevalue_nominal(crate::value::TYPE_ID_STRING),
+            make_typevalue_nominal(TEST_ID_BOOL),
         ],
-        make_typevalue_repr(REPR_FLOAT),
+        make_typevalue_nominal(crate::value::TYPE_ID_FLOAT),
     );
     let result = unify_sync(&any_fn, &multi_fn, &mut state.ctx, &mut Vec::new(), span).await;
     assert!(
@@ -512,8 +525,8 @@ async fn test_is_subtype_concrete_to_any_function() {
     // constrain(concrete_fn ≤ any_fn): arity 1 vs 0, non-variadic → should fail.
     // A Fn type IS a subtype of itself (reflexivity via constrain).
     let concrete_fn = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("TestBool"),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(TEST_ID_BOOL),
     );
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
 
@@ -537,8 +550,8 @@ async fn test_is_subtype_concrete_to_any_function() {
 
     // concrete_fn IS a subtype of itself (reflexivity).
     let concrete_fn2 = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("TestBool"),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(TEST_ID_BOOL),
     );
     let mut constraints_ok = Vec::new();
     let result_ok = super::constrain(
@@ -597,8 +610,8 @@ async fn test_unify_concrete_fn_with_any_function_symmetric() {
     // Arity mismatch (1 vs 0), both non-variadic → Err.
     // Symmetric to test_unify_variadic_zero_with_concrete_arity.
     let concrete_fn = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("TestBool"),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(TEST_ID_BOOL),
     );
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let result = unify_sync(&concrete_fn, &any_fn, &mut state.ctx, &mut Vec::new(), span).await;
@@ -626,8 +639,8 @@ async fn test_is_consistent_any_function_with_concrete() {
     // the return is the only thing constrained when same arity. Here arity mismatch → Err.
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let concrete_fn = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("TestBool"),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(TEST_ID_BOOL),
     );
     assert!(
         matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
@@ -710,16 +723,16 @@ async fn test_types_are_disjoint_function_vs_int() {
     // A Fn type and an Int Repr type are disjoint: constrain(Fn ≤ Repr(Int)) should fail
     // because they have different ctor tags and neither is Unknown.
     let fn_tv = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_op("TestBool"),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(TEST_ID_BOOL),
     );
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     assert!(
         matches!(fn_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
         "fn_tv must be TypeValue.Fn"
     );
     assert!(
-        matches!(int_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_REPR),
+        matches!(int_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_NOMINAL),
         "int_tv must be TypeValue.Repr"
     );
     let mut state = InferState::new();
@@ -746,7 +759,7 @@ async fn test_types_are_disjoint_function_vs_primitives() {
         "fn_tv must be TypeValue.Fn"
     );
     // Fn vs String Repr: disjoint.
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let mut state = InferState::new();
     let result = super::constrain(
         &fn_tv,
@@ -789,7 +802,7 @@ async fn test_types_are_disjoint_function_vs_literals() {
 #[tokio::test]
 async fn test_types_are_disjoint_function_vs_record() {
     // A Fn type is disjoint from a Record type.
-    let record_tv = make_record_tv(vec![("x", make_typevalue_repr(REPR_INT))]);
+    let record_tv = make_record_tv(vec![("x", make_typevalue_nominal(crate::value::TYPE_ID_INT))]);
     assert!(
         matches!(record_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
         "record_tv must be TypeValue.Record"
@@ -832,7 +845,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
     // Register a named TypeVar "a" at level 0. This should NOT be bound by Recursive unification.
     state.set_level("a".to_string(), 0);
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Build μ. {val: Repr(Int), next: RecursiveRef(0)} — a simple recursive list type.
     // The body uses RecursiveRef(0) (de Bruijn), not TypeValue.Var("a").
@@ -865,11 +878,11 @@ fn test_disjoint_fn_vs_tycon_app() {
     let ctx = InferenceContext::new();
 
     // Create a Fn type: Fn@Int [Int]
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let fn_tv = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
 
     // Create a TyCon.App type: Seq Int (for example)
-    let seq_tycon = make_typevalue_op("TestSeq");
+    let seq_tycon = make_typevalue_nominal(TEST_ID_SEQ);
     let seq_app = crate::type_infer::make_typevalue_app(seq_tycon, int_tv);
 
     // Fn-vs-App: a function type and a type-constructor application are structurally
@@ -887,7 +900,7 @@ fn test_disjoint_fn_vs_map() {
     let ctx = InferenceContext::new();
 
     // Create a Fn type: Fn@Int [Int]
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let fn_tv = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
 
     // Create a Record (Map) type: {x: Int}
@@ -910,11 +923,11 @@ fn test_disjoint_fn_vs_fn_conservative() {
 
     // Create two Fn types with different signatures:
     // Fn@Int [Int]
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let fn1 = make_fn_tv(vec![int_tv.clone()], int_tv.clone());
 
     // Fn@String [String]
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let fn2 = make_fn_tv(vec![str_tv.clone()], str_tv.clone());
 
     // Conservative: two different Fn types are NOT reported as disjoint
@@ -946,7 +959,7 @@ async fn test_type_var_entry_stores_level_binding_kind() {
     assert!(lookup_binding(&state.ctx, "a").is_none());
 
     // Bind it via InferenceContext.bind
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     state
         .ctx
         .bind("a".to_string(), Arc::clone(&int_tv))
@@ -965,14 +978,14 @@ async fn test_bind_type_var_writes_to_type_vars() {
     let mut state = InferState::new();
 
     state.set_level("var1".to_string(), 1);
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     state
         .ctx
         .bind("var1".to_string(), Arc::clone(&int_tv))
         .unwrap();
 
     state.set_level("var2".to_string(), 2);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     state
         .ctx
         .bind("var2".to_string(), Arc::clone(&str_tv))
@@ -996,7 +1009,7 @@ async fn test_type_vars_snapshot_restore_pattern() {
 
     // Bind a variable in the initial state via InferenceContext.
     state.set_level("original_var".to_string(), 0);
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     state
         .ctx
         .bind("original_var".to_string(), Arc::clone(&int_tv))
@@ -1008,7 +1021,7 @@ async fn test_type_vars_snapshot_restore_pattern() {
 
     // Simulate a probe that adds a new binding.
     state.set_level("probe_var".to_string(), 0);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     state
         .ctx
         .bind("probe_var".to_string(), Arc::clone(&str_tv))
@@ -1151,8 +1164,8 @@ async fn test_unify_tycon_same_name_ok() {
     let span = rust_span!();
 
     // After S-1003: TypeValue.Op replaces Type::TyCon.
-    let ty1 = make_typevalue_op("Color");
-    let ty2 = make_typevalue_op("Color");
+    let ty1 = make_typevalue_nominal(TEST_ID_COLOR);
+    let ty2 = make_typevalue_nominal(TEST_ID_COLOR);
 
     let result = unify_sync(&ty1, &ty2, &mut state.ctx, &mut Vec::new(), span).await;
 
@@ -1171,8 +1184,8 @@ async fn test_unify_tycon_different_name_err() {
 
     let span = rust_span!();
 
-    let ty1 = make_typevalue_op("Color");
-    let ty2 = make_typevalue_op("Shape");
+    let ty1 = make_typevalue_nominal(TEST_ID_COLOR);
+    let ty2 = make_typevalue_nominal(TEST_ID_SHAPE);
 
     let result = unify_sync(&ty1, &ty2, &mut state.ctx, &mut Vec::new(), span).await;
 
@@ -1189,8 +1202,8 @@ async fn test_unify_tycon_vs_empty_name_err() {
 
     let span = rust_span!();
 
-    let ty1 = make_typevalue_op("Foo");
-    let ty2 = make_typevalue_op("");
+    let ty1 = make_typevalue_nominal(TEST_ID_FOO);
+    let ty2 = make_typevalue_nominal(TEST_ID_EMPTY);
 
     let result = unify_sync(&ty1, &ty2, &mut state.ctx, &mut Vec::new(), span).await;
 
@@ -1208,14 +1221,14 @@ async fn test_unify_tycon_vs_empty_name_err() {
 /// Record { a: Int, ...String } ~ Record { a: Int, ...String } should unify.
 #[tokio::test]
 async fn test_unify_uniform_same_value_type_records_ok() {
-    use crate::type_infer::{make_rowtail_uniform, make_typevalue_repr};
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_nominal};
 
     let mut state = InferState::new();
     let span = rust_span!();
 
     // Both records have field "a: Int" and a uniform tail with value-type String.
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let tail = make_rowtail_uniform(str_tv);
 
     let rec1 = make_record_with_tail(vec![("a", int_tv.clone())], tail.clone());
@@ -1234,13 +1247,13 @@ async fn test_unify_uniform_same_value_type_records_ok() {
 /// Record { a: Int, ...String } ~ Record { a: Str, ...String } should fail (Int ≠ Str in named field).
 #[tokio::test]
 async fn test_unify_uniform_inconsistent_named_field_type_errors() {
-    use crate::type_infer::{make_rowtail_uniform, make_typevalue_repr};
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_nominal};
 
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let tail = make_rowtail_uniform(str_tv.clone());
 
     let rec1 = make_record_with_tail(vec![("a", int_tv)], tail.clone());
@@ -1297,13 +1310,13 @@ async fn test_unify_empty_uniform_typevar_join() {
 /// Record { a: Int, b: Str, ...String } <: Record { a: Int, ...String } should succeed (extra field b: Str <: String).
 #[tokio::test]
 async fn test_constrain_rows_uniform_sup_tail() {
-    use crate::type_infer::{make_rowtail_uniform, make_typevalue_repr};
+    use crate::type_infer::{make_rowtail_uniform, make_typevalue_nominal};
 
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let tail = make_rowtail_uniform(str_tv.clone());
 
     // sub: { a: Int, b: Str, ...String }
@@ -1328,13 +1341,13 @@ async fn test_constrain_rows_uniform_sup_tail() {
 /// extra fields are allowed by structural width subtyping.
 #[tokio::test]
 async fn test_constrain_rows_closed_sup_tail_allows_width_subtyping() {
-    use crate::type_infer::make_typevalue_repr;
+    use crate::type_infer::make_typevalue_nominal;
 
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // sub: { a: Int, b: Str } (closed tail)
     let sub = make_record_tv(vec![("a", int_tv.clone()), ("b", str_tv)]);
@@ -1359,12 +1372,12 @@ async fn test_constrain_rows_closed_sup_tail_allows_width_subtyping() {
 /// symmetric; unification finds the common supertype (join/LUB), not enforces equality.
 #[tokio::test]
 async fn test_unify_record_with_extra_fields_vs_empty_record_no_false_positive() {
-    use crate::type_infer::make_typevalue_repr;
+    use crate::type_infer::make_typevalue_nominal;
 
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let dict_tv = make_typevalue_repr(REPR_DICT);
+    let dict_tv = make_typevalue_nominal(crate::value::TYPE_ID_DICT);
 
     // a = {ts: Dict, rt: Dict} — record with two named fields
     let a = make_record_tv(vec![("ts", dict_tv.clone()), ("rt", dict_tv)]);
@@ -1386,7 +1399,7 @@ async fn test_unify_record_with_extra_fields_vs_empty_record_no_false_positive()
     // With the fix, constrain(b={}, a={ts,rt}) fires because a has fields ts and rt that b lacks.
     // This is the correct direction: empty record cannot satisfy {ts,rt}'s field requirements.
     let mut state2 = InferState::new();
-    let dict_tv2 = make_typevalue_repr(REPR_DICT);
+    let dict_tv2 = make_typevalue_nominal(crate::value::TYPE_ID_DICT);
     let a2 = make_record_tv(vec![("ts", dict_tv2.clone()), ("rt", dict_tv2)]);
     let b2 = make_record_tv(vec![]);
     let result2 = unify_sync(&b2, &a2, &mut state2.ctx, &mut Vec::new(), span.clone()).await;
@@ -1400,13 +1413,13 @@ async fn test_unify_record_with_extra_fields_vs_empty_record_no_false_positive()
 /// unify({x: Int}, {y: Str}) must fail — the first constrain(a,b) already catches this.
 #[tokio::test]
 async fn test_unify_disjoint_field_records_still_fails() {
-    use crate::type_infer::make_typevalue_repr;
+    use crate::type_infer::make_typevalue_nominal;
 
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // a = {x: Int}, b = {y: Str} — disjoint field sets
     let a = make_record_tv(vec![("x", int_tv)]);
@@ -1512,7 +1525,7 @@ async fn test_constrain_error_absorption() {
 
     // After S-1003: Type::error_note → make_typevalue_unknown(), Type::Int → Repr(Value::Int).
     let error_tv = make_typevalue_unknown();
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let result = constrain(
         &error_tv,
@@ -1547,8 +1560,8 @@ async fn test_unify_error_absorption() {
 
     // After S-1003: Error → Unknown, Int → Repr(Value::Int).
     let error_tv = make_typevalue_unknown();
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // Test unify(Unknown/Error, Repr(Int)) — Error on left side
     let result = unify_sync(
@@ -1622,8 +1635,8 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
 
     let alpha = make_typevar_value("α");
     let beta = make_typevar_value("β");
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     // constrain(Int, Union([Str, α, β])) uses C-LB-Union arm.
     // Int does not match Str (concrete member), so Int is accumulated as a lower bound for α
     // (first TypeVar member). No equality binding.
@@ -1669,7 +1682,7 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let lb_ctor = crate::type_infer::typevalue_ctor(&lbs[0]);
     assert_eq!(
         lb_ctor,
-        Some(crate::type_tags::TV_REPR),
+        Some(crate::type_tags::TV_NOMINAL),
         "lower bound must be TypeValue.Repr, got: {:?}",
         lb_ctor
     );
@@ -1688,8 +1701,8 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     state.set_level("α".to_string(), 0);
 
     let alpha = make_typevar_value("α");
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let sup = make_union_tv(vec![Arc::clone(&str_tv), Arc::clone(&alpha)]);
 
     let result = constrain(&int_tv, &sup, &mut state.ctx, &mut Vec::new(), span).await;
@@ -1735,8 +1748,8 @@ async fn test_constrain_union_concrete_member_matches_no_typevar_binding() {
     state.set_level("α".to_string(), 0);
 
     let alpha = make_typevar_value("α");
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     // Union has both a matching concrete member (Int) and a TypeVar (α).
     let sup = make_union_tv(vec![
         Arc::clone(&int_tv),
@@ -1781,7 +1794,7 @@ async fn test_constrain_typevar_lower_bound_added() {
     state.set_level("β".to_string(), 0);
 
     let beta = make_typevar_value("β");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let result = constrain(&int_tv, &beta, &mut state.ctx, &mut Vec::new(), span).await;
 
@@ -1816,7 +1829,7 @@ async fn test_constrain_typevar_lower_bound_added() {
     let lb_ctor = crate::type_infer::typevalue_ctor(&lbs[0]);
     assert_eq!(
         lb_ctor,
-        Some(crate::type_tags::TV_REPR),
+        Some(crate::type_tags::TV_NOMINAL),
         "lower bound must be TypeValue.Repr, got: {:?}",
         lb_ctor
     );
@@ -1843,7 +1856,7 @@ async fn test_constrain_cfn_typevar_accumulates_bounds() {
 
     state.set_level("α".to_string(), 0);
     let alpha = make_typevar_value("α");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // After migration: TypeValue.Fn { params: Dict, return: TypeValue }
     let fn_with_typevar = make_fn_tv(vec![Arc::clone(&alpha)], Arc::clone(&alpha));
@@ -1893,7 +1906,7 @@ async fn test_constrain_cfn_init_reducer_pattern() {
 
     state.set_level("α".to_string(), 0);
     let alpha = make_typevar_value("α");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // After migration: TypeValue.Fn
     let fn_init = make_fn_tv(
@@ -1934,8 +1947,8 @@ async fn test_constrain_cfn_arity_mismatch_errors() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let fn1 = make_fn_tv(vec![Arc::clone(&int_tv)], Arc::clone(&int_tv));
     let fn2 = make_fn_tv(
         vec![Arc::clone(&int_tv), Arc::clone(&str_tv)],
@@ -1958,8 +1971,8 @@ async fn test_constrain_cfn_any_function_with_concrete() {
     let span = rust_span!();
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let concrete_fn = make_fn_tv(
-        vec![make_typevalue_repr(REPR_INT)],
-        make_typevalue_repr(REPR_INT),
+        vec![make_typevalue_nominal(crate::value::TYPE_ID_INT)],
+        make_typevalue_nominal(crate::value::TYPE_ID_INT),
     );
     let result = constrain(&any_fn, &concrete_fn, &mut state.ctx, &mut Vec::new(), span).await;
     // Arity mismatch (0 vs 1), both non-variadic → Err.
@@ -1983,7 +1996,7 @@ async fn test_constrain_dict_field_covariant() {
     let span = rust_span!();
 
     // After migration: TypeValue.Record replaces Type::Dict.
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let dict_concrete = make_record_tv(vec![("a", Arc::clone(&int_tv))]);
 
     let result_trivial = constrain(
@@ -2028,8 +2041,8 @@ async fn test_constrain_dict_width_subtyping() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let dict_sub = make_record_tv(vec![("a", Arc::clone(&int_tv)), ("b", Arc::clone(&str_tv))]);
     let dict_sup = make_record_tv(vec![("a", Arc::clone(&int_tv))]);
 
@@ -2049,7 +2062,7 @@ async fn test_constrain_dict_missing_field() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let dict_sub = make_record_tv(vec![("b", Arc::clone(&int_tv))]);
     let dict_sup = make_record_tv(vec![("a", Arc::clone(&int_tv))]);
 
@@ -2087,7 +2100,7 @@ async fn test_unify_fn_uses_bidirectional_constrain() {
 
     state.set_level("a".to_string(), 1);
     let tv_a = make_typevar_value("a");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let fn_concrete = make_fn_tv(vec![Arc::clone(&int_tv)], Arc::clone(&int_tv));
     let fn_with_var = make_fn_tv(vec![Arc::clone(&tv_a)], Arc::clone(&tv_a));
@@ -2145,15 +2158,15 @@ async fn test_constrain_app_covariant_arg() {
     });
     state.tycon_env.insert("CovF".to_string(), cov_def);
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let tv_x = make_typevar_value("x");
     state.set_level("x".to_string(), 1);
 
     // TypeValue.App instead of Type::App
     let sub =
-        crate::type_normalize::make_typevalue_app(make_typevalue_op("CovF"), Arc::clone(&int_tv));
+        crate::type_normalize::make_typevalue_app(make_typevalue_nominal(TEST_ID_COVF), Arc::clone(&int_tv));
     let sup =
-        crate::type_normalize::make_typevalue_app(make_typevalue_op("CovF"), Arc::clone(&tv_x));
+        crate::type_normalize::make_typevalue_app(make_typevalue_nominal(TEST_ID_COVF), Arc::clone(&tv_x));
 
     let result = constrain(&sub, &sup, &mut state.ctx, &mut Vec::new(), span).await;
     // constrain(App(CovF,Int), App(CovF,x)) calls unify (App-to-App path in type_unify.rs:737).
@@ -2202,10 +2215,10 @@ async fn test_constrain_cfn_variadic_callable_accepts_any_arity() {
     // Concrete function: Fn([Int, Int], return: Int) — the type of [fn [let x y] [+ x y]].
     let concrete_fn = crate::type_infer::make_typevalue_fn_with_flags(
         vec![
-            (None, make_typevalue_repr(REPR_INT)),
-            (None, make_typevalue_repr(REPR_INT)),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
         ],
-        make_typevalue_repr(REPR_INT),
+        make_typevalue_nominal(crate::value::TYPE_ID_INT),
         None, // required_count — all params required
         false,
         Vec::new(),
@@ -2241,10 +2254,10 @@ async fn test_constrain_cfn_callable_as_sup_accepts_any_arity() {
     // Concrete function as sub.
     let concrete_fn = crate::type_infer::make_typevalue_fn_with_flags(
         vec![
-            (None, make_typevalue_repr(REPR_INT)),
-            (None, make_typevalue_repr(REPR_INT)),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
         ],
-        make_typevalue_repr(REPR_INT),
+        make_typevalue_nominal(crate::value::TYPE_ID_INT),
         None, // required_count — all params required
         false,
         Vec::new(),
@@ -2292,8 +2305,8 @@ async fn test_process_deferred_equalities_resolves_union_vs_union() {
     state.set_level("a".to_string(), 0);
     state.set_level("b".to_string(), 0);
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let a_tv = make_typevar_value("a");
     let b_tv = make_typevar_value("b");
 
@@ -2348,7 +2361,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Body: Record { value: Int, next: RecursiveRef(0) } -- self-referential linked-list node.
     let body_a = make_record_tv(vec![
@@ -2386,8 +2399,8 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // Body A: Record { value: Int, next: RecursiveRef(0) }
     let body_a = make_record_tv(vec![
@@ -2424,7 +2437,7 @@ async fn test_unify_typevar_binds_to_recursive_type() {
 
     state.set_level("a".to_string(), 0);
     let tv_a = make_typevar_value("a");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Simple recursive type: Mu = Record { value: Int, self_ref: RecursiveRef(0) }
     let body = make_record_tv(vec![
@@ -2470,7 +2483,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
 
     state.set_level("a".to_string(), 0);
     let tv_a = make_typevar_value("a");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let body = make_record_tv(vec![
         ("value", Arc::clone(&int_tv)),
@@ -2514,7 +2527,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let body = make_record_tv(vec![
         ("value", Arc::clone(&int_tv)),
@@ -2549,10 +2562,10 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     state.set_level("alpha".to_string(), 0);
     state.set_level("beta".to_string(), 0);
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let tv_alpha = make_typevar_value("alpha");
     let tv_beta = make_typevar_value("beta");
-    let f_op = make_typevalue_op("F");
+    let f_op = make_typevalue_nominal(TEST_ID_F);
 
     // Build App(F, alpha) and App(F, beta).
     let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_alpha));
@@ -2607,11 +2620,11 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     state.set_level("alpha".to_string(), 0);
     state.set_level("beta".to_string(), 0);
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let tv_alpha = make_typevar_value("alpha");
     let tv_beta = make_typevar_value("beta");
-    let f_op = make_typevalue_op("F");
+    let f_op = make_typevalue_nominal(TEST_ID_F);
 
     let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_alpha));
     let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&tv_beta));
@@ -2656,9 +2669,9 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     let span = rust_span!();
 
     // Ground, permanently-stuck pair: App(F, Int) ~ App(F, String).
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let f_op = make_typevalue_op("F");
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let f_op = make_typevalue_nominal(TEST_ID_F);
 
     let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&int_tv));
     let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&f_op), Arc::clone(&str_tv));
@@ -2701,8 +2714,8 @@ async fn test_tycon_resolved_different_arcs_reject_unification() {
     let span = rust_span!();
 
     // Two distinct Arc allocations for Op("List").
-    let op_a = make_typevalue_op("List");
-    let op_b = make_typevalue_op("List");
+    let op_a = make_typevalue_nominal(TEST_ID_LIST);
+    let op_b = make_typevalue_nominal(TEST_ID_LIST);
 
     assert!(
         !Arc::ptr_eq(&op_a, &op_b),
@@ -2728,7 +2741,7 @@ async fn test_tycon_resolved_same_arc_unifies() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let op = make_typevalue_op("Color");
+    let op = make_typevalue_nominal(TEST_ID_COLOR);
     // Clone the Arc -- same underlying allocation.
     let op_same = Arc::clone(&op);
 
@@ -2760,8 +2773,8 @@ async fn test_unify_tycon_expand_same_op_same_args_succeeds() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let alias_op = make_typevalue_op("Alias");
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let alias_op = make_typevalue_nominal(TEST_ID_ALIAS);
 
     let app_a = crate::type_infer::make_typevalue_app(Arc::clone(&alias_op), Arc::clone(&int_tv));
     let app_b = crate::type_infer::make_typevalue_app(Arc::clone(&alias_op), Arc::clone(&int_tv));
@@ -2786,7 +2799,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // AliasA body = TypeVar("a") -- expands to its argument.
     let body_a = make_typevar_value("a");
@@ -2822,8 +2835,8 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
     state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
 
-    let op_a = make_typevalue_op("AliasA");
-    let op_b = make_typevalue_op("AliasB");
+    let op_a = make_typevalue_nominal(TEST_ID_ALIAS_A);
+    let op_b = make_typevalue_nominal(TEST_ID_ALIAS_B);
 
     let app_a = crate::type_infer::make_typevalue_app(op_a, Arc::clone(&int_tv));
     let app_b = crate::type_infer::make_typevalue_app(op_b, Arc::clone(&int_tv));
@@ -2848,8 +2861,8 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // AliasA body = Repr(Int) -- constant body.
     let def_a = Arc::new(TyConDef {
@@ -2882,8 +2895,8 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
     state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
     state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
 
-    let op_a = make_typevalue_op("AliasA");
-    let op_b = make_typevalue_op("AliasB");
+    let op_a = make_typevalue_nominal(TEST_ID_ALIAS_A);
+    let op_b = make_typevalue_nominal(TEST_ID_ALIAS_B);
 
     let app_a = crate::type_infer::make_typevalue_app(op_a, Arc::clone(&int_tv));
     let app_b = crate::type_infer::make_typevalue_app(op_b, Arc::clone(&int_tv));
@@ -2907,7 +2920,7 @@ async fn test_unify_tycon_expand_one_op_not_registered_fails() {
     let mut state = InferState::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Register only "KnownAlias".
     let def = Arc::new(TyConDef {
@@ -2924,8 +2937,8 @@ async fn test_unify_tycon_expand_one_op_not_registered_fails() {
     });
     state.ctx.tycon_env.insert("KnownAlias".to_string(), def);
 
-    let op_known = make_typevalue_op("KnownAlias");
-    let op_unknown = make_typevalue_op("UnknownOp"); // not in tycon_env
+    let op_known = make_typevalue_nominal(TEST_ID_KNOWN_ALIAS);
+    let op_unknown = make_typevalue_nominal(TEST_ID_UNKNOWN_OP); // not in tycon_env
 
     let app_a = crate::type_infer::make_typevalue_app(op_known, Arc::clone(&int_tv));
     let app_b = crate::type_infer::make_typevalue_app(op_unknown, Arc::clone(&int_tv));
@@ -2949,7 +2962,7 @@ async fn test_unify_app_handle_same_typevar() {
     state.set_level("a".to_string(), 1);
     let span = rust_span!();
 
-    let handle_op = make_typevalue_op("Handle");
+    let handle_op = make_typevalue_nominal(TEST_ID_HANDLE);
     let var_a = make_typevar_value("a");
     let app1 = crate::type_infer::make_typevalue_app(handle_op.clone(), var_a.clone());
     let app2 = crate::type_infer::make_typevalue_app(handle_op, var_a);
@@ -2977,7 +2990,7 @@ fn test_make_rowtail_var_roundtrip() {
 /// typevalue_to_typenode converts Repr(Int) to a TypeNode variant.
 #[test]
 fn test_typevalue_to_typenode_repr_int() {
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let result = crate::type_class::typevalue_to_typenode(&int_tv);
     assert!(result.is_some(), "Repr(Int) should convert to TypeNode.Int");
 }
@@ -2992,7 +3005,7 @@ async fn test_constrain_top_sub_rejected() {
     let mut constraints = Vec::new();
 
     let top = make_typevalue_top();
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let result = constrain(&top, &int, &mut state.ctx, &mut constraints, rust_span!()).await;
     assert!(
@@ -3008,7 +3021,7 @@ async fn test_constrain_never_sup_rejected() {
     let mut state = InferState::new();
     let mut constraints = Vec::new();
 
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let never = make_typevalue_never();
 
     let result = constrain(&int, &never, &mut state.ctx, &mut constraints, rust_span!()).await;
@@ -3026,7 +3039,7 @@ async fn test_constrain_never_sub_accepted() {
     let mut constraints = Vec::new();
 
     let never = make_typevalue_never();
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let result = constrain(&never, &int, &mut state.ctx, &mut constraints, rust_span!()).await;
     assert!(
@@ -3042,7 +3055,7 @@ async fn test_constrain_top_sup_accepted() {
     let mut state = InferState::new();
     let mut constraints = Vec::new();
 
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let top = make_typevalue_top();
 
     let result = constrain(&int, &top, &mut state.ctx, &mut constraints, rust_span!()).await;
@@ -3062,7 +3075,7 @@ async fn test_unify_float_literal_with_float() {
     let mut constraints = Vec::new();
 
     let float_lit = make_typevalue_float_lit(3.14);
-    let float = make_typevalue_repr(REPR_FLOAT);
+    let float = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
 
     let result = unify_sync(
         &float_lit,
@@ -3085,7 +3098,7 @@ async fn test_unify_float_with_float_literal() {
     let mut state = InferState::new();
     let mut constraints = Vec::new();
 
-    let float = make_typevalue_repr(REPR_FLOAT);
+    let float = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
     let float_lit = make_typevalue_float_lit(3.14);
 
     let result = unify_sync(
@@ -3110,7 +3123,7 @@ async fn test_unify_float_literal_with_int() {
     let mut constraints = Vec::new();
 
     let float_lit = make_typevalue_float_lit(3.14);
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     let result = unify_sync(
         &float_lit,
@@ -3144,7 +3157,7 @@ async fn test_rowvar_occurs_check() {
     let row_var = make_rowtail_var("rho");
 
     // Build a Record { x: Int, tail: ρ }.
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let record_with_rowvar = {
         use crate::value::{HashableValue, Thunk};
         let mut fields = IndexMap::new();
@@ -3301,8 +3314,8 @@ async fn test_c_ub_rejects_inconsistent_bounds() {
     let mut state = InferState::new();
     let mut constraints = Vec::new();
 
-    let string = make_typevalue_repr(REPR_STRING);
-    let int = make_typevalue_repr(REPR_INT);
+    let string = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let alpha = make_typevar_value("alpha");
 
     // First constraint: String <: α (lower bound).
@@ -3358,7 +3371,7 @@ fn test_apply_subst_traverses_uniform_tail() {
     let record = make_typevalue_record(IndexMap::new(), Some(uniform_tail));
 
     // Bind α = Int in the substitution.
-    let int = make_typevalue_repr(REPR_INT);
+    let int = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     state
         .ctx
         .bind("alpha".to_string(), Arc::clone(&int))
@@ -3386,46 +3399,18 @@ fn test_apply_subst_traverses_uniform_tail() {
     let value_type_ctor = crate::type_infer::typevalue_ctor(&value_type);
     assert_eq!(
         value_type_ctor,
-        Some(TV_REPR),
+        Some(TV_NOMINAL),
         "Uniform tail value-type should be Repr (Int), not TypeVar: got {:?}",
         value_type_ctor
     );
 
-    // Verify it's specifically REPR_INT.
-    // Use explicit .expect() calls instead of nested if-let so the REPR_INT assertion
-    // is guaranteed to execute — nested if-lets silently skip the assertion on mismatch.
-    let crate::value::Value::Variant {
-        payload: Some(thunk),
-        ..
-    } = value_type.as_ref()
-    else {
-        panic!("Uniform tail value-type should be a Variant (TypeValue.Repr), got non-Variant");
-    };
-    let Ok(crate::value::Value::Dict { entries, .. }) = thunk
-        .peek_result()
-        .expect("Repr TypeValue thunk should be settled")
-    else {
-        panic!("Repr TypeValue thunk should contain a Dict payload, not an error");
-    };
-    let repr_key = crate::value::HashableValue::Str(Arc::from("repr"));
-    let repr_thunk = entries
-        .get(&repr_key)
-        .expect("Repr payload dict should have a 'repr' field");
-    let Ok(crate::value::Value::String {
-        ref source,
-        start,
-        end,
-        ..
-    }) = repr_thunk
-        .peek_result()
-        .expect("repr field thunk should be settled")
-    else {
-        panic!("repr field should be a String value");
-    };
+    // Verify it's Nominal(TYPE_ID_INT).
+    let id = crate::type_infer::typevalue_nominal_id(&value_type)
+        .expect("Uniform tail value-type should be TypeValue.Nominal");
     assert_eq!(
-        &source[*start..*end],
-        REPR_INT,
-        "Uniform tail value-type should be Repr(Int)"
+        id,
+        crate::value::TYPE_ID_INT,
+        "Uniform tail value-type should be Nominal(TYPE_ID_INT)"
     );
 }
 
@@ -3469,7 +3454,7 @@ async fn test_b707_lower_levels_check_occurs_tv_uniform_key_type() {
     let ctx = &mut state.ctx;
 
     let alpha = ctx.fresh_typevar("alpha");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Create Uniform tail with value-type=Int, key-type=α.
     let uniform_tail = make_uniform_tail(int_tv.clone(), Some(alpha.clone()));
@@ -3497,7 +3482,7 @@ async fn test_b707_lower_levels_check_occurs_tv_uniform_key_type_level_lowering(
     let beta_name = crate::type_infer::typevalue_var_name(&beta).expect("β should be a TypeVar");
     ctx.levels.insert(beta_name.clone(), 5); // insert β at level 5
 
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Create Uniform tail with value-type=Int, key-type=β.
     let uniform_tail = make_uniform_tail(int_tv.clone(), Some(beta.clone()));
@@ -3525,7 +3510,7 @@ async fn test_b707_rowvar_occurs_in_tail_uniform_key_type() {
     // Create RowTail.Uniform { value-type: Int, key-type: Record { ...ρ } }
     // and verify that rowvar_occurs_in_tail("rho", tail) returns true.
     let rho = crate::type_infer::make_rowtail_var("rho");
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Create a Record with RowVar tail: Record { ...ρ }.
     let key_record = make_record_with_tail(vec![], rho.clone());
@@ -3550,8 +3535,8 @@ async fn test_b709_uniform_uniform_key_type_unification_success() {
     let ctx = &mut state.ctx;
     let mut constraints = Vec::new();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // Both Uniform tails have value-type=Int, key-type=String.
     let tail_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));
@@ -3573,9 +3558,9 @@ async fn test_b709_uniform_uniform_key_type_unification_failure() {
     let ctx = &mut state.ctx;
     let mut constraints = Vec::new();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let float_tv = make_typevalue_repr(REPR_FLOAT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let float_tv = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
 
     // Uniform tail A: value-type=Int, key-type=String.
     // Uniform tail B: value-type=Int, key-type=Float.
@@ -3597,8 +3582,8 @@ async fn test_b709_uniform_uniform_key_type_none_compatible() {
     let ctx = &mut state.ctx;
     let mut constraints = Vec::new();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
 
     // Uniform tail A: value-type=Int, key-type=String.
     // Uniform tail B: value-type=Int, no key-type.
@@ -3616,16 +3601,16 @@ async fn test_b709_uniform_uniform_key_type_none_compatible() {
 /// key-types use invariant (equality) semantics via unify(), not covariant semantics via constrain().
 #[tokio::test]
 async fn test_b710_constrain_record_key_type() {
-    use crate::type_infer::make_typevalue_repr;
+    use crate::type_infer::make_typevalue_nominal;
 
     let mut state = InferState::new();
     let ctx = &mut state.ctx;
     let mut constraints = Vec::new();
     let span = rust_span!();
 
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let float_tv = make_typevalue_repr(REPR_FLOAT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let float_tv = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
 
     // Positive: same key-type on both sides → constrain succeeds
     let tail_same_a = make_uniform_tail(int_tv.clone(), Some(str_tv.clone()));

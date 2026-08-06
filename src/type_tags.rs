@@ -20,8 +20,7 @@ pub const TV_RECORD: &str = "TypeValue.Record";
 pub const TV_UNION: &str = "TypeValue.Union";
 pub const TV_INTER: &str = "TypeValue.Inter";
 pub const TV_NEG: &str = "TypeValue.Neg";
-pub const TV_REPR: &str = "TypeValue.Repr";
-pub const TV_OP: &str = "TypeValue.Op";
+pub const TV_NOMINAL: &str = "TypeValue.Nominal";
 pub const TV_APP: &str = "TypeValue.App";
 pub const TV_SCHEME: &str = "TypeValue.Scheme";
 pub const TV_UNKNOWN: &str = "TypeValue.Unknown";
@@ -63,58 +62,6 @@ pub const RT_FIELD_VALUE_TYPE: &str = "value-type";
 /// Field key for RowTail payload (reserved for typed-key maps): `{ key-type: TypeValue }`
 pub const RT_FIELD_KEY_TYPE: &str = "key-type";
 
-// ── Repr discriminant strings ────────────────────────────────────────────────
-//
-// These strings identify Rust Value enum variants in the TypeValue.Repr payload.
-// They correspond to the `repr:` values in builtin_core.llt and must match the
-// Rust variant names exactly as used in the discriminant comparisons.
-
-pub const REPR_INT: &str = "Value::Int";
-pub const REPR_U64: &str = "Value::U64";
-pub const REPR_FLOAT: &str = "Value::Float";
-pub const REPR_STRING: &str = "Value::String";
-pub const REPR_BYTES: &str = "Value::Bytes";
-// Note: there is no REPR_BOOL constant. Value::Bool does not exist as a runtime
-// variant — tinct booleans are `Variant { ctor: "true" | "false" }`. Bool has no
-// valid TypeValue.Repr discriminant and must never appear in a TypeValue.Repr payload.
-pub const REPR_DICT: &str = "Value::Dict";
-pub const REPR_FUNCTION: &str = "Value::Function";
-/// Not currently used in type matching — Value::Builtin maps to REPR_FUNCTION at runtime
-/// (ground_typevalue_of treats both Function and Builtin as REPR_FUNCTION). Reserved for
-/// future use if Builtin values need their own TypeValue.Repr discriminant.
-pub const REPR_BUILTIN: &str = "Value::Builtin";
-pub const REPR_DECIMAL: &str = "Value::Decimal";
-pub const REPR_BIGINT: &str = "Value::BigInt";
-pub const REPR_DIR_CAP: &str = "Value::DirCap";
-pub const REPR_REVOCABLE_DIR_CAP: &str = "Value::RevocableDirCap";
-pub const REPR_NET_CAP: &str = "Value::NetCap";
-pub const REPR_FILE: &str = "Value::File";
-pub const REPR_CLOCK_CAP: &str = "Value::ClockCap";
-pub const REPR_TASK: &str = "Value::Task";
-pub const REPR_CHANNEL: &str = "Value::Channel";
-pub const REPR_CONTEXT: &str = "Value::Context";
-pub const REPR_REACTIVE_CELL: &str = "Value::ReactiveCell";
-pub const REPR_QUIC_SESSION: &str = "Value::QuicSession";
-pub const REPR_QUIC_DATAGRAM_HANDLE: &str = "Value::QuicDatagramHandle";
-pub const REPR_HTTP2_SESSION: &str = "Value::Http2Session";
-pub const REPR_HTTP3_SESSION: &str = "Value::Http3Session";
-pub const REPR_URI: &str = "Value::Uri";
-pub const REPR_PROGRAM: &str = "Value::Program";
-pub const REPR_DOCUMENT: &str = "Value::Document";
-pub const REPR_TYPE_CONTEXT: &str = "Value::TypeContext";
-pub const REPR_TIMESTAMP: &str = "Value::Timestamp";
-pub const REPR_DURATION: &str = "Value::Duration";
-pub const REPR_TIMEZONE: &str = "Value::Timezone";
-pub const REPR_PROXY: &str = "Value::Proxy";
-pub const REPR_VARIANT: &str = "Value::Variant";
-pub const REPR_BROADCAST_CHANNEL: &str = "Value::BroadcastChannel";
-pub const REPR_ONESHOT_SENDER: &str = "Value::OneshotSender";
-pub const REPR_ONESHOT_RECEIVER: &str = "Value::OneshotReceiver";
-pub const REPR_ARENA: &str = "Value::Arena";
-pub const REPR_EXPRESSION: &str = "Value::Expression";
-pub const REPR_ANNOTATED: &str = "Value::Annotated";
-pub const REPR_CORE_DOCUMENT: &str = "Value::CoreDocument";
-pub const REPR_SCOPE: &str = "Value::Scope";
 
 // ── TypeValue payload field name constants ───────────────────────────────────
 //
@@ -123,8 +70,8 @@ pub const REPR_SCOPE: &str = "Value::Scope";
 
 /// Field key for TypeValue.Var: { name: String }
 pub const FIELD_NAME: &str = "name";
-/// Field key for TypeValue.Repr: { repr: String, is: [or [] Fn] }
-pub const FIELD_REPR: &str = "repr";
+/// Field key for TypeValue.Nominal: { id: u64 }
+pub const FIELD_ID: &str = "id";
 /// Field key for TypeValue.IntLit / TypeValue.StrLit / TypeValue.FloatLit: { value: T }
 pub const FIELD_VALUE: &str = "value";
 /// Field key for TypeValue.Fn params: { params: Dict }

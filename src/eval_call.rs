@@ -1003,44 +1003,17 @@ mod tests {
         }
     }
 
-    fn make_repr_typevalue(repr: &str) -> Arc<Value> {
-        // Build a TypeValue.Repr { repr: String } Arc<Value> for tests.
-        let mut entries = indexmap::IndexMap::new();
-        entries.insert(
-            crate::value::HashableValue::Str(Arc::from(FIELD_REPR)),
-            Arc::new(crate::value::Thunk::value(
-                Value::String {
-                    source: Arc::from(repr),
-                    start: 0,
-                    end: repr.len(),
-                    type_val: crate::value::unknown_type_val(),
-                },
-                crate::rust_span!(),
-            )),
-        );
-        Arc::new(Value::Variant {
-            type_val: crate::value::unknown_type_val(),
-            type_decl_id: 0,
-            ctor: Arc::from(TV_REPR),
-            payload: Some(Arc::new(crate::value::Thunk::value(
-                Value::Dict {
-                    entries,
-                    type_val: crate::value::unknown_type_val(),
-                },
-                crate::rust_span!(),
-            ))),
-        })
+    fn make_nominal_typevalue(id: u64) -> Arc<Value> {
+        crate::type_infer::make_typevalue_nominal(id)
     }
 
-    fn typed_variadic_param(name: &str, repr: &str, slot: u32) -> Param {
-        // Construct the TypeValue directly from the REPR_* constant —
-        // no annotation-name-to-repr mapping needed.
+    fn typed_variadic_param(name: &str, type_id: u64, slot: u32) -> Param {
         Param {
             name: name.to_string(),
-            annotation: Some(sp(Annotation::Simple(repr.to_string()))),
+            annotation: Some(sp(Annotation::Simple(name.to_string()))),
             variadic: true,
             slot,
-            resolved_type: Some(make_repr_typevalue(repr)),
+            resolved_type: Some(make_nominal_typevalue(type_id)),
         }
     }
 
@@ -1115,8 +1088,8 @@ mod tests {
         // `[fn [let x ...strings@String ...nums@Int ...rest] ...]`
         let params = vec![
             fixed_param_with_slot("x", 0),
-            typed_variadic_param("strings", REPR_STRING, 1),
-            typed_variadic_param("nums", REPR_INT, 2),
+            typed_variadic_param("strings", crate::value::TYPE_ID_STRING, 1),
+            typed_variadic_param("nums", crate::value::TYPE_ID_INT, 2),
             rest_param("rest", 3),
         ];
         let (fixed, typed, rest) = classify(&params);
@@ -1137,8 +1110,8 @@ mod tests {
     fn test_classify_params_only_typed_variadics_no_rest() {
         // `[fn [let ...strings@String ...nums@Int] ...]`
         let params = vec![
-            typed_variadic_param("strings", REPR_STRING, 0),
-            typed_variadic_param("nums", REPR_INT, 1),
+            typed_variadic_param("strings", crate::value::TYPE_ID_STRING, 0),
+            typed_variadic_param("nums", crate::value::TYPE_ID_INT, 1),
         ];
         let (fixed, typed, rest) = classify(&params);
         assert!(fixed.is_empty());
@@ -1168,7 +1141,7 @@ mod tests {
         let params = vec![
             fixed_param_with_slot("a", 0),
             fixed_param_with_slot("b", 1),
-            typed_variadic_param("xs", REPR_INT, 2),
+            typed_variadic_param("xs", crate::value::TYPE_ID_INT, 2),
             rest_param("rest", 3),
         ];
         let (fixed, typed, rest) = classify(&params);
@@ -1189,7 +1162,7 @@ mod tests {
             annotation: Some(sp(Annotation::Simple("Int".to_string()))),
             variadic: true,
             slot: 0,
-            resolved_type: Some(make_repr_typevalue(REPR_INT)),
+            resolved_type: Some(make_nominal_typevalue(crate::value::TYPE_ID_INT)),
         };
         let unknown_bucket = Param {
             name: "rest".to_string(),

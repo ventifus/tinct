@@ -124,7 +124,38 @@ pub async fn typecheck_program_bootstrap(
     // Use or_insert so that static TyConDefs (with correct primitive bodies) are never
     // overwritten by dynamic declarations that produce nominal bodies.
     for (name, def) in seed_tycon_env {
-        state.tycon_env.entry(name).or_insert(def);
+        state.tycon_env.entry(name.clone()).or_insert(def);
+    }
+    // Seed primitive type name↔id mappings for Nominal type resolution.
+    {
+        use crate::value::*;
+        let primitives = [
+            ("Integer", TYPE_ID_INT), ("Int", TYPE_ID_INT), ("NativeInt", TYPE_ID_INT),
+            ("NativeUInt", TYPE_ID_INT), ("U64", TYPE_ID_U64),
+            ("Float", TYPE_ID_FLOAT), ("Float64", TYPE_ID_FLOAT),
+            ("String", TYPE_ID_STRING), ("Bytes", TYPE_ID_BYTES),
+            ("Dict", TYPE_ID_DICT), ("Function", TYPE_ID_FUNCTION), ("Fn", TYPE_ID_FUNCTION),
+            ("Proxy", TYPE_ID_PROXY), ("DirCap", TYPE_ID_DIRCAP), ("NetCap", TYPE_ID_NETCAP),
+            ("File", TYPE_ID_FILE), ("Handle", TYPE_ID_FILE),
+            ("Scope", TYPE_ID_SCOPE), ("TypeContext", TYPE_ID_TYPE_CONTEXT),
+            ("Task", TYPE_ID_TASK), ("Channel", TYPE_ID_CHANNEL),
+            ("Context", TYPE_ID_CONTEXT), ("ReactiveCell", TYPE_ID_REACTIVE_CELL),
+            ("ClockCap", TYPE_ID_CLOCKCAP), ("Timezone", TYPE_ID_TIMEZONE),
+            ("Timestamp", TYPE_ID_TIMESTAMP), ("Duration", TYPE_ID_DURATION),
+            ("Decimal", TYPE_ID_DECIMAL), ("BigInt", TYPE_ID_BIGINT),
+            ("Program", TYPE_ID_PROGRAM), ("Document", TYPE_ID_DOCUMENT),
+            ("Expression", TYPE_ID_EXPRESSION), ("CoreDocument", TYPE_ID_CORE_DOCUMENT),
+            ("Arena", TYPE_ID_ARENA), ("Builder", TYPE_ID_BUILDER),
+            ("Uri", TYPE_ID_URI), ("QuicSession", TYPE_ID_QUIC_SESSION),
+            ("Http2Session", TYPE_ID_HTTP2_SESSION), ("Http3Session", TYPE_ID_HTTP3_SESSION),
+            ("QuicDatagramHandle", TYPE_ID_QUIC_DATAGRAM_HANDLE),
+            ("BroadcastChannel", TYPE_ID_BROADCAST_CHANNEL),
+            ("OneshotSender", TYPE_ID_ONESHOT_SENDER), ("OneshotReceiver", TYPE_ID_ONESHOT_RECEIVER),
+        ];
+        for (name, id) in &primitives {
+            state.type_name_to_id.insert(name.to_string(), *id);
+            state.type_display_names.insert(*id, name.to_string());
+        }
     }
     // Seed the resolver from the full root_group when an eval context is available,
     // so all builtin slots match the runtime. Falls back to core_builtins() only when
@@ -156,7 +187,7 @@ pub async fn typecheck_program_bootstrap(
     // 2. Entries with proper schemes from parent_env's chain (prelude, builtins).
     // 3. Unknown for any remaining slot in root_frame_for_ts (capability vars, etc.).
     {
-        use crate::type_infer::{make_typevalue_op, make_typevalue_unknown};
+        use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
         let mut child_inner = child_env.write().unwrap();
         let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
@@ -182,7 +213,7 @@ pub async fn typecheck_program_bootstrap(
             }
         }
         for (name, _thunk) in &state.type_stage_fns {
-            let tv = make_typevalue_op(name);
+            let tv = make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0));
             let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                 state
                     .resolver_frames
@@ -200,7 +231,7 @@ pub async fn typecheck_program_bootstrap(
             }
         }
         for (name, _kind) in &state.type_stage_type_vars {
-            let tv = make_typevalue_op(name);
+            let tv = make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0));
             let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                 state
                     .resolver_frames
@@ -368,7 +399,7 @@ fn merge_env_schemes_into_env(
         for (name, _) in &frame.tycon_defs {
             state.type_stage_scope[0]
                 .entry(name.clone())
-                .or_insert_with(|| crate::type_infer::make_typevalue_op(name));
+                .or_insert_with(|| crate::type_infer::make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0)));
         }
     }
 }
@@ -592,7 +623,7 @@ pub(crate) async fn process_document(
                     || c == TV_UNKNOWN
                     || c == TV_TOP
                     || c == TV_VAR
-                    || c == TV_OP
+                    || c == TV_NOMINAL
                     || c == TV_APP
             }
             // Bootstrap sentinel (empty dict = Unknown during bootstrap)
@@ -683,25 +714,19 @@ pub(crate) async fn process_document(
 pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
     match tv.as_ref() {
         Value::Variant { ctor, .. } => match ctor.as_ref() {
-            TV_REPR => {
-                // Extract the repr string from the payload to determine the dispatch tag.
-                let repr = typevalue_repr_string(tv)?;
-                match repr.as_str() {
-                    REPR_INT => Some(DISPATCH_INTEGER.to_string()),
-                    REPR_FLOAT => Some(DISPATCH_FLOAT.to_string()),
-                    REPR_STRING => Some(DISPATCH_STRING.to_string()),
-                    REPR_BYTES => Some(DISPATCH_BYTES.to_string()),
+            TV_NOMINAL => {
+                let id = crate::type_infer::typevalue_nominal_id(tv)?;
+                match id {
+                    crate::value::TYPE_ID_INT | crate::value::TYPE_ID_U64 => Some(DISPATCH_INTEGER.to_string()),
+                    crate::value::TYPE_ID_FLOAT => Some(DISPATCH_FLOAT.to_string()),
+                    crate::value::TYPE_ID_STRING => Some(DISPATCH_STRING.to_string()),
+                    crate::value::TYPE_ID_BYTES => Some(DISPATCH_BYTES.to_string()),
                     _ => None,
                 }
             }
             TV_INT_LIT => Some(DISPATCH_INTEGER.to_string()),
             TV_FLOAT_LIT => Some(DISPATCH_FLOAT.to_string()),
             TV_STR_LIT => Some(DISPATCH_STRING.to_string()),
-            // TypeValue.Op: a named type constructor → dispatch on its name.
-            TV_OP => {
-                // Extract name from payload dict.
-                typevalue_op_name(tv).map(|n| n.to_string())
-            }
             // Inference variables and gradual types cannot be dispatched.
             TV_VAR | TV_UNKNOWN | TV_TOP | TV_NEVER => None,
             // Compound types (Record, Fn, Union, App, etc.) don't map to single dispatch tags.
@@ -712,54 +737,8 @@ pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
     }
 }
 
-/// Extract the `repr` string from a TypeValue.Repr variant payload (synchronously).
-fn typevalue_repr_string(tv: &Arc<Value>) -> Option<String> {
-    use crate::value::HashableValue;
-    match tv.as_ref() {
-        Value::Variant {
-            ctor,
-            payload: Some(thunk),
-            ..
-        } if ctor.as_ref() == TV_REPR => match thunk.peek_result()? {
-            Ok(Value::Dict { entries, .. }) => {
-                let key = HashableValue::Str(Arc::from(FIELD_REPR));
-                match entries.get(&key)?.peek_result()? {
-                    Ok(Value::String {
-                        source, start, end, ..
-                    }) => Some(source[*start..*end].to_string()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 /// Extract the `name` string from a TypeValue.Op variant payload (synchronously).
-fn typevalue_op_name(tv: &Arc<Value>) -> Option<String> {
-    use crate::value::HashableValue;
-    match tv.as_ref() {
-        Value::Variant {
-            ctor,
-            payload: Some(thunk),
-            ..
-        } if ctor.as_ref() == TV_OP => match thunk.peek_result()? {
-            Ok(Value::Dict { entries, .. }) => {
-                let key = HashableValue::Str(Arc::from(FIELD_NAME));
-                match entries.get(&key)?.peek_result()? {
-                    Ok(Value::String {
-                        source, start, end, ..
-                    }) => Some(source[*start..*end].to_string()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
 /// Called from process_document (via CEK Sequential) and typecheck_cek::run_typecheck_dict — no Expr bridge needed.
 pub(crate) fn infer_class_decl_from_surface(
@@ -847,7 +826,7 @@ pub(crate) fn infer_class_decl_from_surface(
                 let kind = existing_param_kinds
                     .get(p)
                     .cloned()
-                    .unwrap_or_else(|| crate::type_infer::make_typevalue_op(KIND_TYPE));
+                    .unwrap_or_else(|| crate::type_infer::make_typevalue_nominal(0));
                 (p.clone(), kind)
             })
             .collect(),

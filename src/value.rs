@@ -807,6 +807,50 @@ pub const TYPE_ID_SCOPE: u64 = 39;
 /// User-defined variant `type_decl_id` values start at `TYPE_ID_RESERVED_MAX + 1` (100).
 pub const TYPE_ID_RESERVED_MAX: u64 = 99;
 
+pub fn type_id_for_name(name: &str) -> Option<u64> {
+    match name {
+        "Integer" | "Int" | "NativeInt" | "NativeUInt" => Some(TYPE_ID_INT),
+        "U64" => Some(TYPE_ID_U64),
+        "Float" | "Float64" => Some(TYPE_ID_FLOAT),
+        "String" => Some(TYPE_ID_STRING),
+        "Dict" => Some(TYPE_ID_DICT),
+        "Bytes" => Some(TYPE_ID_BYTES),
+        "Function" | "Fn" => Some(TYPE_ID_FUNCTION),
+        "Builtin" => Some(TYPE_ID_BUILTIN),
+        "Proxy" => Some(TYPE_ID_PROXY),
+        "DirCap" => Some(TYPE_ID_DIRCAP),
+        "NetCap" => Some(TYPE_ID_NETCAP),
+        "File" | "Handle" => Some(TYPE_ID_FILE),
+        "Scope" => Some(TYPE_ID_SCOPE),
+        "TypeContext" => Some(TYPE_ID_TYPE_CONTEXT),
+        "Task" => Some(TYPE_ID_TASK),
+        "Channel" => Some(TYPE_ID_CHANNEL),
+        "Context" => Some(TYPE_ID_CONTEXT),
+        "ReactiveCell" => Some(TYPE_ID_REACTIVE_CELL),
+        "ClockCap" => Some(TYPE_ID_CLOCKCAP),
+        "Timezone" => Some(TYPE_ID_TIMEZONE),
+        "Timestamp" => Some(TYPE_ID_TIMESTAMP),
+        "Duration" => Some(TYPE_ID_DURATION),
+        "Decimal" => Some(TYPE_ID_DECIMAL),
+        "BigInt" => Some(TYPE_ID_BIGINT),
+        "Program" => Some(TYPE_ID_PROGRAM),
+        "Document" => Some(TYPE_ID_DOCUMENT),
+        "Expression" => Some(TYPE_ID_EXPRESSION),
+        "CoreDocument" => Some(TYPE_ID_CORE_DOCUMENT),
+        "Arena" => Some(TYPE_ID_ARENA),
+        "Builder" => Some(TYPE_ID_BUILDER),
+        "Uri" | "URN" => Some(TYPE_ID_URI),
+        "QuicSession" => Some(TYPE_ID_QUIC_SESSION),
+        "Http2Session" => Some(TYPE_ID_HTTP2_SESSION),
+        "Http3Session" => Some(TYPE_ID_HTTP3_SESSION),
+        "QuicDatagramHandle" => Some(TYPE_ID_QUIC_DATAGRAM_HANDLE),
+        "BroadcastChannel" => Some(TYPE_ID_BROADCAST_CHANNEL),
+        "OneshotSender" => Some(TYPE_ID_ONESHOT_SENDER),
+        "OneshotReceiver" => Some(TYPE_ID_ONESHOT_RECEIVER),
+        _ => None,
+    }
+}
+
 /// A materialized runtime value.
 pub enum Value {
     /// 64-bit signed integer

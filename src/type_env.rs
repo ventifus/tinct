@@ -201,7 +201,7 @@ pub fn apply_typevalue_renaming(
                 // Unit variants — no substitution positions.
                 TV_UNKNOWN | TV_NEVER | TV_TOP => Arc::clone(ty),
                 // Leaf variants with opaque payloads — no TypeVar positions to substitute.
-                TV_REPR | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT | TV_OP => Arc::clone(ty),
+                TV_NOMINAL | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT => Arc::clone(ty),
                 // Structural variants: recursively apply to settled payload dict fields.
                 _ => {
                     let Some(payload_thunk) = payload else {
@@ -749,8 +749,8 @@ mod typevalue_scheme_tests {
     /// (like Record.fields) were not recursed into.
     #[test]
     fn test_apply_typevalue_renaming_substitutes_into_record_field() {
-        use crate::type_infer::{make_typevalue_record, make_typevalue_repr};
-        use crate::type_tags::REPR_INT;
+        use crate::type_infer::{make_typevalue_record, make_typevalue_nominal};
+        
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -763,7 +763,7 @@ mod typevalue_scheme_tests {
         );
 
         // Rename "a" → TypeValue.Repr(Int)
-        let replacement = make_typevalue_repr(REPR_INT);
+        let replacement = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         let renaming: HashMap<String, crate::type_class::TypeValue> =
             [("a".to_string(), Arc::clone(&replacement))]
                 .into_iter()
@@ -785,7 +785,7 @@ mod typevalue_scheme_tests {
             .expect("renamed Record must still have field 'x'");
         assert_eq!(
             typevalue_ctor(x_field),
-            Some(TV_REPR),
+            Some(TV_NOMINAL),
             "field 'x' in renamed Record must be TypeValue.Repr — \
              apply_typevalue_renaming must recurse into Record.fields Dict"
         );
@@ -801,9 +801,9 @@ mod typevalue_scheme_tests {
     #[test]
     fn test_generalize_instantiate_round_trip_fn() {
         use crate::type_infer::{
-            make_typevalue_fn, make_typevalue_repr, typevalue_fn_params_and_ret, InferenceContext,
+            make_typevalue_fn, make_typevalue_nominal, typevalue_fn_params_and_ret, InferenceContext,
         };
-        use crate::type_tags::REPR_INT;
+        
         use std::sync::Arc;
 
         let mut ctx = InferenceContext::new();
@@ -815,7 +815,7 @@ mod typevalue_scheme_tests {
             typevalue_var_name(&tv_a).expect("fresh_typevar must produce a named var");
 
         // Build TypeValue.Fn { params: [TypeValue.Repr(Int)], return: TypeValue.Var("a") }
-        let int_repr = make_typevalue_repr(REPR_INT);
+        let int_repr = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         let params = vec![(None, Arc::clone(&int_repr))];
         let fn_ty = make_typevalue_fn(params, Arc::clone(&tv_a));
 

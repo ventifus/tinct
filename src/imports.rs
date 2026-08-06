@@ -69,9 +69,9 @@ pub async fn get_builtin_core_tycon_env() -> crate::type_def::TyConEnv {
 ///    Returns `Some((tv, None, None))` on success (Resolved entry). Structural types like Span
 ///    and Diagnostic produce precise record types with named fields.
 /// 2. TypeVar kind sentinel (Operator, Label) → `typenode_typevar_kind`. Returns
-///    `Some((make_typevalue_op(name), None, Some(kind)))` where the third element is the kind.
+///    `Some((make_typevalue_nominal(name), None, Some(kind)))` where the third element is the kind.
 /// 3. `Value::Function` → parameterized type constructor. Returns
-///    `Some((make_typevalue_op(name), Some(thunk), None))` where the second element is the thunk.
+///    `Some((make_typevalue_nominal(name), Some(thunk), None))` where the second element is the thunk.
 ///
 /// Returns:
 /// - `Ok(Some((tv, opt_thunk, opt_kind)))`:
@@ -112,11 +112,11 @@ pub(crate) async fn classify_type_stage_entry(
     if let Some(kind) =
         crate::type_normalize::typenode_typevar_kind(val).map_err(|e| Box::new((*e).clone()))?
     {
-        let tv = crate::type_infer::make_typevalue_op(name);
+        let tv = crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0));
         return Ok(Some((tv, None, Some(kind))));
     }
     if matches!(val, crate::value::Value::Function { .. }) {
-        let tv = crate::type_infer::make_typevalue_op(name);
+        let tv = crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0));
         return Ok(Some((tv, Some(std::sync::Arc::clone(thunk)), None)));
     }
     // Not a recognized Variant, TypeVar sentinel, or Function — not a type-stage entry.
@@ -305,23 +305,23 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             let slot = env_write.slots.len();
             env_write.insert_at_slot(slot, name.clone(), Arc::clone(tv), None);
         }
-        // Function entries: insert make_typevalue_op placeholder.
+        // Function entries: insert make_typevalue_nominal placeholder.
         for (name, _thunk) in &type_stage_data.fns {
             let slot = env_write.slots.len();
             env_write.insert_at_slot(
                 slot,
                 name.clone(),
-                crate::type_infer::make_typevalue_op(name),
+                crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0)),
                 None,
             );
         }
-        // TypeVar entries: insert make_typevalue_op placeholder.
+        // TypeVar entries: insert make_typevalue_nominal placeholder.
         for (name, _kind) in &type_stage_data.type_vars {
             let slot = env_write.slots.len();
             env_write.insert_at_slot(
                 slot,
                 name.clone(),
-                crate::type_infer::make_typevalue_op(name),
+                crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0)),
                 None,
             );
         }
@@ -343,7 +343,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                 ..
             } = tv.as_ref()
             {
-                if ctor.as_ref() == TV_OP {
+                if ctor.as_ref() == TV_NOMINAL {
                     if let Some(Ok(crate::value::Value::Dict { entries, .. })) =
                         payload_thunk.peek_result()
                     {

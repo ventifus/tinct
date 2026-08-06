@@ -37,9 +37,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ast::{SurfaceExpression, SurfaceNode};
+use std::sync::Arc;
 use crate::type_tags::*;
 use crate::value::Value;
-use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Coverage pattern representation
@@ -188,14 +188,10 @@ impl ConstructorSignature {
         for member in members {
             let ctor_tag = typevalue_ctor(member)?;
             let entry = match ctor_tag {
-                TV_REPR => {
-                    // Extract repr string: "Value::X" → strip "Value::" prefix → "X"
-                    let repr_str = extract_string_payload_field(member, FIELD_REPR)?;
-                    let short = repr_str
-                        .strip_prefix("Value::")
-                        .unwrap_or(&repr_str)
-                        .to_string();
-                    (ConstructorTag::Variant(short), 0)
+                TV_NOMINAL => {
+                    let _id = crate::type_infer::typevalue_nominal_id(member)?;
+                    let name = crate::eval::format_type(member);
+                    (ConstructorTag::Variant(name), 0)
                 }
                 TV_STR_LIT => {
                     let s = extract_string_payload_field(member, FIELD_VALUE)?;
@@ -484,66 +480,34 @@ pub fn ast_pattern_to_coverage(
 
             // Determine the constructor tag from the TypeValue's ctor string.
             let tag_opt: Option<&str> = match resolved_tv.as_ref() {
-                Value::Variant { ctor, payload, .. } => match ctor.as_ref() {
-                    TV_REPR => {
-                        // Extract repr string from payload
-                        use crate::value::HashableValue;
-                        let repr = payload
-                            .as_ref()
-                            .and_then(|t| t.peek_result())
-                            .and_then(|r| {
-                                if let Ok(Value::Dict { entries, .. }) = r {
-                                    let k = HashableValue::Str(Arc::from(FIELD_REPR));
-                                    entries.get(&k).and_then(|t| t.peek_result()).and_then(|r| {
-                                        if let Ok(Value::String {
-                                            source, start, end, ..
-                                        }) = r
-                                        {
-                                            Some(source[*start..*end].to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                } else {
-                                    None
-                                }
-                            });
-                        match repr.as_deref() {
-                            Some(REPR_INT) => Some("Int"),
-                            Some(REPR_FLOAT) => Some("Float"),
-                            Some(REPR_STRING) => Some("String"),
-                            Some(REPR_BYTES) => Some("Bytes"),
-                            _ => None,
-                        }
-                    }
+                Value::Variant { ctor, .. } => match ctor.as_ref() {
                     TV_INT_LIT => Some("Int"),
                     TV_FLOAT_LIT => Some("Float"),
                     TV_STR_LIT => Some("String"),
-                    TV_OP => {
-                        // Named type constructor — look up in tycon_env.
-                        use crate::value::HashableValue;
-                        let name = payload
-                            .as_ref()
-                            .and_then(|t| t.peek_result())
-                            .and_then(|r| {
-                                if let Ok(Value::Dict { entries, .. }) = r {
-                                    let k = HashableValue::Str(Arc::from(FIELD_NAME));
-                                    entries.get(&k).and_then(|t| t.peek_result()).and_then(|r| {
-                                        if let Ok(Value::String {
-                                            source, start, end, ..
-                                        }) = r
-                                        {
-                                            Some(source[*start..*end].to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                } else {
-                                    None
-                                }
-                            });
-                        if let (Some(name), Some(env)) = (name, tycon_env) {
-                            if let Some(def) = env.get(&name) {
+                    TV_NOMINAL => {
+                        // Check for primitive types by id first.
+                        let nominal_id = crate::type_infer::typevalue_nominal_id(&resolved_tv);
+                        match nominal_id {
+                            Some(crate::value::TYPE_ID_INT) => return CoveragePattern::Constructor {
+                                tag: ConstructorTag::Variant("Int".into()),
+                                sub_patterns: inner_sub.clone(),
+                            },
+                            Some(crate::value::TYPE_ID_FLOAT) => return CoveragePattern::Constructor {
+                                tag: ConstructorTag::Variant("Float".into()),
+                                sub_patterns: inner_sub.clone(),
+                            },
+                            Some(crate::value::TYPE_ID_STRING) => return CoveragePattern::Constructor {
+                                tag: ConstructorTag::Variant("String".into()),
+                                sub_patterns: inner_sub.clone(),
+                            },
+                            Some(crate::value::TYPE_ID_BYTES) => return CoveragePattern::Constructor {
+                                tag: ConstructorTag::Variant("Bytes".into()),
+                                sub_patterns: inner_sub.clone(),
+                            },
+                            _ => {}
+                        }
+                        if let (Some(id), Some(env)) = (nominal_id, tycon_env) {
+                            if let Some(def) = env.get(&id.to_string()) {
                                 if !def.constructors.is_empty() {
                                     let branches: Vec<CoveragePattern> = def
                                         .constructors
@@ -1001,7 +965,7 @@ pub fn format_witnesses(witnesses: &[CoveragePattern]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::type_infer::{make_typevalue_repr, make_typevalue_str_lit};
+    use crate::type_infer::{make_typevalue_nominal, make_typevalue_str_lit};
 
     // Helper: create a constructor pattern
     fn con(tag: ConstructorTag, sub_patterns: Vec<CoveragePattern>) -> CoveragePattern {
@@ -1457,7 +1421,7 @@ mod tests {
     #[test]
     fn test_sig_from_union_record_variants() {
         let unknown_tv = crate::value::unknown_type_val();
-        let str_tv = make_typevalue_repr(REPR_STRING);
+        let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
         let union_members = vec![
             make_record_typevalue_test(&[("ok", unknown_tv)]),
             make_record_typevalue_test(&[("err", str_tv)]),
@@ -1474,8 +1438,8 @@ mod tests {
     #[test]
     fn test_sig_from_union_primitive_types() {
         let union_members = vec![
-            make_typevalue_repr(REPR_INT),
-            make_typevalue_repr(REPR_STRING),
+            make_typevalue_nominal(crate::value::TYPE_ID_INT),
+            make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         ];
         let sig =
             ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
@@ -1505,7 +1469,7 @@ mod tests {
             ctor: Arc::from(TV_FN),
             payload: None,
         });
-        let union_members = vec![make_typevalue_repr(REPR_INT), fn_tv];
+        let union_members = vec![make_typevalue_nominal(crate::value::TYPE_ID_INT), fn_tv];
         let sig =
             ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new());
         assert!(

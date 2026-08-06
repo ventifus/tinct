@@ -19,9 +19,9 @@ use std::sync::Arc;
 pub(crate) fn widen_literal_types(tv: Arc<Value>) -> Arc<Value> {
     match tv.as_ref() {
         Value::Variant { ctor, .. } => match ctor.as_ref() {
-            TV_INT_LIT => crate::type_infer::make_typevalue_repr(REPR_INT),
-            TV_FLOAT_LIT => crate::type_infer::make_typevalue_repr(REPR_FLOAT),
-            TV_STR_LIT => crate::type_infer::make_typevalue_repr(REPR_STRING),
+            TV_INT_LIT => crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
+            TV_FLOAT_LIT => crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_FLOAT),
+            TV_STR_LIT => crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_STRING),
             _ => tv,
         },
         _ => tv,

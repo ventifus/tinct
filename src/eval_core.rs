@@ -19,7 +19,6 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceMatchArm, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
-use crate::type_tags::*;
 use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value};
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
@@ -1187,15 +1186,6 @@ pub(crate) fn eval_core_expr<'a>(
                 is_pred,
                 inner,
             } => {
-                // Validate repr string against the known Value variant names.
-                if !is_valid_repr_string(&repr) {
-                    return Err(EvalError::user_error(
-                        format!("repr: {:?} is not a known Value variant", repr),
-                        span.clone(),
-                    )
-                    .into());
-                }
-
                 // Evaluate the inner constructor dict.
                 let inner_thunk = eval_core_expr(inner, frame, ctx).await?;
 
@@ -1240,62 +1230,6 @@ pub(crate) fn eval_core_expr<'a>(
     }) // end Box::pin(async move {
 }
 
-/// Returns `true` if `s` is a valid `repr:` string for [`CoreExpr::ReprDecl`].
-///
-/// Each entry in the slice corresponds to exactly one variant of [`Value`] via the
-/// canonical `REPR_*` constant from `type_tags`. When a new `Value` variant is added,
-/// this function must be updated — the compiler cannot enforce this directly, but the
-/// test [`tests::test_is_valid_repr_string`] verifies every entry explicitly and will
-/// fail if an entry is removed or a new variant is added without updating here.
-///
-/// `Value::Builder` is intentionally excluded: Builder is a transient accumulator that
-/// is consumed before type identity matters; it cannot meaningfully participate in the
-/// `repr:` type-identity protocol.
-fn is_valid_repr_string(s: &str) -> bool {
-    [
-        REPR_INT,
-        REPR_U64,
-        REPR_FLOAT,
-        REPR_STRING,
-        REPR_BYTES,
-        REPR_DICT,
-        REPR_FUNCTION,
-        REPR_BUILTIN,
-        REPR_PROXY,
-        REPR_VARIANT,
-        REPR_DECIMAL,
-        REPR_BIGINT,
-        REPR_DURATION,
-        REPR_URI,
-        REPR_TIMESTAMP,
-        REPR_TIMEZONE,
-        REPR_CLOCK_CAP,
-        REPR_DIR_CAP,
-        REPR_NET_CAP,
-        REPR_FILE,
-        REPR_REVOCABLE_DIR_CAP,
-        REPR_QUIC_SESSION,
-        REPR_HTTP2_SESSION,
-        REPR_HTTP3_SESSION,
-        REPR_QUIC_DATAGRAM_HANDLE,
-        REPR_TASK,
-        REPR_CHANNEL,
-        REPR_BROADCAST_CHANNEL,
-        REPR_ONESHOT_SENDER,
-        REPR_ONESHOT_RECEIVER,
-        REPR_CONTEXT,
-        REPR_REACTIVE_CELL,
-        REPR_ARENA,
-        REPR_TYPE_CONTEXT,
-        REPR_PROGRAM,
-        REPR_DOCUMENT,
-        REPR_EXPRESSION,
-        REPR_CORE_DOCUMENT,
-        REPR_SCOPE,
-        REPR_ANNOTATED,
-    ]
-    .contains(&s)
-}
 
 #[cfg(test)]
 mod tests {
@@ -1410,84 +1344,4 @@ mod tests {
         );
     }
 
-    /// Verifies that `is_valid_repr_string` returns `true` for every expected `Value`
-    /// variant name and `false` for unknown strings.
-    ///
-    /// Each entry corresponds to one `REPR_*` constant from `type_tags`. If a constant
-    /// is removed or a new variant is added without updating `is_valid_repr_string`,
-    /// this test will fail.
-    #[test]
-    fn test_is_valid_repr_string() {
-        use crate::type_tags::*;
-        // Every entry that should be accepted — one per Value variant (excluding Builder).
-        let valid = [
-            REPR_INT,
-            REPR_U64,
-            REPR_FLOAT,
-            REPR_STRING,
-            REPR_BYTES,
-            REPR_DICT,
-            REPR_FUNCTION,
-            REPR_BUILTIN,
-            REPR_PROXY,
-            REPR_VARIANT,
-            REPR_DECIMAL,
-            REPR_BIGINT,
-            REPR_DURATION,
-            REPR_URI,
-            REPR_TIMESTAMP,
-            REPR_TIMEZONE,
-            REPR_CLOCK_CAP,
-            REPR_DIR_CAP,
-            REPR_NET_CAP,
-            REPR_FILE,
-            REPR_REVOCABLE_DIR_CAP,
-            REPR_QUIC_SESSION,
-            REPR_HTTP2_SESSION,
-            REPR_HTTP3_SESSION,
-            REPR_QUIC_DATAGRAM_HANDLE,
-            REPR_TASK,
-            REPR_CHANNEL,
-            REPR_BROADCAST_CHANNEL,
-            REPR_ONESHOT_SENDER,
-            REPR_ONESHOT_RECEIVER,
-            REPR_CONTEXT,
-            REPR_REACTIVE_CELL,
-            REPR_ARENA,
-            REPR_TYPE_CONTEXT,
-            REPR_PROGRAM,
-            REPR_DOCUMENT,
-            REPR_EXPRESSION,
-            REPR_CORE_DOCUMENT,
-            REPR_SCOPE,
-            REPR_ANNOTATED,
-        ];
-        for s in &valid {
-            assert!(
-                super::is_valid_repr_string(s),
-                "is_valid_repr_string must return true for {:?}",
-                s
-            );
-        }
-
-        // Builder is explicitly excluded — it is a transient accumulator.
-        assert!(
-            !super::is_valid_repr_string("Value::Builder"),
-            "is_valid_repr_string must return false for Value::Builder (transient accumulator)"
-        );
-
-        // Unknown strings must be rejected.
-        assert!(
-            !super::is_valid_repr_string("Value::Unknown"),
-            "is_valid_repr_string must return false for unknown variant names"
-        );
-        assert!(
-            !super::is_valid_repr_string(""),
-            "is_valid_repr_string must return false for empty string"
-        );
-        assert!(
-            !super::is_valid_repr_string("Int"),
-            "is_valid_repr_string must return false for variant name without 'Value::' prefix"
-        );
-    }
 }

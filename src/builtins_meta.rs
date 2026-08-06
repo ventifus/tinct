@@ -798,8 +798,7 @@ pub(crate) fn builtin_type_of(
             &ctx,
             call_span.clone(),
         )?;
-        let type_value = crate::eval::ground_typevalue_of(&val);
-        Ok(Arc::new(Thunk::value((*type_value).clone(), call_span)))
+        Ok(Arc::new(Thunk::value(val.type_val().as_ref().clone(), call_span)))
     })
 }
 
@@ -2546,7 +2545,7 @@ pub(crate) fn builtin_typecheck_doc(
             Arc::clone(&parent_env),
         )));
         {
-            use crate::type_infer::{make_typevalue_op, make_typevalue_unknown};
+            use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
             let mut child_inner = child_env.write().unwrap();
             let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
@@ -2569,7 +2568,7 @@ pub(crate) fn builtin_typecheck_doc(
                 }
             }
             for (name, _thunk) in &state.type_stage_fns {
-                let tv = make_typevalue_op(name);
+                let tv = make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0));
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                     state
                         .resolver_frames
@@ -2586,7 +2585,7 @@ pub(crate) fn builtin_typecheck_doc(
                 }
             }
             for (name, _kind) in &state.type_stage_type_vars {
-                let tv = make_typevalue_op(name);
+                let tv = make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0));
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                     state
                         .resolver_frames

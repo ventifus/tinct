@@ -96,7 +96,7 @@ fn extract_constraint_class_name(cv: &Arc<crate::value::Value>) -> Option<String
                         ctor: c_ctor,
                         payload: Some(payload),
                         ..
-                    }) if c_ctor.as_ref() == TV_OP => match payload.peek_result()? {
+                    }) if c_ctor.as_ref() == TV_NOMINAL => match payload.peek_result()? {
                         Ok(crate::value::Value::Dict { entries: inner, .. }) => {
                             let name_key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
                             let name_thunk = inner.get(&name_key)?;
@@ -223,7 +223,7 @@ fn extract_op_name(tv: &TypeValue) -> Option<String> {
             ctor,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_OP => match thunk.peek_result()? {
+        } if ctor.as_ref() == TV_NOMINAL => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
                 let name_thunk = entries.get(&key)?;
@@ -240,29 +240,6 @@ fn extract_op_name(tv: &TypeValue) -> Option<String> {
     }
 }
 
-/// Extract the `repr` string from a TypeValue.Repr { repr: String }.
-fn extract_repr_string(tv: &TypeValue) -> Option<String> {
-    match tv.as_ref() {
-        crate::value::Value::Variant {
-            ctor,
-            payload: Some(thunk),
-            ..
-        } if ctor.as_ref() == TV_REPR => match thunk.peek_result()? {
-            Ok(crate::value::Value::Dict { entries, .. }) => {
-                let key = crate::value::HashableValue::Str(Arc::from(FIELD_REPR));
-                let repr_thunk = entries.get(&key)?;
-                match repr_thunk.peek_result()? {
-                    Ok(crate::value::Value::String {
-                        source, start, end, ..
-                    }) => Some(source[*start..*end].to_string()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 // ── check_function_arity ──────────────────────────────────────────────────────
 
@@ -335,8 +312,8 @@ pub(crate) fn lower_levels_check_occurs_tv(
             ctx.lower_var_level(&name, cap_level);
             found
         }
-        Some(TV_UNKNOWN) | Some(TV_NEVER) | Some(TV_TOP) | Some(TV_ERROR) | Some(TV_REPR)
-        | Some(TV_INT_LIT) | Some(TV_FLOAT_LIT) | Some(TV_STR_LIT) | Some(TV_OP) => {
+        Some(TV_UNKNOWN) | Some(TV_NEVER) | Some(TV_TOP) | Some(TV_ERROR) | Some(TV_NOMINAL)
+        | Some(TV_INT_LIT) | Some(TV_FLOAT_LIT) | Some(TV_STR_LIT) => {
             // Leaf types: no TypeVars
             false
         }
@@ -619,30 +596,11 @@ pub async fn unify(
     let ctor_b = tv_ctor(&b);
 
     match (ctor_a, ctor_b) {
-        // Repr types: same repr = equal, different = error.
-        (Some(TV_REPR), Some(TV_REPR)) => {
-            let repr_a = extract_repr_string(&a);
-            let repr_b = extract_repr_string(&b);
-            if repr_a == repr_b {
-                Ok(())
-            } else {
-                Err(Diagnostic::error(
-                    "type-error",
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
-                    ),
-                    span,
-                ))
-            }
-        }
-
-        // Op types: same name = equal, different = error.
-        (Some(TV_OP), Some(TV_OP)) => {
-            let name_a = extract_op_name(&a);
-            let name_b = extract_op_name(&b);
-            if name_a == name_b {
+        // Nominal types: same id = equal, different = error.
+        (Some(TV_NOMINAL), Some(TV_NOMINAL)) => {
+            let id_a = crate::type_infer::typevalue_nominal_id(&a);
+            let id_b = crate::type_infer::typevalue_nominal_id(&b);
+            if id_a == id_b {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -676,9 +634,9 @@ pub async fn unify(
             }
         }
 
-        (Some(TV_INT_LIT), Some(TV_REPR)) => {
+        (Some(TV_INT_LIT), Some(TV_NOMINAL)) => {
             // IntLiteral promotes to Int: IntLit(n) ~ Value::Int is allowed.
-            if extract_repr_string(&b).as_deref() == Some(REPR_INT) {
+            if crate::type_infer::typevalue_nominal_id(&b) == Some(crate::value::TYPE_ID_INT) {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -692,8 +650,8 @@ pub async fn unify(
                 ))
             }
         }
-        (Some(TV_REPR), Some(TV_INT_LIT)) => {
-            if extract_repr_string(&a).as_deref() == Some(REPR_INT) {
+        (Some(TV_NOMINAL), Some(TV_INT_LIT)) => {
+            if crate::type_infer::typevalue_nominal_id(&a) == Some(crate::value::TYPE_ID_INT) {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -726,8 +684,8 @@ pub async fn unify(
             }
         }
 
-        (Some(TV_STR_LIT), Some(TV_REPR)) => {
-            if extract_repr_string(&b).as_deref() == Some(REPR_STRING) {
+        (Some(TV_STR_LIT), Some(TV_NOMINAL)) => {
+            if crate::type_infer::typevalue_nominal_id(&b) == Some(crate::value::TYPE_ID_STRING) {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -741,8 +699,8 @@ pub async fn unify(
                 ))
             }
         }
-        (Some(TV_REPR), Some(TV_STR_LIT)) => {
-            if extract_repr_string(&a).as_deref() == Some(REPR_STRING) {
+        (Some(TV_NOMINAL), Some(TV_STR_LIT)) => {
+            if crate::type_infer::typevalue_nominal_id(&a) == Some(crate::value::TYPE_ID_STRING) {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -777,8 +735,8 @@ pub async fn unify(
         }
 
         // FloatLiteral promotes to Float (mirrors IntLiteral promotion).
-        (Some(TV_FLOAT_LIT), Some(TV_REPR)) => {
-            if extract_repr_string(&b).as_deref() == Some(REPR_FLOAT) {
+        (Some(TV_FLOAT_LIT), Some(TV_NOMINAL)) => {
+            if crate::type_infer::typevalue_nominal_id(&b) == Some(crate::value::TYPE_ID_FLOAT) {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -792,8 +750,8 @@ pub async fn unify(
                 ))
             }
         }
-        (Some(TV_REPR), Some(TV_FLOAT_LIT)) => {
-            if extract_repr_string(&a).as_deref() == Some(REPR_FLOAT) {
+        (Some(TV_NOMINAL), Some(TV_FLOAT_LIT)) => {
+            if crate::type_infer::typevalue_nominal_id(&a) == Some(crate::value::TYPE_ID_FLOAT) {
                 Ok(())
             } else {
                 Err(Diagnostic::error(
@@ -1002,7 +960,7 @@ pub async fn unify(
                 Diagnostic::error("type-error", "malformed TypeValue.App", span.clone())
             })?;
 
-            // Check whether both ops are TV_OP with the same name and, if so, whether
+            // Check whether both ops are TV_NOMINAL with the same name and, if so, whether
             // the op name is associated with a non-injective resolver.
             let op_name_a = extract_op_name(&op_a);
             let op_name_b = extract_op_name(&op_b);
@@ -2611,7 +2569,7 @@ mod type_unify_tests;
 #[cfg(test)]
 mod type_unify_tests_new {
     use super::*;
-    use crate::type_infer::{make_typevalue_repr, make_typevalue_unknown, InferenceContext};
+    use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown, InferenceContext};
 
     fn make_ctx() -> InferenceContext {
         InferenceContext::new()
@@ -2632,7 +2590,7 @@ mod type_unify_tests_new {
     async fn test_unify_same_repr() {
         let mut ctx = make_ctx();
         let mut constraints = Vec::new();
-        let int_tv = make_typevalue_repr(REPR_INT);
+        let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         let result = unify(&int_tv, &int_tv, &mut ctx, &mut constraints, make_span(), 0).await;
         assert!(result.is_ok());
     }
@@ -2642,7 +2600,7 @@ mod type_unify_tests_new {
         let mut ctx = make_ctx();
         let mut constraints = Vec::new();
         let var = ctx.fresh_typevar("t");
-        let int_tv = make_typevalue_repr(REPR_INT);
+        let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         let span = make_span();
         let result = unify(&var, &int_tv, &mut ctx, &mut constraints, span, 0).await;
         assert!(result.is_ok());
@@ -2658,7 +2616,7 @@ mod type_unify_tests_new {
         let mut ctx = make_ctx();
         let mut constraints = Vec::new();
         let unknown = make_typevalue_unknown();
-        let int_tv = make_typevalue_repr(REPR_INT);
+        let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         let span = make_span();
         let result = unify(&unknown, &int_tv, &mut ctx, &mut constraints, span, 0).await;
         assert!(result.is_ok());
@@ -2668,8 +2626,8 @@ mod type_unify_tests_new {
     async fn test_unify_different_reprs_fails() {
         let mut ctx = make_ctx();
         let mut constraints = Vec::new();
-        let int_tv = make_typevalue_repr(REPR_INT);
-        let str_tv = make_typevalue_repr(REPR_STRING);
+        let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+        let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
         let result = unify(&int_tv, &str_tv, &mut ctx, &mut constraints, make_span(), 0).await;
         assert!(result.is_err());
     }
@@ -2684,8 +2642,8 @@ mod type_unify_tests_new {
         };
 
         // Build Record { ...Int-keyed String-valued } (Uniform tail: key=Int, value=String)
-        let int_tv = make_typevalue_repr(REPR_INT);
-        let str_tv = make_typevalue_repr(REPR_STRING);
+        let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+        let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
         let top_tv = make_typevalue_top();
 
         let int_key_tail = make_rowtail_uniform_with_key_type(top_tv.clone(), Some(int_tv.clone()));

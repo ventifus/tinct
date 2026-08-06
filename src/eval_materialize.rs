@@ -3891,7 +3891,6 @@ mod tests {
     use super::*;
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
-    use crate::type_tags::{REPR_INT, REPR_STRING};
     use crate::value::Thunk;
     fn test_ctx() -> Arc<EvalContext> {
         EvalContext::new()
@@ -3966,8 +3965,8 @@ mod tests {
         );
 
         // Create a Guarded thunk that expects String but wraps the Int
-        use crate::type_infer::make_typevalue_repr;
-        let expected_type = make_typevalue_repr(REPR_STRING);
+        use crate::type_infer::make_typevalue_nominal;
+        let expected_type = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
         let guard_span = test_span(10, 1, 10, 20); // Line 10: the assertion site
         let guarded = Arc::new(crate::value::Thunk::guarded(
             Arc::new(value_thunk),
@@ -4017,10 +4016,10 @@ mod tests {
             same_span.clone(),
         );
         // Create a Guarded thunk with the same span for both guard and inner
-        use crate::type_infer::make_typevalue_repr;
+        use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(crate::value::Thunk::guarded(
             Arc::new(value_thunk),
-            make_typevalue_repr(REPR_STRING),
+            make_typevalue_nominal(crate::value::TYPE_ID_STRING),
             Vec::new(),
             same_span.clone(),
             None,
@@ -4266,10 +4265,10 @@ mod tests {
             span.clone(),
         ));
 
-        use crate::type_infer::make_typevalue_repr;
+        use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
             inner,
-            make_typevalue_repr(REPR_INT),
+            make_typevalue_nominal(crate::value::TYPE_ID_INT),
             vec![],
             span,
             None,
@@ -4324,10 +4323,10 @@ mod tests {
         // Default expression: a literal Int(99).
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int(99)));
-        use crate::type_infer::make_typevalue_repr;
+        use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
             inner,
-            make_typevalue_repr(REPR_INT),
+            make_typevalue_nominal(crate::value::TYPE_ID_INT),
             vec![],
             span,
             None,
@@ -4385,10 +4384,10 @@ mod tests {
             span.clone(),
         ));
 
-        use crate::type_infer::make_typevalue_repr;
+        use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
             inner,
-            make_typevalue_repr(REPR_INT),
+            make_typevalue_nominal(crate::value::TYPE_ID_INT),
             vec![],
             span,
             None,

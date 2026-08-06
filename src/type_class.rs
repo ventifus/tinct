@@ -130,7 +130,7 @@ fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
 pub fn make_type_op(name: impl Into<String>) -> TypeValue {
     let name_str: String = name.into();
     let payload = single_field_dict("name", string_value(&name_str));
-    Arc::new(make_variant(TV_OP, Some(payload)))
+    Arc::new(make_variant(TV_NOMINAL, Some(payload)))
 }
 
 /// Extract the inner `Value` from an `Arc<Value>`, cloning if there are multiple owners.
@@ -309,7 +309,7 @@ fn extract_fd_constraint_parts(cv: &Arc<Value>) -> Option<(String, Vec<Arc<Value
                     ctor: c_ctor,
                     payload: Some(class_payload),
                     ..
-                }) if c_ctor.as_ref() == TV_OP => {
+                }) if c_ctor.as_ref() == TV_NOMINAL => {
                     let class_payload_val = class_payload.peek_result()?;
                     match class_payload_val {
                         Ok(Value::Dict { entries: inner, .. }) => {
@@ -396,8 +396,7 @@ fn has_free_type_vars_inner(
                 }
             }
             // Leaf/opaque variants have no type variable positions.
-            TV_UNKNOWN | TV_NEVER | TV_TOP | TV_REPR | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT
-            | TV_OP => false,
+            TV_UNKNOWN | TV_NEVER | TV_TOP | TV_NOMINAL | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT => false,
             // Structural variants: inspect settled payload dicts.
             _ => {
                 if let Some(thunk) = payload {
@@ -554,32 +553,18 @@ fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
                 ..
             },
         ) => ca.as_ref() == cb.as_ref(),
-        // TypeValue.Repr: match by repr string.
+        // TypeValue.Nominal: match by id.
         (
             Value::Variant {
                 ctor: ca,
-                payload: Some(pa),
                 ..
             },
             Value::Variant {
                 ctor: cb,
-                payload: Some(pb),
                 ..
             },
-        ) if ca.as_ref() == TV_REPR && cb.as_ref() == TV_REPR => {
-            let repr_str = |thunk: &Arc<Thunk>| -> Option<String> {
-                if let Some(Ok(Value::Dict { entries, .. })) = thunk.peek_result() {
-                    let key = HashableValue::Str(Arc::from(FIELD_REPR));
-                    if let Some(Ok(Value::String {
-                        source, start, end, ..
-                    })) = entries.get(&key).and_then(|t| t.peek_result())
-                    {
-                        return Some(source[*start..*end].to_string());
-                    }
-                }
-                None
-            };
-            repr_str(pa) == repr_str(pb)
+        ) if ca.as_ref() == TV_NOMINAL && cb.as_ref() == TV_NOMINAL => {
+            crate::type_infer::typevalue_nominal_id(pattern) == crate::type_infer::typevalue_nominal_id(target)
         }
         // Same ctor with payload: match by ctor tag only. This is correct for all
         // builtin TypeValue constructors (Int, Float, Str, Bool, etc.) where the
@@ -814,45 +799,38 @@ pub(crate) async fn try_fd_improvement(
 pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
     use crate::type_infer::typevalue_ctor;
 
+    use crate::value::*;
     match typevalue_ctor(tv) {
-        Some(TV_REPR) => {
-            let repr_field = crate::type_infer::typevalue_payload_field(tv, FIELD_REPR)?;
-            let repr_str = match repr_field.as_ref() {
-                Value::String {
-                    source, start, end, ..
-                } => source[*start..*end].to_string(),
-                _ => return None,
-            };
-            let tn_ctor = match repr_str.as_str() {
-                REPR_INT => TN_INT,
-                REPR_FLOAT => TN_FLOAT,
-                REPR_STRING => TN_STRING,
-                REPR_BYTES => TN_BYTES,
-                // REPR_DICT not mapped: TypeNode.Dict requires structural payload (fields, open)
-                // that TypeValue.Repr lacks. Use TypeNode.Dict construction explicitly.
-                REPR_DECIMAL => TN_DECIMAL,
-                REPR_BIGINT => TN_BIG_INT,
-                REPR_DIR_CAP => TN_DIR_CAP,
-                REPR_NET_CAP => TN_NET_CAP,
-                REPR_FILE => TN_FILE,
-                REPR_TASK => TN_TASK,
-                REPR_CHANNEL => TN_CHANNEL,
-                REPR_CONTEXT => TN_CONTEXT,
-                REPR_REACTIVE_CELL => TN_REACTIVE_CELL,
-                REPR_CLOCK_CAP => TN_CLOCK_CAP,
-                REPR_TIMEZONE => TN_TIMEZONE,
-                REPR_TIMESTAMP => TN_TIMESTAMP,
-                REPR_DURATION => TN_DURATION,
-                REPR_PROXY => TN_PROXY,
-                REPR_QUIC_SESSION => TN_QUIC_SESSION,
-                REPR_QUIC_DATAGRAM_HANDLE => TN_QUIC_DATAGRAM_HANDLE,
-                REPR_HTTP2_SESSION => TN_HTTP2_SESSION,
-                REPR_HTTP3_SESSION => TN_HTTP3_SESSION,
-                REPR_URI => TN_URI,
-                REPR_PROGRAM => TN_PROGRAM,
-                REPR_DOCUMENT => TN_DOCUMENT,
-                REPR_CORE_DOCUMENT => TN_CORE_DOCUMENT,
-                REPR_TYPE_CONTEXT => TN_TYPE_CONTEXT,
+        Some(TV_NOMINAL) => {
+            let id = crate::type_infer::typevalue_nominal_id(tv)?;
+            let tn_ctor = match id {
+                TYPE_ID_INT | TYPE_ID_U64 => TN_INT,
+                TYPE_ID_FLOAT => TN_FLOAT,
+                TYPE_ID_STRING => TN_STRING,
+                TYPE_ID_BYTES => TN_BYTES,
+                TYPE_ID_DECIMAL => TN_DECIMAL,
+                TYPE_ID_BIGINT => TN_BIG_INT,
+                TYPE_ID_DIRCAP | TYPE_ID_REVOCABLE_DIRCAP => TN_DIR_CAP,
+                TYPE_ID_NETCAP => TN_NET_CAP,
+                TYPE_ID_FILE => TN_FILE,
+                TYPE_ID_TASK => TN_TASK,
+                TYPE_ID_CHANNEL => TN_CHANNEL,
+                TYPE_ID_CONTEXT => TN_CONTEXT,
+                TYPE_ID_REACTIVE_CELL => TN_REACTIVE_CELL,
+                TYPE_ID_CLOCKCAP => TN_CLOCK_CAP,
+                TYPE_ID_TIMEZONE => TN_TIMEZONE,
+                TYPE_ID_TIMESTAMP => TN_TIMESTAMP,
+                TYPE_ID_DURATION => TN_DURATION,
+                TYPE_ID_PROXY => TN_PROXY,
+                TYPE_ID_QUIC_SESSION => TN_QUIC_SESSION,
+                TYPE_ID_QUIC_DATAGRAM_HANDLE => TN_QUIC_DATAGRAM_HANDLE,
+                TYPE_ID_HTTP2_SESSION => TN_HTTP2_SESSION,
+                TYPE_ID_HTTP3_SESSION => TN_HTTP3_SESSION,
+                TYPE_ID_URI => TN_URI,
+                TYPE_ID_PROGRAM => TN_PROGRAM,
+                TYPE_ID_DOCUMENT => TN_DOCUMENT,
+                TYPE_ID_CORE_DOCUMENT => TN_CORE_DOCUMENT,
+                TYPE_ID_TYPE_CONTEXT => TN_TYPE_CONTEXT,
                 _ => return None,
             };
             Some(Arc::new(Value::Variant {

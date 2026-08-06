@@ -72,21 +72,47 @@ pub fn make_typevalue_top() -> TypeValue {
 ///
 /// `repr` is the Rust variant discriminant string, e.g. `"Value::Int"`, `"Value::Float"`.
 /// The `is` field is left as an empty dict (no typeclass instance attached at construction time).
-pub fn make_typevalue_repr(repr: &str) -> TypeValue {
-    // Payload: { repr: String, is: [] }
-    let payload = make_dict_typevalue(&[
-        (FIELD_REPR, make_string_typevalue(repr)),
-        (FIELD_IS, make_empty_dict_typevalue()),
-    ]);
+pub fn make_typevalue_nominal(id: u64) -> TypeValue {
+    let payload = make_dict_typevalue(&[(
+        FIELD_ID,
+        crate::value::Value::U64 {
+            n: id,
+            type_val: crate::value::unknown_type_val(),
+        },
+    )]);
     Arc::new(crate::value::Value::Variant {
         type_val: crate::value::unknown_type_val(),
         type_decl_id: 0,
-        ctor: Arc::from(TV_REPR),
+        ctor: Arc::from(TV_NOMINAL),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
         ))),
     })
+}
+
+pub fn typevalue_nominal_id(v: &TypeValue) -> Option<u64> {
+    if typevalue_ctor(v) != Some(TV_NOMINAL) {
+        return None;
+    }
+    match v.as_ref() {
+        crate::value::Value::Variant {
+            payload: Some(thunk),
+            ..
+        } => match thunk.peek_result()? {
+            Ok(crate::value::Value::Dict { entries, .. }) => {
+                let key = crate::value::HashableValue::Str(Arc::from(FIELD_ID));
+                let id_thunk = entries.get(&key)?;
+                match id_thunk.peek_result()? {
+                    Ok(crate::value::Value::U64 { n, .. }) => Some(*n),
+                    Ok(crate::value::Value::Int { n, .. }) => Some(*n as u64),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Create a TypeValue.IntLit Arc<Value> for an integer literal type.
@@ -143,19 +169,6 @@ pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
     })
 }
 
-/// Create a TypeValue.Op Arc<Value> for a type constructor name.
-pub fn make_typevalue_op(name: &str) -> TypeValue {
-    let payload = make_dict_typevalue(&[(FIELD_NAME, make_string_typevalue(name))]);
-    Arc::new(crate::value::Value::Variant {
-        type_val: crate::value::unknown_type_val(),
-        type_decl_id: 0,
-        ctor: Arc::from(TV_OP),
-        payload: Some(Arc::new(crate::value::Thunk::value(
-            payload,
-            crate::rust_span!(),
-        ))),
-    })
-}
 
 /// Create a TypeValue.Var Arc<Value> — alias for `make_typevar_value`.
 pub fn make_typevalue_var(name: &str) -> TypeValue {
@@ -1145,13 +1158,6 @@ fn make_string_typevalue(s: &str) -> crate::value::Value {
 }
 
 /// Construct an empty `Value::Dict` for use as a TypeValue field.
-fn make_empty_dict_typevalue() -> crate::value::Value {
-    crate::value::Value::Dict {
-        entries: indexmap::IndexMap::new(),
-        type_val: crate::value::unknown_type_val(),
-    }
-}
-
 /// Construct a `Value::Dict` from a slice of `(key, value)` pairs.
 ///
 /// Keys are string keys; values are already-constructed `Value` objects that will be
@@ -1228,44 +1234,12 @@ pub fn typevalue_payload_field(tv: &TypeValue, field: &str) -> Option<TypeValue>
     }
 }
 
-/// Check if a TypeValue is a TypeValue.Op (type operator/constructor name).
-pub fn typevalue_is_op(v: &TypeValue) -> bool {
-    typevalue_ctor(v) == Some(TV_OP)
-}
-
 /// Return the constructor tag string of a TypeValue.
 ///
 /// Returns `None` if the value is not a `Value::Variant`.
 /// Delegates to `crate::type_class::typevalue_ctor` — canonical implementation lives there.
 pub fn typevalue_ctor(v: &TypeValue) -> Option<&str> {
     crate::type_class::typevalue_ctor(v)
-}
-
-/// Extract the `name` string from a TypeValue.Op payload.
-/// Returns None if not a TypeValue.Op or payload cannot be read.
-pub fn typevalue_op_name(v: &TypeValue) -> Option<String> {
-    if typevalue_ctor(v) != Some(TV_OP) {
-        return None;
-    }
-    match v.as_ref() {
-        crate::value::Value::Variant {
-            payload: Some(thunk),
-            ..
-        } => match thunk.peek_result()? {
-            Ok(crate::value::Value::Dict { entries, .. }) => {
-                let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
-                let name_thunk = entries.get(&key)?;
-                match name_thunk.peek_result()? {
-                    Ok(crate::value::Value::String {
-                        source, start, end, ..
-                    }) => Some(source[*start..*end].to_string()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// Extract (tycon, ctor) strings from a TypeValue.NominalVariant payload.
@@ -1500,6 +1474,7 @@ pub struct InferenceContext {
     /// Used by BAS subtyping to look up variance annotations for type constructor applications.
     /// Optional: callers that don't need TyCon variance can leave this empty.
     pub tycon_env: HashMap<String, Arc<crate::type_def::TyConDef>>,
+    pub type_display_names: HashMap<u64, String>,
     /// Deferred equality pairs for non-injective resolver FDs.
     ///
     /// Added by `unify()` when two `TV_APP(F, ...)` nodes with non-injective F are compared.
@@ -1575,6 +1550,7 @@ impl InferenceContext {
             subst: HashMap::new(),
             gensym_counter: 0,
             tycon_env: HashMap::new(),
+            type_display_names: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
@@ -1595,6 +1571,7 @@ impl InferenceContext {
             subst: HashMap::new(),
             gensym_counter: 0,
             tycon_env,
+            type_display_names: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
@@ -1622,6 +1599,7 @@ impl InferenceContext {
             subst,
             gensym_counter: 0,
             tycon_env,
+            type_display_names: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
@@ -2055,8 +2033,8 @@ impl InferenceContext {
                     // TV_RECURSIVE_REF: payload { depth: Integer } — no TypeVar positions.
                     // TV_ERROR: Rust-internal sentinel; never contains inference vars.
                     // TV_STAGE_APP: deferred computation sentinel; payload fields are not TypeVar containers.
-                    TV_UNKNOWN | TV_NEVER | TV_TOP | TV_REPR | TV_INT_LIT | TV_FLOAT_LIT
-                    | TV_STR_LIT | TV_OP | TV_PHANTOM | TV_RECURSIVE_REF | TV_ERROR
+                    TV_UNKNOWN | TV_NEVER | TV_TOP | TV_NOMINAL | TV_INT_LIT | TV_FLOAT_LIT
+                    | TV_STR_LIT | TV_PHANTOM | TV_RECURSIVE_REF | TV_ERROR
                     | TV_STAGE_APP => {}
                     _ => {
                         // Structural variants: inspect settled payload dicts recursively.
@@ -2276,6 +2254,8 @@ pub struct InferState {
     /// Type constructor environment.
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    pub type_name_to_id: std::collections::HashMap<String, u64>,
+    pub type_display_names: std::collections::HashMap<u64, String>,
     /// Current FD improvement recursion depth. Passed by `&mut` to `try_fd_improvement`,
     /// which increments it on entry and decrements it on exit (RAII-style depth guard).
     /// Capped at 32 to prevent infinite fixpoint loops in pathological cases
@@ -2372,6 +2352,8 @@ impl InferState {
             type_stage_fns: std::collections::HashMap::new(),
             type_stage_type_vars: std::collections::HashMap::new(),
             tycon_env: std::collections::HashMap::new(),
+            type_name_to_id: std::collections::HashMap::new(),
+            type_display_names: std::collections::HashMap::new(),
             fd_depth: 0,
             current_binding: None,
             use_def: std::collections::HashMap::new(),
@@ -2683,10 +2665,10 @@ mod tests {
     /// make_typevalue_repr creates a TypeValue.Repr variant with the correct repr field.
     #[test]
     fn test_make_typevalue_repr() {
-        let repr = make_typevalue_repr(REPR_INT);
+        let repr = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         assert_eq!(
             typevalue_ctor(&repr),
-            Some(TV_REPR),
+            Some(TV_NOMINAL),
             "repr must have ctor TypeValue.Repr"
         );
         // The variant has a non-None payload

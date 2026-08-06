@@ -2168,14 +2168,14 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // "undefined variable". Each injection site in main.rs is responsible for its type.
         let injected_type_env = {
             use tinct::Env;
-            let dircap = || tinct::make_typevalue_op("DirCap");
+            let dircap = || tinct::make_typevalue_nominal(tinct::TYPE_ID_DIRCAP);
             // Dict capabilities (%programs, %args) must use the structural open-record TypeValue,
-            // not make_typevalue_op("Dict"). The annotation @Dict resolves to
-            // Record{fields:{}, tail:Uniform(Top)} via the type-stage scope; using Op("Dict")
+            // not make_typevalue_nominal(TYPE_ID_DICT). The annotation @Dict resolves to
+            // Record{fields:{}, tail:Uniform(Top)} via the type-stage scope; using Nominal(DICT)
             // instead causes a cross-ctor mismatch in unify when annotated functions like
             // `null?` (param x@Dict) are called with %programs as the argument.
             let dict = || tinct::make_typevalue_open_dict();
-            let netcap = || tinct::make_typevalue_op("NetCap");
+            let netcap = || tinct::make_typevalue_nominal(tinct::TYPE_ID_NETCAP);
             let mut inj = Env::new();
             // CLI-injected values: types match what is actually injected above.
             // Each capability gets a consecutive slot (no resolver-assigned slots at this point).

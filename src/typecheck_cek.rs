@@ -29,12 +29,12 @@ use crate::type_def::TyConDef;
 use crate::type_infer::{
     make_rowtail_uniform, make_typevalue_float_lit, make_typevalue_fn, make_typevalue_int_lit,
     make_typevalue_negation, make_typevalue_never, make_typevalue_nominal_variant,
-    make_typevalue_op, make_typevalue_record, make_typevalue_repr, make_typevalue_str_lit,
+    make_typevalue_nominal, make_typevalue_record, make_typevalue_str_lit,
     make_typevalue_top, make_typevalue_unknown, typevalue_ctor, typevalue_extract_members_pub,
     typevalue_fn_params_and_ret, typevalue_nominal_variant_has_fields,
     typevalue_nominal_variant_tag, typevalue_normalize_intersection,
     typevalue_normalize_union_ctx,
-    typevalue_op_name, typevalue_record_fields_pub, typevalue_var_name, InferState, TypeValue,
+    typevalue_record_fields_pub, typevalue_var_name, InferState, TypeValue,
 };
 use crate::types::constrain;
 use crate::types::unify;
@@ -461,7 +461,7 @@ async fn infer_step(
         SurfaceExpression::StringLiteral { content, .. } => {
             TypeCheckAction::Done(make_typevalue_str_lit(content))
         }
-        SurfaceExpression::U64(_) => TypeCheckAction::Done(make_typevalue_repr(REPR_INT)),
+        SurfaceExpression::U64(_) => TypeCheckAction::Done(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
 
         // Placeholder: typed hole — infer as a fresh TypeVar (unifies with context)
         SurfaceExpression::Placeholder(..) => {
@@ -878,7 +878,7 @@ async fn infer_step(
         // an inner expression — recurse into it.
         SurfaceExpression::UnitVariant { tycon, .. } => {
             let tv = if state.tycon_env.contains_key(tycon.as_str()) {
-                crate::type_infer::make_typevalue_op(tycon)
+                crate::type_infer::make_typevalue_nominal(state.type_name_to_id.get(tycon.as_str()).copied().or_else(|| crate::value::type_id_for_name(tycon)).unwrap_or(0))
             } else {
                 make_typevalue_unknown()
             };
@@ -887,7 +887,7 @@ async fn infer_step(
         SurfaceExpression::MakeVariant { tag, .. } => {
             let tycon = tag.split('.').next().unwrap_or("");
             let tv = if state.tycon_env.contains_key(tycon) {
-                crate::type_infer::make_typevalue_op(tycon)
+                crate::type_infer::make_typevalue_nominal(state.type_name_to_id.get(tycon).copied().or_else(|| crate::value::type_id_for_name(tycon)).unwrap_or(0))
             } else {
                 make_typevalue_unknown()
             };
@@ -962,7 +962,7 @@ async fn apply_cont(
                 Some(declared_ret) => {
                     // For checkable primitive return annotations, verify the body is consistent.
                     let is_checkable_primitive =
-                        matches!(typevalue_ctor(&declared_ret), Some(TV_REPR));
+                        matches!(typevalue_ctor(&declared_ret), Some(TV_NOMINAL));
                     if is_checkable_primitive {
                         let body_resolved = state.apply(&child_ty);
                         let body_is_concrete = !is_opaque(&body_resolved);
@@ -3852,10 +3852,11 @@ fn run_match_exhaustiveness_check(
                 None
             }
         }
-        Some(TV_OP) => {
+        Some(TV_NOMINAL) => {
             // TyCon reference — look up in tycon_env for constructors.
-            let name = typevalue_op_name(scrutinee_ty)
-                .expect("invariant: TV_OP TypeValue must have a name field");
+            let id = crate::type_infer::typevalue_nominal_id(scrutinee_ty)
+                .expect("invariant: TV_NOMINAL TypeValue must have an id field");
+            let name = state.type_display_names.get(&id).cloned().unwrap_or_else(|| id.to_string());
             match tycon_env_ref.get(name.as_str()) {
                 Some(def) if !def.constructors.is_empty() => {
                     let constructors = def
@@ -4872,7 +4873,7 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     state.type_stage_scope[0]
                         .entry(name.clone())
-                        .or_insert_with(|| make_typevalue_op(name));
+                        .or_insert_with(|| make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0)));
                     // Use params from TypeDecl for constructor scheme registration.
                     let value_scheme_ty = adt_value_type(&body_tv);
                     let ctor_fields = typevalue_record_fields_pub(&value_scheme_ty);

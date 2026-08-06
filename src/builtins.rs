@@ -2832,7 +2832,7 @@ mod tests {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
-                    crate::type_tags::TV_REPR,
+                    crate::type_tags::TV_NOMINAL,
                     "type_of_int: ctor must be TypeValue.Repr"
                 );
             }
@@ -2866,7 +2866,7 @@ mod tests {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
-                    crate::type_tags::TV_REPR,
+                    crate::type_tags::TV_NOMINAL,
                     "type_of_float: ctor must be TypeValue.Repr"
                 );
             }
@@ -2894,7 +2894,7 @@ mod tests {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
-                    crate::type_tags::TV_REPR,
+                    crate::type_tags::TV_NOMINAL,
                     "type_of_string: ctor must be TypeValue.Repr"
                 );
             }
@@ -2928,7 +2928,7 @@ mod tests {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
-                    crate::type_tags::TV_REPR,
+                    crate::type_tags::TV_NOMINAL,
                     "type_of_dict: ctor must be TypeValue.Repr"
                 );
             }
@@ -3008,7 +3008,7 @@ mod tests {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
-                    crate::type_tags::TV_REPR,
+                    crate::type_tags::TV_NOMINAL,
                     "type_of_builtin: ctor must be TypeValue.Repr"
                 );
             }
@@ -3042,12 +3042,12 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        // ground_typevalue_of(Variant) → TypeValue.Op(tycon) — a Variant with ctor=TV_OP.
+        // ground_typevalue_of(Variant) → TypeValue.Op(tycon) — a Variant with ctor=TV_NOMINAL.
         match &result {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
-                    crate::type_tags::TV_OP,
+                    crate::type_tags::TV_NOMINAL,
                     "test_type_of_variant: ctor must be TypeValue.Op"
                 );
             }

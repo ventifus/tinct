@@ -1,7 +1,7 @@
 use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
-use crate::type_infer::{make_typevalue_repr, make_typevalue_unknown};
+use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
 use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
 use crate::types::unify;
@@ -426,8 +426,8 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
 async fn test_union_type_assert_success() {
     // value_matches_type: Int matches TypeValue.Union([Repr(Int), Repr(String)])
     // After migration: build a TypeValue.Union with two members.
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let union_tv = make_test_union(vec![int_tv, str_tv]);
     let ctx = crate::eval::EvalContext::new();
     assert!(crate::eval::value_matches_type(
@@ -443,8 +443,8 @@ async fn test_union_type_assert_success() {
 #[tokio::test]
 async fn test_union_type_assert_failure_float() {
     // value_matches_type: Float does NOT match TypeValue.Union([Repr(Int), Repr(String)])
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let union_tv = make_test_union(vec![int_tv, str_tv]);
     let ctx = crate::eval::EvalContext::new();
     assert!(!crate::eval::value_matches_type(
@@ -460,7 +460,7 @@ async fn test_union_type_assert_failure_float() {
 #[tokio::test]
 async fn test_union_nullable_pattern() {
     // TypeValue.Union([Repr(Int), Record(Empty)]) — nullable integer pattern
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let null_tv = crate::typecheck::make_typevalue_record_pub(IndexMap::new(), None);
     let union_tv = make_test_union(vec![Arc::clone(&int_tv), Arc::clone(&null_tv)]);
     assert!(
@@ -473,8 +473,8 @@ async fn test_union_nullable_pattern() {
 #[tokio::test]
 async fn test_union_display_format() {
     // TypeValue.Union display format test — just verify it's a Union TypeValue.
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let union_tv = make_test_union(vec![int_tv, str_tv]);
     assert!(
         is_union(&union_tv),
@@ -557,7 +557,7 @@ async fn test_normalize_intersection_unknown_is_identity() {
     // After migration: use TypeValues and the TypeValue intersection normalization function.
     // These tests are simplified to check the key semantic invariant:
     // Unknown ∩ T = T (Unknown is the gradual identity in intersection).
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let unknown_tv = make_typevalue_unknown();
 
     // normalize_intersection with two members produces a TypeValue.Inter (or flattened form).
@@ -610,8 +610,8 @@ async fn test_c_var1_binds_typevar_in_union() {
     let mut state = InferState::new();
     let var_name = "_a0".to_string();
     state.set_level(var_name.clone(), 1);
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let var_tv = make_typevar_value(&var_name);
     let union_b = make_test_union(vec![str_tv, Arc::clone(&var_tv)]);
     let mut constraints = Vec::new();
@@ -636,8 +636,8 @@ async fn test_c_var1_already_covered_no_binding() {
     let mut state = InferState::new();
     let var_name = "_a1".to_string();
     state.set_level(var_name.clone(), 1);
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let int_tv2 = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let int_tv2 = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let var_tv = make_typevar_value(&var_name);
     let union_b = make_test_union(vec![int_tv2, Arc::clone(&var_tv)]);
     let mut constraints = Vec::new();
@@ -663,8 +663,8 @@ async fn test_c_var1_symmetric_union_on_left() {
     let mut state = InferState::new();
     let var_name = "_a2".to_string();
     state.set_level(var_name.clone(), 1);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let var_tv = make_typevar_value(&var_name);
     let union_a = make_test_union(vec![str_tv, Arc::clone(&var_tv)]);
     let mut constraints = Vec::new();
@@ -691,8 +691,8 @@ async fn test_c_var2_binds_typevar_in_intersection() {
     let mut state = InferState::new();
     let var_name = "_a3".to_string();
     state.set_level(var_name.clone(), 1);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let var_tv = make_typevar_value(&var_name);
     // Build TypeValue.Inter { members: Dict }
     let inter_a = {
@@ -803,7 +803,7 @@ async fn test_is_subtype_recursive_vs_typevar_gradual() {
     ctx.current_level = 2;
     let var_tv = make_typevar_value("_t0");
     ctx.levels.insert("_t0".to_string(), 2);
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     // μa.Int — a trivially non-self-referential Recursive wrapper
     let mu_int = make_typevalue_recursive(Arc::clone(&int_tv));
     // TypeVar ~<: Recursive: conservative true per BAS semantics.
@@ -835,7 +835,7 @@ async fn test_is_subtype_recursive_union_terminates() {
         InferenceContext,
     };
     let ctx = InferenceContext::new();
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
 
     // Build mu.X.(Int | {x: X}) — two separate allocations
     let body_a = {
@@ -905,8 +905,8 @@ async fn test_is_subtype_recursive_incompatible_returns_false() {
     use crate::bas::is_subtype_bas;
     use crate::type_infer::{make_typevalue_record, make_typevalue_recursive, InferenceContext};
     let ctx = InferenceContext::new();
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     // μa.{x: Int, y: RecRef(0)}
     let body_a = make_typevalue_record(
         indexmap::indexmap! {
@@ -938,7 +938,7 @@ async fn test_is_subtype_recursive_structural_mismatch_returns_false() {
     use crate::bas::is_subtype_bas;
     use crate::type_infer::{make_typevalue_record, make_typevalue_recursive, InferenceContext};
     let ctx = InferenceContext::new();
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     // μa.Int (body is a non-recursive Int)
     let mu_a = make_typevalue_recursive(Arc::clone(&int_tv));
     // μb.{x: RecRef(0)}
@@ -1176,9 +1176,9 @@ fn test_cek_type_contains_typevar_finds_free_var() {
 /// (e.g., hit a wrong match arm), ground-type inference tests would fail spuriously.
 #[test]
 fn test_cek_type_contains_typevar_not_found_in_ground_types() {
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let float_tv = make_typevalue_repr(REPR_FLOAT);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let float_tv = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
     for ty in &[int_tv, str_tv, float_tv] {
         assert!(
             !typecheck_cek::type_contains_typevar(ty, "a"),
@@ -1201,8 +1201,8 @@ fn test_cek_type_contains_typevar_not_found_in_ground_types() {
 fn test_cek_type_contains_typevar_nested_in_union() {
     use crate::type_infer::{make_typevalue_union, make_typevar_value};
     let x_var = make_typevar_value("x");
-    let int_tv = make_typevalue_repr(REPR_INT);
-    let str_tv = make_typevalue_repr(REPR_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let ty = make_typevalue_union(vec![x_var, int_tv, str_tv]);
     assert!(
         typecheck_cek::type_contains_typevar(&ty, "x"),
@@ -1345,8 +1345,8 @@ async fn test_typenode_float_literal_arm_conversion() {
 async fn test_typenode_dict_type_produces_variant() {
     // After S-1003: TypeValue.Record IS the TypeNode.Dict representation.
     // Row, RowTail, Type::Str, Type::Int are all deleted.
-    let str_tv = make_typevalue_repr(REPR_STRING);
-    let int_tv = make_typevalue_repr(REPR_INT);
+    let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
+    let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let record_tv = crate::typecheck::make_typevalue_record_pub(
         indexmap::IndexMap::from([
             ("name".to_string(), Arc::clone(&str_tv)),
@@ -1761,7 +1761,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     use crate::ast::{Resolution, SurfaceExpression, SurfaceNode, VarAddr};
     use crate::env::Env;
     use crate::type_class::ClassDecl;
-    use crate::type_infer::{make_typevalue_fn, make_typevalue_op, make_typevalue_var, InferState};
+    use crate::type_infer::{make_typevalue_fn, make_typevalue_nominal, make_typevalue_var, InferState};
     use crate::typecheck::typecheck_cek::{run_typecheck, TypeCheckCont};
     use crate::value::Value;
     use indexmap::IndexMap;
@@ -1789,7 +1789,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     // TypeValue.Fn with params = [TypeValue.Var "a"], ret = TypeValue.Op "String"
     let param_var = make_typevalue_var("a");
 
-    let ret_type = make_typevalue_op("String");
+    let ret_type = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
     let params_list = vec![(None, param_var)];
     let method_sig = make_typevalue_fn(params_list, ret_type);
 
