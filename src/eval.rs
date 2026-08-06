@@ -1571,29 +1571,54 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                                         match ctor.as_ref() {
                                             "RowTail.Closed" => String::new(),
                                             "RowTail.Uniform" => {
-                                                // Extract value-type from Uniform payload.
+                                                // Uniform tail = parameterized Dict type.
+                                                // Display as [Dict KeyType ValueType].
                                                 if let Some(Ok(Value::Dict { entries: u_entries, .. })) =
                                                     tail_payload.as_ref().and_then(|t| t.peek_result())
                                                 {
-                                                    if let Some(vt_thunk) = u_entries.get(
-                                                        &HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)),
+                                                    let vt = u_entries
+                                                        .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)))
+                                                        .and_then(|t| t.peek_result())
+                                                        .and_then(|r| r.ok())
+                                                        .map(|v| format_type_for_assert(&Arc::new(v.clone())));
+                                                    let kt = u_entries
+                                                        .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_KEY_TYPE)))
+                                                        .and_then(|t| t.peek_result())
+                                                        .and_then(|r| r.ok())
+                                                        .map(|v| format_type_for_assert(&Arc::new(v.clone())));
+                                                    // If there are named fields, show them
+                                                    // with ... tail; otherwise show [Dict K V].
+                                                    if !parts.is_empty() {
+                                                        // Named fields + uniform tail
+                                                        return format!("[{}  ...]", parts.join("  "));
+                                                    }
+                                                    let kt_str = kt.as_deref().unwrap_or("?");
+                                                    let vt_str = vt.as_deref().unwrap_or("?");
+                                                    // [Dict Top Top] is just Dict
+                                                    if kt_str == "Top" && vt_str == "Top" {
+                                                        return "Dict".to_string();
+                                                    }
+                                                    return format!("[Dict {} {}]", kt_str, vt_str);
+                                                }
+                                                "  ...".to_string()
+                                            }
+                                            "RowTail.Var" => {
+                                                // Extract row variable name if available.
+                                                if let Some(Ok(Value::Dict { entries: v_entries, .. })) =
+                                                    tail_payload.as_ref().and_then(|t| t.peek_result())
+                                                {
+                                                    if let Some(name_thunk) = v_entries.get(
+                                                        &HashableValue::Str(Arc::from(FIELD_NAME)),
                                                     ) {
-                                                        if let Some(Ok(vt)) = vt_thunk.peek_result() {
-                                                            let vt_str = format_type_for_assert(&Arc::new(vt.clone()));
-                                                            // [_: Top ...] is just [...] (any dict)
-                                                            if vt_str == "Top" {
-                                                                return "  ...".to_string();
-                                                            }
-                                                            return format!(
-                                                                "  _: {}  ...",
-                                                                vt_str
-                                                            );
+                                                        if let Some(Ok(Value::String { source, start, end, .. })) =
+                                                            name_thunk.peek_result()
+                                                        {
+                                                            return format!("  ...{}", &source[*start..*end]);
                                                         }
                                                     }
                                                 }
                                                 "  ...".to_string()
                                             }
-                                            "RowTail.Var" => "  ...".to_string(),
                                             _ => "  ...".to_string(),
                                         }
                                     } else {
