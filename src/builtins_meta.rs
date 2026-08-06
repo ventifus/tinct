@@ -95,7 +95,7 @@ fn serialize_diagnostic(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
                 entries: ss,
-
+                type_decl_id: 0,
             }),
         );
     }
@@ -103,7 +103,7 @@ fn serialize_diagnostic(
         HashableValue::Str("secondary-spans".into()),
         mk(crate::value::Value::Dict {
             entries: secondary,
-
+            type_decl_id: 0,
         }),
     );
 
@@ -116,7 +116,7 @@ fn serialize_diagnostic(
         HashableValue::Str("notes".into()),
         mk(crate::value::Value::Dict {
             entries: notes_dict,
-
+            type_decl_id: 0,
         }),
     );
 
@@ -129,7 +129,7 @@ fn serialize_diagnostic(
         HashableValue::Str("help".into()),
         mk(crate::value::Value::Dict {
             entries: help_dict,
-
+            type_decl_id: 0,
         }),
     );
 
@@ -143,7 +143,7 @@ fn serialize_diagnostic(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
                 entries: frame,
-
+                type_decl_id: 0,
             }),
         );
     }
@@ -151,21 +151,20 @@ fn serialize_diagnostic(
         HashableValue::Str("call-stack".into()),
         mk(crate::value::Value::Dict {
             entries: call_stack_dict,
-
+            type_decl_id: 0,
         }),
     );
 
-    // macro-expand: recursively serialize inner Diagnostic, or {} if None
     let macro_val = if let Some(inner) = &diag.macro_expand {
         let inner_entries = serialize_diagnostic(inner, call_span);
         crate::value::Value::Dict {
             entries: inner_entries,
-
+            type_decl_id: 0,
         }
     } else {
         crate::value::Value::Dict {
             entries: IndexMap::new(),
-
+            type_decl_id: 0,
         }
     };
     w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -177,7 +176,7 @@ fn serialize_diagnostic(
             Some(b) => string_val(b),
             None => crate::value::Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         }),
     );
@@ -391,7 +390,7 @@ pub(crate) fn builtin_try(
                 ok_val(
                     Value::Dict {
                         entries: map,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -431,7 +430,7 @@ pub(crate) fn builtin_try(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
                             entries: ss,
-            
+                            type_decl_id: 0,
                         }),
                     );
                 }
@@ -439,7 +438,7 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("secondary-spans".into()),
                     mk(Value::Dict {
                         entries: secondary,
-        
+                        type_decl_id: 0,
                     }),
                 );
                 let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -450,13 +449,14 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("notes".into()),
                     mk(Value::Dict {
                         entries: notes_dict,
-        
+                        type_decl_id: 0,
                     }),
                 );
                 w.insert(
                     HashableValue::Str("help".into()),
                     mk(Value::Dict {
                         entries: IndexMap::new(),
+                        type_decl_id: 0,
         
                     }),
                 );
@@ -476,7 +476,7 @@ pub(crate) fn builtin_try(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
                             entries: fd,
-            
+                            type_decl_id: 0,
                         }),
                     );
                 }
@@ -484,22 +484,21 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("call-stack".into()),
                     mk(Value::Dict {
                         entries: stack,
-        
+                        type_decl_id: 0,
                     }),
                 );
-                // macro-expand: {name, span} or {}
                 let macro_val = if let Some((name, span)) = &e.macro_expansion {
                     let mut me: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     me.insert(HashableValue::Str("name".into()), mk(string_val(name)));
                     me.insert(HashableValue::Str("span".into()), mk_span(span));
                     Value::Dict {
                         entries: me,
-        
+                        type_decl_id: 0,
                     }
                 } else {
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     }
                 };
                 w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -507,12 +506,13 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("blame".into()),
                     mk(Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: w,
+                        type_decl_id: 0,
         
                     },
                     call_span,
@@ -1448,7 +1448,7 @@ pub(crate) fn builtin_span_of(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -5377,7 +5377,7 @@ mod tests {
         };
         let annotation = Value::Dict {
             entries: IndexMap::new(),
-
+            type_decl_id: 0,
         };
         let annotated = Value::Annotated {
             inner: Box::new(variant),
@@ -5412,14 +5412,14 @@ mod tests {
             inner: Box::new(variant),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             }),
         };
         let outer_annotated = Value::Annotated {
             inner: Box::new(inner_annotated),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             }),
         };
         let ctx = test_ctx();
@@ -5502,7 +5502,7 @@ mod tests {
             }),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             }),
         };
         let ctx = test_ctx();

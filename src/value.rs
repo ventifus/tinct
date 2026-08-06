@@ -1379,6 +1379,14 @@ pub struct Http3SessionState {
     pub _driver: tokio::task::JoinHandle<()>,
 }
 
+/// Helper: construct an anonymous `Value::Dict` (type_decl_id = 0).
+pub fn dict_val(entries: IndexMap<HashableValue, Arc<Thunk>>) -> Value {
+    Value::Dict {
+        entries,
+        type_decl_id: 0,
+    }
+}
+
 /// Helper function to construct a `Value::String` from a string slice.
 pub fn string_val(s: &str) -> Value {
     Value::String {
