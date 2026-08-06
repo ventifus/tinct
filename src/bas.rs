@@ -1819,7 +1819,21 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
             let a_id = crate::type_infer::typevalue_nominal_id(a);
             let b_id = crate::type_infer::typevalue_nominal_id(b);
             match (a_id, b_id) {
-                (Some(ai), Some(bi)) => ai != bi,
+                (Some(ai), Some(bi)) if ai == bi => false,
+                (Some(ai), Some(bi)) => {
+                    // Check if one aliases the other via builtin_type.
+                    let a_aliases_b = ctx.type_display_names.get(&bi)
+                        .and_then(|n| ctx.tycon_env.get(n.as_str()))
+                        .and_then(|def| def.builtin_type.as_ref())
+                        .and_then(|disc| crate::value::type_id_for_name(disc))
+                        == Some(ai);
+                    let b_aliases_a = ctx.type_display_names.get(&ai)
+                        .and_then(|n| ctx.tycon_env.get(n.as_str()))
+                        .and_then(|def| def.builtin_type.as_ref())
+                        .and_then(|disc| crate::value::type_id_for_name(disc))
+                        == Some(bi);
+                    !a_aliases_b && !b_aliases_a
+                }
                 _ => false,
             }
         }
@@ -2374,11 +2388,42 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         return is_record_consistent_subtype(sub, sup, ctx);
     }
 
+    // Nominal(id) same-ctor: check id equality, then TyCon alias chain.
+    if matches!((sub_ctor, sup_ctor), (Some(TV_NOMINAL), Some(TV_NOMINAL))) {
+        let sub_id = crate::type_infer::typevalue_nominal_id(sub);
+        let sup_id = crate::type_infer::typevalue_nominal_id(sup);
+        if sub_id == sup_id {
+            return true;
+        }
+        // Check TyCon alias: does sup's TyCon have a builtin_type that maps to sub's id?
+        if let (Some(si), Some(pi)) = (sub_id, sup_id) {
+            let sup_name = ctx.type_display_names.get(&pi);
+            if let Some(def) = sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
+                if let Some(ref builtin_disc) = def.builtin_type {
+                    return crate::value::type_id_for_name(builtin_disc) == Some(si);
+                }
+                if !def.constructors.is_empty() {
+                    return false;
+                }
+                return is_subtype_bas(sub, &def.body, ctx);
+            }
+            // Check reverse: does sub's TyCon alias sup's id?
+            let sub_name = ctx.type_display_names.get(&si);
+            if let Some(def) = sub_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
+                if let Some(ref builtin_disc) = def.builtin_type {
+                    if crate::value::type_id_for_name(builtin_disc) == Some(pi) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     // Atomic same-constructor pairs: no gradual positions inside, structural equality.
-    // Repr/Repr, Op/Op, IntLit/IntLit, StrLit/StrLit, FloatLit/FloatLit.
     if sub_ctor == sup_ctor {
         match sub_ctor {
-            Some(TV_NOMINAL) | Some(TV_INT_LIT) | Some(TV_STR_LIT)
+            Some(TV_INT_LIT) | Some(TV_STR_LIT)
             | Some(TV_FLOAT_LIT) | Some(TV_NOMINAL_VARIANT) => {
                 return is_subtype_bas(sub, sup, ctx);
             }
