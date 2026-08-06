@@ -1562,7 +1562,47 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                                     }
                                 })
                                 .collect();
-                            return format!("[{}]", parts.join("  "));
+                            // Check the record tail to determine open/closed/uniform.
+                            let tail_suffix = payload_entries
+                                .get(&HashableValue::Str(Arc::from(FIELD_TAIL)))
+                                .and_then(|t| t.peek_result())
+                                .map(|tail_result| {
+                                    if let Ok(Value::Variant { ctor, payload: tail_payload, .. }) = tail_result {
+                                        match ctor.as_ref() {
+                                            "RowTail.Closed" => String::new(),
+                                            "RowTail.Uniform" => {
+                                                // Extract value-type from Uniform payload.
+                                                if let Some(Ok(Value::Dict { entries: u_entries, .. })) =
+                                                    tail_payload.as_ref().and_then(|t| t.peek_result())
+                                                {
+                                                    if let Some(vt_thunk) = u_entries.get(
+                                                        &HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)),
+                                                    ) {
+                                                        if let Some(Ok(vt)) = vt_thunk.peek_result() {
+                                                            return format!(
+                                                                "  _: {}  ...",
+                                                                format_type_for_assert(&Arc::new(vt.clone()))
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                                "  ...".to_string()
+                                            }
+                                            "RowTail.Var" => "  ...".to_string(),
+                                            _ => "  ...".to_string(),
+                                        }
+                                    } else {
+                                        String::new()
+                                    }
+                                })
+                                .unwrap_or_default();
+                            if parts.is_empty() && tail_suffix.is_empty() {
+                                return "[]".to_string();
+                            }
+                            if parts.is_empty() {
+                                return format!("[{}]", tail_suffix.trim_start());
+                            }
+                            return format!("[{}{}]", parts.join("  "), tail_suffix);
                         }
                     }
                 }
