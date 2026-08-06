@@ -300,7 +300,7 @@ fn float_to_int_builtin(
     let val = expect_one_arg(name, args, named, ctx, call_span.clone())?;
     let arg0_span = args[0].span.clone();
     match val {
-        Value::Int { n, type_val } => ok_val(Value::Int { n, type_val }, call_span),
+        Value::Int { n } => ok_val(Value::Int { n }, call_span),
         Value::Float { n: f, .. } => {
             if !f.is_finite() {
                 return Err(EvalError::float_not_finite(name.to_string(), f, arg0_span).into());
@@ -687,7 +687,7 @@ mod tests {
             result,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -714,7 +714,7 @@ mod tests {
             result,
             Value::Int {
                 n: -7,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -741,7 +741,7 @@ mod tests {
             result,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -768,7 +768,7 @@ mod tests {
             result,
             Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -796,7 +796,7 @@ mod tests {
             result,
             Value::Int {
                 n: -4,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -823,7 +823,7 @@ mod tests {
             result,
             Value::Int {
                 n: 5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -850,7 +850,7 @@ mod tests {
             result,
             Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1161,7 +1161,7 @@ mod tests {
             result,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1188,7 +1188,7 @@ mod tests {
             result,
             Value::Int {
                 n: -7,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1216,7 +1216,7 @@ mod tests {
             result,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1244,7 +1244,7 @@ mod tests {
             result,
             Value::Int {
                 n: -1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1271,7 +1271,7 @@ mod tests {
             result,
             Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1298,7 +1298,7 @@ mod tests {
             result,
             Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1326,7 +1326,7 @@ mod tests {
             result,
             Value::Int {
                 n: -2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1354,7 +1354,7 @@ mod tests {
             result,
             Value::Int {
                 n: -3,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1381,7 +1381,7 @@ mod tests {
             result,
             Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1408,7 +1408,7 @@ mod tests {
             result,
             Value::Int {
                 n: -2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1435,7 +1435,7 @@ mod tests {
             result,
             Value::Int {
                 n: 5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1677,7 +1677,7 @@ mod tests {
             result,
             Value::Int {
                 n: 42,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1698,7 +1698,7 @@ mod tests {
             result,
             Value::Int {
                 n: -7,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1719,7 +1719,7 @@ mod tests {
             result,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1740,7 +1740,7 @@ mod tests {
             result,
             Value::Int {
                 n: i64::MAX,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -1990,7 +1990,7 @@ mod tests {
             result,
             Value::Float {
                 n: 2.5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2012,7 +2012,7 @@ mod tests {
             result,
             Value::Float {
                 n: 42.0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2033,7 +2033,7 @@ mod tests {
             result,
             Value::Float {
                 n: -2.5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2054,7 +2054,7 @@ mod tests {
             result,
             Value::Float {
                 n: 1.5e10,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2075,7 +2075,7 @@ mod tests {
             result,
             Value::Float {
                 n: 2.5e-3,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2096,7 +2096,7 @@ mod tests {
             result,
             Value::Float {
                 n: 0.0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2118,7 +2118,7 @@ mod tests {
             result,
             Value::Float {
                 n: 0.5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -2583,7 +2583,7 @@ mod tests {
                     ok_val_result,
                     Value::Int {
                         n: 42,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -2707,7 +2707,7 @@ mod tests {
                     ok_val_result,
                     Value::Int {
                         n: 99,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -2991,7 +2991,6 @@ mod tests {
                 force_count: 0,
                 needs_caller_env: false,
             },
-            type_val: crate::value::unknown_type_val(),
         };
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
@@ -3126,7 +3125,7 @@ mod tests {
                         val,
                         Value::Int {
                             n: i,
-                            type_val: crate::value::unknown_type_val()
+            
                         }
                     );
                 }
@@ -3206,7 +3205,7 @@ mod tests {
                     k0,
                     Value::Int {
                         n: 0,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
@@ -3216,7 +3215,7 @@ mod tests {
                     k2,
                     Value::Int {
                         n: 5,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -3292,7 +3291,7 @@ mod tests {
             result,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -3336,7 +3335,7 @@ mod tests {
             result,
             Value::Int {
                 n: 3,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -3361,7 +3360,7 @@ mod tests {
             result,
             Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -3550,7 +3549,7 @@ mod tests {
             result,
             Value::Int {
                 n: 5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -3571,7 +3570,7 @@ mod tests {
             result,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -3593,7 +3592,7 @@ mod tests {
             result,
             Value::Int {
                 n: 2,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4636,7 +4635,7 @@ mod tests {
             r,
             Value::Int {
                 n: 8,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4674,7 +4673,7 @@ mod tests {
             r,
             Value::Float {
                 n: 5.5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4710,7 +4709,7 @@ mod tests {
             r,
             Value::Float {
                 n: 4.0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4746,7 +4745,7 @@ mod tests {
             r,
             Value::Int {
                 n: -7,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4782,7 +4781,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4944,7 +4943,7 @@ mod tests {
             r,
             Value::Int {
                 n: 7,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -4980,7 +4979,7 @@ mod tests {
             r,
             Value::Float {
                 n: 7.0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5016,7 +5015,7 @@ mod tests {
             r,
             Value::Int {
                 n: -7,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5052,7 +5051,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5164,7 +5163,7 @@ mod tests {
             r,
             Value::Int {
                 n: 20,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5200,7 +5199,7 @@ mod tests {
             r,
             Value::Float {
                 n: 7.5,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5236,7 +5235,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5272,7 +5271,7 @@ mod tests {
             r,
             Value::Int {
                 n: -12,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5308,7 +5307,7 @@ mod tests {
             r,
             Value::Int {
                 n: -42,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5627,7 +5626,7 @@ mod tests {
             r,
             Value::Float {
                 n: 3.0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5775,7 +5774,7 @@ mod tests {
             r,
             Value::Float {
                 n: 0.0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5811,7 +5810,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5847,7 +5846,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5884,7 +5883,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5920,7 +5919,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5956,7 +5955,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -5992,7 +5991,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6017,7 +6016,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6041,7 +6040,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6103,7 +6102,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6139,7 +6138,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6175,7 +6174,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6211,7 +6210,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6235,7 +6234,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6259,7 +6258,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6283,7 +6282,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6307,7 +6306,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6446,7 +6445,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6483,7 +6482,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6520,7 +6519,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6557,7 +6556,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6650,7 +6649,7 @@ mod tests {
             r,
             Value::Int {
                 n: 1,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6686,7 +6685,7 @@ mod tests {
             r,
             Value::Int {
                 n: 0,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -6767,7 +6766,7 @@ mod tests {
                     .await,
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
@@ -6778,7 +6777,7 @@ mod tests {
                     .await,
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7018,7 +7017,7 @@ mod tests {
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7073,14 +7072,14 @@ mod tests {
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7145,28 +7144,28 @@ mod tests {
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 4,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7268,28 +7267,28 @@ mod tests {
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 1,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 2,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 3,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
                     Value::Int {
                         n: 4,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7338,7 +7337,7 @@ mod tests {
                     mat_id(m.get(&HashableValue::Int(0)).unwrap().clone(), &ctx).await,
                     Value::Int {
                         n: 99,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7376,7 +7375,7 @@ mod tests {
                     handler_val,
                     Value::Int {
                         n: 42,
-                        type_val: crate::value::unknown_type_val()
+        
                     }
                 );
             }
@@ -7593,7 +7592,7 @@ mod tests {
             result,
             Value::Int {
                 n: 20,
-                type_val: crate::value::unknown_type_val()
+
             }
         );
     }
@@ -7863,7 +7862,7 @@ mod tests {
             val,
             Value::Int {
                 n: 4,
-                type_val: crate::value::unknown_type_val()
+
             },
             "expected length 4, got {:?}",
             val
