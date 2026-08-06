@@ -19,7 +19,7 @@ use crate::type_infer::{
     make_typevalue_nominal_variant, make_typevalue_op, make_typevalue_record,
     make_typevalue_recursive, make_typevalue_repr, make_typevalue_str_lit, make_typevalue_top,
     make_typevalue_unknown, make_typevalue_var, typevalue_normalize_intersection,
-    typevalue_normalize_union,
+    typevalue_normalize_union, typevalue_normalize_union_ctx,
 };
 use crate::type_tags::*;
 use crate::types::InferState;
@@ -2260,7 +2260,7 @@ pub(crate) async fn resolve_type_expr(
                                     .await?,
                                 );
                             }
-                            return Ok(typevalue_normalize_union(members));
+                            return Ok(typevalue_normalize_union_ctx(members, Some(&state.ctx)));
                         }
                         "all" => {
                             let mut members = Vec::with_capacity(args.len());
@@ -2401,7 +2401,7 @@ pub(crate) async fn resolve_type_dict(
                                 );
                             }
                             if !members.is_empty() {
-                                return Ok(typevalue_normalize_union(members));
+                                return Ok(typevalue_normalize_union_ctx(members, Some(&state.ctx)));
                             }
                         }
                         "all" => {
@@ -2649,7 +2649,7 @@ pub(crate) async fn resolve_type_dict(
             return Ok(if members.len() == 1 {
                 members.into_iter().next().unwrap()
             } else {
-                typevalue_normalize_union(members)
+                typevalue_normalize_union_ctx(members, Some(&state.ctx))
             });
         }
     }
@@ -2855,7 +2855,7 @@ pub(crate) async fn resolve_type_dict(
                     )
                 })
                 .collect();
-            return Ok(typevalue_normalize_union(members));
+            return Ok(typevalue_normalize_union_ctx(members, Some(&state.ctx)));
         }
     }
     if all_positional && entries.len() == 1 {

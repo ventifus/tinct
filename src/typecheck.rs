@@ -1279,13 +1279,13 @@ pub(crate) async fn infer_instance_decl_from_surface(
                                             )
                                             .with_note(format!(
                                                 "class signature expects: {}",
-                                                crate::eval::format_type_for_assert(
+                                                crate::eval::format_type(
                                                     class_param
                                                 )
                                             ))
                                             .with_note(format!(
                                                 "instance method has: {}",
-                                                crate::eval::format_type_for_assert(
+                                                crate::eval::format_type(
                                                     method_param
                                                 )
                                             ))

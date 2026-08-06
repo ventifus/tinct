@@ -2116,6 +2116,185 @@ fn is_subtype_bas_with_sigma(
     is_rdnf_empty(&rdnf, ctx, sigma, depth)
 }
 
+/// Consistent record subtyping: mirrors `is_record_subtype` but uses
+/// `is_consistent_subtype` for field and tail value-type comparisons,
+/// so Unknown positions are treated as gradual rather than rejected.
+fn is_record_consistent_subtype(
+    sub: &Arc<Value>,
+    sup: &Arc<Value>,
+    ctx: &InferenceContext,
+) -> bool {
+    let sub_payload = match typevalue_payload(sub) {
+        Some(p) => p,
+        None => return false,
+    };
+    let sup_payload = match typevalue_payload(sup) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let sub_fields = payload_typevalue_field(sub_payload, FIELD_FIELDS);
+    let sup_fields = payload_typevalue_field(sup_payload, FIELD_FIELDS);
+
+    if let Some(sup_fs) = &sup_fields {
+        if let Value::Dict {
+            entries: sup_entries,
+            ..
+        } = sup_fs.as_ref()
+        {
+            if let Some(sub_fs) = &sub_fields {
+                if let Value::Dict {
+                    entries: sub_entries,
+                    ..
+                } = sub_fs.as_ref()
+                {
+                    for (key, sup_field_thunk) in sup_entries {
+                        if let Some(sup_field_val) = peek_value(sup_field_thunk) {
+                            let sup_field_tv = Arc::new(sup_field_val.clone());
+                            match sub_entries.get(key) {
+                                Some(sub_field_thunk) => {
+                                    if let Some(sub_field_val) = peek_value(sub_field_thunk) {
+                                        let sub_field_tv = Arc::new(sub_field_val.clone());
+                                        if !is_consistent_subtype(
+                                            &sub_field_tv,
+                                            &sup_field_tv,
+                                            ctx,
+                                        ) {
+                                            return false;
+                                        }
+                                    } else {
+                                        return false;
+                                    }
+                                }
+                                None => return false,
+                            }
+                        }
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                return sup_entries.is_empty();
+            }
+        }
+    }
+
+    let sup_explicit_keys: HashSet<String> = if let Some(sup_fs) = &sup_fields {
+        if let Value::Dict { entries, .. } = sup_fs.as_ref() {
+            entries
+                .keys()
+                .filter_map(|k| {
+                    if let HashableValue::Str(s) = k {
+                        Some(s.as_ref().to_owned())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        }
+    } else {
+        HashSet::new()
+    };
+
+    let sub_tail = payload_typevalue_field(sub_payload, FIELD_TAIL);
+    let sup_tail = payload_typevalue_field(sup_payload, FIELD_TAIL);
+
+    match (sub_tail.as_ref(), sup_tail.as_ref()) {
+        (_, None) => true,
+        (_, Some(sup_t)) => {
+            let sup_tail_ctor = typevalue_ctor(sup_t);
+            if sup_tail_ctor == Some(RT_VAR) {
+                true
+            } else if sup_tail_ctor == Some(RT_UNIFORM) {
+                if let Some(sup_t_val) = typevalue_payload(sup_t) {
+                    if let Some(sup_val_type) =
+                        payload_typevalue_field(sup_t_val, RT_FIELD_VALUE_TYPE)
+                    {
+                        if let Some(sub_t) = &sub_tail {
+                            if typevalue_ctor(sub_t) == Some(RT_UNIFORM) {
+                                if let Some(sub_t_val) = typevalue_payload(sub_t) {
+                                    if let Some(sub_val_type) =
+                                        payload_typevalue_field(sub_t_val, RT_FIELD_VALUE_TYPE)
+                                    {
+                                        return is_consistent_subtype(
+                                            &sub_val_type,
+                                            &sup_val_type,
+                                            ctx,
+                                        );
+                                    }
+                                }
+                                return false;
+                            }
+                            is_closed_tail(sub_t)
+                                && check_sub_fields_against_uniform_consistent(
+                                    &sub_fields,
+                                    &sup_explicit_keys,
+                                    &sup_val_type,
+                                    ctx,
+                                )
+                        } else {
+                            check_sub_fields_against_uniform_consistent(
+                                &sub_fields,
+                                &sup_explicit_keys,
+                                &sup_val_type,
+                                ctx,
+                            )
+                        }
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            } else {
+                match &sub_tail {
+                    None => true,
+                    Some(sub_t) => is_closed_tail(sub_t),
+                }
+            }
+        }
+    }
+}
+
+/// Consistent version of `check_sub_fields_against_uniform`: uses `is_consistent_subtype`
+/// instead of `is_subtype_bas_with_sigma` for field value checks.
+fn check_sub_fields_against_uniform_consistent(
+    sub_fields: &Option<Arc<Value>>,
+    sup_explicit_keys: &HashSet<String>,
+    sup_val_type: &Arc<Value>,
+    ctx: &InferenceContext,
+) -> bool {
+    if let Some(sub_fs) = sub_fields {
+        if let Value::Dict {
+            entries: sub_entries,
+            ..
+        } = sub_fs.as_ref()
+        {
+            for (key, sub_field_thunk) in sub_entries {
+                let key_str = match key {
+                    HashableValue::Str(s) => s.as_ref().to_owned(),
+                    HashableValue::Int(i) => i.to_string(),
+                    _ => continue,
+                };
+                if sup_explicit_keys.contains(&key_str) {
+                    continue;
+                }
+                if let Some(sub_field_val) = peek_value(sub_field_thunk) {
+                    let sub_field_tv = Arc::new(sub_field_val.clone());
+                    if !is_consistent_subtype(&sub_field_tv, sup_val_type, ctx) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Consistent subtyping (AGT, Garcia et al. 2016): `A ~<: B`.
 ///
 /// Used for runtime TypeAssert: value type (which may have Unknown at erased positions)
@@ -2274,8 +2453,74 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         }
     }
 
-    // Fallback: use proper subtyping
-    is_subtype_bas(sub, sup, ctx)
+    // Never is a subtype of everything.
+    if matches!(sub_ctor, Some(TV_NEVER)) {
+        return true;
+    }
+
+    // Top is a supertype of everything.
+    if matches!(sup_ctor, Some(TV_TOP)) {
+        return true;
+    }
+
+    // Intersection on sub: sub is the conjunction of its members.
+    // sub <: sup if ANY member <: sup (since INTER narrows, each member is wider,
+    // and at least one must cover sup).
+    if matches!(sub_ctor, Some(TV_INTER)) {
+        if let Some(payload) = typevalue_payload(sub) {
+            let members = payload_members(payload);
+            return members.iter().any(|m| is_consistent_subtype(m, sup, ctx));
+        }
+    }
+
+    // Record/Record: consistent structural subtyping with recursive is_consistent_subtype
+    // for field type comparisons. The non-consistent path (is_record_subtype) uses
+    // is_subtype_bas_with_sigma which rejects Unknown — wrong for gradual checking.
+    if matches!(sub_ctor, Some(TV_RECORD)) && matches!(sup_ctor, Some(TV_RECORD)) {
+        return is_record_consistent_subtype(sub, sup, ctx);
+    }
+
+    // Atomic same-constructor pairs: no gradual positions inside, structural equality.
+    // Repr/Repr, Op/Op, IntLit/IntLit, StrLit/StrLit, FloatLit/FloatLit.
+    if sub_ctor == sup_ctor {
+        match sub_ctor {
+            Some(TV_REPR) | Some(TV_OP) | Some(TV_INT_LIT) | Some(TV_STR_LIT)
+            | Some(TV_FLOAT_LIT) | Some(TV_NOMINAL_VARIANT) => {
+                return is_subtype_bas(sub, sup, ctx);
+            }
+            _ => {}
+        }
+    }
+
+    // Cross-constructor nominal dispatch: no gradual positions in the comparison,
+    // so is_subtype_bas is semantically equivalent. Covers:
+    //   Repr/Op, Repr/App — TyCon env lookup (e.g., Dict <: Indexable)
+    //   NominalVariant/Op — variant tag prefix check
+    //   IntLit/Repr, StrLit/Repr, FloatLit/Repr — literal promotion (IntLit <: Int)
+    //   IntLit/Op, StrLit/Op, FloatLit/Op — literal vs nominal type
+    //   Op/Repr — opaque type vs repr
+    if matches!(
+        (sub_ctor, sup_ctor),
+        (Some(TV_REPR), Some(TV_OP))
+            | (Some(TV_REPR), Some(TV_APP))
+            | (Some(TV_NOMINAL_VARIANT), Some(TV_OP))
+            | (Some(TV_INT_LIT), Some(TV_REPR))
+            | (Some(TV_STR_LIT), Some(TV_REPR))
+            | (Some(TV_FLOAT_LIT), Some(TV_REPR))
+            | (Some(TV_INT_LIT), Some(TV_OP))
+            | (Some(TV_STR_LIT), Some(TV_OP))
+            | (Some(TV_FLOAT_LIT), Some(TV_OP))
+            | (Some(TV_OP), Some(TV_REPR))
+    ) {
+        return is_subtype_bas(sub, sup, ctx);
+    }
+
+    // TypeVar on sub side: gradual — consistent with anything.
+    if matches!(sub_ctor, Some(TV_VAR)) {
+        return true;
+    }
+
+    false
 }
 
 // ---------------------------------------------------------------------------

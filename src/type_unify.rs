@@ -630,8 +630,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -649,8 +649,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -668,8 +668,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -685,8 +685,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -700,8 +700,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -718,8 +718,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -734,8 +734,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -749,8 +749,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -768,8 +768,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -785,8 +785,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -800,8 +800,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ))
@@ -868,8 +868,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}: union member count differs ({} vs {})",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                         members_a.len(),
                         members_b.len(),
                     ),
@@ -958,7 +958,7 @@ pub async fn unify(
                         "type-error",
                         format!(
                             "cannot unify union types: no matching member found for type {}",
-                            crate::eval::format_type_for_assert(ma)
+                            crate::eval::format_type(ma)
                         ),
                         span,
                     ))
@@ -1147,8 +1147,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ));
@@ -1188,8 +1188,8 @@ pub async fn unify(
                 "type-error",
                 format!(
                     "cannot unify {} with {}",
-                    crate::eval::format_type_for_assert(&a),
-                    crate::eval::format_type_for_assert(&b),
+                    crate::eval::format_type(&a),
+                    crate::eval::format_type(&b),
                 ),
                 span,
             ))
@@ -1209,8 +1209,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type_for_assert(&a),
-                        crate::eval::format_type_for_assert(&b),
+                        crate::eval::format_type(&a),
+                        crate::eval::format_type(&b),
                     ),
                     span,
                 ));
@@ -1248,8 +1248,8 @@ pub async fn unify(
                 "type-error",
                 format!(
                     "cannot unify {} with {}",
-                    crate::eval::format_type_for_assert(&a),
-                    crate::eval::format_type_for_assert(&b),
+                    crate::eval::format_type(&a),
+                    crate::eval::format_type(&b),
                 ),
                 span,
             ))
@@ -1304,8 +1304,8 @@ pub async fn unify(
                 "type-error",
                 format!(
                     "cannot unify {} with {}",
-                    crate::eval::format_type_for_assert(&a),
-                    crate::eval::format_type_for_assert(&b),
+                    crate::eval::format_type(&a),
+                    crate::eval::format_type(&b),
                 ),
                 span,
             ))
@@ -1316,8 +1316,8 @@ pub async fn unify(
             "type-error",
             format!(
                 "cannot unify {} with {}",
-                crate::eval::format_type_for_assert(&a),
-                crate::eval::format_type_for_assert(&b),
+                crate::eval::format_type(&a),
+                crate::eval::format_type(&b),
             ),
             span,
         )),
@@ -1845,11 +1845,11 @@ async fn constrain_record(
             )
             .with_note(format!(
                 "actual:   {}",
-                crate::eval::format_type_for_assert(sub)
+                crate::eval::format_type(sub)
             ))
             .with_note(format!(
                 "expected: {}",
-                crate::eval::format_type_for_assert(sup)
+                crate::eval::format_type(sup)
             )));
         }
     }

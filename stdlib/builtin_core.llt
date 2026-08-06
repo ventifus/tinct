@@ -237,9 +237,9 @@
   builtin-debug-repr:      [fn@String   [let x@Any] ...]
 
   # ── Capability ─────────────────────────────────────────────────────────────
-  # cap-env-has?: true (1) if the named capability key is present in the env dict.
-  # env: flat Dict<String, thunk> — the accumulated env dict passed to builtin-eval.
-  builtin-cap-env-has?:  [fn@[or 0 1] [let name@String env@Dict] ...]
+  # cap-env-has?: true (1) if the named capability key is present in the env scope.
+  # env: Scope — the accumulated scope passed to builtin-eval.
+  builtin-cap-env-has?:  [fn@[or 0 1] [let name@String env@Scope] ...]
 
   # ── I/O ───────────────────────────────────────────────────────────────────
   builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]

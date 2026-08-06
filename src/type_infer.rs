@@ -674,11 +674,23 @@ pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
     })
 }
 
-/// Normalize a union: flatten nested unions and deduplicate.
+/// Normalize a union: flatten nested unions, deduplicate, and eliminate subtypes.
 /// If members is empty, returns TypeValue.Never.
 /// If members has one element, returns that element.
 /// Otherwise wraps in TypeValue.Union.
-pub fn typevalue_normalize_union(mut members: Vec<TypeValue>) -> TypeValue {
+///
+/// When `ctx` is provided, performs subtype elimination: if member A <: member B,
+/// A is redundant and dropped. This handles cases like `[or Dict []]` → `Dict`
+/// (closed empty record is a subtype of open dict).
+pub fn typevalue_normalize_union(members: Vec<TypeValue>) -> TypeValue {
+    typevalue_normalize_union_ctx(members, None)
+}
+
+/// Normalize a union with an InferenceContext for subtype-aware simplification.
+pub fn typevalue_normalize_union_ctx(
+    mut members: Vec<TypeValue>,
+    ctx: Option<&crate::type_infer::InferenceContext>,
+) -> TypeValue {
     // Flatten nested unions
     let mut flat: Vec<TypeValue> = Vec::with_capacity(members.len());
     while let Some(m) = members.pop() {
@@ -702,6 +714,32 @@ pub fn typevalue_normalize_union(mut members: Vec<TypeValue>) -> TypeValue {
     for tv in flat {
         if !deduped.iter().any(|existing| typevalue_eq(existing, &tv)) {
             deduped.push(tv);
+        }
+    }
+    // Subtype elimination: drop members that are subtypes of other members.
+    if let Some(ctx) = ctx {
+        if deduped.len() > 1 {
+            let mut keep = vec![true; deduped.len()];
+            for i in 0..deduped.len() {
+                if !keep[i] {
+                    continue;
+                }
+                for j in 0..deduped.len() {
+                    if i == j || !keep[j] {
+                        continue;
+                    }
+                    if crate::bas::is_subtype_bas(&deduped[j], &deduped[i], ctx) {
+                        keep[j] = false;
+                    }
+                }
+            }
+            let mut reduced: Vec<TypeValue> = Vec::new();
+            for (idx, tv) in deduped.into_iter().enumerate() {
+                if keep[idx] {
+                    reduced.push(tv);
+                }
+            }
+            deduped = reduced;
         }
     }
     match deduped.len() {

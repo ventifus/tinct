@@ -1418,161 +1418,166 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
 ///
 /// Produces a human-readable string from a TypeValue for type assertion error messages.
 /// Future work: produce prettier output for complex TypeValues (Union, Record, etc.).
-pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
+pub(crate) fn format_type(ty: &Arc<Value>) -> String {
     // Extract the TypeValue ctor tag and payload for display.
     match ty.as_ref() {
-        Value::Variant { ctor, payload, .. } => match ctor.as_ref() {
-            TV_REPR => {
-                // Extract repr string and map to user-friendly name.
-                if let Some(Ok(Value::Dict { entries, .. })) =
-                    payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_REPR))) {
-                        if let Some(Ok(Value::String {
-                            source, start, end, ..
-                        })) = thunk.peek_result()
-                        {
-                            return match &source[*start..*end] {
-                                REPR_INT => "Int".to_string(),
-                                REPR_FLOAT => "Float".to_string(),
-                                REPR_STRING => "String".to_string(),
-                                REPR_BYTES => "Bytes".to_string(),
-                                REPR_FUNCTION => "Fn".to_string(),
-                                REPR_DICT => "Dict".to_string(),
-                                other => other.to_string(),
-                            };
-                        }
-                    }
-                }
-                TV_REPR.to_string()
-            }
-            TV_UNKNOWN => "?".to_string(),
-            TV_TOP => "Top".to_string(),
-            TV_NEVER => "Never".to_string(),
-            TV_VAR => {
-                if let Some(Ok(Value::Dict { entries, .. })) =
-                    payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_NAME))) {
-                        if let Some(Ok(Value::String {
-                            source, start, end, ..
-                        })) = thunk.peek_result()
-                        {
-                            return source[*start..*end].to_string();
-                        }
-                    }
-                }
-                "TypeVar".to_string()
-            }
-            TV_OP => {
-                if let Some(Ok(Value::Dict { entries, .. })) =
-                    payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_NAME))) {
-                        if let Some(Ok(Value::String {
-                            source, start, end, ..
-                        })) = thunk.peek_result()
-                        {
-                            return source[*start..*end].to_string();
-                        }
-                    }
-                }
-                TV_OP.to_string()
-            }
-            TV_UNION | TV_INTER => {
-                let keyword = if ctor.as_ref() == TV_UNION {
-                    "or"
-                } else {
-                    "and"
-                };
-                if let Some(Ok(Value::Dict {
-                    entries: payload_entries,
-                    ..
-                })) = payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    if let Some(members_thunk) =
-                        payload_entries.get(&HashableValue::Str(Arc::from(FIELD_MEMBERS)))
+        Value::Variant { ctor, payload, .. } => {
+            match ctor.as_ref() {
+                TV_REPR => {
+                    // Extract repr string and map to user-friendly name.
+                    if let Some(Ok(Value::Dict { entries, .. })) =
+                        payload.as_ref().and_then(|t| t.peek_result())
                     {
-                        if let Some(Ok(Value::Dict {
-                            entries: members, ..
-                        })) = members_thunk.peek_result()
+                        if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_REPR)))
                         {
-                            let parts: Vec<String> = members
-                                .values()
-                                .filter_map(|t| {
-                                    if let Some(Ok(v)) = t.peek_result() {
-                                        Some(format_type_for_assert(&Arc::new(v.clone())))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            if !parts.is_empty() {
-                                return format!("[{} {}]", keyword, parts.join(" "));
+                            if let Some(Ok(Value::String {
+                                source, start, end, ..
+                            })) = thunk.peek_result()
+                            {
+                                return match &source[*start..*end] {
+                                    REPR_INT => "Int".to_string(),
+                                    REPR_FLOAT => "Float".to_string(),
+                                    REPR_STRING => "String".to_string(),
+                                    REPR_BYTES => "Bytes".to_string(),
+                                    REPR_FUNCTION => "Fn".to_string(),
+                                    REPR_DICT => "Dict".to_string(),
+                                    other => other.to_string(),
+                                };
                             }
                         }
                     }
+                    TV_REPR.to_string()
                 }
-                ctor.to_string()
-            }
-            TV_NEG => {
-                if let Some(Ok(Value::Dict { entries, .. })) =
-                    payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    if let Some(inner_thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_OF)))
+                TV_UNKNOWN => "?".to_string(),
+                TV_TOP => "Top".to_string(),
+                TV_NEVER => "Never".to_string(),
+                TV_VAR => {
+                    if let Some(Ok(Value::Dict { entries, .. })) =
+                        payload.as_ref().and_then(|t| t.peek_result())
                     {
-                        if let Some(Ok(inner)) = inner_thunk.peek_result() {
-                            return format!(
-                                "~{}",
-                                format_type_for_assert(&Arc::new(inner.clone()))
-                            );
+                        if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_NAME)))
+                        {
+                            if let Some(Ok(Value::String {
+                                source, start, end, ..
+                            })) = thunk.peek_result()
+                            {
+                                return source[*start..*end].to_string();
+                            }
                         }
                     }
+                    "TypeVar".to_string()
                 }
-                "~?".to_string()
-            }
-            TV_RECORD => {
-                if let Some(Ok(Value::Dict {
-                    entries: payload_entries,
-                    ..
-                })) = payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    if let Some(fields_thunk) =
-                        payload_entries.get(&HashableValue::Str(Arc::from(FIELD_FIELDS)))
+                TV_OP => {
+                    if let Some(Ok(Value::Dict { entries, .. })) =
+                        payload.as_ref().and_then(|t| t.peek_result())
                     {
-                        if let Some(Ok(Value::Dict {
-                            entries: fields, ..
-                        })) = fields_thunk.peek_result()
+                        if let Some(thunk) = entries.get(&HashableValue::Str(Arc::from(FIELD_NAME)))
                         {
-                            let parts: Vec<String> = fields
-                                .iter()
-                                .filter_map(|(k, v_thunk)| {
-                                    let key_str = match k {
-                                        HashableValue::Str(s) => s.to_string(),
-                                        _ => return None,
-                                    };
-                                    if let Some(Ok(v)) = v_thunk.peek_result() {
-                                        Some(format!(
-                                            "{}: {}",
-                                            key_str,
-                                            format_type_for_assert(&Arc::new(v.clone()))
-                                        ))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            // Check the record tail to determine open/closed/uniform.
-                            let tail_suffix = payload_entries
+                            if let Some(Ok(Value::String {
+                                source, start, end, ..
+                            })) = thunk.peek_result()
+                            {
+                                return source[*start..*end].to_string();
+                            }
+                        }
+                    }
+                    TV_OP.to_string()
+                }
+                TV_UNION | TV_INTER => {
+                    let keyword = if ctor.as_ref() == TV_UNION {
+                        "or"
+                    } else {
+                        "and"
+                    };
+                    if let Some(Ok(Value::Dict {
+                        entries: payload_entries,
+                        ..
+                    })) = payload.as_ref().and_then(|t| t.peek_result())
+                    {
+                        if let Some(members_thunk) =
+                            payload_entries.get(&HashableValue::Str(Arc::from(FIELD_MEMBERS)))
+                        {
+                            if let Some(Ok(Value::Dict {
+                                entries: members, ..
+                            })) = members_thunk.peek_result()
+                            {
+                                let parts: Vec<String> = members
+                                    .values()
+                                    .filter_map(|t| {
+                                        if let Some(Ok(v)) = t.peek_result() {
+                                            Some(format_type(&Arc::new(v.clone())))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                if !parts.is_empty() {
+                                    return format!("[{} {}]", keyword, parts.join(" "));
+                                }
+                            }
+                        }
+                    }
+                    ctor.to_string()
+                }
+                TV_NEG => {
+                    if let Some(Ok(Value::Dict { entries, .. })) =
+                        payload.as_ref().and_then(|t| t.peek_result())
+                    {
+                        if let Some(inner_thunk) =
+                            entries.get(&HashableValue::Str(Arc::from(FIELD_OF)))
+                        {
+                            if let Some(Ok(inner)) = inner_thunk.peek_result() {
+                                return format!(
+                                    "~{}",
+                                    format_type(&Arc::new(inner.clone()))
+                                );
+                            }
+                        }
+                    }
+                    "~?".to_string()
+                }
+                TV_RECORD => {
+                    if let Some(Ok(Value::Dict {
+                        entries: payload_entries,
+                        ..
+                    })) = payload.as_ref().and_then(|t| t.peek_result())
+                    {
+                        if let Some(fields_thunk) =
+                            payload_entries.get(&HashableValue::Str(Arc::from(FIELD_FIELDS)))
+                        {
+                            if let Some(Ok(Value::Dict {
+                                entries: fields, ..
+                            })) = fields_thunk.peek_result()
+                            {
+                                let parts: Vec<String> = fields
+                                    .iter()
+                                    .filter_map(|(k, v_thunk)| {
+                                        let key_str = match k {
+                                            HashableValue::Str(s) => s.to_string(),
+                                            _ => return None,
+                                        };
+                                        if let Some(Ok(v)) = v_thunk.peek_result() {
+                                            Some(format!(
+                                                "{}: {}",
+                                                key_str,
+                                                format_type(&Arc::new(v.clone()))
+                                            ))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                // Check the record tail to determine open/closed/uniform.
+                                // Ok = complete display string (return directly).
+                                // Err = suffix to append to field list.
+                                let tail_display: Result<String, String> = payload_entries
                                 .get(&HashableValue::Str(Arc::from(FIELD_TAIL)))
                                 .and_then(|t| t.peek_result())
                                 .map(|tail_result| {
                                     if let Ok(Value::Variant { ctor, payload: tail_payload, .. }) = tail_result {
                                         match ctor.as_ref() {
-                                            "RowTail.Closed" => String::new(),
+                                            "RowTail.Closed" => Err(String::new()),
                                             "RowTail.Uniform" => {
-                                                // Uniform tail = parameterized Dict type.
-                                                // Display as [Dict KeyType ValueType].
                                                 if let Some(Ok(Value::Dict { entries: u_entries, .. })) =
                                                     tail_payload.as_ref().and_then(|t| t.peek_result())
                                                 {
@@ -1580,32 +1585,28 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                                                         .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)))
                                                         .and_then(|t| t.peek_result())
                                                         .and_then(|r| r.ok())
-                                                        .map(|v| format_type_for_assert(&Arc::new(v.clone())));
+                                                        .map(|v| format_type(&Arc::new(v.clone())));
                                                     let kt = u_entries
                                                         .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_KEY_TYPE)))
                                                         .and_then(|t| t.peek_result())
                                                         .and_then(|r| r.ok())
-                                                        .map(|v| format_type_for_assert(&Arc::new(v.clone())));
+                                                        .map(|v| format_type(&Arc::new(v.clone())));
                                                     let kt_str = kt.as_deref().unwrap_or("?");
                                                     let vt_str = vt.as_deref().unwrap_or("?");
-                                                    // If there are named fields, show
-                                                    // [Dict K V  field: T  ...].
                                                     if !parts.is_empty() {
-                                                        return format!(
+                                                        return Ok(format!(
                                                             "[Dict {} {}  {}  ...]",
                                                             kt_str, vt_str, parts.join("  ")
-                                                        );
+                                                        ));
                                                     }
-                                                    // [Dict Top Top] is just Dict
                                                     if kt_str == "Top" && vt_str == "Top" {
-                                                        return "Dict".to_string();
+                                                        return Ok("Dict".to_string());
                                                     }
-                                                    return format!("[Dict {} {}]", kt_str, vt_str);
+                                                    return Ok(format!("[Dict {} {}]", kt_str, vt_str));
                                                 }
-                                                "  ...".to_string()
+                                                Err("  ...".to_string())
                                             }
                                             "RowTail.Var" => {
-                                                // Extract row variable name if available.
                                                 if let Some(Ok(Value::Dict { entries: v_entries, .. })) =
                                                     tail_payload.as_ref().and_then(|t| t.peek_result())
                                                 {
@@ -1615,82 +1616,88 @@ pub(crate) fn format_type_for_assert(ty: &Arc<Value>) -> String {
                                                         if let Some(Ok(Value::String { source, start, end, .. })) =
                                                             name_thunk.peek_result()
                                                         {
-                                                            return format!("  ...{}", &source[*start..*end]);
+                                                            return Err(format!("  ...{}", &source[*start..*end]));
                                                         }
                                                     }
                                                 }
-                                                "  ...".to_string()
+                                                Err("  ...".to_string())
                                             }
-                                            _ => "  ...".to_string(),
+                                            _ => Err("  ...".to_string()),
                                         }
                                     } else {
-                                        String::new()
+                                        Err(String::new())
                                     }
                                 })
-                                .unwrap_or_default();
-                            if parts.is_empty() && tail_suffix.is_empty() {
-                                return "[]".to_string();
+                                .unwrap_or(Err(String::new()));
+                                match tail_display {
+                                    Ok(complete) => return complete,
+                                    Err(ref suffix) if parts.is_empty() && suffix.is_empty() => {
+                                        return "[]".to_string();
+                                    }
+                                    Err(ref suffix) if parts.is_empty() => {
+                                        return format!("[{}]", suffix.trim_start());
+                                    }
+                                    Err(suffix) => {
+                                        return format!("[{}{}]", parts.join("  "), suffix);
+                                    }
+                                }
                             }
-                            if parts.is_empty() {
-                                return format!("[{}]", tail_suffix.trim_start());
-                            }
-                            return format!("[{}{}]", parts.join("  "), tail_suffix);
                         }
                     }
+                    "Dict".to_string()
                 }
-                "Dict".to_string()
-            }
-            TV_FN => {
-                // TypeValue.Fn: format as "Fn@RetType [ParamType ...]".
-                // TypeValue payloads use settled thunks (Thunk::value), so peek_result()
-                // returns Some(Ok(v)) for well-formed TypeValues. Errored thunks indicate
-                // malformed TypeValues — surface the error in the display string (Axiom 6:
-                // errors must be visible, not suppressed).
-                if let Some(Ok(Value::Dict { entries, .. })) =
-                    payload.as_ref().and_then(|t| t.peek_result())
-                {
-                    let ret_str = entries
-                        .get(&HashableValue::Str(Arc::from(FIELD_RETURN)))
-                        .and_then(|t| t.peek_result())
-                        .map(|r| match r {
-                            Ok(v) => format_type_for_assert(&Arc::new(v.clone())),
-                            Err(e) => format!("<error: {e}>"),
-                        })
-                        .unwrap_or_else(|| "?".to_string());
-                    let params_str = match entries
-                        .get(&HashableValue::Str(Arc::from(FIELD_PARAMS)))
-                        .and_then(|t| t.peek_result())
-                        .and_then(|r| match r {
-                            Ok(Value::Dict {
-                                entries: p_entries, ..
-                            }) => {
-                                let parts: Vec<String> = p_entries
-                                    .values()
-                                    .map(|t| {
-                                        t.peek_result()
-                                            .map(|r| match r {
-                                                Ok(pv) => {
-                                                    format_type_for_assert(&Arc::new(pv.clone()))
-                                                }
-                                                Err(e) => format!("<error: {e}>"),
-                                            })
-                                            .unwrap_or_else(|| "?".to_string())
-                                    })
-                                    .collect();
-                                Some(parts.join(" "))
-                            }
-                            Ok(_) => None,
-                            Err(e) => Some(format!("<error: {e}>")),
-                        }) {
-                        Some(v) => v,
-                        None => String::new(), // TypeValue.Fn has no members to display.
-                    };
-                    return format!("Fn@{ret_str} [{params_str}]");
+                TV_FN => {
+                    // TypeValue.Fn: format as "Fn@RetType [ParamType ...]".
+                    // TypeValue payloads use settled thunks (Thunk::value), so peek_result()
+                    // returns Some(Ok(v)) for well-formed TypeValues. Errored thunks indicate
+                    // malformed TypeValues — surface the error in the display string (Axiom 6:
+                    // errors must be visible, not suppressed).
+                    if let Some(Ok(Value::Dict { entries, .. })) =
+                        payload.as_ref().and_then(|t| t.peek_result())
+                    {
+                        let ret_str = entries
+                            .get(&HashableValue::Str(Arc::from(FIELD_RETURN)))
+                            .and_then(|t| t.peek_result())
+                            .map(|r| match r {
+                                Ok(v) => format_type(&Arc::new(v.clone())),
+                                Err(e) => format!("<error: {e}>"),
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        let params_str = match entries
+                            .get(&HashableValue::Str(Arc::from(FIELD_PARAMS)))
+                            .and_then(|t| t.peek_result())
+                            .and_then(|r| match r {
+                                Ok(Value::Dict {
+                                    entries: p_entries, ..
+                                }) => {
+                                    let parts: Vec<String> = p_entries
+                                        .values()
+                                        .map(|t| {
+                                            t.peek_result()
+                                                .map(|r| match r {
+                                                    Ok(pv) => format_type(&Arc::new(
+                                                        pv.clone(),
+                                                    )),
+                                                    Err(e) => format!("<error: {e}>"),
+                                                })
+                                                .unwrap_or_else(|| "?".to_string())
+                                        })
+                                        .collect();
+                                    Some(parts.join(" "))
+                                }
+                                Ok(_) => None,
+                                Err(e) => Some(format!("<error: {e}>")),
+                            }) {
+                            Some(v) => v,
+                            None => String::new(), // TypeValue.Fn has no members to display.
+                        };
+                        return format!("Fn@{ret_str} [{params_str}]");
+                    }
+                    "<Fn: display failed>".to_string()
                 }
-                "<Fn: display failed>".to_string()
+                other => other.to_string(),
             }
-            other => other.to_string(),
-        },
+        }
         _ => "?".to_string(), // Non-variant (bootstrap unknown_type_val) → gradual
     }
 }

@@ -32,7 +32,8 @@ use crate::type_infer::{
     make_typevalue_op, make_typevalue_record, make_typevalue_repr, make_typevalue_str_lit,
     make_typevalue_top, make_typevalue_unknown, typevalue_ctor, typevalue_extract_members_pub,
     typevalue_fn_params_and_ret, typevalue_nominal_variant_has_fields,
-    typevalue_nominal_variant_tag, typevalue_normalize_intersection, typevalue_normalize_union,
+    typevalue_nominal_variant_tag, typevalue_normalize_intersection,
+    typevalue_normalize_union_ctx,
     typevalue_op_name, typevalue_record_fields_pub, typevalue_var_name, InferState, TypeValue,
 };
 use crate::types::constrain;
@@ -128,11 +129,11 @@ pub(crate) async fn run_fd_improvement_fixpoint(
                 Err(mut e) => {
                     e = e.with_note(format!(
                         "expected (FD-determined target): {}",
-                        crate::eval::format_type_for_assert(&target)
+                        crate::eval::format_type(&target)
                     ));
                     e = e.with_note(format!(
                         "actual (FD-computed type):        {}",
-                        crate::eval::format_type_for_assert(&computed)
+                        crate::eval::format_type(&computed)
                     ));
                     errors.push(e);
                 }
@@ -627,21 +628,6 @@ async fn infer_step(
             let intermediates = &exprs[0..exprs.len() - 1];
             let last = &exprs[exprs.len() - 1];
             let mut intermediate_envs: Vec<Arc<RwLock<Env>>> = Vec::new();
-            // Cumulative LGM slot counter for fn-body sequential intermediate dicts.
-            // For fn-body sequential: body 0 starts at slot 0, body 1 at body-0's key count, etc.
-            // (The resolver's sequential_offset also starts at 0 within a fresh fn frame.)
-            // For document-level sequential (process_document wrapping): body_slot_base is read
-            // from state.resolver_frames per dict body instead of this counter (see below), because
-            // document-level slots start at initial_offset (= root_group_len), not 0.
-            // This counter is still advanced per body so it stays correct for fn-body sequential
-            // bodies that follow any non-Dict intermediate.
-            let mut sequential_slot_offset: u32 = 0;
-            // Tracks the document-level initial_offset: the absolute slot base for body 0.
-            // Learned from the first document-level body's phase-2 slot lookup.
-            // For fn-body sequential this stays None (fn bodies use 0-based sequential_slot_offset).
-            // For document-level sequential: after body 0, doc_initial_offset = body_0_base.
-            // For body N > 0: correct base = doc_initial_offset + sequential_slot_offset_at_N_start.
-            let mut doc_initial_offset: Option<u32> = None;
 
             // Save and reset use_def and current_binding at the start of each Sequential
             // so that edges from a previous (or outer) Sequential scope don't contaminate this
@@ -654,79 +640,22 @@ async fn infer_step(
             for (_i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use run_typecheck_dict for proper letrec
                 if let SurfaceExpression::Dict(entries) = &intermediate.expr {
-                    // Compute static_keys and body_slot_base BEFORE run_typecheck_dict so we
-                    // can pass the correct slot base. Without this, run_typecheck_dict's own
-                    // find_map picks the FIRST resolver frame with the key name, which may be
-                    // from a different dict (e.g. Dict1's frame for Dict2 when both define Boolean).
-                    // That causes Dict2's internal env to use Dict1's slot base, corrupting
-                    // get_scheme_at lookups from nested dict expressions inside Dict2's values.
-                    let static_keys_pre = crate::resolve::surface_dict_static_keys(entries);
-                    // Two-phase body_slot_base disambiguation:
-                    //
-                    // Phase 1 (exact match): search ALL frames (regardless of FrameKind) for a
-                    // frame where slot - j == sequential_slot_offset. Fn-body sequential frames
-                    // don't cause contamination here because sequential_slot_offset tracks the
-                    // correct base for the current sequential context.
-                    //
-                    // Phase 2 (fallback): when no exact match exists, restrict to DocSequential
-                    // frames only. Fn-body DictLetrec frames have small absolute slots starting
-                    // from 0 and must not win the min() selection over document-level frames.
-                    // FrameKind::DocSequential filtering replaces the old doc_min_slot heuristic.
-                    let body_slot_base_pre: u32 = static_keys_pre
-                        .iter()
-                        .enumerate()
-                        .find_map(|(j, key)| {
-                            // Phase 1: exact match across all frames.
-                            let exact = state
-                                .resolver_frames
-                                .iter()
-                                .filter_map(|(frame, _kind)| frame.get(key.as_str()).copied())
-                                .map(|slot| slot.saturating_sub(j as u32))
-                                .find(|&base| base == sequential_slot_offset);
-                            if exact.is_some() {
-                                return exact;
-                            }
-                            // Phase 2: filter to DocSequential frames only so fn-body
-                            // DictLetrec frames (with small absolute slots) don't
-                            // contaminate document-level body_slot_base computation.
-                            let candidates: Vec<u32> = state
-                                .resolver_frames
-                                .iter()
-                                .filter(|(_frame, kind)| {
-                                    *kind == crate::resolve::FrameKind::DocSequential
-                                })
-                                .filter_map(|(frame, _kind)| frame.get(key.as_str()).copied())
-                                .map(|slot| slot.saturating_sub(j as u32))
-                                .collect();
-                            if candidates.is_empty() {
-                                return None;
-                            }
-                            if let Some(initial) = doc_initial_offset {
-                                let expected = initial + sequential_slot_offset;
-                                if let Some(&b) = candidates.iter().find(|&&b| b == expected) {
-                                    return Some(b);
-                                }
-                            }
-                            candidates.into_iter().min()
-                        })
-                        .unwrap_or(sequential_slot_offset);
+                    // The resolver writes each entry's absolute slot into assigned_slot.
+                    // The first entry's slot is the base for this dict body.
+                    let body_slot_base_pre: Option<u32> = entries
+                        .first()
+                        .and_then(|e| e.node.assigned_slot.get().copied());
 
                     let (_, _schemes, body_dict_env, mut dict_errs) = run_typecheck_dict(
                         entries,
                         &current_env,
                         state,
                         type_map,
-                        Some(body_slot_base_pre),
+                        body_slot_base_pre,
                     )
                     .await;
                     errors.append(&mut dict_errs);
 
-                    if doc_initial_offset.is_none() && body_slot_base_pre > sequential_slot_offset {
-                        doc_initial_offset = Some(body_slot_base_pre - sequential_slot_offset);
-                    }
-
-                    // Use dict_env directly as the Sequential env frame. No copying.
-                    sequential_slot_offset += static_keys_pre.len() as u32;
                     current_env = body_dict_env;
                     // Track the intermediate env frame for lost-binding detection.
                     // The frame is captured AFTER inserting schemes so the handler
@@ -1055,8 +984,8 @@ async fn apply_cont(
                                         "return type mismatch: body type is not consistent with declared return type",
                                         node_span.clone(),
                                     )
-                                    .with_note(format!("declared: {}", crate::eval::format_type_for_assert(&declared_ret)))
-                                    .with_note(format!("inferred: {}", crate::eval::format_type_for_assert(&body_resolved)))
+                                    .with_note(format!("declared: {}", crate::eval::format_type(&declared_ret)))
+                                    .with_note(format!("inferred: {}", crate::eval::format_type(&body_resolved)))
                                 );
                             }
                         }
@@ -1089,8 +1018,8 @@ async fn apply_cont(
                                                 "body type is not consistent with function annotation member",
                                                 node_span.clone(),
                                             )
-                                            .with_note(format!("declared member: {}", crate::eval::format_type_for_assert(member)))
-                                            .with_note(format!("inferred:        {}", crate::eval::format_type_for_assert(&body_resolved)))
+                                            .with_note(format!("declared member: {}", crate::eval::format_type(member)))
+                                            .with_note(format!("inferred:        {}", crate::eval::format_type(&body_resolved)))
                                         );
                                     }
                                 }
@@ -1136,11 +1065,11 @@ async fn apply_cont(
                                     )
                                     .with_note(format!(
                                         "declared: {}",
-                                        crate::eval::format_type_for_assert(&declared_ret)
+                                        crate::eval::format_type(&declared_ret)
                                     ))
                                     .with_note(format!(
                                         "inferred: {}",
-                                        crate::eval::format_type_for_assert(&body_resolved)
+                                        crate::eval::format_type(&body_resolved)
                                     )),
                                 );
                             }
@@ -1169,14 +1098,14 @@ async fn apply_cont(
 
             // Emit trace diagnostic if trace_level >= 1.
             if trace_level >= 1 {
-                let ret_str = crate::eval::format_type_for_assert(&fn_ret_ty);
+                let ret_str = crate::eval::format_type(&fn_ret_ty);
                 let params_str = params
                     .iter()
                     .map(|(name, ty)| {
                         format!(
                             "{}: {}",
                             name.as_deref().unwrap_or("_"),
-                            crate::eval::format_type_for_assert(ty)
+                            crate::eval::format_type(ty)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1199,10 +1128,11 @@ async fn apply_cont(
             // Exhaustiveness check for typed variadic params.
             // If typed_variadics is non-empty and rest is None, emit a warning.
             if !typed_variadics.is_empty() && rest.is_none() {
-                let covered = typevalue_normalize_union(
+                let covered = typevalue_normalize_union_ctx(
                     typed_variadics.iter().map(|(_, t)| Arc::clone(t)).collect(),
+                    Some(&state.ctx),
                 );
-                let covered_display = crate::eval::format_type_for_assert(&covered);
+                let covered_display = crate::eval::format_type(&covered);
                 errors.push(Diagnostic::error("type-error",
                     format!(
                         "non-exhaustive variadic type dispatch: typed buckets cover {} but no fallback (...rest) handles other types — add ...rest for a wildcard bucket",
@@ -1404,13 +1334,13 @@ async fn apply_cont(
 
             if remaining_arms.is_empty() {
                 // All arms done — build the union of arm types (BAS: arms may return different types).
-                // typevalue_normalize_union flattens, deduplicates, and returns the single type
-                // if all arms agreed, or a union if they differ.
+                // typevalue_normalize_union_ctx flattens, deduplicates, eliminates subtypes,
+                // and returns the single type if all arms agreed, or a union if they differ.
                 let match_ty = if accumulated_types.is_empty() {
                     // No arms produced types: fresh TypeVar (unconstrained)
                     state.fresh_type_var(&span)
                 } else {
-                    typevalue_normalize_union(accumulated_types)
+                    typevalue_normalize_union_ctx(accumulated_types, Some(&state.ctx))
                 };
                 TypeCheckAction::Done(match_ty)
             } else {
@@ -1431,7 +1361,7 @@ async fn apply_cont(
                             // No arms: fresh TypeVar (unconstrained)
                             state.fresh_type_var(&span)
                         } else {
-                            typevalue_normalize_union(accumulated_types)
+                            typevalue_normalize_union_ctx(accumulated_types, Some(&state.ctx))
                         };
                         TypeCheckAction::Done(match_ty)
                     }
@@ -1561,11 +1491,11 @@ async fn apply_cont(
                     )
                     .with_note(format!(
                         "expected: {}",
-                        crate::eval::format_type_for_assert(&expected_resolved)
+                        crate::eval::format_type(&expected_resolved)
                     ))
                     .with_note(format!(
                         "actual:   {}",
-                        crate::eval::format_type_for_assert(&default_resolved)
+                        crate::eval::format_type(&default_resolved)
                     ));
                     errors.push(e);
                 }
@@ -2640,7 +2570,7 @@ async fn apply_cont_call_func(
                 "type-error",
                 format!(
                     "expected function type, got {}",
-                    crate::eval::format_type_for_assert(&func_ty)
+                    crate::eval::format_type(&func_ty)
                 ),
                 call_node.span.clone(),
             );
@@ -2727,12 +2657,12 @@ async fn finalize_call_no_positional_args(
                 {
                     e = e.with_note(format!(
                         "expected: {} (parameter '{}')",
-                        crate::eval::format_type_for_assert(&ctx.state.apply(&param_ty)),
+                        crate::eval::format_type(&ctx.state.apply(&param_ty)),
                         na.node.name
                     ));
                     e = e.with_note(format!(
                         "actual:   {}",
-                        crate::eval::format_type_for_assert(&ctx.state.apply(&arg_ty))
+                        crate::eval::format_type(&ctx.state.apply(&arg_ty))
                     ));
                     ctx.errors.push(e);
                 }
@@ -2837,7 +2767,7 @@ async fn apply_call_args_poly(
                     });
 
                     if !has_matching_instance {
-                        let arg_ty_str = crate::eval::format_type_for_assert(&arg_ty_applied);
+                        let arg_ty_str = crate::eval::format_type(&arg_ty_applied);
                         if let Some(arg_node) = arg_nodes.first() {
                             ctx.state.diagnostics.push(Diagnostic::info(
                                 "missing-instance",
@@ -2920,12 +2850,12 @@ async fn apply_call_args_poly(
             };
             e = e.with_note(format!(
                 "expected: {}{}",
-                crate::eval::format_type_for_assert(&ctx.state.apply(param_ty)),
+                crate::eval::format_type(&ctx.state.apply(param_ty)),
                 param_label,
             ));
             e = e.with_note(format!(
                 "actual:   {}",
-                crate::eval::format_type_for_assert(&ctx.state.apply(&widened_arg)),
+                crate::eval::format_type(&ctx.state.apply(&widened_arg)),
             ));
             ctx.errors.push(e);
         }
@@ -2983,7 +2913,7 @@ async fn apply_call_args_poly(
                         "type-error",
                         format!(
                             "argument type does not match any variadic bucket, got {}",
-                            crate::eval::format_type_for_assert(&widened)
+                            crate::eval::format_type(&widened)
                         ),
                         span.clone(),
                     );
@@ -4075,11 +4005,11 @@ fn compute_type_assert_mismatch(
         )
         .with_note(format!(
             "expected: {}",
-            crate::eval::format_type_for_assert(expected)
+            crate::eval::format_type(expected)
         ))
         .with_note(format!(
             "actual:   {}",
-            crate::eval::format_type_for_assert(actual)
+            crate::eval::format_type(actual)
         ))])
     } else {
         None
@@ -4632,31 +4562,7 @@ pub(crate) async fn run_typecheck_dict(
     // directly to avoid the find_map ambiguity that arises when multiple dicts share the same
     // first key name (e.g. both Dict1 and Dict2 defining Boolean: the find_map picks Dict1's
     // frame for Dict2, inserting Dict2's entries at Dict1's slots and corrupting lookups).
-    // When slot_base_override is None (DictPassZero or nested dicts), fall back to find_map.
-    let static_keys_for_slot = crate::resolve::surface_dict_static_keys(entries);
-    let body_slot_base_opt: Option<u32> = slot_base_override.or_else(|| {
-        // DictPassZero / nested dict fallback: find the first frame that has the first key.
-        // Prefer DocSequential frames first: when run_typecheck_dict is called recursively
-        // for nested Dict values inside fn-body SCC inference (with slot_base_override=None),
-        // state.resolver_frames contains fn-body DictLetrec frames with small absolute slots
-        // starting from 0. A DictLetrec frame sharing a key name with a document-level
-        // DocSequential frame would win a naive find_map and produce an incorrect slot base.
-        // Try DocSequential-only first; if none match (genuine fn-body nested dict where no
-        // document-level frame holds the key), fall back to all frames.
-        static_keys_for_slot.first().and_then(|first_key| {
-            state
-                .resolver_frames
-                .iter()
-                .filter(|(_, kind)| *kind == crate::resolve::FrameKind::DocSequential)
-                .find_map(|(frame, _kind)| frame.get(first_key.as_str()).copied())
-                .or_else(|| {
-                    state
-                        .resolver_frames
-                        .iter()
-                        .find_map(|(frame, _kind)| frame.get(first_key.as_str()).copied())
-                })
-        })
-    });
+    let body_slot_base_opt: Option<u32> = slot_base_override;
     let mut fresh_vars_by_name: indexmap::IndexMap<String, TypeValue> = indexmap::IndexMap::new();
     let mut static_slot_idx: u32 = 0;
     for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
@@ -4931,7 +4837,7 @@ pub(crate) async fn run_typecheck_dict(
                         }
                     }
                 } else {
-                    typevalue_normalize_union(variant_members)
+                    typevalue_normalize_union_ctx(variant_members, Some(&state.ctx))
                 };
 
                 let constructors = extract_typevalue_constructors(&body_tv);

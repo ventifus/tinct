@@ -492,20 +492,37 @@ pub(crate) async fn invoke_function_tco(
             }
         }
     }
-    let mut err = EvalError::user_error(
-        "no matching clause for the given arguments".to_string(),
-        ctx.call_span.clone(),
-    );
+    let message = match &ctx.call_span.name {
+        Some(name) => format!("no matching clause for the given arguments in `{name}`"),
+        None => "no matching clause for the given arguments".to_string(),
+    };
+    let mut err = EvalError::user_error(message, ctx.call_span.clone());
 
-    // Note: arg count and named args provided.
-    let mut call_desc = format!("called with {} positional arg(s)", ctx.positional.len());
+    // Note: actual arg types (peeked from thunk cache — free if already materialized by try_clause).
+    let arg_types: Vec<String> = ctx
+        .positional
+        .iter()
+        .map(|arg| match arg.peek_result() {
+            Some(Ok(val)) => crate::eval::format_type(val.type_val()),
+            _ => "_".to_string(),
+        })
+        .collect();
+    err.notes
+        .push(format!("called with ({})", arg_types.join(", ")));
+
     if let Some(named) = ctx.named {
         if !named.is_empty() {
-            let keys: Vec<&str> = named.keys().map(|k| k.as_str()).collect();
-            call_desc.push_str(&format!(" and named arg(s): {}", keys.join(", ")));
+            let named_types: Vec<String> = named
+                .iter()
+                .map(|(k, thunk)| match thunk.peek_result() {
+                    Some(Ok(val)) => format!("{k}: {}", crate::eval::format_type(val.type_val())),
+                    _ => format!("{k}: _"),
+                })
+                .collect();
+            err.notes
+                .push(format!("named args: {}", named_types.join(", ")));
         }
     }
-    err.notes.push(call_desc);
 
     // Note: each clause's expected signature.
     for (i, clause) in ctx.clauses.iter().enumerate() {
@@ -516,7 +533,7 @@ pub(crate) async fn invoke_function_tco(
                 let name = &p.node.name;
                 match &p.node.resolved_type {
                     Some(tv) if !is_typevalue_unknown(tv) => {
-                        format!("{name}@{tv}")
+                        format!("{}@{}", name, crate::eval::format_type(tv))
                     }
                     _ => name.clone(),
                 }

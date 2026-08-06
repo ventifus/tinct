@@ -338,7 +338,7 @@
   # core-tc0 is kept so the same object is passed to uses-scope AND returned — both arms
   # of the match return the original TypeContext.
   core-tc0: [builtin-make-type-ctx]
-  core-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] core-tc0 [] %stderr].impls] 0]
+  core-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] core-tc0 [builtin-empty-scope] %stderr].impls] 0]
     0: core-tc0
     1: core-tc0]
 
@@ -439,7 +439,8 @@
           [res:   [builtin-resolve doc scope]]
           [err:   [emit-diagnostics res.diagnostics mods.stderr]]
           [match [builtin-eq-int [count-errors res.diagnostics] 0]
-            0: [merge acc [diagnostics: [append-diags acc.diagnostics res.diagnostics]  stderr: err]]
+            0: [env: acc.env  tc: acc.tc  last-result: acc.last-result
+                stderr: err  diagnostics: [append-diags acc.diagnostics res.diagnostics]]
             1: [call [fn [let]
                  [checked: [builtin-typecheck-doc res.doc acc.tc scope]]
                  [lowered: [builtin-lower checked.doc]]
@@ -454,11 +455,13 @@
                        [env: [match [builtin-eq-string name ""]
                                 0: [builtin-scope-extend env-base [$name: exports]]
                                 1: env-base]]
-                       [merge acc [env: .env  tc: acc.tc  last-result: exports  stderr: err]]]]]
+                       [env: .env  tc: acc.tc  last-result: exports
+                        stderr: err  diagnostics: acc.diagnostics]]]]
                    # Catch-all: evaled is an error Diagnostic. Accumulate without formatting
                    # (format-diagnostic requires narrowed Diagnostic type; evaled is a union).
                    ...: [call [fn [let]
-                     [merge acc [diagnostics: [append-diags acc.diagnostics [$evaled]]  stderr: err]]]]]]]]]]]]]
+                     [env: acc.env  tc: acc.tc  last-result: acc.last-result
+                      stderr: err  diagnostics: [append-diags acc.diagnostics [$evaled]]]]]]]]]]]]]]
     # Split documents by stage: check hdr.stage string.
     # Stage headers (--- stage: "type") are string literals — no env needed.
     # Using env here creates a circular dependency: docs forces env from the same
@@ -628,8 +631,8 @@
               # Resolve errors: accumulate into diagnostics (don't raise — raise is lazy
               # and escapes builtin-try; accumulation lets if-ok short-circuit at the
               # pipeline level).
-              0: [merge s [diagnostics: [append-diags diags r.diagnostics]
-                             stderr: err]]
+              0: [env: .env  last-result: prev  tc: .tc  stderr: err
+                  diagnostics: [append-diags diags r.diagnostics]  doc-index: idx  doc-results: history]
               1: [call [fn [let]
                    [checked: [builtin-typecheck-doc r.doc tc scope].doc]
                    [lowered: [builtin-lower checked]]
@@ -660,16 +663,19 @@
                           # result may be non-Dict (e.g. %.x selects a field value). Only merge
                           # result's entries into scope when it IS a Dict; always inject %: result.
                           [scope-ext: [match result Dict: result  ...: []]]
-                          [merge s [env:         [builtin-scope-extend eval-scope [merge scope-ext [%: result]]]
-                                    last-result:  result
-                                    stderr:      err
-                                    doc-index:   [builtin-int-add idx 1]
-                                    doc-results: [merge history [$idx: result]]]]
+                          [env:         [builtin-scope-extend eval-scope [builtin-dict-merge scope-ext [%: result]]]
+                           last-result:  result
+                           tc:          .tc
+                           stderr:      err
+                           diagnostics: diags
+                           doc-index:   [builtin-int-add idx 1]
+                           doc-results: [builtin-dict-merge history [$idx: result]]]
                            ]]]
                      # Catch-all: evaled is an error Diagnostic. Accumulate without formatting.
                      ...: [call [fn [let]
-                       [merge s [diagnostics: [append-diags diags [$evaled]]
-                                  stderr: err]]]]]]]]]]]]
+                       [env: .env  last-result: prev  tc: .tc
+                        stderr: err  diagnostics: [append-diags diags [$evaled]]
+                        doc-index: idx  doc-results: history]]]]]]]]]]]
       [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict]
        [env:         base-env
         last-result: []
@@ -768,7 +774,7 @@
   # cli/out/llt.llt runs as the output formatter with % = last-result.
   # The formatter writes llt-repr(%) to a StringWriter (prelude's functional
   # string capture). Output = formatter's StringWriter.cells — same as the CLI.
-  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Dict] [let source path prelude-env@Dict prelude-tc stderr-h]
+  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Dict] [let source path prelude-env@Scope prelude-tc stderr-h]
     [out: [make-string-handle]]
     # Parse first so pragma headers are available before the env is constructed.
     # .path references the function parameter from the parent scope, not the letrec
@@ -868,7 +874,7 @@
 
   # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
   # Returns result dict including stderr: err so the cascade continues.
-  run-test-file: [fn [let p prelude-env@Dict prelude-tc stderr-h]
+  run-test-file: [fn [let p prelude-env@Scope prelude-tc stderr-h]
     [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
@@ -953,7 +959,7 @@
   # run-test: run one ProgramItem as a corpus test.
   # Takes stderr-h so the "test: path" log write threads into the data-flow cascade.
   # Returns result dict including stderr: updated-handle so the outer reduce can chain it.
-  run-test: [fn [let item prelude-env@Dict prelude-tc stderr-h]
+  run-test: [fn [let item prelude-env@Scope prelude-tc stderr-h]
     [p:         [match item
                   ProgramItem.File: item.path
                   ...:              "<expr>"]]

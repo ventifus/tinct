@@ -647,7 +647,7 @@ fn lower_expr(
             if trace_level >= 1 {
                 let sig = resolved_fn_type
                     .as_ref()
-                    .map(|tv| crate::eval::format_type_for_assert(tv))
+                    .map(|tv| crate::eval::format_type(tv))
                     .unwrap_or_else(|| "<no type>".to_string());
                 diagnostics.push(Diagnostic::info("trace-lower", sig, arc.span.clone()));
             }

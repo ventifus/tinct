@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    as_record_typevalue_merged, format_field_path, format_type_for_assert, materialize,
+    as_record_typevalue_merged, format_field_path, format_type, materialize,
     primitive_eq, validate_and_wrap_record, value_matches_type, EvalContext,
     DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
@@ -1877,7 +1877,7 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("field {}: ", format_field_path(&field_path))
                             };
-                            let expected_str = format_type_for_assert(&expected);
+                            let expected_str = format_type(&expected);
                             let mut err = EvalError::type_assert_failed(
                                 &format!("{}{}", field_path_prefix, expected_str),
                                 value.type_name(),
@@ -1935,7 +1935,7 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("field {}: ", format_field_path(&field_path))
                             };
-                            let expected_str = format_type_for_assert(&expected);
+                            let expected_str = format_type(&expected);
                             let mut err = EvalError::type_assert_failed(
                                 &format!("{}{}", field_path_prefix, expected_str),
                                 value.type_name(),
@@ -2230,7 +2230,7 @@ pub(crate) async fn apply_cont(
                     crate::ast::TypeAssertCheck::Source { annotation } => {
                         annotation_type_display(&annotation.node)
                     }
-                    crate::ast::TypeAssertCheck::Resolved(tv) => format_type_for_assert(tv),
+                    crate::ast::TypeAssertCheck::Resolved(tv) => format_type(tv),
                 }
             };
 
