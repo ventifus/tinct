@@ -645,7 +645,7 @@ pub(crate) fn builtin_macro_injects(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -1078,17 +1078,13 @@ pub(crate) fn builtin_ast_of(
                 None => Arc::new(crate::value::Thunk::value(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span.clone(),
                 )),
             };
             dict.insert(HashableValue::Str("return-ann".into()), return_ann_thunk);
 
-            // params: integer-keyed dict of param entry dicts [{name: "x", annotation: ...}, ...]
-            // Extract params from the first clause (single-clause common case).
-            // Multi-clause functions expose the first clause's params here; T-2133 may extend
-            // this to expose all clauses if the protocol requires it.
             let first_clause_params = clauses
                 .first()
                 .map(|c| c.params.as_slice())
@@ -1105,14 +1101,13 @@ pub(crate) fn builtin_ast_of(
                         )),
                     );
                     if let Some(ann) = &p.node.annotation {
-                        // ann: &Spanned<Annotation>
                         let ann_thunk = crate::surface_convert::alloc_annotation(ann, &ctx);
                         param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
                     }
                     Ok(Arc::new(crate::value::Thunk::value(
                         Value::Dict {
                             entries: param_dict,
-            
+                            type_decl_id: 0,
                         },
                         call_span.clone(),
                     )))
@@ -1129,7 +1124,7 @@ pub(crate) fn builtin_ast_of(
                 Arc::new(Thunk::value(
                     Value::Dict {
                         entries: params_dict,
-        
+                        type_decl_id: 0,
                     },
                     call_span.clone(),
                 )),
@@ -1138,7 +1133,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 Value::Dict {
                     entries: dict,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             )));
@@ -1433,7 +1428,7 @@ pub(crate) fn builtin_span_of(
                                 return ok_val(
                                     Value::Dict {
                                         entries: w,
-                        
+                                        type_decl_id: 0,
                                     },
                                     call_span,
                                 );
@@ -1619,12 +1614,11 @@ pub(crate) fn builtin_var_resolution(
             None => ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             ),
             Some(addr) => {
-                // Return the VarAddr index as a flat dict {addr-type, index}.
                 use crate::ast::VarAddr;
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 let (addr_type, index_val): (&str, i64) = match addr {
@@ -1632,7 +1626,6 @@ pub(crate) fn builtin_var_resolution(
                     VarAddr::ClosureCapture(i) => ("closure", i as i64),
                     VarAddr::Parameter(i) => ("param", i as i64),
                     VarAddr::EffectPerform { .. } => {
-                        // EffectPerform is not a simple index — return special type with sentinel
                         ("effect-perform", 0)
                     }
                 };
@@ -1644,13 +1637,12 @@ pub(crate) fn builtin_var_resolution(
                     HashableValue::Str("index".into()),
                     mk(Value::Int {
                         n: index_val,
-        
                     }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: result,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -1748,7 +1740,7 @@ pub(crate) fn builtin_annotation_of(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
