@@ -298,7 +298,7 @@
   # needed. Attempting to call builtin-tc-update-type-stage-env with type-stage letrec exports
   # causes circular-dependency errors because materializing letrec thunks in the same group
   # creates mutual dependencies that the evaluator detects as cycles (T-1646).
-  uses-scope: [fn [let module-names@Dict tc@TypeContext env@Dict err]
+  uses-scope: [fn [let module-names@Dict tc@TypeContext env@Scope err]
     [reduce
       [fn [let acc@[impls: Dict  stderr: Dict] name]
         # Intermediate dict: path and result (type-checking side effect).

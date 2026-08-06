@@ -2847,7 +2847,7 @@ async fn apply_call_args_poly(
 
     // Unify positional args against fixed params (Robinson unification via unify())
     let mut consumed_params: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for (idx, ((_, param_ty), arg_ty)) in param_types
+    for (idx, ((param_name, param_ty), arg_ty)) in param_types
         .iter()
         .take(non_variadic_param_count)
         .zip(arg_types.iter())
@@ -2886,6 +2886,19 @@ async fn apply_call_args_poly(
             if let Some(arg_node) = arg_nodes.get(idx) {
                 e = e.with_span(arg_node.span.clone(), "this argument".to_string());
             }
+            let param_label = match param_name {
+                Some(name) => format!(" (parameter '{}')", name),
+                None => String::new(),
+            };
+            e = e.with_note(format!(
+                "expected: {}{}",
+                crate::eval::format_type_for_assert(&ctx.state.apply(param_ty)),
+                param_label,
+            ));
+            e = e.with_note(format!(
+                "actual:   {}",
+                crate::eval::format_type_for_assert(&ctx.state.apply(&widened_arg)),
+            ));
             ctx.errors.push(e);
         }
         ctx.state.constraints = constraints;
