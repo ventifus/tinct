@@ -604,6 +604,7 @@ async fn infer_step(
                 }
                 Err(e) => {
                     // Annotation resolution failed — report the error and evaluate inner without asserting
+                    let e = e.with_note("in type assertion annotation");
                     errors.push(e);
                     TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
                 }
@@ -1553,11 +1554,20 @@ async fn apply_cont(
                     &ctx_for_check,
                 );
                 if !passes {
-                    errors.push(Diagnostic::error(
+                    let e = Diagnostic::error(
                         "type-error",
                         "default value type does not match the assertion's expected type",
                         default_n.span.clone(),
+                    )
+                    .with_note(format!(
+                        "expected: {}",
+                        crate::eval::format_type_for_assert(&expected_resolved)
+                    ))
+                    .with_note(format!(
+                        "actual:   {}",
+                        crate::eval::format_type_for_assert(&default_resolved)
                     ));
+                    errors.push(e);
                 }
             }
 
@@ -2291,7 +2301,7 @@ async fn apply_cont_call_func(
                         ctx.type_map,
                     )
                     .await;
-                    let err = Diagnostic::error(
+                    let mut err = Diagnostic::error(
                         "type-error",
                         format!(
                             "arity mismatch: expected {} argument(s), got {}",
@@ -2299,6 +2309,9 @@ async fn apply_cont_call_func(
                         ),
                         call_node.span.clone(),
                     );
+                    if let SurfaceExpression::VarRef { name, .. } = &func_node.expr {
+                        err = err.with_note(format!("in call to '{}'", name));
+                    }
                     ctx.errors.push(err.clone());
                     // Arity error: fresh TypeVar (failed call, unconstrained return)
                     return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
@@ -2447,7 +2460,7 @@ async fn apply_cont_call_func(
                 // This enforces that the positional payload dict matches the declared fields.
                 if has_declared_fields {
                     let mut constraints = std::mem::take(&mut ctx.state.constraints);
-                    if let Err(e) = constrain(
+                    if let Err(mut e) = constrain(
                         &arg_ty,
                         &declared_fields_tv,
                         &mut ctx.state.ctx,
@@ -2456,6 +2469,12 @@ async fn apply_cont_call_func(
                     )
                     .await
                     {
+                        if let Some((tycon, ctor)) = typevalue_nominal_variant_tag(&func_ty) {
+                            e = e.with_note(format!(
+                                "in payload for variant constructor '{}.{}'",
+                                tycon, ctor
+                            ));
+                        }
                         ctx.errors.push(e);
                     }
                     ctx.state.constraints = constraints;
@@ -2697,7 +2716,7 @@ async fn finalize_call_no_positional_args(
                     .await
                 };
                 let mut constraints = std::mem::take(&mut ctx.state.constraints);
-                if let Err(e) = constrain(
+                if let Err(mut e) = constrain(
                     &arg_ty,
                     &param_ty,
                     &mut ctx.state.ctx,
@@ -2706,6 +2725,15 @@ async fn finalize_call_no_positional_args(
                 )
                 .await
                 {
+                    e = e.with_note(format!(
+                        "expected: {} (parameter '{}')",
+                        crate::eval::format_type_for_assert(&ctx.state.apply(&param_ty)),
+                        na.node.name
+                    ));
+                    e = e.with_note(format!(
+                        "actual:   {}",
+                        crate::eval::format_type_for_assert(&ctx.state.apply(&arg_ty))
+                    ));
                     ctx.errors.push(e);
                 }
                 ctx.state.constraints = constraints;
@@ -2978,6 +3006,7 @@ async fn apply_call_args_poly(
                 )
                 .await
                 {
+                    let e = e.with_note("in variadic parameter");
                     ctx.errors.push(e);
                 }
                 ctx.state.constraints = constraints;
@@ -3004,6 +3033,7 @@ async fn apply_call_args_poly(
                 )
                 .await
                 {
+                    let e = e.with_note("in variadic rest arguments");
                     ctx.errors.push(e);
                 }
                 ctx.state.constraints = constraints;
@@ -3135,6 +3165,7 @@ async fn apply_call_args_poly(
             )
             .await
             {
+                let e = e.with_note("in unmatched named arguments");
                 ctx.errors.push(e);
             }
             ctx.state.constraints = constraints;
@@ -3283,6 +3314,7 @@ async fn infer_fn_push_cont(
                 match result {
                     Ok((ret_ty, _doc)) => Some(ret_ty),
                     Err(e) => {
+                        let e = e.with_note("in function return type annotation");
                         errors.push(e);
                         None
                     }
@@ -3302,6 +3334,7 @@ async fn infer_fn_push_cont(
                 match result {
                     Ok(ty) => Some(ty),
                     Err(e) => {
+                        let e = e.with_note("in function return type annotation");
                         errors.push(e);
                         None
                     }
@@ -3357,6 +3390,8 @@ async fn infer_fn_push_cont(
                 match ann_result {
                     Ok(ty) => ty,
                     Err(e) => {
+                        let e =
+                            e.with_note(format!("in annotation for parameter '{}'", p.node.name));
                         errors.push(e);
                         // Annotation resolution failed: fresh TypeVar (unconstrained)
                         state.fresh_type_var(&p.span)
@@ -3383,6 +3418,7 @@ async fn infer_fn_push_cont(
             match ann_result {
                 Ok(ty) => ty,
                 Err(e) => {
+                    let e = e.with_note(format!("in annotation for parameter '{}'", p.node.name));
                     errors.push(e);
                     // Annotation resolution failed: fresh TypeVar (unconstrained)
                     state.fresh_type_var(&p.span)
@@ -4862,6 +4898,10 @@ pub(crate) async fn run_typecheck_dict(
                             {
                                 Ok(t) => t,
                                 Err(e) => {
+                                    let e = e.with_note(format!(
+                                        "in body of type declaration '{}'",
+                                        alias_name
+                                    ));
                                     errors.push(e);
                                     state.fresh_type_var(&inner.span)
                                 }
@@ -4880,6 +4920,10 @@ pub(crate) async fn run_typecheck_dict(
                             {
                                 Ok(t) => t,
                                 Err(e) => {
+                                    let e = e.with_note(format!(
+                                        "in body of type declaration '{}'",
+                                        alias_name
+                                    ));
                                     errors.push(e);
                                     state.fresh_type_var(&inner.span)
                                 }
