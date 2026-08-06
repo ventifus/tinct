@@ -2424,7 +2424,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -2437,7 +2437,7 @@ mod tests {
             val,
             Value::Float {
                 n: 2.5,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -2471,7 +2471,7 @@ mod tests {
                     mat_id(x_id, &ctx).await.unwrap(),
                     Value::Int {
                         n: 1,
-                        type_val: unknown_type_val()
+        
                     }
                 );
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
@@ -2496,7 +2496,7 @@ mod tests {
                         .unwrap(),
                     Value::Int {
                         n: 10,
-                        type_val: unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
@@ -2505,7 +2505,7 @@ mod tests {
                         .unwrap(),
                     Value::Int {
                         n: 20,
-                        type_val: unknown_type_val()
+        
                     }
                 );
                 assert_eq!(
@@ -2514,7 +2514,7 @@ mod tests {
                         .unwrap(),
                     Value::Int {
                         n: 30,
-                        type_val: unknown_type_val()
+        
                     }
                 );
             }
@@ -2536,7 +2536,7 @@ mod tests {
                     mat_id(y_id, &ctx).await.unwrap(),
                     Value::Int {
                         n: 5,
-                        type_val: unknown_type_val()
+        
                     }
                 );
             }
@@ -2558,7 +2558,7 @@ mod tests {
                     mat_id(y_id, &ctx).await.unwrap(),
                     Value::Int {
                         n: 10,
-                        type_val: unknown_type_val()
+        
                     }
                 );
             }
@@ -2707,7 +2707,7 @@ mod tests {
                             mat_id(y_id, &ctx).await.unwrap(),
                             Value::Int {
                                 n: 42,
-                                type_val: unknown_type_val()
+                
                             }
                         );
                     }
@@ -2856,7 +2856,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -2878,7 +2878,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -2892,7 +2892,7 @@ mod tests {
             val,
             Value::Float {
                 n: 2.5,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -2960,7 +2960,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -3013,7 +3013,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -3129,7 +3129,7 @@ mod tests {
             val,
             Value::Int {
                 n: 0,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -3308,7 +3308,7 @@ mod tests {
                     inner,
                     Value::Int {
                         n: 42,
-                        type_val: unknown_type_val()
+        
                     }
                 );
             }
@@ -3345,7 +3345,7 @@ mod tests {
                     inner,
                     Value::Int {
                         n: 1,
-                        type_val: unknown_type_val()
+        
                     }
                 );
             }
@@ -3665,7 +3665,7 @@ mod tests {
             val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -3756,7 +3756,7 @@ mod tests {
             val,
             Value::Int {
                 n: 99,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -4024,7 +4024,7 @@ mod tests {
             val,
             Value::Int {
                 n: 7,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -4208,7 +4208,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             },
             &int_tv,
             &ctx
@@ -4217,7 +4217,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Float {
                 n: 1.0,
-                type_val: unknown_type_val()
+
             },
             &int_tv,
             &ctx
@@ -4233,7 +4233,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &str_tv,
             &ctx
@@ -4241,7 +4241,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Float {
                 n: 0.0,
-                type_val: unknown_type_val()
+
             },
             &str_tv,
             &ctx
@@ -4256,7 +4256,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Float {
                 n: 2.5,
-                type_val: unknown_type_val()
+
             },
             &float_tv,
             &ctx
@@ -4264,7 +4264,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 3,
-                type_val: unknown_type_val()
+
             },
             &float_tv,
             &ctx
@@ -4280,7 +4280,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &top_tv,
             &ctx
@@ -4288,7 +4288,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Float {
                 n: 1.0,
-                type_val: unknown_type_val()
+
             },
             &top_tv,
             &ctx
@@ -4313,7 +4313,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &var_tv,
             &ctx,
@@ -4375,7 +4375,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4383,7 +4383,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Float {
                 n: 1.0,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4418,7 +4418,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4426,7 +4426,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Float {
                 n: 1.0,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4472,7 +4472,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4480,7 +4480,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Float {
                 n: 1.0,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4533,7 +4533,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &tycon,
             &ctx
@@ -4573,7 +4573,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &app_type,
             &ctx
@@ -4649,7 +4649,7 @@ mod tests {
             !value_matches_type(
                 &Value::Int {
                     n: 1,
-                    type_val: unknown_type_val()
+    
                 },
                 &tycon,
                 &ctx
@@ -4665,7 +4665,7 @@ mod tests {
         assert_eq!(
             Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             }
             .value_tycon_name(),
             None,
@@ -4694,7 +4694,7 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             },
             &unknown_tycon,
             &ctx
@@ -4988,7 +4988,7 @@ mod tests {
             result.unwrap(),
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
     }
@@ -5034,7 +5034,7 @@ mod tests {
             result1.unwrap(),
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
 
@@ -5047,7 +5047,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }),
             "after first materialization thunk should be Materialized(Int(42))"
         );
@@ -5062,7 +5062,7 @@ mod tests {
             result2.unwrap(),
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }
         );
 
@@ -5075,7 +5075,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }),
             "state should still be Materialized after second access"
         );
@@ -5315,7 +5315,7 @@ mod tests {
                     used_val,
                     Value::Int {
                         n: 1,
-                        type_val: unknown_type_val()
+        
                     }
                 );
 
@@ -5461,7 +5461,7 @@ mod tests {
             val,
             Value::Int {
                 n: 99,
-                type_val: unknown_type_val()
+
             },
             "Placeholder wildcard arm must produce 99; got: {:?}",
             val
@@ -5866,7 +5866,7 @@ mod tests {
             result_val,
             Value::Int {
                 n: 777,
-                type_val: unknown_type_val()
+
             },
             "% should resolve to initial_input Int(777); got: {result_val:?}"
         );
@@ -5963,7 +5963,7 @@ mod tests {
             r_val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             },
             "B-598: case arm binding v should be 42; got: {r_val:?}"
         );
@@ -6004,7 +6004,7 @@ mod tests {
             r_val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             },
             "B-598: v=41, body [builtin-int-add v 1] should be 42; got: {r_val:?}"
         );
@@ -6044,7 +6044,7 @@ mod tests {
             r_val,
             Value::Int {
                 n: 99,
-                type_val: unknown_type_val()
+
             },
             "B-598: non-matching case arm must fall through to wildcard; got: {r_val:?}"
         );
@@ -6147,7 +6147,7 @@ mod tests {
             result_val,
             Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             },
             "B-637: dot-access must resolve builtin-dict-get via root_group; got: {result_val:?}"
         );

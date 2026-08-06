@@ -2606,7 +2606,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }),
             "Expected materialized Int(42)"
         );
@@ -2630,7 +2630,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             }),
             "Expected materialized Int(1)"
         );
@@ -2674,7 +2674,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 1,
-                type_val: unknown_type_val()
+
             }),
             "Expected materialized Int(1)"
         );
@@ -2736,7 +2736,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }),
             "Materialized thunk must not transition to Failed — OnceCell write-once"
         );
@@ -2831,7 +2831,7 @@ mod tests {
             },
             Some(&Value::Int {
                 n: 42,
-                type_val: unknown_type_val()
+
             }),
             "Expected Some(Ok(&Int(42)))"
         );
