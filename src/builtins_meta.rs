@@ -2080,13 +2080,13 @@ pub(crate) fn builtin_parse(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: errors_dict,
-
+                type_decl_id: 0,
             }),
         );
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )))
@@ -2269,21 +2269,21 @@ pub(crate) fn builtin_resolve(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: diagnostics_dict,
-
+                type_decl_id: 0,
             }),
         );
         result_dict.insert(
             HashableValue::Str("unreferenced".into()),
             mk(Value::Dict {
                 entries: unreferenced_dict,
-
+                type_decl_id: 0,
             }),
         );
         result_dict.insert(HashableValue::Str("doc-span".into()), mk_span(&doc_span));
         ok_val(
             Value::Dict {
                 entries: result_dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -2422,7 +2422,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
         ok_val(
             Value::Dict {
                 entries: diagnostics_dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -2762,13 +2762,13 @@ pub(crate) fn builtin_typecheck_doc(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: diagnostics_dict,
-
+                type_decl_id: 0,
             }),
         );
         ok_val(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -3343,7 +3343,7 @@ pub(crate) fn builtin_program_docs(
         ok_val(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -3408,7 +3408,7 @@ pub(crate) fn builtin_doc_expressions(
         ok_val(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -3472,7 +3472,7 @@ pub(crate) fn builtin_doc_meta(
         ok_val(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -3526,7 +3526,7 @@ pub(crate) fn builtin_builtin_module(
                 ok_val(
                     Value::Dict {
                         entries: dict_map,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -3703,7 +3703,7 @@ pub(crate) fn builtin_scope_exports(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: dict_map,
-
+                type_decl_id: 0,
             },
             call_span,
         )))
@@ -3857,7 +3857,7 @@ pub(crate) fn builtin_variant_payload(
             Value::Variant { payload: None, .. } => ok_val(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             ),
@@ -4132,7 +4132,7 @@ pub(crate) fn builtin_eval_types(
         ok_val(
             Value::Dict {
                 entries: result_dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
