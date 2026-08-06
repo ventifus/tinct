@@ -1317,6 +1317,41 @@ pub fn typevalue_nominal_variant_has_fields(v: &TypeValue) -> bool {
 ///
 /// Available in production (not test-only) so normalize_union/intersection can use it
 /// for structural deduplication.
+fn values_structurally_eq(a: &crate::value::Value, b: &crate::value::Value) -> bool {
+    match (a, b) {
+        (crate::value::Value::Int { n: na, .. }, crate::value::Value::Int { n: nb, .. }) => na == nb,
+        (crate::value::Value::Float { n: na, .. }, crate::value::Value::Float { n: nb, .. }) => {
+            na.to_bits() == nb.to_bits()
+        }
+        (
+            crate::value::Value::String { source: sa, start: s1, end: e1, .. },
+            crate::value::Value::String { source: sb, start: s2, end: e2, .. },
+        ) => sa[*s1..*e1] == sb[*s2..*e2],
+        (
+            crate::value::Value::Variant { ctor: ca, .. },
+            crate::value::Value::Variant { ctor: cb, .. },
+        ) => {
+            ca.as_ref() == cb.as_ref()
+                && typevalue_eq(&Arc::new(a.clone()), &Arc::new(b.clone()))
+        }
+        (
+            crate::value::Value::Dict { entries: ea, .. },
+            crate::value::Value::Dict { entries: eb, .. },
+        ) => {
+            ea.len() == eb.len()
+                && ea.iter().all(|(k, va)| {
+                    eb.get(k).map_or(false, |vb| {
+                        match (va.peek_result(), vb.peek_result()) {
+                            (Some(Ok(va)), Some(Ok(vb))) => values_structurally_eq(va, vb),
+                            _ => false,
+                        }
+                    })
+                })
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
     // Reflexivity: pointer-identical TypeValues are definitionally equal.
     if Arc::ptr_eq(a, b) {
@@ -1336,22 +1371,7 @@ pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
                 ..
             },
         ) => ca.as_ref() == cb.as_ref(),
-        // TypeValue.Var: equality by name.
-        (
-            crate::value::Value::Variant {
-                ctor: ca,
-                payload: Some(_),
-                ..
-            },
-            crate::value::Value::Variant {
-                ctor: cb,
-                payload: Some(_),
-                ..
-            },
-        ) if ca.as_ref() == TV_VAR && cb.as_ref() == TV_VAR => {
-            typevalue_var_name(a) == typevalue_var_name(b)
-        }
-        // TypeValue.Repr: equality by repr string.
+        // Payload variants: same ctor tag + structurally equal payloads.
         (
             crate::value::Value::Variant {
                 ctor: ca,
@@ -1363,23 +1383,28 @@ pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
                 payload: Some(pb),
                 ..
             },
-        ) if ca.as_ref() == TV_REPR && cb.as_ref() == TV_REPR => {
-            // Extract repr string from each payload dict.
-            let repr_str = |thunk: &crate::value::Thunk| -> Option<String> {
-                if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
-                    let key = crate::value::HashableValue::Str(Arc::from(FIELD_REPR));
-                    if let Some(Ok(crate::value::Value::String {
-                        source, start, end, ..
-                    })) = entries.get(&key).and_then(|t| t.peek_result())
-                    {
-                        return Some(source[*start..*end].to_string());
+        ) if ca.as_ref() == cb.as_ref() => {
+            // Recursively compare payload dicts.
+            match (pa.peek_result(), pb.peek_result()) {
+                (Some(Ok(crate::value::Value::Dict { entries: ea, .. })),
+                 Some(Ok(crate::value::Value::Dict { entries: eb, .. }))) => {
+                    if ea.len() != eb.len() {
+                        return false;
                     }
+                    ea.iter().all(|(k, va)| {
+                        eb.get(k).map_or(false, |vb| {
+                            match (va.peek_result(), vb.peek_result()) {
+                                (Some(Ok(val_a)), Some(Ok(val_b))) => {
+                                    values_structurally_eq(val_a, val_b)
+                                }
+                                _ => false,
+                            }
+                        })
+                    })
                 }
-                None
-            };
-            repr_str(pa) == repr_str(pb)
+                _ => false,
+            }
         }
-        // Conservative: all other variants use pointer equality (already checked above).
         _ => false,
     }
 }
@@ -2234,6 +2259,17 @@ pub struct InferState {
     /// nested Sequentials do not corrupt the enclosing Sequential's liveness graph. The
     /// saved value is carried in AfterSequentialFinal and restored when it fires.
     pub use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
+    /// BindingIds captured via ClosureCapture during the current fn body's evaluation.
+    ///
+    /// When a VarRef resolves via `VarAddr::ClosureCapture`, its target BindingId is
+    /// pushed here. When `AfterBlock` fires for the fn body, these are merged as
+    /// `use_def[fn_binding_id → captured]` edges in the *outer* scope's use_def graph.
+    /// Captures from even-outer scopes (not in the current binding_envs) propagate
+    /// upward so that deeply nested closures correctly mark their transitive captures.
+    ///
+    /// Saved and restored (via std::mem::take) alongside `use_def` at each fn body /
+    /// Sequential / match arm boundary.
+    pub closure_captures: Vec<BindingId>,
     /// Narrowing refinements for the current branch scope (T-2083).
     ///
     /// Maps BindingId → narrowed TypeValue for bindings whose type has been refined
@@ -2292,6 +2328,7 @@ impl InferState {
             fd_depth: 0,
             current_binding: None,
             use_def: std::collections::HashMap::new(),
+            closure_captures: Vec::new(),
             narrowing_map: std::collections::HashMap::new(),
             current_parameter_frame: None,
             ctx: InferenceContext::new(),
