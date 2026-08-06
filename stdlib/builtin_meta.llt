@@ -9,29 +9,20 @@
   builtin-eval-macro-ast:    [fn@Any      [let ast@Dict] ...]
 
   # ── Type-checking context ──────────────────────────────────────────────────
-  # get-type-context: retrieve the EvalContext's TypeContext handle.
-  builtin-get-type-context:  [fn@TypeContext [] ...]
-  # make-type-ctx: create a fresh TypeContext seeded with core type definitions.
-  builtin-make-type-ctx:     [fn@TypeContext [] ...]
+  # Note: builtin-get-type-context and builtin-make-type-ctx are Core-46 —
+  # declared in builtin_core.llt.
   # fork-type-ctx: create child TypeContext inheriting parent; mutations don't propagate up.
   builtin-fork-type-ctx:     [fn@TypeContext [let ctx@TypeContext] ...]
   # validate: validate program AST structure; returns Program or error.
   builtin-validate:          [fn@Program    [let prog@Program ctx@TypeContext] ...]
 
   # ── Reflection and introspection ───────────────────────────────────────────
-  # tag-of: return the qualified constructor name (e.g. "Color.Red", "Boolean.True").
-  builtin-tag-of:            [fn@String  [let x@Any] ...]
-  # variant?: return 1 if value is a nominal variant (Value::Variant), 0 otherwise.
-  builtin-variant?:          [fn@Integer [let x@Any] ...]
-  # type-of: return the ground TypeValue for a value. Returns TypeValue.Repr for primitives,
-  # TypeValue.Op(tycon) for nominal variants, TypeValue.Unknown for other runtime types.
-  builtin-type-of:           [fn@TypeValue [let x@Any] ...]
+  # Note: builtin-tag-of, builtin-variant?, builtin-type-of, builtin-llt-repr
+  # are Core-46 — declared in builtin_core.llt.
   # annotation-of: return the PropertyDict annotation stored on a value (or []).
   builtin-annotation-of:     [fn@Dict    [let x@Any] ...]
   # make-annotated: wrap x with ann as its runtime annotation dict; returns x.
   builtin-make-annotated:    [fn@Any     [let x@Any ann@Dict] ...]
-  # llt-repr: return the tinct literal representation of x as a String.
-  builtin-llt-repr:          [fn@String  [let x@Any] ...]
 
   # ── Macro support ─────────────────────────────────────────────────────────
   # gensym: generate a fresh unique name with scope and prefix.
@@ -73,11 +64,5 @@
   builtin-span-of:           [fn@Dict    [let x@Any] ...]
   builtin-sequential:        [fn@Any     [let x@Any] ...]
 
-  # ── Scope operations ──────────────────────────────────────────────────────
-  # empty-scope: return an empty Scope with no entries.
-  builtin-empty-scope:       [fn@Scope   [let] ...]
-  # scope-extend: extend a Scope with additional Dict entries.
-  builtin-scope-extend:      [fn@Scope   [let scope@Scope additions@Dict] ...]
-  # scope-exports: convert a Scope to a Dict exposing its named entries.
-  builtin-scope-exports:     [fn@Dict    [let scope@Scope] ...]
+  # Scope operations moved to builtin_core.llt (loader programs need them).
 ]

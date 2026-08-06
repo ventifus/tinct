@@ -58,10 +58,11 @@ use crate::builtins_bytes::{builtin_bytes, builtin_bytes_concat};
 // Meta/eval implementations — Core-46 only.
 use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_env_has, builtin_check_type, builtin_debug_repr,
-    builtin_desugar, builtin_doc_expressions, builtin_doc_meta, builtin_eval, builtin_expand,
-    builtin_get_type_context, builtin_is_variant, builtin_llt_repr, builtin_parse,
-    builtin_program_docs, builtin_raise, builtin_resolve, builtin_tag_of, builtin_try,
-    builtin_type_of, builtin_typecheck_doc, builtin_variant_payload,
+    builtin_desugar, builtin_doc_expressions, builtin_doc_meta, builtin_empty_scope, builtin_eval,
+    builtin_expand, builtin_get_type_context, builtin_is_variant, builtin_llt_repr, builtin_parse,
+    builtin_program_docs, builtin_raise, builtin_resolve, builtin_scope_exports,
+    builtin_scope_extend, builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck_doc,
+    builtin_variant_payload,
 };
 // I/O implementations — Core-46 only.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -589,6 +590,22 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq],
             0,
             ["doc"]
+        ),
+        // ── Scope operations ──────────────────────────────────────────────────────────
+        builtin!("builtin-empty-scope", builtin_empty_scope),
+        builtin!(
+            "builtin-scope-extend",
+            builtin_scope_extend,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["scope", "additions"]
+        ),
+        builtin!(
+            "builtin-scope-exports",
+            builtin_scope_exports,
+            [Strictness::Seq],
+            1,
+            ["scope"]
         ),
         // ── Sequences ─────────────────────────────────────────────────────────────────
         builtin!(

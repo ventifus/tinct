@@ -414,4 +414,9 @@
   Callable: [class [let a]]
   [instance Callable [let k@Fn]:      []]
   [instance Callable [let k@Builtin]: []]
+
+  # ── Scope operations ──────────────────────────────────────────────────────
+  builtin-empty-scope:       [fn@Scope   [let] ...]
+  builtin-scope-extend:      [fn@Scope   [let scope@Scope additions@Dict] ...]
+  builtin-scope-exports:     [fn@Dict    [let scope@Scope] ...]
 ]

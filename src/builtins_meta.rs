@@ -5275,22 +5275,6 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         // builtin-current-env: zero-arg; returns the calling lexical environment.
         // needs_caller_env: true — only builtin that requires BuiltinArgs.caller_env_id to be Some.
         builtin!(@needs_caller_env, "builtin-current-env", builtin_current_env),
-        // ── Scope operations ─────────────────────────────────────────────────────────
-        builtin!("builtin-empty-scope", builtin_empty_scope),
-        builtin!(
-            "builtin-scope-extend",
-            builtin_scope_extend,
-            [Strictness::Seq, Strictness::Seq],
-            2,
-            ["scope", "additions"]
-        ),
-        builtin!(
-            "builtin-scope-exports",
-            builtin_scope_exports,
-            [Strictness::Seq],
-            1,
-            ["scope"]
-        ),
     ]
 }
 
