@@ -854,11 +854,11 @@ pub fn type_id_for_name(name: &str) -> Option<u64> {
 /// A materialized runtime value.
 pub enum Value {
     /// 64-bit signed integer
-    Int { n: i64, type_val: Arc<Value> },
+    Int { n: i64 },
     /// Unsigned 64-bit integer (from `42u`, `0xFFu` literals)
-    U64 { n: u64, type_val: Arc<Value> },
+    U64 { n: u64 },
     /// 64-bit IEEE 754 float
-    Float { n: f64, type_val: Arc<Value> },
+    Float { n: f64 },
     /// UTF-8 string (from bare words or quoted literals).
     /// Stored as a shared slice of a source string with byte offsets.
     /// This enables zero-copy substring operations and shared storage.
@@ -866,12 +866,12 @@ pub enum Value {
         source: Arc<str>,
         start: usize,
         end: usize,
-        type_val: Arc<Value>,
+
     },
     /// Ordered key-value map with lazy (thunked) values
     Dict {
         entries: IndexMap<HashableValue, Arc<Thunk>>,
-        type_val: Arc<Value>,
+
     },
     /// Transient accumulator — no type_val. Consumed before type identity matters.
     ///
@@ -898,48 +898,48 @@ pub enum Value {
         clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         annotation: Option<Box<FnAnnotation>>,
-        type_val: Arc<Value>,
+
     },
     /// Rust-native built-in function
     Builtin {
         def: BuiltinDef,
-        type_val: Arc<Value>,
+
     },
     /// Proxy object — field access calls the handler function with the field name
     Proxy {
         handler: std::sync::Arc<Thunk>,
-        type_val: Arc<Value>,
+
     },
     /// Capability-bound directory handle (object capability model)
     DirCap {
         dir: cap_std::fs::Dir,
         perms: DirPerms,
-        type_val: Arc<Value>,
+
     },
     /// Network capability — authority to connect to specified hosts/subnets
     NetCap {
         entries: Arc<Vec<NetCapEntry>>,
-        type_val: Arc<Value>,
+
     },
     /// Raw OS file handle (thin wrapper over cap_std::fs::File, no buffering).
     /// Opened via `builtin-file-open`; read/written/sought via `builtin-file-*` builtins.
     File {
         inner: Arc<Mutex<cap_std::fs::File>>,
-        type_val: Arc<Value>,
+
     },
     /// Revocable directory capability
     RevocableDirCap {
         inner: cap_std::fs::Dir,
         perms: DirPerms,
         revoked: Arc<AtomicBool>,
-        type_val: Arc<Value>,
+
     },
     /// Nominal variant (enum-like value)
     Variant {
         /// The runtime TypeValue for this variant's type constructor.
         /// Set to `unknown_type_val()` at construction sites that do not yet have
         /// a resolved TypeValue; wired up by the repr: protocol when it runs.
-        type_val: Arc<Value>,
+
         /// Stable numeric type declaration ID from the expand stage (T-2135).
         /// Same as `expand::next_type_decl_id()` assigned to the enclosing `[type ...]` declaration.
         /// 0 means "unknown" (construction sites without type_decl_id wiring, e.g. identity sentinel).
@@ -951,64 +951,64 @@ pub enum Value {
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
     Decimal {
         n: rust_decimal::Decimal,
-        type_val: Arc<Value>,
+
     },
     /// Arbitrary-precision integer (num_bigint::BigInt).
     BigInt {
         n: num_bigint::BigInt,
-        type_val: Arc<Value>,
+
     },
     /// Byte sequence (opaque binary data).
     Bytes {
         source: Arc<[u8]>,
         start: usize,
         end: usize,
-        type_val: Arc<Value>,
+
     },
     /// URI — a uniform resource identifier with scheme and URI string.
     Uri {
         scheme: String,
         uri: String,
-        type_val: Arc<Value>,
+
     },
     /// UTC timestamp — pre-validated jiff::Timestamp. Construction must succeed at creation
     /// sites (all i64-nanosecond values are within jiff's representable range).
     Timestamp {
         ts: jiff::Timestamp,
-        type_val: Arc<Value>,
+
     },
     /// Signed duration (nanoseconds).
-    Duration { nanos: i64, type_val: Arc<Value> },
+    Duration { nanos: i64 },
     /// Clock capability for reading current time (object capability model).
     ClockCap {
         inner: Arc<ClockCapInner>,
-        type_val: Arc<Value>,
+
     },
     /// Timezone (parsed IANA TZ rules from zoneinfo file).
     Timezone {
         tz: Arc<jiff::tz::TimeZone>,
-        type_val: Arc<Value>,
+
     },
     /// QUIC session — multiplexed connection over UDP (RFC 9000).
     QuicSession {
         conn: Arc<quinn::Connection>,
-        type_val: Arc<Value>,
+
     },
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
     Http2Session {
         client: Arc<reqwest::Client>,
         base_url: String,
-        type_val: Arc<Value>,
+
     },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
     Http3Session {
         session: Arc<Mutex<Http3SessionState>>,
-        type_val: Arc<Value>,
+
     },
     /// QUIC datagram handle — unreliable message delivery over QUIC (RFC 9221).
     QuicDatagramHandle {
         conn: Arc<quinn::Connection>,
-        type_val: Arc<Value>,
+
     },
 
     // =========================================================================
@@ -1022,7 +1022,7 @@ pub enum Value {
     Program {
         program: std::sync::Arc<crate::ast::SurfaceProgram>,
         resolutions: Arc<crate::ast::ResolutionTable>,
-        type_val: Arc<Value>,
+
     },
 
     /// A single document within a program — accessible via `program.documents`.
@@ -1037,13 +1037,13 @@ pub enum Value {
         ///
         /// Set by builtin-resolve. Empty if the document was not resolved.
         resolver_frames: Arc<Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>>,
-        type_val: Arc<Value>,
+
     },
 
     /// A single AST expression node — the type returned by `ast-of` and `[quote ...]`.
     Expression {
         node: Arc<SurfaceNode>,
-        type_val: Arc<Value>,
+
     },
 
     // =========================================================================
@@ -1052,43 +1052,43 @@ pub enum Value {
     /// Async task handle — returned by `task` builtin, consumed by `await`.
     Task {
         state: Arc<tokio::sync::Mutex<TaskState>>,
-        type_val: Arc<Value>,
+
     },
 
     /// Channel for inter-task communication — created by `channel` builtin.
     Channel {
         inner: Arc<ChannelInner>,
-        type_val: Arc<Value>,
+
     },
 
     /// Broadcast channel — created by `broadcast-channel` builtin.
     BroadcastChannel {
         inner: Arc<BroadcastChannelInner>,
-        type_val: Arc<Value>,
+
     },
 
     /// Oneshot sender half — created by `oneshot-channel` builtin.
     OneshotSender {
         inner: Arc<OneshotSenderInner>,
-        type_val: Arc<Value>,
+
     },
 
     /// Oneshot receiver half — created by `oneshot-channel` builtin.
     OneshotReceiver {
         inner: Arc<OneshotReceiverInner>,
-        type_val: Arc<Value>,
+
     },
 
     /// Cancellation context — created by `context` builtin.
     Context {
         token: tokio_util::sync::CancellationToken,
-        type_val: Arc<Value>,
+
     },
 
     /// Reactive cell — created by `reactive-cell` builtin.
     ReactiveCell {
         inner: Arc<ReactiveCellInner>,
-        type_val: Arc<Value>,
+
     },
 
     /// Arena view handle — wraps a named scope managed by this arena.
@@ -1098,7 +1098,7 @@ pub enum Value {
     Arena {
         name: Arc<str>,
         start_env_id: u32,
-        type_val: Arc<Value>,
+
     },
     /// Type identity delegates to inner.type_val() — no own type_val field.
     ///
@@ -1113,7 +1113,7 @@ pub enum Value {
     /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck-doc`, `builtin-resolve`, etc.
     TypeContext {
         ctx: std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>,
-        type_val: Arc<Value>,
+
     },
     /// A fully-lowered document — produced by `builtin-lower` after lowering all SurfaceNodes to
     /// CoreExpr. This is the discrete lowering step that separates surface-to-core lowering from
@@ -1129,7 +1129,7 @@ pub enum Value {
             )>,
         >,
         span: crate::ast::Span,
-        type_val: Arc<Value>,
+
     },
     /// Opaque scope value for pipeline env passing between stages.
     /// Contains slots (thunks) and a name-to-slot mapping. Not inspectable
@@ -1137,7 +1137,7 @@ pub enum Value {
     Scope {
         slots: Arc<Vec<Arc<Thunk>>>,
         names: Arc<IndexMap<String, u32>>,
-        type_val: Arc<Value>,
+
     },
 }
 

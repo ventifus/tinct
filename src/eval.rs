@@ -1375,20 +1375,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
         Some(e) => e.clone(),
         None => std::collections::HashMap::new(), // tycon_env not wired (e.g., --no-typecheck or test context).
     };
-    let mut inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env.clone());
-    for (name, def) in &tycon_env {
-        if def.type_decl_id != 0 {
-            inference_ctx.type_display_names.insert(def.type_decl_id, name.clone());
-        } else if let Some(id) = crate::value::type_id_for_name(name) {
-            inference_ctx.type_display_names.insert(id, name.clone());
-        }
-    }
-    let sub_tv = if crate::eval_call::is_typevalue_unknown(value.type_val()) {
-        crate::type_infer::make_typevalue_nominal(value.type_id())
-    } else {
-        Arc::clone(value.type_val())
-    };
-    crate::bas::is_consistent_subtype(&sub_tv, expected, &inference_ctx)
+    let inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
+    crate::bas::is_consistent_subtype(value.type_val(), expected, &inference_ctx)
 }
 
 /// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.
