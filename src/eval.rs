@@ -1376,7 +1376,24 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
         None => std::collections::HashMap::new(), // tycon_env not wired (e.g., --no-typecheck or test context).
     };
     let inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
-    crate::bas::is_consistent_subtype(value.type_val(), expected, &inference_ctx)
+    let sub_id = match value {
+        Value::Int { .. } => crate::value::TYPE_ID_INT,
+        Value::U64 { .. } => crate::value::TYPE_ID_U64,
+        Value::Float { .. } => crate::value::TYPE_ID_FLOAT,
+        Value::String { .. } => crate::value::TYPE_ID_STRING,
+        Value::Bytes { .. } => crate::value::TYPE_ID_BYTES,
+        Value::Dict { type_decl_id, .. } => *type_decl_id,
+        Value::Function { .. } => crate::value::TYPE_ID_FUNCTION,
+        Value::Builtin { .. } => crate::value::TYPE_ID_BUILTIN,
+        Value::Variant { type_decl_id, .. } => *type_decl_id,
+        _ => 0,
+    };
+    let sub_tv = if sub_id > 0 {
+        crate::type_infer::make_typevalue_nominal(sub_id)
+    } else {
+        crate::type_infer::make_typevalue_unknown()
+    };
+    crate::bas::is_consistent_subtype(&sub_tv, expected, &inference_ctx)
 }
 
 /// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.

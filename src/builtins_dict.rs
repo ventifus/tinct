@@ -309,8 +309,7 @@ pub(crate) fn builtin_get(
 
         match target_val {
             Value::Dict {
-                entries: map,
-                type_val,
+                entries: map, ..
             } => {
                 let key_str = key.to_string();
                 match map.get(&key) {
@@ -322,9 +321,8 @@ pub(crate) fn builtin_get(
                             EvalError::key_not_found(&key_str, available_keys, target_span);
                         err.spans.push((call_span, "accessed here".to_string()));
                         err.notes.push(format!(
-                            "dict has {} entries, type_val: {}",
+                            "dict has {} entries",
                             map.len(),
-                            type_val.type_name()
                         ));
                         Err(err.into())
                     }
