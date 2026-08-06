@@ -2810,7 +2810,7 @@ mod tests {
     async fn type_of_int() {
         // builtin_type_of now uses ground_typevalue_of, which returns TypeValue.Repr("Value::Int")
         // for Value::Int regardless of the type_val field. This is stable even during bootstrap
-        // when all Values carry unknown_type_val().
+        // when all Values carry crate::type_infer::make_typevalue_unknown().
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(

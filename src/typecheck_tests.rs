@@ -6,7 +6,7 @@ use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
 use crate::types::unify;
 // TypeScheme deleted in S-1003 — TypeValues stored directly.
-use crate::value::{unknown_type_val, HashableValue, Value};
+use crate::value::{HashableValue, Value};
 use crate::Annotation;
 use indexmap::IndexMap;
 use std::sync::Arc;

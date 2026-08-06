@@ -735,7 +735,7 @@ mod tests {
     fn make_def(name: &str) -> Arc<TyConDef> {
         Arc::new(TyConDef::new_with_body(
             name,
-            crate::value::unknown_type_val(),
+            crate::type_infer::make_typevalue_unknown(),
         ))
     }
 

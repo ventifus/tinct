@@ -26,7 +26,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::type_tags::*;
-use crate::value::{unknown_type_val, HashableValue, Thunk, Value};
+use crate::value::{HashableValue, Thunk, Value};
 
 /// Global counter for unique class declaration IDs.
 /// Shared between the resolver's Phase 1b scan (which pre-assigns IDs before type-checking)

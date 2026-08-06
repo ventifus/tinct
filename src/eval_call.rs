@@ -23,7 +23,7 @@ use crate::eval_core::eval_core_expr;
 pub(crate) fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
     match tv.as_ref() {
         Value::Variant { ctor, .. } => ctor.as_ref() == TV_UNKNOWN,
-        // Bootstrap sentinel: unknown_type_val() is an empty dict before repr protocol runs.
+        // Bootstrap sentinel: crate::type_infer::make_typevalue_unknown() is an empty dict before repr protocol runs.
         Value::Dict { entries, .. } => entries.is_empty(),
         _ => false,
     }
@@ -800,7 +800,7 @@ pub(crate) async fn bind_args_thunks(
             .map(|p| {
                 p.resolved_type
                     .clone()
-                    .unwrap_or_else(crate::value::unknown_type_val)
+                    .unwrap_or_else(crate::type_infer::make_typevalue_unknown)
             })
             .collect();
 
@@ -1169,7 +1169,7 @@ mod tests {
             annotation: Some(sp(Annotation::Simple("Unknown".to_string()))),
             variadic: true,
             slot: 1,
-            resolved_type: Some(crate::value::unknown_type_val()),
+            resolved_type: Some(crate::type_infer::make_typevalue_unknown()),
         };
         let none_bucket = Param {
             name: "extra".to_string(),

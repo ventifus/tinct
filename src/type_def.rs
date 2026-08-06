@@ -26,9 +26,9 @@ use crate::ast::Span;
 //
 // Row construction:
 //   Closed row (was RowTail::Empty):
-//     Value::Variant { ctor: Arc::from("RowTail.Closed"), payload: None, type_val: unknown_type_val() }
+//     Value::Variant { ctor: Arc::from("RowTail.Closed"), payload: None, type_val: crate::type_infer::make_typevalue_unknown() }
 //   Open row with variable (was RowTail::Var(name)):
-//     Value::Variant { ctor: Arc::from("RowTail.Var"), payload: Some(settled_string(name)), type_val: unknown_type_val() }
+//     Value::Variant { ctor: Arc::from("RowTail.Var"), payload: Some(settled_string(name)), type_val: crate::type_infer::make_typevalue_unknown() }
 //
 // TypeValue.Record { fields: Dict, tail: RowTail.* } represents the full row type.
 
@@ -86,7 +86,7 @@ pub enum Variance {
 ///
 /// T-1986: `body` field changed from `Type` to `Arc<crate::value::Value>` (TypeValue).
 /// The body is a TypeValue representing the resolved type for this constructor.
-/// During bootstrap (before repr wiring), `body` is `crate::value::unknown_type_val()`.
+/// During bootstrap (before repr wiring), `body` is `crate::type_infer::make_typevalue_unknown()`.
 #[derive(Debug, Clone)]
 pub struct TyConDef {
     /// Unique type declaration identity. Assigned by the expander (≥100 for user types)
@@ -97,7 +97,7 @@ pub struct TyConDef {
 
     /// Type body as a TypeValue (Arc<Value>). For structural aliases, this is the expanded
     /// TypeValue; for nominal ADTs, this is typically a TypeValue.Union of NominalVariants.
-    /// During bootstrap, holds `unknown_type_val()` as a placeholder.
+    /// During bootstrap, holds `crate::type_infer::make_typevalue_unknown()` as a placeholder.
     pub body: Arc<crate::value::Value>,
 
     /// Class constraints on type parameters, populated when params carry `@ClassName` annotations.
@@ -188,12 +188,12 @@ impl TyConDef {
     /// Create a new TyConDef for a parameterized type constructor with the given arity.
     ///
     /// Convenience constructor for registration and testing (T-1112). The body is set to
-    /// `unknown_type_val()` (opaque until instantiated with type arguments).
+    /// `crate::type_infer::make_typevalue_unknown()` (opaque until instantiated with type arguments).
     pub fn new_parameterized(arity: usize) -> Self {
         Self {
             type_decl_id: 0,
             params: (0..arity).map(|i| format!("a{i}")).collect(),
-            body: crate::value::unknown_type_val(),
+            body: crate::type_infer::make_typevalue_unknown(),
             constraints: vec![],
             variance: vec![Variance::Invariant; arity],
             constructors: vec![],

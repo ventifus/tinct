@@ -825,7 +825,7 @@ pub enum Value {
     ///
     /// Mutable dict builder: one-shot invariant (once frozen via builder-finish, all mutations
     /// error). Sequential-use: not safe for concurrent modification (Mutex protects state, not
-    /// semantics). Also serves as the `unknown_type_val()` bootstrap sentinel — `Value::Builder`
+    /// semantics). Also serves as the `crate::type_infer::make_typevalue_unknown()` bootstrap sentinel — `Value::Builder`
     /// breaks the circularity that would arise from requiring a `type_val` to construct any Value.
     Builder(Arc<Builder>),
     /// User-defined function (closure capturing its defining environment).
@@ -885,7 +885,7 @@ pub enum Value {
     /// Nominal variant (enum-like value)
     Variant {
         /// The runtime TypeValue for this variant's type constructor.
-        /// Set to `unknown_type_val()` at construction sites that do not yet have
+        /// Set to `crate::type_infer::make_typevalue_unknown()` at construction sites that do not yet have
         /// a resolved TypeValue; wired up by the repr: protocol when it runs.
 
         /// Stable numeric type declaration ID from the expand stage (T-2135).

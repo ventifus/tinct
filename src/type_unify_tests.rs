@@ -14,7 +14,7 @@ use crate::type_infer::{
 use crate::types::InferState;
 // Constraint deleted in S-1003 — constraints are Vec<Arc<Value>> ConstraintDecls.
 // Kind deleted in S-1003 — kind is now Arc<Value> (TypeValue.Op{name}).
-use crate::value::{unknown_type_val, Value};
+use crate::value::{Value};
 
 const TEST_ID_BOOL: u64 = 1000;
 const TEST_ID_SEQ: u64 = 1001;
@@ -1098,7 +1098,7 @@ async fn test_tycondef_construction() {
     let def = TyConDef {
         type_decl_id: 0,
         params: vec!["a".to_string()],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![("Maybe.Some".to_string(), 1), ("Maybe.None".to_string(), 0)],
@@ -1122,7 +1122,7 @@ async fn test_tycondef_multi_variance() {
     let def = TyConDef {
         type_decl_id: 0,
         params: vec!["a".to_string(), "b".to_string()],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Contravariant, Variance::Covariant],
         constructors: vec![],
@@ -1144,7 +1144,7 @@ async fn test_tycondef_builtin_type() {
     let def = TyConDef {
         type_decl_id: 0,
         params: vec!["a".to_string()],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
@@ -1456,7 +1456,7 @@ async fn test_tycondef_partialeq() {
     let def1 = TyConDef {
         type_decl_id: 0,
         params: vec![],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
@@ -1469,7 +1469,7 @@ async fn test_tycondef_partialeq() {
     let def2 = TyConDef {
         type_decl_id: 0,
         params: vec![],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
@@ -1488,7 +1488,7 @@ async fn test_tycondef_partialeq_different_variance() {
     let def1 = TyConDef {
         type_decl_id: 0,
         params: vec![],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
@@ -1501,7 +1501,7 @@ async fn test_tycondef_partialeq_different_variance() {
     let def2 = TyConDef {
         type_decl_id: 0,
         params: vec![],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![],
@@ -2154,7 +2154,7 @@ async fn test_constrain_app_covariant_arg() {
     let cov_def = Arc::new(TyConDef {
         type_decl_id: 0,
         params: vec!["a".to_string()],
-        body: crate::value::unknown_type_val(),
+        body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],

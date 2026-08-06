@@ -2914,7 +2914,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&bare_thunk),
-                                                            Some(Value::Int { n: 1, type_val: crate::value::unknown_type_val() }),
+                                                            Some(Value::Int { n: 1, type_val: crate::type_infer::make_typevalue_unknown() }),
                                                             "bare should be true for bare word 'foo'"
                                                         );
                                                     }
@@ -3016,7 +3016,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&bare_thunk),
-                                                            Some(Value::Int { n: 0, type_val: crate::value::unknown_type_val() }),
+                                                            Some(Value::Int { n: 0, type_val: crate::type_infer::make_typevalue_unknown() }),
                                                             "bare should be false for quoted string \"foo\""
                                                         );
                                                     }
@@ -3245,7 +3245,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&blank_thunk),
-                                                            Some(Value::Int { n: 1, type_val: crate::value::unknown_type_val() }),
+                                                            Some(Value::Int { n: 1, type_val: crate::type_infer::make_typevalue_unknown() }),
                                                             "blank-before should be true for second entry"
                                                         );
                                                     }
@@ -3347,7 +3347,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&bare_thunk),
-                                                            Some(Value::Int { n: 0, type_val: crate::value::unknown_type_val() }),
+                                                            Some(Value::Int { n: 0, type_val: crate::type_infer::make_typevalue_unknown() }),
                                                             "bare should be false when source is None"
                                                         );
 
@@ -3360,7 +3360,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&blank_thunk),
-                                                            Some(Value::Int { n: 0, type_val: crate::value::unknown_type_val() }),
+                                                            Some(Value::Int { n: 0, type_val: crate::type_infer::make_typevalue_unknown() }),
                                                             "blank-before should be false when comments is None"
                                                         );
 

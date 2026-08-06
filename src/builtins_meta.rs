@@ -767,7 +767,7 @@ pub(crate) fn builtin_big_int(
 /// Uses `ground_typevalue_of` to compute the canonical TypeValue from the value's Rust
 /// discriminant. This is the stable, repr-based identity that tinct type predicates
 /// (`int?`, `str?`, `proxy?`, etc.) rely on. Using the ground typevalue ensures that
-/// values constructed with the bootstrap `unknown_type_val()` sentinel (all literals and
+/// values constructed with the bootstrap `crate::type_infer::make_typevalue_unknown()` sentinel (all literals and
 /// builtins) still return the correct TypeValue after the prelude is loaded.
 ///
 /// Returns:

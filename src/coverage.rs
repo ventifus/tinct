@@ -475,7 +475,7 @@ pub fn ast_pattern_to_coverage(
             let resolved_tv = resolved_type
                 .get()
                 .cloned()
-                .unwrap_or_else(crate::value::unknown_type_val);
+                .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
 
             let inner_sub = vec![ast_pattern_to_coverage(expr, tycon_env)];
 
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn test_sig_from_union_record_variants() {
-        let unknown_tv = crate::value::unknown_type_val();
+        let unknown_tv = crate::type_infer::make_typevalue_unknown();
         let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
         let union_members = vec![
             make_record_typevalue_test(&[("ok", unknown_tv)]),

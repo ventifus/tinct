@@ -674,7 +674,7 @@ pub struct EvalContext {
     ///
     /// `match_pattern` uses `Arc::ptr_eq` on `type_val` fields: if the scrutinee's
     /// `type_val` and the pinned dict's `type_val` point to the same allocation, the
-    /// scrutinee belongs to that type. Plain dicts (no TypeDecl) carry `unknown_type_val()`
+    /// scrutinee belongs to that type. Plain dicts (no TypeDecl) carry `crate::type_infer::make_typevalue_unknown()`
     /// and do not match.
     ///
     /// NOT a global OnceLock: unlike `repr_registry` (populated from `builtin_core.llt` —
@@ -3021,7 +3021,7 @@ mod tests {
     #[tokio::test]
     async fn test_type_assert_default_used_on_mismatch() {
         // [@[type: Int  default: 0] "hello"] — Source annotation with default.
-        // test_ctx() has no tycon_env, so Source resolves `type: Int` to unknown_type_val()
+        // test_ctx() has no tycon_env, so Source resolves `type: Int` to crate::type_infer::make_typevalue_unknown()
         // which passes value_matches_type for all values. "hello" (String) passes the check
         // and is returned as-is — the default is not used because no mismatch occurs.
         // Requires a populated tycon_env (e.g. from a full typecheck pass) to fire the default path.
@@ -4402,7 +4402,7 @@ mod tests {
             Arc::new(TyConDef {
                 type_decl_id: TEST_ID_MY_INT,
                 params: vec![],
-                body: crate::value::unknown_type_val(),
+                body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
@@ -4446,7 +4446,7 @@ mod tests {
             Arc::new(TyConDef {
                 type_decl_id: TEST_ID_MY_DICT,
                 params: vec![],
-                body: crate::value::unknown_type_val(),
+                body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
@@ -4500,7 +4500,7 @@ mod tests {
             Arc::new(TyConDef {
                 type_decl_id: TEST_ID_COLOR,
                 params: vec![],
-                body: crate::value::unknown_type_val(),
+                body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
@@ -4555,7 +4555,7 @@ mod tests {
             Arc::new(TyConDef {
                 type_decl_id: TEST_ID_MY_SEQ,
                 params: vec![],
-                body: crate::value::unknown_type_val(),
+                body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
@@ -4590,7 +4590,7 @@ mod tests {
         let color_def = Arc::new(TyConDef {
             type_decl_id: TEST_ID_COLOR,
             params: vec![],
-            body: crate::value::unknown_type_val(),
+            body: crate::type_infer::make_typevalue_unknown(),
             constraints: vec![],
             variance: vec![],
             constructors: vec![
@@ -5365,7 +5365,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
 
         // Build an unevaluated thunk that evaluates to an empty dict.
-        // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict { entries: IndexMap::new(), type_val: unknown_type_val() }`.
+        // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict { entries: IndexMap::new(), type_val: crate::type_infer::make_typevalue_unknown() }`.
         let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
@@ -5565,7 +5565,7 @@ mod tests {
     // When a VarRef pin pattern resolves to a type-constructor Dict (from a [type ...]
     // declaration), match_pattern uses Arc::ptr_eq on the Dict's type_val and the
     // Variant's type_val. Both carry the same Arc created by CoreExpr::TypeDecl, so
-    // ptr_eq succeeds. Plain dicts (no TypeDecl) carry unknown_type_val() — a different
+    // ptr_eq succeeds. Plain dicts (no TypeDecl) carry crate::type_infer::make_typevalue_unknown() — a different
     // Arc — so ptr_eq fails and they do not falsely match variants.
     // -------------------------------------------------------------------------
 
@@ -5798,7 +5798,7 @@ mod tests {
             .expect("r-inner materialize");
         assert_eq!(
             ri_val,
-            Value::String { source: Arc::from("no-match"), start: 0, end: 8, type_val: crate::value::unknown_type_val() },
+            Value::String { source: Arc::from("no-match"), start: 0, end: 8 },
             "inner Color.Red must NOT match outer Color arm (independent Arc identity); got: {ri_val:?}"
         );
         // Verify r-outer (forced after r-inner) — must still match outer Color despite inner overwrite

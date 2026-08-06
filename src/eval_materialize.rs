@@ -2150,7 +2150,7 @@ pub(crate) async fn apply_cont(
                     // Evaluate the annotation name against the tycon_env to get the TypeValue.
                     // The annotation node carries the user-written type (e.g. `Integer`, `String`).
                     // Look up the TyConDef body (Arc<Value>) for this annotation name.
-                    // Falls back to unknown_type_val() when the type is not in tycon_env.
+                    // Falls back to crate::type_infer::make_typevalue_unknown() when the type is not in tycon_env.
                     // This is correct behavior (not an error) in the following cases:
                     //   1. --no-typecheck mode: tycon_env is not populated; all Source annotations
                     //      fall back here and pass unconditionally (gradual typing: advisory only).
@@ -2158,7 +2158,7 @@ pub(crate) async fn apply_cont(
                     //      e.g. @[type: Seq  ...]) — no simple name to look up.
                     //   3. Annotation references a type that is not in scope (unusual; not an error
                     //      here because the type checker would have already diagnosed it).
-                    // unknown_type_val() is the Unknown TypeValue. value_matches_type returns true
+                    // crate::type_infer::make_typevalue_unknown() is the Unknown TypeValue. value_matches_type returns true
                     // for Unknown (consistent with everything under AGT — Unknown is the top of the
                     // consistent-subtyping relation). This is not error suppression: when no
                     // TypeValue is available, the assertion is advisory and passes all values.
@@ -3783,7 +3783,7 @@ async fn bind_or_pin_name(
         // the two type_val fields therefore correctly identifies "scrutinee is a member of
         // this type" — match if true, fall through to primitive_eq otherwise.
         //
-        // Plain dicts (no TypeDecl) carry unknown_type_val() — a different Arc from any
+        // Plain dicts (no TypeDecl) carry crate::type_infer::make_typevalue_unknown() — a different Arc from any
         // Variant's type_val — so ptr_eq correctly returns false and they do not false-match.
         if let (
             Value::Dict { .. },

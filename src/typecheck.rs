@@ -14,7 +14,7 @@ use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::InferenceContext;
 use crate::types::{generalize_tv, InferState};
-use crate::value::{unknown_type_val, Value};
+use crate::value::{Value};
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]

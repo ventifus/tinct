@@ -139,7 +139,7 @@ pub use formatter::format_source_tinct;
 pub use env::Env;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    string_val, unknown_type_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue,
+    string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue,
     NetCapEntry, Thunk, Value,
 };
 

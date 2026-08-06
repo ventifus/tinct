@@ -741,7 +741,7 @@ pub(crate) fn eval_core_expr<'a>(
             //
             // type_val: look up the type identity from ctx.type_identity_registry using the
             // type_decl_id embedded in this CoreExpr::Variant node. If type_decl_id is 0
-            // (no parent TypeDecl — shouldn't happen in practice), fall back to unknown_type_val().
+            // (no parent TypeDecl — shouldn't happen in practice), fall back to crate::type_infer::make_typevalue_unknown().
             // Registered identities are set by CoreExpr::TypeDecl before any constructor is forced.
             CoreExpr::Variant {
                 tag,
@@ -1082,7 +1082,7 @@ pub(crate) fn eval_core_expr<'a>(
             } => {
                 // Create the type identity: a fresh Arc<Value> unique to this type declaration.
                 // The value is a unit Variant with ctor = type_name. This makes the identity
-                // self-describing in debug output. Its own type_val is unknown_type_val() —
+                // self-describing in debug output. Its own type_val is crate::type_infer::make_typevalue_unknown() —
                 // the identity is not itself typed (it is the identity, not a user value).
                 let type_id: Arc<Value> = Arc::new(Value::Variant {
     

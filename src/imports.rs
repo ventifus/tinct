@@ -387,7 +387,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             std::sync::Arc::new(TyConDef {
                 type_decl_id: crate::value::type_id_for_name(&discriminant).unwrap_or(0),
                 params: vec![],
-                body: crate::value::unknown_type_val(),
+                body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],

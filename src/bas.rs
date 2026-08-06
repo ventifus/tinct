@@ -35,7 +35,7 @@ use crate::ast::Span;
 use crate::type_def::Variance;
 use crate::type_infer::InferenceContext;
 use crate::type_tags::*;
-use crate::value::{unknown_type_val, HashableValue, Thunk, Value};
+use crate::value::{HashableValue, Thunk, Value};
 
 /// Maximum depth for atom subtype checking (coinductive Recursive type comparison).
 const MAX_ATOM_SUBTYPE_DEPTH: usize = 256;
@@ -2251,12 +2251,12 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
     //   op:  true; arg: String ~<: Integer → false (correctly caught)
     if matches!(sub_ctor, Some(TV_APP)) && matches!(sup_ctor, Some(TV_APP)) {
         if let (Some(sub_p), Some(sup_p)) = (typevalue_payload(sub), typevalue_payload(sup)) {
-            let sub_op = payload_typevalue_field(sub_p, FIELD_OP).unwrap_or_else(unknown_type_val);
-            let sup_op = payload_typevalue_field(sup_p, FIELD_OP).unwrap_or_else(unknown_type_val);
+            let sub_op = payload_typevalue_field(sub_p, FIELD_OP).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+            let sup_op = payload_typevalue_field(sup_p, FIELD_OP).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
             let sub_arg =
-                payload_typevalue_field(sub_p, FIELD_ARG).unwrap_or_else(unknown_type_val);
+                payload_typevalue_field(sub_p, FIELD_ARG).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
             let sup_arg =
-                payload_typevalue_field(sup_p, FIELD_ARG).unwrap_or_else(unknown_type_val);
+                payload_typevalue_field(sup_p, FIELD_ARG).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
             return is_consistent_subtype(&sub_op, &sup_op, ctx)
                 && is_consistent_subtype(&sub_arg, &sup_arg, ctx);
         }
@@ -2329,9 +2329,9 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         }
         // Covariant return.
         let sub_ret =
-            payload_typevalue_field(sub_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
+            payload_typevalue_field(sub_payload, FIELD_RETURN).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
         let sup_ret =
-            payload_typevalue_field(sup_payload, FIELD_RETURN).unwrap_or_else(unknown_type_val);
+            payload_typevalue_field(sup_payload, FIELD_RETURN).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
         if !is_consistent_subtype(&sub_ret, &sup_ret, ctx) {
             return false;
         }
@@ -2464,7 +2464,6 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::unknown_type_val;
 
     fn empty_ctx() -> InferenceContext {
         InferenceContext::new()
