@@ -1290,11 +1290,11 @@ pub async fn unify(
             span,
         )
         .with_note(format!(
-            "expected: {}",
+            "{}",
             crate::eval::format_type_for_assert(&a)
         ))
         .with_note(format!(
-            "actual:   {}",
+            "{}",
             crate::eval::format_type_for_assert(&b)
         ))),
 
