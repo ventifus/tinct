@@ -1091,57 +1091,57 @@ pub enum Value {
 impl Clone for Value {
     fn clone(&self) -> Self {
         match self {
-            Value::Int { n, type_val } => Value::Int {
+            Value::Int { n } => Value::Int {
                 n: *n,
-                type_val: Arc::clone(type_val),
+
             },
-            Value::U64 { n, type_val } => Value::U64 {
+            Value::U64 { n } => Value::U64 {
                 n: *n,
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Float { n, type_val } => Value::Float {
+            Value::Float { n } => Value::Float {
                 n: *n,
-                type_val: Arc::clone(type_val),
+
             },
             Value::String {
                 source,
                 start,
                 end,
-                type_val,
+
             } => Value::String {
                 source: Arc::clone(source),
                 start: *start,
                 end: *end,
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Dict { entries, type_val } => Value::Dict {
+            Value::Dict { entries } => Value::Dict {
                 entries: entries.clone(),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Builder(b) => Value::Builder(Arc::clone(b)),
             Value::Function {
                 clauses,
                 closure_env,
                 annotation,
-                type_val,
+
             } => Value::Function {
                 clauses: std::sync::Arc::clone(clauses),
                 closure_env: std::sync::Arc::clone(closure_env),
                 annotation: annotation.clone(),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Builtin { def, type_val } => Value::Builtin {
+            Value::Builtin { def } => Value::Builtin {
                 def: *def,
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Proxy { handler, type_val } => Value::Proxy {
+            Value::Proxy { handler } => Value::Proxy {
                 handler: std::sync::Arc::clone(handler),
-                type_val: Arc::clone(type_val),
+
             },
             Value::DirCap {
                 dir,
                 perms,
-                type_val,
+
             } => Value::DirCap {
                 // SAFETY: DirCap values are always created from valid OS file descriptors
                 // (main.rs and builtins_io.rs construction sites). try_clone() can fail with
@@ -1151,187 +1151,187 @@ impl Clone for Value {
                 // closed while a DirCap holding it is alive.
                 dir: dir.try_clone().expect("DirCap try_clone"),
                 perms: perms.clone(),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::NetCap { entries, type_val } => Value::NetCap {
+            Value::NetCap { entries } => Value::NetCap {
                 entries: Arc::clone(entries),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::File { inner, type_val } => Value::File {
+            Value::File { inner } => Value::File {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
             Value::RevocableDirCap {
                 inner,
                 perms,
                 revoked,
-                type_val,
+
             } => Value::RevocableDirCap {
                 inner: inner.try_clone().expect("RevocableDirCap try_clone"),
                 perms: perms.clone(),
                 revoked: Arc::clone(revoked),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Variant {
-                type_val,
+
                 type_decl_id,
                 ctor,
                 payload,
             } => Value::Variant {
-                type_val: Arc::clone(type_val),
+
                 type_decl_id: *type_decl_id,
                 ctor: Arc::clone(ctor),
                 payload: payload.as_ref().map(std::sync::Arc::clone),
             },
-            Value::Decimal { n, type_val } => Value::Decimal {
+            Value::Decimal { n } => Value::Decimal {
                 n: *n,
-                type_val: Arc::clone(type_val),
+
             },
-            Value::BigInt { n, type_val } => Value::BigInt {
+            Value::BigInt { n } => Value::BigInt {
                 n: n.clone(),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Bytes {
                 source,
                 start,
                 end,
-                type_val,
+
             } => Value::Bytes {
                 source: Arc::clone(source),
                 start: *start,
                 end: *end,
-                type_val: Arc::clone(type_val),
+
             },
             Value::Uri {
                 scheme,
                 uri,
-                type_val,
+
             } => Value::Uri {
                 scheme: scheme.clone(),
                 uri: uri.clone(),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Timestamp { ts, type_val } => Value::Timestamp {
+            Value::Timestamp { ts } => Value::Timestamp {
                 ts: ts.clone(),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Duration { nanos, type_val } => Value::Duration {
+            Value::Duration { nanos } => Value::Duration {
                 nanos: *nanos,
-                type_val: Arc::clone(type_val),
+
             },
-            Value::ClockCap { inner, type_val } => Value::ClockCap {
+            Value::ClockCap { inner } => Value::ClockCap {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Timezone { tz, type_val } => Value::Timezone {
+            Value::Timezone { tz } => Value::Timezone {
                 tz: Arc::clone(tz),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::QuicSession { conn, type_val } => Value::QuicSession {
+            Value::QuicSession { conn } => Value::QuicSession {
                 conn: Arc::clone(conn),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Http2Session {
                 client,
                 base_url,
-                type_val,
+
             } => Value::Http2Session {
                 client: Arc::clone(client),
                 base_url: base_url.clone(),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Http3Session { session, type_val } => Value::Http3Session {
+            Value::Http3Session { session } => Value::Http3Session {
                 session: Arc::clone(session),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::QuicDatagramHandle { conn, type_val } => Value::QuicDatagramHandle {
+            Value::QuicDatagramHandle { conn } => Value::QuicDatagramHandle {
                 conn: Arc::clone(conn),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Program {
                 program,
                 resolutions,
-                type_val,
+
             } => Value::Program {
                 program: std::sync::Arc::clone(program),
                 resolutions: Arc::clone(resolutions),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Document {
                 doc,
                 resolver_frames,
-                type_val,
+
             } => Value::Document {
                 doc: Arc::clone(doc),
                 resolver_frames: Arc::clone(resolver_frames),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Expression { node, type_val } => Value::Expression {
+            Value::Expression { node } => Value::Expression {
                 node: Arc::clone(node),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Task { state, type_val } => Value::Task {
+            Value::Task { state } => Value::Task {
                 state: Arc::clone(state),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Channel { inner, type_val } => Value::Channel {
+            Value::Channel { inner } => Value::Channel {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::BroadcastChannel { inner, type_val } => Value::BroadcastChannel {
+            Value::BroadcastChannel { inner } => Value::BroadcastChannel {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::OneshotSender { inner, type_val } => Value::OneshotSender {
+            Value::OneshotSender { inner } => Value::OneshotSender {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::OneshotReceiver { inner, type_val } => Value::OneshotReceiver {
+            Value::OneshotReceiver { inner } => Value::OneshotReceiver {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::Context { token, type_val } => Value::Context {
+            Value::Context { token } => Value::Context {
                 token: token.clone(),
-                type_val: Arc::clone(type_val),
+
             },
-            Value::ReactiveCell { inner, type_val } => Value::ReactiveCell {
+            Value::ReactiveCell { inner } => Value::ReactiveCell {
                 inner: Arc::clone(inner),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Arena {
                 name,
                 start_env_id,
-                type_val,
+
             } => Value::Arena {
                 name: Arc::clone(name),
                 start_env_id: *start_env_id,
-                type_val: Arc::clone(type_val),
+
             },
             Value::Annotated { inner, annotation } => Value::Annotated {
                 inner: inner.clone(),
                 annotation: annotation.clone(),
             },
-            Value::TypeContext { ctx, type_val } => Value::TypeContext {
+            Value::TypeContext { ctx } => Value::TypeContext {
                 ctx: Arc::clone(ctx),
-                type_val: Arc::clone(type_val),
+
             },
             Value::CoreDocument {
                 entries,
                 span,
-                type_val,
+
             } => Value::CoreDocument {
                 entries: std::sync::Arc::clone(entries),
                 span: span.clone(),
-                type_val: Arc::clone(type_val),
+
             },
             Value::Scope {
                 slots,
                 names,
-                type_val,
+
             } => Value::Scope {
                 slots: Arc::clone(slots),
                 names: Arc::clone(names),
-                type_val: Arc::clone(type_val),
+
             },
         }
     }
