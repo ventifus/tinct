@@ -798,7 +798,22 @@ pub(crate) fn builtin_type_of(
             &ctx,
             call_span.clone(),
         )?;
-        Ok(Arc::new(Thunk::value(val.type_val().as_ref().clone(), call_span)))
+        let type_id = match &val {
+            crate::value::Value::Int { .. } => crate::value::TYPE_ID_INT,
+            crate::value::Value::Float { .. } => crate::value::TYPE_ID_FLOAT,
+            crate::value::Value::String { .. } => crate::value::TYPE_ID_STRING,
+            crate::value::Value::Bytes { .. } => crate::value::TYPE_ID_BYTES,
+            crate::value::Value::Dict { type_decl_id, .. } => *type_decl_id,
+            crate::value::Value::Function { .. } => crate::value::TYPE_ID_FUNCTION,
+            crate::value::Value::Variant { type_decl_id, .. } => *type_decl_id,
+            _ => 0,
+        };
+        let tv = if type_id > 0 {
+            crate::type_infer::make_typevalue_nominal(type_id)
+        } else {
+            crate::type_infer::make_typevalue_unknown()
+        };
+        Ok(Arc::new(Thunk::value(tv.as_ref().clone(), call_span)))
     })
 }
 

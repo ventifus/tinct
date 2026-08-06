@@ -503,7 +503,7 @@ pub(crate) async fn invoke_function_tco(
         .positional
         .iter()
         .map(|arg| match arg.peek_result() {
-            Some(Ok(val)) => crate::eval::format_type(val.type_val()),
+            Some(Ok(val)) => val.type_name().to_string(),
             _ => "_".to_string(),
         })
         .collect();
@@ -515,7 +515,7 @@ pub(crate) async fn invoke_function_tco(
             let named_types: Vec<String> = named
                 .iter()
                 .map(|(k, thunk)| match thunk.peek_result() {
-                    Some(Ok(val)) => format!("{k}: {}", crate::eval::format_type(val.type_val())),
+                    Some(Ok(val)) => format!("{k}: {}", val.type_name()),
                     _ => format!("{k}: _"),
                 })
                 .collect();

@@ -5015,7 +5015,6 @@ fn force_dict_tree_impl<'a>(
                 })
             }
             Value::Variant {
-                type_val,
                 type_decl_id,
                 ctor,
                 payload,
@@ -5023,7 +5022,6 @@ fn force_dict_tree_impl<'a>(
                 if let Some(payload_thunk) = payload {
                     let thunk_ptr = Arc::as_ptr(payload_thunk) as usize;
 
-                    // Cycle detection: if we've already visited this thunk, return variant as-is
                     if !visited.insert(thunk_ptr) {
                         return Ok(val.clone());
                     }
@@ -5033,7 +5031,6 @@ fn force_dict_tree_impl<'a>(
                     let deep_thunk =
                         Arc::new(Thunk::value(deep_payload, payload_thunk.span.clone()));
                     Ok(Value::Variant {
-                        type_val: Arc::clone(type_val),
                         type_decl_id: *type_decl_id,
                         ctor: ctor.clone(),
                         payload: Some(deep_thunk),

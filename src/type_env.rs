@@ -138,8 +138,7 @@ fn apply_renaming_to_value(
             let changed = !Arc::ptr_eq(&renamed, &tv);
             (renamed.as_ref().clone(), changed)
         }
-        Value::Dict { entries, type_val } => {
-            // Dict may contain TypeValues or nested Dicts — recurse into all entries.
+        Value::Dict { entries, type_decl_id } => {
             let mut new_entries = indexmap::IndexMap::new();
             let mut changed = false;
             for (key, thunk) in entries.iter() {
@@ -155,14 +154,13 @@ fn apply_renaming_to_value(
                         );
                     }
                     _ => {
-                        // Unsettled or error — copy as-is.
                         new_entries.insert(key.clone(), Arc::clone(thunk));
                     }
                 }
             }
             let new_dict = Value::Dict {
                 entries: new_entries,
-                type_val: Arc::clone(type_val),
+                type_decl_id: *type_decl_id,
             };
             (new_dict, changed)
         }
@@ -184,7 +182,6 @@ pub fn apply_typevalue_renaming(
         Value::Variant {
             ctor,
             payload,
-            type_val,
             ..
         } => {
             match ctor.as_ref() {
@@ -244,7 +241,6 @@ pub fn apply_typevalue_renaming(
                 
                             };
                             Arc::new(Value::Variant {
-                                type_val: Arc::clone(type_val),
                                 type_decl_id: 0,
                                 ctor: Arc::clone(ctor),
                                 payload: Some(Arc::new(crate::value::Thunk::value(
