@@ -693,59 +693,6 @@ impl Clone for Builder {
     }
 }
 
-/// Bootstrap meta-sentinel used as the `type_val` of `unknown_type_val()`.
-///
-/// The unknown sentinel is an empty `Value::Dict`. Every Dict carries a `type_val: Arc<Value>`,
-/// so creating the dict requires a pre-existing TypeValue. The meta-sentinel is a frozen
-/// `Value::Builder` — the only Value variant that carries no `type_val` field — used solely
-/// to break the circularity at this one bootstrap site. It is never returned to user code
-/// and is never passed through `llt-repr` or `to_tinct`.
-fn meta_type_sentinel() -> Arc<Value> {
-    use std::sync::OnceLock;
-    static META: OnceLock<Arc<Value>> = OnceLock::new();
-    Arc::clone(META.get_or_init(|| {
-        let b = Builder::new();
-        // Freeze immediately — this Builder is used only as a circularity-breaker for the
-        // unknown_type_val() bootstrap sentinel. It is never mutated or read; frozen state
-        // prevents any future inserts. Use freeze() not finish(): finish() extracts the inner
-        // map (destructive), which is not the intent here.
-        b.freeze().expect("fresh builder must be freezable");
-        Arc::new(Value::Builder(Arc::new(b)))
-    }))
-}
-
-/// Sentinel TypeValue for values whose runtime type is not yet known.
-/// Returns a static Arc<Value> — the bootstrap TypeValue.Unknown sentinel.
-///
-/// Represented as an empty `Value::Dict` so that `llt-repr` formats it as `[]`,
-/// matching the design intent "TypeValue.Unknown = empty dict during bootstrap".
-/// The dict's own `type_val` is the `meta_type_sentinel()` (a frozen Builder), which
-/// breaks the circularity: Dict needs a type_val, Builder has none.
-///
-/// Used as the default `type_val` on every Value variant during bootstrap, before
-/// `repr:` declarations wire up real TypeValues.
-pub fn unknown_type_val() -> Arc<Value> {
-    use std::sync::OnceLock;
-    static UNKNOWN: OnceLock<Arc<Value>> = OnceLock::new();
-    Arc::clone(UNKNOWN.get_or_init(|| {
-        Arc::new(Value::Dict {
-            entries: indexmap::IndexMap::new(),
-            type_val: meta_type_sentinel(),
-        })
-    }))
-}
-
-/// Returns a static reference to the unknown type_val sentinel.
-///
-/// Same singleton as `unknown_type_val()` but returned as `&'static Arc<Value>` instead
-/// of a fresh `Arc` clone — useful in methods that need to return `&Arc<Value>` without
-/// allocating (e.g., `Value::type_val()` for the `Builder` and fallback arms).
-pub fn unknown_type_val_ref() -> &'static Arc<Value> {
-    use std::sync::OnceLock;
-    static UNKNOWN_REF: OnceLock<Arc<Value>> = OnceLock::new();
-    UNKNOWN_REF.get_or_init(unknown_type_val)
-}
-
 /// Extract the type constructor name from a qualified constructor name.
 ///
 /// Given a `ctor` field like `"Color.Red"`, returns `"Color"`.
@@ -1452,60 +1399,6 @@ pub fn bytes_val(data: &[u8]) -> Value {
 }
 
 impl Value {
-    /// Returns a stable numeric type ID for this value.
-    ///
-    /// Primitive Value variants (Int, String, Dict, etc.) return a constant ID from the
-    /// reserved range (1..=99). User-defined variant types return their `type_decl_id`
-    /// from the lowerer (starting at 100). `Annotated` delegates to the inner value.
-    ///
-    /// This enables O(1) type identity checks without string comparisons or TypeValue
-    /// materialization.
-    pub fn type_id(&self) -> u64 {
-        match self {
-            Value::Int { .. } => TYPE_ID_INT,
-            Value::U64 { .. } => TYPE_ID_U64,
-            Value::Float { .. } => TYPE_ID_FLOAT,
-            Value::String { .. } => TYPE_ID_STRING,
-            Value::Dict { .. } => TYPE_ID_DICT,
-            Value::Builder(_) => TYPE_ID_BUILDER,
-            Value::Function { .. } => TYPE_ID_FUNCTION,
-            Value::Builtin { .. } => TYPE_ID_BUILTIN,
-            Value::Proxy { .. } => TYPE_ID_PROXY,
-            Value::DirCap { .. } => TYPE_ID_DIRCAP,
-            Value::NetCap { .. } => TYPE_ID_NETCAP,
-            Value::File { .. } => TYPE_ID_FILE,
-            Value::RevocableDirCap { .. } => TYPE_ID_REVOCABLE_DIRCAP,
-            Value::Decimal { .. } => TYPE_ID_DECIMAL,
-            Value::BigInt { .. } => TYPE_ID_BIGINT,
-            Value::Bytes { .. } => TYPE_ID_BYTES,
-            Value::Uri { .. } => TYPE_ID_URI,
-            Value::Timestamp { .. } => TYPE_ID_TIMESTAMP,
-            Value::Duration { .. } => TYPE_ID_DURATION,
-            Value::ClockCap { .. } => TYPE_ID_CLOCKCAP,
-            Value::Timezone { .. } => TYPE_ID_TIMEZONE,
-            Value::QuicSession { .. } => TYPE_ID_QUIC_SESSION,
-            Value::Http2Session { .. } => TYPE_ID_HTTP2_SESSION,
-            Value::Http3Session { .. } => TYPE_ID_HTTP3_SESSION,
-            Value::QuicDatagramHandle { .. } => TYPE_ID_QUIC_DATAGRAM_HANDLE,
-            Value::Program { .. } => TYPE_ID_PROGRAM,
-            Value::Document { .. } => TYPE_ID_DOCUMENT,
-            Value::Expression { .. } => TYPE_ID_EXPRESSION,
-            Value::Task { .. } => TYPE_ID_TASK,
-            Value::Channel { .. } => TYPE_ID_CHANNEL,
-            Value::BroadcastChannel { .. } => TYPE_ID_BROADCAST_CHANNEL,
-            Value::OneshotSender { .. } => TYPE_ID_ONESHOT_SENDER,
-            Value::OneshotReceiver { .. } => TYPE_ID_ONESHOT_RECEIVER,
-            Value::Context { .. } => TYPE_ID_CONTEXT,
-            Value::ReactiveCell { .. } => TYPE_ID_REACTIVE_CELL,
-            Value::Arena { .. } => TYPE_ID_ARENA,
-            Value::TypeContext { .. } => TYPE_ID_TYPE_CONTEXT,
-            Value::CoreDocument { .. } => TYPE_ID_CORE_DOCUMENT,
-            Value::Scope { .. } => TYPE_ID_SCOPE,
-            Value::Variant { type_decl_id, .. } => *type_decl_id,
-            Value::Annotated { inner, .. } => inner.type_id(),
-        }
-    }
-
     /// Returns a human-readable type name for error messages and diagnostics.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -1613,54 +1506,6 @@ impl Value {
     }
 
     /// Uniform accessor for a value's runtime type identity.
-    /// Returns the type_val field for all variants that carry it.
-    /// Builder returns the unknown sentinel; Annotated delegates to inner.
-    pub fn type_val(&self) -> &Arc<Value> {
-        match self {
-            Value::Int { type_val, .. } => type_val,
-            Value::U64 { type_val, .. } => type_val,
-            Value::Float { type_val, .. } => type_val,
-            Value::String { type_val, .. } => type_val,
-            Value::Bytes { type_val, .. } => type_val,
-            Value::Dict { type_val, .. } => type_val,
-            Value::Function { type_val, .. } => type_val,
-            Value::Builtin { type_val, .. } => type_val,
-            Value::Proxy { type_val, .. } => type_val,
-            Value::Variant { type_val, .. } => type_val,
-            Value::Decimal { type_val, .. } => type_val,
-            Value::BigInt { type_val, .. } => type_val,
-            Value::Duration { type_val, .. } => type_val,
-            Value::Uri { type_val, .. } => type_val,
-            Value::Timestamp { type_val, .. } => type_val,
-            Value::Timezone { type_val, .. } => type_val,
-            Value::ClockCap { type_val, .. } => type_val,
-            Value::DirCap { type_val, .. } => type_val,
-            Value::NetCap { type_val, .. } => type_val,
-            Value::File { type_val, .. } => type_val,
-            Value::RevocableDirCap { type_val, .. } => type_val,
-            Value::QuicSession { type_val, .. } => type_val,
-            Value::Http2Session { type_val, .. } => type_val,
-            Value::Http3Session { type_val, .. } => type_val,
-            Value::QuicDatagramHandle { type_val, .. } => type_val,
-            Value::Task { type_val, .. } => type_val,
-            Value::Channel { type_val, .. } => type_val,
-            Value::BroadcastChannel { type_val, .. } => type_val,
-            Value::OneshotSender { type_val, .. } => type_val,
-            Value::OneshotReceiver { type_val, .. } => type_val,
-            Value::Context { type_val, .. } => type_val,
-            Value::ReactiveCell { type_val, .. } => type_val,
-            Value::Arena { type_val, .. } => type_val,
-            Value::TypeContext { type_val, .. } => type_val,
-            Value::Program { type_val, .. } => type_val,
-            Value::Document { type_val, .. } => type_val,
-            Value::Expression { type_val, .. } => type_val,
-            Value::CoreDocument { type_val, .. } => type_val,
-            Value::Scope { type_val, .. } => type_val,
-            // Exceptions:
-            Value::Builder(_) => unknown_type_val_ref(),
-            Value::Annotated { inner, .. } => inner.type_val(),
-        }
-    }
 }
 
 impl fmt::Debug for Value {
