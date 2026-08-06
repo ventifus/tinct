@@ -269,7 +269,7 @@ pub(crate) fn builtin_await(
                     &mut *guard,
                     crate::value::TaskState::Done(Ok(Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
@@ -411,11 +411,10 @@ pub(crate) fn builtin_send(
                     }
                 }
 
-                // Return null (empty dict)
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -424,22 +423,17 @@ pub(crate) fn builtin_send(
                 inner: channel_inner,
                 ..
             } => {
-                // Materialize the value to send
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
-
-                // Send to all subscribers. broadcast::send doesn't block.
                 channel_inner.sender.send(value).map_err(|_| {
                     EvalError::user_error(
                         "broadcast channel closed (all receivers dropped)".to_string(),
                         call_span.clone(),
                     )
                 })?;
-
-                // Return null (empty dict)
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -448,10 +442,7 @@ pub(crate) fn builtin_send(
                 inner: sender_inner,
                 ..
             } => {
-                // Materialize the value to send
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
-
-                // Take the sender (single-use)
                 let mut tx_opt = sender_inner.sender.lock().await;
                 let tx = tx_opt.take().ok_or_else(|| {
                     EvalError::user_error(
@@ -459,20 +450,16 @@ pub(crate) fn builtin_send(
                         call_span.clone(),
                     )
                 })?;
-
-                // Send the value. oneshot::send is non-blocking.
                 tx.send(value).map_err(|_| {
                     EvalError::user_error(
                         "oneshot receiver dropped before send".to_string(),
                         call_span.clone(),
                     )
                 })?;
-
-                // Return null (empty dict)
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -824,7 +811,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Dict {
                                 entries: IndexMap::new(),
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -902,7 +889,7 @@ pub(crate) fn builtin_try_recv(
                         return ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         );
@@ -919,7 +906,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -931,7 +918,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -939,7 +926,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -951,7 +938,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -959,7 +946,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
