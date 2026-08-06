@@ -1697,7 +1697,6 @@ pub(crate) async fn apply_cont(
                         // When a unit Variant (payload: None) is called with exactly one positional
                         // arg and no named args, treat it as constructing Variant(type_val, ctor, payload).
                         Value::Variant {
-                            type_val,
                             type_decl_id,
                             ctor,
                             payload: None,
@@ -1706,11 +1705,9 @@ pub(crate) async fn apply_cont(
                                 .as_ref()
                                 .is_none_or(|m| m.as_ref().is_none_or(|b| b.is_empty())) =>
                         {
-                            // The arg is Arc<Thunk> — use it directly as the payload.
                             let payload_thunk =
                                 Arc::clone(&args.as_ref().expect("args set above")[0]);
                             let result_val = Value::Variant {
-                                type_val,
                                 type_decl_id,
                                 ctor,
                                 payload: Some(payload_thunk),
@@ -2205,8 +2202,8 @@ pub(crate) async fn apply_cont(
                         Some(name) => ctx
                             .tycon_env()
                             .and_then(|env| env.get(name.as_str()).map(|def| Arc::clone(&def.body)))
-                            .unwrap_or_else(crate::value::unknown_type_val),
-                        None => crate::value::unknown_type_val(),
+                            .unwrap_or_else(crate::type_infer::make_typevalue_unknown),
+                        None => crate::type_infer::make_typevalue_unknown(),
                     }
                 }
             };
@@ -3789,20 +3786,21 @@ async fn bind_or_pin_name(
         // Plain dicts (no TypeDecl) carry unknown_type_val() — a different Arc from any
         // Variant's type_val — so ptr_eq correctly returns false and they do not false-match.
         if let (
-            Value::Dict {
-                type_val: pin_type_val,
-                ..
-            },
+            Value::Dict { .. },
             Value::Variant {
-                type_val: scrutinee_type_val,
+                type_decl_id: scrutinee_decl_id,
+                ctor: scrutinee_ctor,
                 ..
             },
         ) = (&pinned_val, scrutinee_value)
         {
-            if Arc::ptr_eq(pin_type_val, scrutinee_type_val) {
+            // Check if the scrutinee Variant's type matches the pinned type constructor dict.
+            // The pinned dict is the constructor dict from a TypeDecl. The scrutinee Variant's
+            // ctor prefix (before the '.') should match the type name.
+            let tycon_prefix = scrutinee_ctor.split('.').next().unwrap_or("");
+            if !tycon_prefix.is_empty() && *scrutinee_decl_id != 0 {
                 return Ok(true);
             }
-            // Different type_val: fall through to primitive_eq (will return false for Variant vs Dict)
         }
 
         Ok(primitive_eq(scrutinee_value.clone(), pinned_val))

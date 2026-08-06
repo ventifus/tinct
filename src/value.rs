@@ -815,10 +815,11 @@ pub enum Value {
         end: usize,
 
     },
-    /// Ordered key-value map with lazy (thunked) values
+    /// Ordered key-value map with lazy (thunked) values.
+    /// `type_decl_id` is 0 for anonymous dicts; non-zero for typed dicts created by TypeDecl.
     Dict {
         entries: IndexMap<HashableValue, Arc<Thunk>>,
-
+        type_decl_id: u64,
     },
     /// Transient accumulator — no type_val. Consumed before type identity matters.
     ///
