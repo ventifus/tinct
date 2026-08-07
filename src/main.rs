@@ -1920,7 +1920,8 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // (B-663: without this, Dict → Op("Dict") from TyConDef wiring, causing incorrect
         // record-subtype errors when @Dict annotations are used).
         // Accumulated further by builtin-typecheck-doc calls during loading.
-        let (core_type_env, core_tycon_env, _) = tinct::build_builtin_core_envs().await;
+        let (core_type_env, core_tycon_env, core_type_name_to_id) =
+            tinct::build_builtin_core_envs().await;
         let core_ts_data = tinct::get_builtin_core_type_stage_scope().await;
         ctx.init_type_context(tinct::TypeContextData {
             inference_env: core_type_env,
@@ -1929,6 +1930,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             type_stage_fns: core_ts_data.fns,
             type_stage_type_vars: core_ts_data.type_vars,
             type_diagnostics: Vec::new(),
+            type_name_to_id: core_type_name_to_id,
         });
         ctx
     };

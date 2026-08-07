@@ -749,7 +749,7 @@ pub fn is_atom_subtype(
             match sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
                 Some(def) => {
                     if let Some(ref builtin_disc) = def.builtin_type {
-                        crate::value::type_id_for_name(builtin_disc) == Some(sub_id)
+                        ctx.type_name_to_id.get(builtin_disc.as_str()).copied() == Some(sub_id)
                     } else if !def.constructors.is_empty() {
                         false
                     } else {
@@ -1826,14 +1826,14 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
                         .get(&bi)
                         .and_then(|n| ctx.tycon_env.get(n.as_str()))
                         .and_then(|def| def.builtin_type.as_ref())
-                        .and_then(|disc| crate::value::type_id_for_name(disc))
+                        .and_then(|disc| ctx.type_name_to_id.get(disc.as_str()).copied())
                         == Some(ai);
                     let b_aliases_a = ctx
                         .type_display_names
                         .get(&ai)
                         .and_then(|n| ctx.tycon_env.get(n.as_str()))
                         .and_then(|def| def.builtin_type.as_ref())
-                        .and_then(|disc| crate::value::type_id_for_name(disc))
+                        .and_then(|disc| ctx.type_name_to_id.get(disc.as_str()).copied())
                         == Some(bi);
                     !a_aliases_b && !b_aliases_a
                 }
@@ -2402,7 +2402,7 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
             let sup_name = ctx.type_display_names.get(&pi);
             if let Some(def) = sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
                 if let Some(ref builtin_disc) = def.builtin_type {
-                    return crate::value::type_id_for_name(builtin_disc) == Some(si);
+                    return ctx.type_name_to_id.get(builtin_disc.as_str()).copied() == Some(si);
                 }
                 if !def.constructors.is_empty() {
                     return false;
@@ -2413,7 +2413,7 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
             let sub_name = ctx.type_display_names.get(&si);
             if let Some(def) = sub_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
                 if let Some(ref builtin_disc) = def.builtin_type {
-                    if crate::value::type_id_for_name(builtin_disc) == Some(pi) {
+                    if ctx.type_name_to_id.get(builtin_disc.as_str()).copied() == Some(pi) {
                         return true;
                     }
                 }

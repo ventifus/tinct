@@ -35,6 +35,7 @@ pub(crate) async fn call_strict_resolver(
     resolver_val: Value,
     args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> crate::error::EvalResult<Option<Arc<Value>>> {
     // Leaf value (TypeNode Variant): convert to TypeValue directly without calling.
     if let Some(tv) = typenode_leaf_to_typevalue(&resolver_val) {
@@ -101,7 +102,13 @@ pub(crate) async fn call_strict_resolver(
     let result_val = crate::eval::materialize(&body_thunk, None, eval_ctx).await?;
 
     // The result is already a TypeValue — typenode_value_to_type returns Arc<Value> TypeValue.
-    crate::typecheck::typecheck_annot::typenode_value_to_type(&result_val, eval_ctx, &[]).await
+    crate::typecheck::typecheck_annot::typenode_value_to_type(
+        &result_val,
+        eval_ctx,
+        &[],
+        type_name_to_id,
+    )
+    .await
 }
 
 /// Evaluate a resolver by Arc<Thunk> — materializes the thunk then delegates to `call_strict_resolver`.
@@ -114,9 +121,10 @@ pub(crate) async fn evaluate_resolver_with_thunk(
     thunk: Arc<crate::value::Thunk>,
     args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> crate::error::EvalResult<Option<Arc<Value>>> {
     let resolver_val = crate::eval::materialize(&thunk, None, eval_ctx).await?;
-    call_strict_resolver(resolver_val, args, eval_ctx).await
+    call_strict_resolver(resolver_val, args, eval_ctx, type_name_to_id).await
 }
 
 /// Create a TypeValue.App { op: TypeValue, arg: TypeValue } — type constructor application.

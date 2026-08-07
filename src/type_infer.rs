@@ -1494,6 +1494,11 @@ pub struct InferenceContext {
     /// - **Non-injective F**: `F(a) == F(b)` does not imply `a == b`. Args are pushed to
     ///   `resolver_deferred` instead, where they are retried once both sides are ground.
     pub non_injective_resolvers: HashSet<String>,
+    /// Maps type name → numeric type_decl_id for nominal types.
+    /// Derived from the type-stage scope; passed through from InferState.
+    /// Used by BAS subtyping to resolve builtin_type discriminants to type IDs
+    /// without hardcoding prelude names in Rust.
+    pub type_name_to_id: HashMap<String, u64>,
 }
 
 impl InferenceContext {
@@ -1512,6 +1517,7 @@ impl InferenceContext {
             row_lower_bounds: HashMap::new(),
             protected_vars: HashSet::new(),
             non_injective_resolvers: HashSet::new(),
+            type_name_to_id: HashMap::new(),
         }
     }
 
@@ -1533,6 +1539,7 @@ impl InferenceContext {
             row_lower_bounds: HashMap::new(),
             protected_vars: HashSet::new(),
             non_injective_resolvers: HashSet::new(),
+            type_name_to_id: HashMap::new(),
         }
     }
 
@@ -1547,6 +1554,7 @@ impl InferenceContext {
         levels: HashMap<String, u32>,
         current_level: u32,
         tycon_env: HashMap<String, Arc<crate::type_def::TyConDef>>,
+        type_name_to_id: HashMap<String, u64>,
     ) -> Self {
         Self {
             current_level,
@@ -1561,6 +1569,7 @@ impl InferenceContext {
             row_lower_bounds: HashMap::new(),
             protected_vars: HashSet::new(),
             non_injective_resolvers: HashSet::new(),
+            type_name_to_id,
         }
     }
 

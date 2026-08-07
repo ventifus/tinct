@@ -157,6 +157,10 @@ pub async fn typecheck_program_bootstrap(
             .entry(*id)
             .or_insert_with(|| name.clone());
     }
+    // Sync type_name_to_id into the embedded InferenceContext so that BAS subtyping
+    // (called from type_unify via state.ctx) can resolve builtin_type discriminants.
+    state.ctx.type_name_to_id = state.type_name_to_id.clone();
+
     // Seed the resolver from the full root_group when an eval context is available,
     // so all builtin slots match the runtime. Falls back to core_builtins() only when
     // no eval context is provided (type-only paths without an evaluator).
@@ -218,7 +222,6 @@ pub async fn typecheck_program_bootstrap(
                     .type_name_to_id
                     .get(name.as_str())
                     .copied()
-                    .or_else(|| crate::value::type_id_for_name(name))
                     .unwrap_or(0),
             );
             let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
@@ -243,7 +246,6 @@ pub async fn typecheck_program_bootstrap(
                     .type_name_to_id
                     .get(name.as_str())
                     .copied()
-                    .or_else(|| crate::value::type_id_for_name(name))
                     .unwrap_or(0),
             );
             let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
@@ -421,7 +423,6 @@ fn merge_env_schemes_into_env(
                             .type_name_to_id
                             .get(name.as_str())
                             .copied()
-                            .or_else(|| crate::value::type_id_for_name(name))
                             .unwrap_or(0),
                     )
                 });
@@ -1255,6 +1256,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                                     state.ctx.levels.clone(),
                                     state.ctx.current_level,
                                     state.ctx.tycon_env.clone(),
+                                    state.type_name_to_id.clone(),
                                 );
                                 let mut validation_constraints = Vec::new();
 

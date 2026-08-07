@@ -474,6 +474,10 @@ pub struct TypeContextData {
     /// Type diagnostics (errors + warnings + info) from the most recent typecheck pass.
     /// Currently stored for observability; not surfaced to tinct code yet.
     pub type_diagnostics: Vec<crate::error::Diagnostic>,
+    /// Maps type name → numeric type_decl_id for nominal types.
+    /// Derived from the type-stage scope; propagated from typecheck_program_bootstrap.
+    /// Used to seed InferState.type_name_to_id for subsequent typecheck calls.
+    pub type_name_to_id: std::collections::HashMap<String, u64>,
 }
 
 /// Immutable session configuration shared across evaluation.
@@ -1417,8 +1421,21 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
         .iter()
         .map(|(name, def)| (def.type_decl_id, name.clone()))
         .collect();
+    let mut name_to_id: std::collections::HashMap<String, u64> = display_names
+        .iter()
+        .map(|(id, name)| (name.clone(), *id))
+        .collect();
+    // Also populate from TypeContext if available (has the full type-stage scope mappings).
+    if let Some(tc_guard) = ctx.type_context.lock().ok() {
+        if let Some(ref tc) = *tc_guard {
+            for (name, id) in &tc.type_name_to_id {
+                name_to_id.entry(name.clone()).or_insert(*id);
+            }
+        }
+    }
     let mut inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
     inference_ctx.type_display_names = display_names;
+    inference_ctx.type_name_to_id = name_to_id;
     let sub_id = match value {
         Value::Int { .. } => crate::value::TYPE_ID_INT,
         Value::U64 { .. } => crate::value::TYPE_ID_U64,
@@ -4283,6 +4300,20 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
+        // Seed type_name_to_id so BAS builtin_type dispatch can resolve "Int" → TYPE_ID_INT.
+        let mut tni = std::collections::HashMap::new();
+        tni.insert("Int".to_string(), crate::value::TYPE_ID_INT);
+        tni.insert("Float".to_string(), crate::value::TYPE_ID_FLOAT);
+        tni.insert("String".to_string(), crate::value::TYPE_ID_STRING);
+        ctx.init_type_context(TypeContextData {
+            inference_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+            tycon_env: std::collections::HashMap::new(),
+            type_stage_scope: vec![],
+            type_stage_fns: std::collections::HashMap::new(),
+            type_stage_type_vars: std::collections::HashMap::new(),
+            type_diagnostics: vec![],
+            type_name_to_id: tni,
+        });
         let tycon = make_typevalue_nominal(TEST_ID_MY_INT);
         assert!(value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx));
         assert!(!value_matches_type(&Value::Float { n: 1.0 }, &tycon, &ctx));
@@ -4400,6 +4431,18 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
+        let mut tni = std::collections::HashMap::new();
+        tni.insert("Int".to_string(), crate::value::TYPE_ID_INT);
+        tni.insert("String".to_string(), crate::value::TYPE_ID_STRING);
+        ctx.init_type_context(TypeContextData {
+            inference_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+            tycon_env: std::collections::HashMap::new(),
+            type_stage_scope: vec![],
+            type_stage_fns: std::collections::HashMap::new(),
+            type_stage_type_vars: std::collections::HashMap::new(),
+            type_diagnostics: vec![],
+            type_name_to_id: tni,
+        });
         // App(Nominal(MY_SEQ), Nominal(INT)) — arg is ignored; dispatch on String builtin_type.
         let app_type = make_type_app(
             make_typevalue_nominal(TEST_ID_MY_SEQ),

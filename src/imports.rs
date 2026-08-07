@@ -90,6 +90,7 @@ pub(crate) async fn classify_type_stage_entry(
     val: &crate::value::Value,
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
     scope_so_far: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> crate::error::EvalResult<
     Option<(
         crate::type_infer::TypeValue,
@@ -102,9 +103,13 @@ pub(crate) async fn classify_type_stage_entry(
     // typenode_value_to_type returns Ok(None) for non-TypeNode variants, so calling it
     // unconditionally is correct — no Rust code here needs to know the TypeNode tycon name.
     if matches!(val, crate::value::Value::Variant { .. }) {
-        if let Some(ty) =
-            crate::typecheck::typecheck_annot::typenode_value_to_type(val, ctx, scope_so_far)
-                .await?
+        if let Some(ty) = crate::typecheck::typecheck_annot::typenode_value_to_type(
+            val,
+            ctx,
+            scope_so_far,
+            type_name_to_id,
+        )
+        .await?
         {
             return Ok(Some((ty, None, None)));
         }
@@ -117,13 +122,13 @@ pub(crate) async fn classify_type_stage_entry(
         crate::type_normalize::typenode_typevar_kind(val).map_err(|e| Box::new((*e).clone()))?
     {
         let tv = crate::type_infer::make_typevalue_nominal(
-            crate::value::type_id_for_name(name).unwrap_or(0),
+            type_name_to_id.get(name).copied().unwrap_or(0),
         );
         return Ok(Some((tv, None, Some(kind))));
     }
     if matches!(val, crate::value::Value::Function { .. }) {
         let tv = crate::type_infer::make_typevalue_nominal(
-            crate::value::type_id_for_name(name).unwrap_or(0),
+            type_name_to_id.get(name).copied().unwrap_or(0),
         );
         return Ok(Some((tv, Some(std::sync::Arc::clone(thunk)), None)));
     }
@@ -265,12 +270,22 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                         // prelude.llt.  A future reordering of those declarations could
                         // silently drop entries that can't resolve their references.
                         let scope_so_far = vec![scope_map.clone()];
+                        // Derive a partial type_name_to_id from scope entries processed so far.
+                        let partial_name_to_id: std::collections::HashMap<String, u64> = scope_map
+                            .iter()
+                            .filter_map(|(n, tv)| {
+                                crate::type_infer::typevalue_nominal_id(tv)
+                                    .filter(|id| *id > 0)
+                                    .map(|id| (n.clone(), id))
+                            })
+                            .collect();
                         let classified = classify_type_stage_entry(
                             name,
                             thunk,
                             &val,
                             &eval_ctx_with_frames,
                             &scope_so_far,
+                            &partial_name_to_id,
                         )
                         .await?;
                         if let Some((tv, opt_thunk, opt_kind)) = classified {
@@ -302,6 +317,20 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         }
     };
 
+    // Derive a partial type_name_to_id from the type-stage scope entries.
+    // Each TypeValue.Nominal carries its type_decl_id; extract the mapping so that
+    // Function/TypeVar entries below can look up their ID without hardcoding prelude names.
+    let scope_type_name_to_id: std::collections::HashMap<String, u64> = type_stage_data
+        .scope
+        .iter()
+        .flat_map(|m| m.iter())
+        .filter_map(|(name, tv)| {
+            crate::type_infer::typevalue_nominal_id(tv)
+                .filter(|id| *id > 0)
+                .map(|id| (name.clone(), id))
+        })
+        .collect();
+
     // Insert type-stage bindings into parent_env by name.
     // This enables name-based lookup (get_scheme, resolve_type_head, etc.) from any
     // child env frame. Slot-based insertion (for get_scheme_at) happens in
@@ -321,7 +350,10 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                 slot,
                 name.clone(),
                 crate::type_infer::make_typevalue_nominal(
-                    crate::value::type_id_for_name(name).unwrap_or(0),
+                    scope_type_name_to_id
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or(0),
                 ),
                 None,
             );
@@ -333,7 +365,10 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
                 slot,
                 name.clone(),
                 crate::type_infer::make_typevalue_nominal(
-                    crate::value::type_id_for_name(name).unwrap_or(0),
+                    scope_type_name_to_id
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or(0),
                 ),
                 None,
             );
@@ -399,7 +434,10 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     for discriminant in opaque_tycon_names {
         tycon_env.entry(discriminant.clone()).or_insert_with(|| {
             std::sync::Arc::new(TyConDef {
-                type_decl_id: crate::value::type_id_for_name(&discriminant).unwrap_or(0),
+                type_decl_id: type_name_to_id
+                    .get(discriminant.as_str())
+                    .copied()
+                    .unwrap_or(0),
                 params: vec![],
                 body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],

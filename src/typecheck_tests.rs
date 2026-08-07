@@ -1223,11 +1223,15 @@ async fn test_typenode_int_literal_roundtrip() {
 
     // Roundtrip via typenode_value_to_type.
     let ctx = crate::eval::EvalContext::new();
-    let roundtripped =
-        crate::typecheck::typecheck_annot::typenode_value_to_type(int_lit_tv.as_ref(), &ctx, &[])
-            .await
-            .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeValue.IntLit");
+    let roundtripped = crate::typecheck::typecheck_annot::typenode_value_to_type(
+        int_lit_tv.as_ref(),
+        &ctx,
+        &[],
+        &std::collections::HashMap::new(),
+    )
+    .await
+    .expect("typenode_value_to_type must not error")
+    .expect("typenode_value_to_type must return Some for TypeValue.IntLit");
     assert!(
         is_int_lit(&roundtripped, 42),
         "TypeValue.IntLit(42) must roundtrip through typenode_value_to_type"
@@ -1245,11 +1249,15 @@ async fn test_typenode_string_literal_roundtrip() {
     );
 
     let ctx = crate::eval::EvalContext::new();
-    let roundtripped =
-        crate::typecheck::typecheck_annot::typenode_value_to_type(str_lit_tv.as_ref(), &ctx, &[])
-            .await
-            .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeValue.StrLit");
+    let roundtripped = crate::typecheck::typecheck_annot::typenode_value_to_type(
+        str_lit_tv.as_ref(),
+        &ctx,
+        &[],
+        &std::collections::HashMap::new(),
+    )
+    .await
+    .expect("typenode_value_to_type must not error")
+    .expect("typenode_value_to_type must return Some for TypeValue.StrLit");
     assert!(
         is_str_lit(&roundtripped, "hello"),
         "TypeValue.StrLit must roundtrip through typenode_value_to_type"
@@ -1267,11 +1275,15 @@ async fn test_typenode_float_literal_roundtrip() {
     );
 
     let ctx = crate::eval::EvalContext::new();
-    let roundtripped =
-        crate::typecheck::typecheck_annot::typenode_value_to_type(float_lit_tv.as_ref(), &ctx, &[])
-            .await
-            .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeValue.FloatLit");
+    let roundtripped = crate::typecheck::typecheck_annot::typenode_value_to_type(
+        float_lit_tv.as_ref(),
+        &ctx,
+        &[],
+        &std::collections::HashMap::new(),
+    )
+    .await
+    .expect("typenode_value_to_type must not error")
+    .expect("typenode_value_to_type must return Some for TypeValue.FloatLit");
     assert!(
         is_float_lit(&roundtripped, 3.14),
         "TypeValue.FloatLit must roundtrip through typenode_value_to_type"
@@ -1315,6 +1327,7 @@ async fn test_typenode_float_literal_arm_conversion() {
         &typenode_float_literal,
         &ctx,
         &[],
+        &std::collections::HashMap::new(),
     )
     .await
     .expect("typenode_value_to_type must not error for TypeNode.FloatLiteral")
@@ -1349,11 +1362,15 @@ async fn test_typenode_dict_type_produces_variant() {
 
     // Roundtrip via typenode_value_to_type.
     let ctx = crate::eval::EvalContext::new();
-    let roundtripped =
-        crate::typecheck::typecheck_annot::typenode_value_to_type(record_tv.as_ref(), &ctx, &[])
-            .await
-            .expect("typenode_value_to_type must not error")
-            .expect("typenode_value_to_type must return Some for TypeValue.Record");
+    let roundtripped = crate::typecheck::typecheck_annot::typenode_value_to_type(
+        record_tv.as_ref(),
+        &ctx,
+        &[],
+        &std::collections::HashMap::new(),
+    )
+    .await
+    .expect("typenode_value_to_type must not error")
+    .expect("typenode_value_to_type must return Some for TypeValue.Record");
     assert!(
         crate::typecheck::extract_record_fields_pub(&roundtripped).is_some(),
         "TypeValue.Record must roundtrip through typenode_value_to_type back to TypeValue.Record"

@@ -1570,7 +1570,14 @@ async fn resolve_type_head(
             ));
         }
         if let Some(eval_ctx) = &state.eval_ctx {
-            match crate::type_normalize::evaluate_resolver_with_thunk(thunk, args, eval_ctx).await {
+            match crate::type_normalize::evaluate_resolver_with_thunk(
+                thunk,
+                args,
+                eval_ctx,
+                &state.type_name_to_id,
+            )
+            .await
+            {
                 Ok(Some(ty)) => return Ok(ty),
                 Ok(None) => {
                     // Resolver value not applicable — fall through.
@@ -3113,6 +3120,7 @@ async fn collect_typenode_seq(
     dict_val: Value,
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> crate::error::EvalResult<Option<Vec<TypeValue>>> {
     // Value::Annotated is removed; no unwrapping needed.
     let dict = match dict_val {
@@ -3126,7 +3134,14 @@ async fn collect_typenode_seq(
         match dict.get(&HashableValue::Int(i)) {
             Some(thunk) => {
                 let val = crate::eval::materialize(thunk, None, ctx).await?;
-                match Box::pin(typenode_value_to_type(&val, ctx, type_stage_scope)).await? {
+                match Box::pin(typenode_value_to_type(
+                    &val,
+                    ctx,
+                    type_stage_scope,
+                    type_name_to_id,
+                ))
+                .await?
+                {
                     Some(ty) => {
                         result.push(ty);
                         i += 1;
@@ -3151,6 +3166,7 @@ pub(crate) async fn typenode_value_to_type(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> crate::error::EvalResult<Option<TypeValue>> {
     Box::pin(async move {
         match val {
@@ -3217,11 +3233,17 @@ pub(crate) async fn typenode_value_to_type(
                             Some(v) => v.clone(),
                             None => return Ok(None),
                         };
-                        let members =
-                            match collect_typenode_seq(types_val, ctx, type_stage_scope).await? {
-                                Some(v) => v,
-                                None => return Ok(None),
-                            };
+                        let members = match collect_typenode_seq(
+                            types_val,
+                            ctx,
+                            type_stage_scope,
+                            type_name_to_id,
+                        )
+                        .await?
+                        {
+                            Some(v) => v,
+                            None => return Ok(None),
+                        };
                         if members.is_empty() {
                             return Ok(None); // Empty union is ill-formed — fall back to Unknown.
                         }
@@ -3239,11 +3261,17 @@ pub(crate) async fn typenode_value_to_type(
                             Some(v) => v.clone(),
                             None => return Ok(None),
                         };
-                        let members =
-                            match collect_typenode_seq(types_val, ctx, type_stage_scope).await? {
-                                Some(v) => v,
-                                None => return Ok(None),
-                            };
+                        let members = match collect_typenode_seq(
+                            types_val,
+                            ctx,
+                            type_stage_scope,
+                            type_name_to_id,
+                        )
+                        .await?
+                        {
+                            Some(v) => v,
+                            None => return Ok(None),
+                        };
                         if members.is_empty() {
                             return Ok(None); // Empty intersection is ill-formed — fall back to Unknown.
                         }
@@ -3265,6 +3293,7 @@ pub(crate) async fn typenode_value_to_type(
                             &inner_val,
                             ctx,
                             type_stage_scope,
+                            type_name_to_id,
                         )
                         .await?
                         {
@@ -3307,13 +3336,17 @@ pub(crate) async fn typenode_value_to_type(
                                 for (key, thunk) in dict {
                                     if let HashableValue::Str(k) = key {
                                         let v = crate::eval::materialize(thunk, None, ctx).await?;
-                                        let ty =
-                                            match typenode_value_to_type(&v, ctx, type_stage_scope)
-                                                .await?
-                                            {
-                                                Some(t) => t,
-                                                None => return Ok(None),
-                                            };
+                                        let ty = match typenode_value_to_type(
+                                            &v,
+                                            ctx,
+                                            type_stage_scope,
+                                            type_name_to_id,
+                                        )
+                                        .await?
+                                        {
+                                            Some(t) => t,
+                                            None => return Ok(None),
+                                        };
                                         out.insert(k.to_string(), ty);
                                     }
                                 }
@@ -3326,36 +3359,46 @@ pub(crate) async fn typenode_value_to_type(
                         // Optional key-type: and value-type: fields enable typed-key map encoding.
                         // These are the protocol-defined field names per builtin_core.llt:33.
                         // key-type is resolved and stored in the RowTail.Uniform payload.
-                        let tail = if let Some(kt_val) =
-                            payload_fields.get(TN_FIELD_KEY_TYPE).cloned()
-                        {
-                            // key-type: present — resolve it to a TypeValue.
-                            let key_ty =
-                                match typenode_value_to_type(&kt_val, ctx, type_stage_scope).await?
+                        let tail =
+                            if let Some(kt_val) = payload_fields.get(TN_FIELD_KEY_TYPE).cloned() {
+                                // key-type: present — resolve it to a TypeValue.
+                                let key_ty = match typenode_value_to_type(
+                                    &kt_val,
+                                    ctx,
+                                    type_stage_scope,
+                                    type_name_to_id,
+                                )
+                                .await?
                                 {
                                     Some(t) => t,
                                     None => return Ok(None),
                                 };
-                            // value-type: defaults to Top when absent.
-                            let value_ty = if let Some(vt_val) =
-                                payload_fields.get(TN_FIELD_VALUE_TYPE).cloned()
-                            {
-                                match typenode_value_to_type(&vt_val, ctx, type_stage_scope).await?
+                                // value-type: defaults to Top when absent.
+                                let value_ty = if let Some(vt_val) =
+                                    payload_fields.get(TN_FIELD_VALUE_TYPE).cloned()
                                 {
-                                    Some(t) => t,
-                                    None => return Ok(None),
-                                }
+                                    match typenode_value_to_type(
+                                        &vt_val,
+                                        ctx,
+                                        type_stage_scope,
+                                        type_name_to_id,
+                                    )
+                                    .await?
+                                    {
+                                        Some(t) => t,
+                                        None => return Ok(None),
+                                    }
+                                } else {
+                                    make_typevalue_top()
+                                };
+                                Some(make_rowtail_uniform_with_key_type(value_ty, Some(key_ty)))
+                            } else if matches!(&open_val, Value::Int { n, .. } if *n != 0) {
+                                // Open record: any field value is allowed — RowTail.Uniform with Top.
+                                Some(make_rowtail_uniform(make_typevalue_top()))
                             } else {
-                                make_typevalue_top()
+                                // Closed record
+                                None
                             };
-                            Some(make_rowtail_uniform_with_key_type(value_ty, Some(key_ty)))
-                        } else if matches!(&open_val, Value::Int { n, .. } if *n != 0) {
-                            // Open record: any field value is allowed — RowTail.Uniform with Top.
-                            Some(make_rowtail_uniform(make_typevalue_top()))
-                        } else {
-                            // Closed record
-                            None
-                        };
 
                         Ok(Some(make_typevalue_record(record_fields, tail)))
                     }
@@ -3377,17 +3420,28 @@ pub(crate) async fn typenode_value_to_type(
                             None => return Ok(None),
                         };
 
-                        let param_types =
-                            match collect_typenode_seq(params_val, ctx, type_stage_scope).await? {
-                                Some(v) => v,
-                                None => return Ok(None),
-                            };
-                        let ret_type =
-                            match typenode_value_to_type(&result_val, ctx, type_stage_scope).await?
-                            {
-                                Some(t) => t,
-                                None => return Ok(None),
-                            };
+                        let param_types = match collect_typenode_seq(
+                            params_val,
+                            ctx,
+                            type_stage_scope,
+                            type_name_to_id,
+                        )
+                        .await?
+                        {
+                            Some(v) => v,
+                            None => return Ok(None),
+                        };
+                        let ret_type = match typenode_value_to_type(
+                            &result_val,
+                            ctx,
+                            type_stage_scope,
+                            type_name_to_id,
+                        )
+                        .await?
+                        {
+                            Some(t) => t,
+                            None => return Ok(None),
+                        };
 
                         let param_types_named: Vec<(Option<String>, TypeValue)> =
                             param_types.into_iter().map(|ty| (None, ty)).collect();
@@ -3424,7 +3478,7 @@ pub(crate) async fn typenode_value_to_type(
                         // This is correct for types declared in the runtime section (e.g., Color,
                         // BuilderHandle) that are not yet in the type-stage scope chain.
                         Ok(Some(make_typevalue_nominal(
-                            crate::value::type_id_for_name(&name).unwrap_or(0),
+                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
                         )))
                     }
 
@@ -3445,16 +3499,28 @@ pub(crate) async fn typenode_value_to_type(
                             None => return Ok(None),
                         };
 
-                        let ctor_type =
-                            match typenode_value_to_type(&ctor_val, ctx, type_stage_scope).await? {
-                                Some(t) => t,
-                                None => return Ok(None),
-                            };
-                        let arg_types =
-                            match collect_typenode_seq(args_val, ctx, type_stage_scope).await? {
-                                Some(v) => v,
-                                None => return Ok(None),
-                            };
+                        let ctor_type = match typenode_value_to_type(
+                            &ctor_val,
+                            ctx,
+                            type_stage_scope,
+                            type_name_to_id,
+                        )
+                        .await?
+                        {
+                            Some(t) => t,
+                            None => return Ok(None),
+                        };
+                        let arg_types = match collect_typenode_seq(
+                            args_val,
+                            ctx,
+                            type_stage_scope,
+                            type_name_to_id,
+                        )
+                        .await?
+                        {
+                            Some(v) => v,
+                            None => return Ok(None),
+                        };
 
                         if arg_types.is_empty() {
                             // Zero-arg application — return the constructor itself.
@@ -3517,6 +3583,7 @@ pub(crate) async fn typenode_value_to_type(
                             &body_val,
                             ctx,
                             type_stage_scope,
+                            type_name_to_id,
                         ))
                         .await?
                         {
@@ -3672,7 +3739,7 @@ pub(crate) async fn typenode_value_to_type(
                 if all_match {
                     match prefix {
                         Some(name) => Ok(Some(make_typevalue_nominal(
-                            crate::value::type_id_for_name(&name).unwrap_or(0),
+                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
                         ))),
                         None => {
                             // all_match = true but no Variant entries — all entries are
@@ -3832,7 +3899,7 @@ pub(crate) async fn as_type_dispatch(
     // we return Ok(None) rather than attempting further dispatch.
     // Pass empty type_stage_scope: as_type_dispatch is itself the dispatch path for
     // unrecognised TypeConstructor names; recursing into scope lookup here would loop.
-    typenode_value_to_type(&result_val, &eval_ctx, &[]).await
+    typenode_value_to_type(&result_val, &eval_ctx, &[], &state.type_name_to_id).await
 }
 
 /// Evaluate a type-stage `SurfaceNode` annotation expression and convert the result to
@@ -3948,15 +4015,20 @@ pub(crate) async fn eval_type_stage_expr(
     // as_type_dispatch to normalise the value through the prelude's `as-typenode`
     // function before giving up.
     // Propagate eval errors from typenode_value_to_type and as_type_dispatch as Diagnostics.
-    match typenode_value_to_type(&typenode_val, &ctx, &state.type_stage_scope)
-        .await
-        .map_err(|e| {
-            Diagnostic::error(
-                "type-error",
-                format!("type-stage field materialization failed: {e}"),
-                node_span.clone(),
-            )
-        })? {
+    match typenode_value_to_type(
+        &typenode_val,
+        &ctx,
+        &state.type_stage_scope,
+        &state.type_name_to_id,
+    )
+    .await
+    .map_err(|e| {
+        Diagnostic::error(
+            "type-error",
+            format!("type-stage field materialization failed: {e}"),
+            node_span.clone(),
+        )
+    })? {
         Some(ty) => return Ok(ty),
         None => {}
     }

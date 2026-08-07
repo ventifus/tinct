@@ -2468,6 +2468,20 @@ pub(crate) fn builtin_typecheck_doc(
             state.type_stage_scope = guard.type_stage_scope.clone();
             state.type_stage_fns = guard.type_stage_fns.clone();
             state.type_stage_type_vars = guard.type_stage_type_vars.clone();
+            state.type_name_to_id = guard.type_name_to_id.clone();
+            // Derive type_name_to_id from the type-stage scope if not already populated.
+            // This covers the first typecheck after a fresh TypeContext is created,
+            // where guard.type_name_to_id is empty but the scope carries nominal IDs.
+            for scope_map in &state.type_stage_scope {
+                for (name, tv) in scope_map {
+                    if let Some(id) = crate::type_infer::typevalue_nominal_id(tv) {
+                        if id > 0 {
+                            state.type_name_to_id.entry(name.clone()).or_insert(id);
+                        }
+                    }
+                }
+            }
+            state.ctx.type_name_to_id = state.type_name_to_id.clone();
             if state.type_stage_scope.is_empty() {
                 state
                     .type_stage_scope
@@ -2530,7 +2544,13 @@ pub(crate) fn builtin_typecheck_doc(
                 }
             }
             for (name, _thunk) in &state.type_stage_fns {
-                let tv = make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0));
+                let tv = make_typevalue_nominal(
+                    state
+                        .type_name_to_id
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or(0),
+                );
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                     state
                         .resolver_frames
@@ -2547,7 +2567,13 @@ pub(crate) fn builtin_typecheck_doc(
                 }
             }
             for (name, _kind) in &state.type_stage_type_vars {
-                let tv = make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0));
+                let tv = make_typevalue_nominal(
+                    state
+                        .type_name_to_id
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or(0),
+                );
                 let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                     state
                         .resolver_frames
@@ -2661,6 +2687,11 @@ pub(crate) fn builtin_typecheck_doc(
                         .entry(name.clone())
                         .or_insert_with(|| entry.clone());
                 }
+            }
+            // Write back type_name_to_id: merge new name→id mappings from typecheck
+            // into TypeContextData so subsequent typecheck calls see them.
+            for (name, id) in &state.type_name_to_id {
+                guard.type_name_to_id.entry(name.clone()).or_insert(*id);
             }
         }
 
@@ -2840,6 +2871,7 @@ pub(crate) fn builtin_make_type_ctx(
             type_stage_fns: type_stage_data.fns,
             type_stage_type_vars: type_stage_data.type_vars,
             type_diagnostics: Vec::new(),
+            type_name_to_id: std::collections::HashMap::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
         ctx.init_type_context(tc.clone());
@@ -2987,9 +3019,15 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         // Snapshot the existing resolved type_stage_scope so complex TypeNode variants
         // (TypeApplication, Union, Arrow, etc.) can be resolved by typenode_value_to_type,
         // which requires the scope chain for recursive conversion of child TypeNode values.
-        let existing_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>> = {
+        let (existing_scope, existing_name_to_id): (
+            Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
+            std::collections::HashMap<String, u64>,
+        ) = {
             let guard = tc_arc.lock().unwrap();
-            guard.type_stage_scope.clone()
+            (
+                guard.type_stage_scope.clone(),
+                guard.type_name_to_id.clone(),
+            )
         };
 
         // Materialize each thunk and classify into the three maps
@@ -3007,6 +3045,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                 &val,
                 &ctx,
                 &existing_scope,
+                &existing_name_to_id,
             )
             .await?
             {

@@ -39,7 +39,7 @@ use std::fmt;
 use crate::ast::{SurfaceExpression, SurfaceNode};
 use crate::type_tags::*;
 use crate::value::Value;
-#[allow(unused_imports)]
+#[cfg(test)]
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------

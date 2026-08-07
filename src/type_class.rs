@@ -594,6 +594,7 @@ pub(crate) async fn try_fd_improvement(
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     type_stage_fns: &std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
     diagnostics: &mut Vec<crate::error::Diagnostic>,
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> Vec<(Arc<Value>, Arc<Value>)> {
     if *fd_depth >= 32 {
         return vec![];
@@ -684,6 +685,7 @@ pub(crate) async fn try_fd_improvement(
                     resolver_thunk,
                     &tn_args,
                     eval_ctx,
+                    type_name_to_id,
                 )
                 .await
                 {

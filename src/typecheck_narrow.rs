@@ -123,6 +123,7 @@ pub(crate) enum Narrowing {
 pub(crate) fn extract_narrowings(
     cond: &Arc<SurfaceNode>,
     env: &Arc<RwLock<Env>>,
+    type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> Vec<Narrowing> {
     match &cond.expr {
         SurfaceExpression::Call {
@@ -143,10 +144,10 @@ pub(crate) fn extract_narrowings(
                             return vec![narrowing];
                         }
                         // Try type-of pattern: [= [type-of x] "TypeName"]
-                        if let Some(narrowing) = try_type_of(&args[0], &args[1]) {
+                        if let Some(narrowing) = try_type_of(&args[0], &args[1], type_name_to_id) {
                             return vec![narrowing];
                         }
-                        if let Some(narrowing) = try_type_of(&args[1], &args[0]) {
+                        if let Some(narrowing) = try_type_of(&args[1], &args[0], type_name_to_id) {
                             return vec![narrowing];
                         }
                     }
@@ -167,7 +168,7 @@ pub(crate) fn extract_narrowings(
                     "and" => {
                         let mut narrowings = Vec::new();
                         for arg in args {
-                            narrowings.extend(extract_narrowings(arg, env));
+                            narrowings.extend(extract_narrowings(arg, env, type_name_to_id));
                         }
                         return narrowings;
                     }
@@ -228,7 +229,11 @@ pub(crate) fn try_eq_literal(
 }
 
 /// Try to extract a type-of narrowing from `[= [type-of var] "TypeName"]`.
-pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> Option<Narrowing> {
+pub(crate) fn try_type_of(
+    left: &Arc<SurfaceNode>,
+    right: &Arc<SurfaceNode>,
+    type_name_to_id: &std::collections::HashMap<String, u64>,
+) -> Option<Narrowing> {
     // Left side must be [type-of var]
     if let SurfaceExpression::Call {
         func,
@@ -249,22 +254,12 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                             content: type_name, ..
                         } = &right.expr
                         {
-                            let tv = match type_name.as_str() {
-                                "Int" => Some(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
-                                "Float" => {
-                                    Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))
-                                }
-                                "String" => {
-                                    Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))
-                                }
-                                // Only the three primitive types above produce narrowing from
-                                // type-of. All other type names (including prelude-defined types
-                                // such as Bool and Seq) fall through to None — no narrowing —
-                                // so the variable retains its original type. Encoding prelude
-                                // names as explicit match arms would couple Rust to prelude
-                                // internals (Axiom 4), so the wildcard handles all remaining cases.
-                                _ => None,
-                            };
+                            // Look up the type name in the type_name_to_id map.
+                            // This handles all nominal types (Int, Float, String, and any
+                            // prelude-defined types) without hardcoding names in Rust.
+                            let tv = type_name_to_id
+                                .get(type_name.as_str())
+                                .map(|id| make_typevalue_nominal(*id));
                             return tv.map(|t| Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: t,

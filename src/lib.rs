@@ -272,12 +272,23 @@ pub async fn run_loader_pipeline(
                                 })?;
 
                             let scope_so_far = vec![scope_map.clone()];
+                            // Derive partial type_name_to_id from scope entries processed so far.
+                            let partial_name_to_id: std::collections::HashMap<String, u64> =
+                                scope_map
+                                    .iter()
+                                    .filter_map(|(n, tv)| {
+                                        crate::type_infer::typevalue_nominal_id(tv)
+                                            .filter(|id| *id > 0)
+                                            .map(|id| (n.clone(), id))
+                                    })
+                                    .collect();
                             let classified = crate::imports::classify_type_stage_entry(
                                 name,
                                 thunk,
                                 &val,
                                 &eval_ctx_with_frames,
                                 &scope_so_far,
+                                &partial_name_to_id,
                             )
                             .await
                             .map_err(|e| format!("type-stage classify '{}' failed: {}", name, e))?;
@@ -376,7 +387,7 @@ pub async fn run_loader_pipeline(
         }
         Arc::new(std::sync::RwLock::new(wrapper))
     };
-    let (loader_diagnostics, _loader_env, loader_tycon_env, _) =
+    let (loader_diagnostics, _loader_env, loader_tycon_env, loader_type_name_to_id) =
         typecheck::typecheck_program_bootstrap(
             &loader_program,
             builtin_env,
@@ -419,6 +430,7 @@ pub async fn run_loader_pipeline(
         type_stage_fns: builtin_core_ts_data.fns,
         type_stage_type_vars: builtin_core_ts_data.type_vars,
         type_diagnostics: Vec::new(),
+        type_name_to_id: loader_type_name_to_id,
     });
 
     // Evaluate the full init program. The resolver assigned slots based on the full

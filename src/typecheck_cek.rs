@@ -107,6 +107,7 @@ pub(crate) async fn run_fd_improvement_fixpoint(
             state.eval_ctx.clone(),
             &state.type_stage_fns,
             errors,
+            &state.type_name_to_id,
         )
         .await;
         if pairs.is_empty() {
@@ -884,7 +885,6 @@ async fn infer_step(
                         .type_name_to_id
                         .get(tycon.as_str())
                         .copied()
-                        .or_else(|| crate::value::type_id_for_name(tycon))
                         .unwrap_or(0),
                 )
             } else {
@@ -896,12 +896,7 @@ async fn infer_step(
             let tycon = tag.split('.').next().unwrap_or("");
             let tv = if state.tycon_env.contains_key(tycon) {
                 crate::type_infer::make_typevalue_nominal(
-                    state
-                        .type_name_to_id
-                        .get(tycon)
-                        .copied()
-                        .or_else(|| crate::value::type_id_for_name(tycon))
-                        .unwrap_or(0),
+                    state.type_name_to_id.get(tycon).copied().unwrap_or(0),
                 )
             } else {
                 make_typevalue_unknown()
@@ -987,6 +982,7 @@ async fn apply_cont(
                                 state.ctx.levels.clone(),
                                 state.ctx.current_level,
                                 state.tycon_env.clone(),
+                                state.type_name_to_id.clone(),
                             );
                             if !crate::bas::is_consistent_subtype(
                                 &body_resolved,
@@ -1015,6 +1011,7 @@ async fn apply_cont(
                                 state.ctx.levels.clone(),
                                 state.ctx.current_level,
                                 state.tycon_env.clone(),
+                                state.type_name_to_id.clone(),
                             );
                             if let Some(members) =
                                 crate::type_infer::typevalue_extract_members_pub(&declared_ret)
@@ -1060,6 +1057,7 @@ async fn apply_cont(
                                 state.ctx.levels.clone(),
                                 state.ctx.current_level,
                                 state.tycon_env.clone(),
+                                state.type_name_to_id.clone(),
                             );
                             let is_sub = crate::bas::is_subtype_bas(
                                 &body_resolved,
@@ -1488,6 +1486,7 @@ async fn apply_cont(
                     state.ctx.levels.clone(),
                     state.ctx.current_level,
                     state.tycon_env.clone(),
+                    state.type_name_to_id.clone(),
                 );
                 let passes = crate::bas::is_subtype_bas(
                     &default_resolved,
@@ -2910,6 +2909,7 @@ async fn apply_call_args_poly(
                     ctx.state.ctx.levels.clone(),
                     ctx.state.ctx.current_level,
                     ctx.state.tycon_env.clone(),
+                    ctx.state.type_name_to_id.clone(),
                 );
                 if crate::bas::is_consistent_subtype(&widened, &elem_ty, &ctx_for_check) {
                     bucket_args[bucket_idx].push(widened.clone());
@@ -3638,7 +3638,7 @@ async fn setup_match_arm_env(
     let guard_narrowings = if let Some(guard) = &arm.guard {
         let mut local_stack = Vec::new();
         typecheck_for_errors(guard, &arm_env, state, errors, type_map, &mut local_stack).await;
-        typecheck_narrow::extract_narrowings(guard, &arm_env)
+        typecheck_narrow::extract_narrowings(guard, &arm_env, &state.type_name_to_id)
     } else {
         Vec::new()
     };
@@ -3985,6 +3985,7 @@ fn compute_type_assert_mismatch(
         state.ctx.levels.clone(),
         state.ctx.current_level,
         state.tycon_env.clone(),
+        state.type_name_to_id.clone(),
     );
     // Check if both are function types (TypeValue.Fn) for arity checking.
     if typevalue_ctor(actual) == Some(TV_FN) && typevalue_ctor(expected) == Some(TV_FN) {
@@ -4916,7 +4917,6 @@ pub(crate) async fn run_typecheck_dict(
                                     .type_name_to_id
                                     .get(name.as_str())
                                     .copied()
-                                    .or_else(|| crate::value::type_id_for_name(name))
                                     .unwrap_or(0),
                             )
                         });
