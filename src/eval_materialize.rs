@@ -4587,6 +4587,7 @@ mod tests {
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
             crate::value::empty_scope(),
+            None,
         ));
 
         // Force via the CEK machine (not via materialize() recursive path).
@@ -4713,6 +4714,7 @@ mod tests {
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
             crate::value::empty_scope(),
+            None,
         ));
 
         // Force via CEK — exercises BuiltinForceArg loop for both positions.

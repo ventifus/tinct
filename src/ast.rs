@@ -541,7 +541,7 @@ pub struct SurfaceNode {
     /// Inferred type_decl_id set by the type checker after inference.
     /// The lowerer carries this to `Spanned<CoreExpr>.type_decl_id` so
     /// the evaluator can set it on Thunk construction without materializing.
-    pub inferred_type_decl_id: InferredTypeId,
+    pub inferred_type_decl_id: InferredType,
     /// Per-call-site type instantiation set by the type checker after unification.
     /// Maps type parameter names (e.g. "a") to their concrete TypeValues at this call site.
     /// Only set on Call nodes for polymorphic function calls.
@@ -592,7 +592,7 @@ impl SurfaceNode {
             span,
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
-            inferred_type_decl_id: InferredTypeId::new(),
+            inferred_type_decl_id: InferredType::new(),
             type_instantiation: TypeInstantiation::new(),
         }
     }
@@ -607,7 +607,7 @@ impl SurfaceNode {
             span: crate::rust_span!(),
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
-            inferred_type_decl_id: InferredTypeId::new(),
+            inferred_type_decl_id: InferredType::new(),
             type_instantiation: TypeInstantiation::new(),
         }
     }
@@ -624,7 +624,7 @@ macro_rules! surface_node {
             span: $span,
             type_guard: $crate::ast::TypeAnnotation::new(),
             provenance: $crate::ast::Provenance::new(),
-            inferred_type_decl_id: $crate::ast::InferredTypeId::new(),
+            inferred_type_decl_id: $crate::ast::InferredType::new(),
             type_instantiation: $crate::ast::TypeInstantiation::new(),
         }
     };
@@ -1183,38 +1183,39 @@ impl std::fmt::Debug for TypeInstantiation {
     }
 }
 
-/// Inferred type identity — set once by the type checker, read by the lowerer.
+/// Inferred type — the full resolved TypeValue set by the type checker, read by the lowerer.
 /// OnceLock-based for interior mutability through Arc<SurfaceNode>.
-pub struct InferredTypeId(std::sync::OnceLock<u64>);
-impl InferredTypeId {
+/// Stores the complete TypeValue (Nominal, Fn, Record, Union, etc.), not just a nominal ID.
+pub struct InferredType(std::sync::OnceLock<Arc<crate::value::Value>>);
+impl InferredType {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    pub fn get(&self) -> u64 {
-        self.0.get().copied().unwrap_or(0)
+    pub fn get(&self) -> Option<&Arc<crate::value::Value>> {
+        self.0.get()
     }
-    pub fn set(&self, id: u64) {
-        let _ = self.0.set(id);
+    pub fn set(&self, tv: Arc<crate::value::Value>) {
+        let _ = self.0.set(tv);
     }
 }
-impl Clone for InferredTypeId {
+impl Clone for InferredType {
     fn clone(&self) -> Self {
         Self::new()
     }
 }
-impl PartialEq for InferredTypeId {
+impl PartialEq for InferredType {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
-impl Default for InferredTypeId {
+impl Default for InferredType {
     fn default() -> Self {
         Self::new()
     }
 }
-impl std::fmt::Debug for InferredTypeId {
+impl std::fmt::Debug for InferredType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InferredTypeId({})", self.get())
+        write!(f, "InferredType({:?})", self.0.get().map(|_| "set"))
     }
 }
 
@@ -1861,7 +1862,7 @@ mod tests {
                 span: zero_span.clone(),
                 type_guard: TypeAnnotation::new(),
                 provenance: Provenance::new(),
-                inferred_type_decl_id: InferredTypeId::new(),
+                inferred_type_decl_id: InferredType::new(),
                 type_instantiation: TypeInstantiation::new(),
             })
         };

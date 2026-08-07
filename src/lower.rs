@@ -166,9 +166,8 @@ pub(crate) fn lower_inner(
     };
 
     let mut core_expr = core_expr;
-    let inferred_id = arc.inferred_type_decl_id.get();
-    if inferred_id != 0 {
-        core_expr.set_inferred_type(Some(crate::type_infer::make_typevalue_nominal(inferred_id)));
+    if let Some(tv) = arc.inferred_type_decl_id.get() {
+        core_expr.set_inferred_type(Some(Arc::clone(tv)));
     }
     Spanned::new(core_expr, span)
 }
@@ -1276,7 +1275,7 @@ mod tests {
             span,
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
-            inferred_type_decl_id: crate::ast::InferredTypeId::new(),
+            inferred_type_decl_id: crate::ast::InferredType::new(),
             type_instantiation: crate::ast::TypeInstantiation::new(),
         })
     }

@@ -407,11 +407,9 @@ pub(crate) async fn run_typecheck(
                 // Record this node's inferred type in type_map for LSP.
                 record_type_map(type_map, &current_node.span, &ty);
 
-                // Wire inferred type_decl_id to SurfaceNode for the lowerer.
+                // Wire the full resolved TypeValue to SurfaceNode for the lowerer.
                 let resolved = state.apply(&ty);
-                if let Some(id) = crate::type_infer::typevalue_nominal_id(&resolved) {
-                    current_node.inferred_type_decl_id.set(id);
-                }
+                current_node.inferred_type_decl_id.set(resolved);
 
                 // Pop and apply continuations until we get an Eval action or empty stack.
                 let mut result_ty = ty;
@@ -1283,9 +1281,7 @@ async fn apply_cont(
             .await;
             if let TypeCheckAction::Done(ref ty) = result {
                 let resolved = ctx.state.apply(ty);
-                if let Some(id) = crate::type_infer::typevalue_nominal_id(&resolved) {
-                    call_node.inferred_type_decl_id.set(id);
-                }
+                call_node.inferred_type_decl_id.set(resolved.clone());
                 // Capture type instantiation from scheme renaming.
                 // The renaming maps original type param names (e.g. "a") to fresh TypeVar
                 // names (e.g. "a⦀42"). We compose with the substitution to get
@@ -2288,11 +2284,9 @@ async fn apply_cont_call_func(
                     ctx,
                 )
                 .await;
-                // Wire inferred_type_decl_id and type instantiation on call_node.
+                // Wire inferred type and type instantiation on call_node.
                 let resolved = ctx.state.apply(&result);
-                if let Some(id) = crate::type_infer::typevalue_nominal_id(&resolved) {
-                    call_node.inferred_type_decl_id.set(id);
-                }
+                call_node.inferred_type_decl_id.set(resolved.clone());
                 if let Some(renaming) = ctx.state.last_scheme_renaming.take() {
                     let mut type_inst = std::collections::HashMap::new();
                     for (original_name, fresh_name) in &renaming {
@@ -6020,7 +6014,7 @@ mod tests {
             span: crate::rust_span!(),
             type_guard: TypeAnnotation::new(),
             provenance: crate::ast::Provenance::new(),
-            inferred_type_decl_id: crate::ast::InferredTypeId::new(),
+            inferred_type_decl_id: crate::ast::InferredType::new(),
             type_instantiation: crate::ast::TypeInstantiation::new(),
         })
     }

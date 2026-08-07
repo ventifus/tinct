@@ -6078,6 +6078,7 @@ mod tests {
             0, // caller_env_id bridge placeholder
             Arc::clone(&ctx),
             crate::value::empty_scope(),
+            None,
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is

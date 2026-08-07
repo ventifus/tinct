@@ -2873,6 +2873,7 @@ mod tests {
             0,
             Arc::clone(&ctx),
             empty_evidence(),
+            None,
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2925,6 +2926,7 @@ mod tests {
             0,
             Arc::clone(&ctx),
             empty_evidence(),
+            None,
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2977,6 +2979,7 @@ mod tests {
             0,
             Arc::clone(&ctx),
             empty_evidence(),
+            None,
         ));
         let err = run(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],

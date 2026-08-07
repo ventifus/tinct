@@ -2115,6 +2115,7 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
+        let inferred_type = inner.inferred_type.clone();
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -2130,7 +2131,7 @@ impl Thunk {
             },
             span,
             type_inst: std::collections::HashMap::new(),
-            inferred_type: None,
+            inferred_type,
         }
     }
 
@@ -2142,6 +2143,7 @@ impl Thunk {
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         caller_evidence: Scope,
+        inferred_type: Option<std::sync::Arc<Value>>,
     ) -> Self {
         Self {
             inner: ThunkInner {
@@ -2162,7 +2164,7 @@ impl Thunk {
             },
             span,
             type_inst: std::collections::HashMap::new(),
-            inferred_type: None,
+            inferred_type,
         }
     }
 
@@ -2178,6 +2180,7 @@ impl Thunk {
         } else {
             Some(Box::new(named))
         };
+        let inferred_type = spec.original_call.node.inferred_type().cloned();
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -2198,7 +2201,7 @@ impl Thunk {
             },
             span,
             type_inst: std::collections::HashMap::new(),
-            inferred_type: None,
+            inferred_type,
         }
     }
 
@@ -2210,6 +2213,7 @@ impl Thunk {
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<GuardDefault>,
     ) -> Self {
+        let inferred_type = inner.inferred_type.clone();
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -2228,7 +2232,7 @@ impl Thunk {
             },
             span: guard_span.with_name(Arc::from("type guard")),
             type_inst: std::collections::HashMap::new(),
-            inferred_type: None,
+            inferred_type,
         }
     }
 
