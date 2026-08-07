@@ -18,6 +18,7 @@ use crate::builtins::builtin;
 use crate::error::{EvalError, EvalResult};
 use crate::value::{
     string_val, BuiltinArgs, BuiltinDef, ClockCapInner, HashableValue, Strictness, Thunk, Value,
+    TYPE_ID_DICT,
 };
 
 /// Helper to create a boxed EvalError from a message.
@@ -720,7 +721,7 @@ pub fn builtin_timestamp_parts(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )))
@@ -1138,7 +1139,7 @@ pub fn builtin_timestamp_in_tz(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )))

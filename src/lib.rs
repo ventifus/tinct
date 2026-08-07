@@ -91,6 +91,8 @@ pub mod profiling;
 
 use std::sync::Arc;
 
+use crate::value::type_id_display_name;
+
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
@@ -128,7 +130,7 @@ pub use type_class::TypeValue;
 /// injected type env). These are the canonical single-path constructors — callers must
 /// not duplicate construction logic locally (Axiom 2).
 pub use type_infer::{make_typevalue_nominal, make_typevalue_open_dict, make_typevalue_unknown};
-pub use value::{TYPE_ID_DIRCAP, TYPE_ID_NETCAP};
+pub use value::{TYPE_ID_DICT, TYPE_ID_DIRCAP, TYPE_ID_NETCAP};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source_tinct;
@@ -312,7 +314,7 @@ pub async fn run_loader_pipeline(
                 other => {
                     return Err(format!(
                         "type-stage evaluation produced {}, expected Dict",
-                        other.type_name()
+                        type_id_display_name(other.type_decl_id_of())
                     ));
                 }
             }
@@ -1254,7 +1256,7 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -1272,12 +1274,12 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
         let green_val = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Green"),
             payload: None,
         };
@@ -1301,7 +1303,7 @@ mod tests {
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("MyBool.Yes"),
             payload: None,
         };

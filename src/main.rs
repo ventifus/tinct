@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
     build_core_env, format_diagnostic, literate, parse, string_val, EvalContext, HashableValue,
-    Thunk, Value,
+    Thunk, Value, TYPE_ID_DICT,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -1485,7 +1485,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             // at resolve time with "undefined variable: %stdin".
             let stdin_value = Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
             env.write()
@@ -1987,10 +1987,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             .insert(HashableValue::Str("path".into()), mk_thunk(string_val("-")));
                         let payload_id = alloc_val(Value::Dict {
                             entries: payload_dict,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         });
                         Value::Variant {
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
                         }
@@ -2021,10 +2021,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             .insert(HashableValue::Str("handle".into()), mk_thunk(handle_value));
                         let payload_id = alloc_val(Value::Dict {
                             entries: payload_dict,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         });
                         Value::Variant {
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
                         }
@@ -2039,10 +2039,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     );
                     let payload_id = alloc_val(Value::Dict {
                         entries: payload_dict,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     });
                     Value::Variant {
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                         ctor: Arc::from("ProgramItem.Expr"),
                         payload: Some(payload_id),
                     }
@@ -2052,7 +2052,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         }
         Value::Dict {
             entries: dict,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     };
 
@@ -2090,7 +2090,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
 
         Value::Dict {
             entries: dict,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     };
 

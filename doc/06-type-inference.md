@@ -1508,7 +1508,7 @@ The kind of each TypeVar is tracked in `InferState.kind_env: HashMap<String, Kin
 Two TypeValue variants for higher-kinded types:
 
 - `TypeValue.App` (TV_APP) — type constructor applied to an argument: `App(Result, Int)` is `Result Int`
-- `TypeValue.Op` (TV_OP) — a type constructor variable: `Operator("m")` for a Monad variable `m`
+- `TypeValue.Nominal` (TV_NOMINAL) — a nominal type identified by a u64 ID. Identity (type checking) is separate from display (error messages). Reserved IDs 1-39 for primitives and opaques (e.g., TYPE_ID_INT = 1, TYPE_ID_DIRCAP = 10); user types get sequential IDs ≥100. Display names stored in type_display_names registry
 
 In annotation positions, `[f a]` (no colons) is type constructor application when `f` is Operator-kinded or a user type alias. `@[m a]` applies constructor `m` to argument `a`.
 

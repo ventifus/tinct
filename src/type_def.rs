@@ -21,6 +21,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
+use crate::value::TYPE_ID_DICT;
 
 // T-2001: RowTail and Row deleted. Row types now use Arc<Value> TypeValues directly.
 //
@@ -108,13 +109,10 @@ pub struct TyConDef {
     pub variance: Vec<Variance>,
     /// Constructors as (tag, arity) pairs
     pub constructors: Vec<(String, usize)>,
-    /// Optional builtin type discriminant (e.g., "Seq", "Map")
-    pub builtin_type: Option<String>,
     /// Annotation dict attached to the type constructor declaration via `@[...]` syntax.
-    ///
-    /// `None` until T-1122 populates it from `@[...]` annotations on `[type ...]`
-    /// declarations via eval_type_stage_expr. At type-check time, `annotation-of` on a
-    /// TyConDef reference reads this field.
+    /// Populated from `@[...]` annotations on `[type ...]` declarations via
+    /// eval_type_stage_expr at type-check time. `annotation-of` on a TyConDef reference
+    /// reads this field. `None` for types without annotations.
     ///
     /// Uses `IndexMap` to preserve annotation key insertion order for user-facing output.
     pub annotation: Option<IndexMap<String, crate::value::Value>>,
@@ -150,13 +148,12 @@ pub struct TyConDef {
 
 impl PartialEq for TyConDef {
     fn eq(&self, other: &Self) -> bool {
-        // Compare by params, variance, constructors, builtin_type — not body (Arc<Value>
+        // Compare by params, variance, constructors — not body (Arc<Value>
         // comparison would need deep equality which is expensive and not meaningful for
         // type identity). Two TyConDefs are equal if they describe the same nominal structure.
         self.params == other.params
             && self.variance == other.variance
             && self.constructors == other.constructors
-            && self.builtin_type == other.builtin_type
     }
 }
 
@@ -171,13 +168,12 @@ impl TyConDef {
     /// resolved TypeValue for the type (e.g., a TypeValue.Union of NominalVariants).
     pub fn new_with_body(_name: impl Into<String>, body: Arc<crate::value::Value>) -> Self {
         Self {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             params: vec![],
             body,
             constraints: vec![],
             variance: vec![],
             constructors: vec![],
-            builtin_type: None,
             annotation: None,
             field_annotations: IndexMap::new(),
             constructor_constants: IndexMap::new(),
@@ -191,13 +187,12 @@ impl TyConDef {
     /// `crate::type_infer::make_typevalue_unknown()` (opaque until instantiated with type arguments).
     pub fn new_parameterized(arity: usize) -> Self {
         Self {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             params: (0..arity).map(|i| format!("a{i}")).collect(),
             body: crate::type_infer::make_typevalue_unknown(),
             constraints: vec![],
             variance: vec![Variance::Invariant; arity],
             constructors: vec![],
-            builtin_type: None,
             annotation: None,
             field_annotations: IndexMap::new(),
             constructor_constants: IndexMap::new(),
@@ -212,7 +207,7 @@ impl TyConDef {
 /// distinct Arcs. `Arc::ptr_eq` in UNIFY-TYCON can then detect shadowing: if two TyCon("Foo")
 /// types came from different `[type Foo ...]` declarations in different scopes, their Arcs
 /// will differ even though the name string is equal.
-pub type TyConEnv = HashMap<String, Arc<TyConDef>>;
+pub type TyConEnv = HashMap<u64, Arc<TyConDef>>;
 
 // InferenceContext is defined in type_infer.rs (canonical location).
 // It was duplicated here during the S-1003 migration; the duplicate has been removed.

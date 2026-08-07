@@ -13,7 +13,8 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::error::Diagnostic;
 use crate::type_infer::{
-    extract_rowtail_var_name, typevalue_ctor, typevalue_var_name, InferenceContext, TypeValue,
+    extract_rowtail_var_name, typevalue_ctor, typevalue_nominal_id, typevalue_var_name,
+    InferenceContext, TypeValue,
 };
 use crate::type_tags::*;
 
@@ -216,43 +217,7 @@ fn extract_indexed_members(tv: &TypeValue, ctor_tag: &str, field: &str) -> Optio
     }
 }
 
-/// Extract the `name` string from a TypeValue.Op { name: String }.
-fn extract_op_name(tv: &TypeValue, ctx: &InferenceContext) -> Option<String> {
-    match tv.as_ref() {
-        crate::value::Value::Variant {
-            ctor,
-            payload: Some(thunk),
-            ..
-        } if ctor.as_ref() == TV_NOMINAL => match thunk.peek_result()? {
-            Ok(crate::value::Value::Dict { entries, .. }) => {
-                // Try FIELD_NAME first (legacy Op-style TypeValues).
-                let name_key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
-                if let Some(name_thunk) = entries.get(&name_key) {
-                    if let Some(Ok(crate::value::Value::String {
-                        source, start, end, ..
-                    })) = name_thunk.peek_result()
-                    {
-                        return Some(source[*start..*end].to_string());
-                    }
-                }
-                // Fall back to FIELD_ID: extract the u64 id and look up the display name.
-                let id_key = crate::value::HashableValue::Str(Arc::from(FIELD_ID));
-                let id_thunk = entries.get(&id_key)?;
-                match id_thunk.peek_result()? {
-                    Ok(crate::value::Value::U64 { n, .. }) => {
-                        ctx.type_display_names.get(n).cloned()
-                    }
-                    Ok(crate::value::Value::Int { n, .. }) => {
-                        ctx.type_display_names.get(&(*n as u64)).cloned()
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
+
 
 // ── check_function_arity ──────────────────────────────────────────────────────
 
@@ -975,16 +940,15 @@ pub async fn unify(
 
             // Check whether both ops are TV_NOMINAL with the same name and, if so, whether
             // the op name is associated with a non-injective resolver.
-            let op_name_a = extract_op_name(&op_a, ctx);
-            let op_name_b = extract_op_name(&op_b, ctx);
-            let same_op_name = op_name_a.is_some() && op_name_a == op_name_b;
+            let op_id_a = typevalue_nominal_id(&op_a);
+            let op_id_b = typevalue_nominal_id(&op_b);
+            let same_op_id = op_id_a.is_some() && op_id_a == op_id_b;
 
-            if same_op_name {
-                // Same op name: check injectivity before deciding how to unify args.
-                let is_non_injective = op_name_a
-                    .as_deref()
-                    .map(|name| ctx.non_injective_resolvers.contains(name))
-                    .expect("invariant: same_op_name guard ensures op_name_a is Some");
+            if same_op_id {
+                // Same op id: check injectivity before deciding how to unify args.
+                let is_non_injective = op_id_a
+                    .map(|id| ctx.non_injective_resolvers.contains(&id))
+                    .unwrap_or(false);
 
                 if is_non_injective {
                     // Non-injective resolver: defer arg equality check until both sides are
@@ -1012,8 +976,8 @@ pub async fn unify(
                 // substitute the argument into the body and unify the expanded types.
                 // This allows structural aliases to unify: if Alias[T] = Seq[T], then
                 // App(Alias, Int) ~ App(Seq, Int) succeeds by expanding both to their bodies.
-                let expanded_a = expand_tycon_app(&op_name_a, &arg_a, ctx);
-                let expanded_b = expand_tycon_app(&op_name_b, &arg_b, ctx);
+                let expanded_a = expand_tycon_app(op_id_a, &arg_a, ctx);
+                let expanded_b = expand_tycon_app(op_id_b, &arg_b, ctx);
                 match (expanded_a, expanded_b) {
                     (Some(exp_a), Some(exp_b)) => {
                         // Both expanded: unify the expanded bodies.
@@ -2275,12 +2239,12 @@ fn extract_str_lit(tv: &TypeValue) -> Option<String> {
 /// constructors require multi-argument App chains (App(App(F, a), b)) — those are
 /// handled by the outer structural arms after partial expansion.
 fn expand_tycon_app(
-    op_name: &Option<String>,
+    op_id: Option<u64>,
     arg: &TypeValue,
     ctx: &InferenceContext,
 ) -> Option<TypeValue> {
-    let name = op_name.as_deref()?;
-    let tycon_def = ctx.tycon_env.get(name)?;
+    let id = op_id?;
+    let tycon_def = ctx.tycon_env.get(&id)?;
     // Only expand single-parameter type constructors.
     if tycon_def.params.len() != 1 {
         return None;

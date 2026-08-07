@@ -428,22 +428,25 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // Auto-register TyConDefs for opaque builtin types derived from the type-stage scope.
     // These types are declared as TypeNode leaf constructors in the type-stage (not as
     // [type X] in the runtime dict), so the typecheck pass does not create their TyConDefs
-    // automatically. builtin_type: Some(discriminant) enables value_matches_type dispatch.
+    // automatically. Identity-based type_decl_id enables value_matches_type dispatch.
     // or_insert_with: if a [type X] declaration already registered an entry, keep it.
     use crate::type_def::TyConDef;
     for discriminant in opaque_tycon_names {
-        tycon_env.entry(discriminant.clone()).or_insert_with(|| {
+        let type_decl_id = type_name_to_id
+            .get(discriminant.as_str())
+            .copied()
+            .unwrap_or(0);
+        if type_decl_id == 0 {
+            continue; // No id for this type name — cannot register without an identity.
+        }
+        tycon_env.entry(type_decl_id).or_insert_with(|| {
             std::sync::Arc::new(TyConDef {
-                type_decl_id: type_name_to_id
-                    .get(discriminant.as_str())
-                    .copied()
-                    .unwrap_or(0),
+                type_decl_id,
                 params: vec![],
                 body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
-                builtin_type: Some(discriminant.clone()),
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),

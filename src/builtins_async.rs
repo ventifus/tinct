@@ -38,7 +38,9 @@ use crate::builtins::ok_val;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
-use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value};
+use crate::value::{
+    type_id_display_name, BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value, TYPE_ID_DICT,
+};
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
@@ -268,7 +270,7 @@ pub(crate) fn builtin_await(
                     &mut *guard,
                     crate::value::TaskState::Done(Ok(Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
@@ -312,7 +314,12 @@ pub(crate) fn builtin_await(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch("Task", task_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Task",
+                type_id_display_name(task_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -358,7 +365,12 @@ pub(crate) fn builtin_channel(
                 call_span,
             )
             .into()),
-            _ => Err(EvalError::type_mismatch("Int", capacity_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Int",
+                type_id_display_name(capacity_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -412,7 +424,7 @@ pub(crate) fn builtin_send(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -431,7 +443,7 @@ pub(crate) fn builtin_send(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -457,14 +469,14 @@ pub(crate) fn builtin_send(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotSender",
-                chan_val.type_name(),
+                type_id_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -518,7 +530,7 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -554,7 +566,7 @@ pub(crate) fn builtin_recv(
                             Arc::new(Thunk::value(Value::Int { n: n as i64 }, call_span.clone()));
                         ok_val(
                             Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Lagged.Lagged"),
                                 payload: Some(count_thunk),
                             },
@@ -565,7 +577,7 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -609,7 +621,7 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -620,7 +632,7 @@ pub(crate) fn builtin_recv(
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotReceiver",
-                chan_val.type_name(),
+                type_id_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -688,7 +700,12 @@ pub(crate) fn builtin_broadcast_channel(
                 call_span,
             )
             .into()),
-            _ => Err(EvalError::type_mismatch("Int", capacity_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Int",
+                type_id_display_name(capacity_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -754,7 +771,7 @@ pub(crate) fn builtin_oneshot_channel(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -797,7 +814,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Dict {
                                 entries: IndexMap::new(),
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -806,7 +823,7 @@ pub(crate) fn builtin_try_send(
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Full.Full"),
                                 payload: None,
                             },
@@ -817,7 +834,7 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
                             },
@@ -826,7 +843,12 @@ pub(crate) fn builtin_try_send(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch("Channel", chan_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Channel",
+                type_id_display_name(chan_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -865,7 +887,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -873,7 +895,7 @@ pub(crate) fn builtin_try_recv(
                         return ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         );
@@ -890,7 +912,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -902,7 +924,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -910,7 +932,7 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -922,7 +944,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -930,14 +952,19 @@ pub(crate) fn builtin_try_recv(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch("Channel", chan_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Channel",
+                type_id_display_name(chan_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -983,7 +1010,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -995,7 +1022,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -1003,7 +1030,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -1015,7 +1042,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -1023,7 +1050,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -1035,7 +1062,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -1043,17 +1070,19 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
                     }
                 }
             }
-            _ => Err(
-                EvalError::type_mismatch("BroadcastChannel", chan_val.type_name(), call_span)
-                    .into(),
-            ),
+            _ => Err(EvalError::type_mismatch(
+                "BroadcastChannel",
+                type_id_display_name(chan_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1098,7 +1127,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -1106,7 +1135,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         return ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         );
@@ -1120,7 +1149,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         Arc::new(Thunk::value(
                             Value::Dict {
                                 entries: IndexMap::new(),
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span.clone(),
                         )),
@@ -1128,7 +1157,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                     return ok_val(
                         Value::Dict {
                             entries: map,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         },
                         call_span,
                     );
@@ -1145,7 +1174,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -1158,7 +1187,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -1166,7 +1195,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -1178,7 +1207,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                 },
                                 call_span.clone(),
                             )),
@@ -1186,16 +1215,19 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
                     }
                 }
             }
-            _ => Err(
-                EvalError::type_mismatch("OneshotReceiver", chan_val.type_name(), call_span).into(),
-            ),
+            _ => Err(EvalError::type_mismatch(
+                "OneshotReceiver",
+                type_id_display_name(chan_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1235,7 +1267,7 @@ pub(crate) fn builtin_yield(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1297,7 +1329,7 @@ pub(crate) fn builtin_signal_channel(
                 other => {
                     return Err(EvalError::type_mismatch(
                         "Dict of Signal",
-                        other.type_name(),
+                        type_id_display_name(other.type_decl_id_of()),
                         call_span,
                     )
                     .into())
@@ -1312,7 +1344,7 @@ pub(crate) fn builtin_signal_channel(
                     _ => {
                         return Err(EvalError::type_mismatch(
                             "Signal",
-                            head_val.type_name(),
+                            type_id_display_name(head_val.type_decl_id_of()),
                             call_span,
                         )
                         .into())
@@ -1373,7 +1405,7 @@ pub(crate) fn builtin_signal_channel(
                                 }
                                 match tx_clone.try_send(Value::Variant {
 
-                                    type_decl_id: 0,
+                                    type_decl_id: TYPE_ID_DICT,
                                     ctor: Arc::from(sig_name.as_str()),
                                     payload: None,
                                 }) {
@@ -1453,7 +1485,7 @@ pub(crate) fn builtin_timer_channel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "ClockCap",
-                    clock_val.type_name(),
+                    type_id_display_name(clock_val.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1475,7 +1507,7 @@ pub(crate) fn builtin_timer_channel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Duration",
-                    interval_val.type_name(),
+                    type_id_display_name(interval_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1598,9 +1630,12 @@ pub(crate) fn builtin_watch_channel(
         let dir = match dir_cap_val {
             Value::DirCap { dir, .. } => dir,
             _ => {
-                return Err(
-                    EvalError::type_mismatch("DirCap", dir_cap_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "DirCap",
+                    type_id_display_name(dir_cap_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -1610,9 +1645,12 @@ pub(crate) fn builtin_watch_channel(
                 source, start, end, ..
             } => source[start..end].to_string(),
             _ => {
-                return Err(
-                    EvalError::type_mismatch("String", path_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "String",
+                    type_id_display_name(path_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -1693,7 +1731,7 @@ pub(crate) fn builtin_watch_channel(
                                             // Full is expected (last-write-wins, capacity=1); Closed means consumer dropped.
                                             match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                                type_decl_id: 0,
+                                                type_decl_id: TYPE_ID_DICT,
                                             }) {
                                                 Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1703,7 +1741,7 @@ pub(crate) fn builtin_watch_channel(
                                     } else {
                                         match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                                type_decl_id: 0,
+                                                type_decl_id: TYPE_ID_DICT,
                                             }) {
                                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1716,7 +1754,7 @@ pub(crate) fn builtin_watch_channel(
                                 if last_modified.is_some() {
                                     match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                                type_decl_id: 0,
+                                                type_decl_id: TYPE_ID_DICT,
                                             }) {
                                         Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1837,9 +1875,12 @@ pub(crate) fn builtin_with_cancel(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(
-                    EvalError::type_mismatch("Context", parent_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "Context",
+                    type_id_display_name(parent_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -1869,14 +1910,14 @@ pub(crate) fn builtin_with_cancel(
         let payload_thunk = Arc::new(Thunk::value(
             Value::Dict {
                 entries: payload_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span.clone(),
         ));
 
         ok_val(
             Value::Variant {
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
                 ctor: Arc::from("CancelHandle.CancelHandle"),
                 payload: Some(payload_thunk),
             },
@@ -1920,7 +1961,7 @@ pub(crate) fn builtin_with_timeout(
         if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
-                clock_val.type_name(),
+                type_id_display_name(clock_val.type_decl_id_of()),
                 call_span.clone(),
             )
             .into());
@@ -1932,9 +1973,12 @@ pub(crate) fn builtin_with_timeout(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(
-                    EvalError::type_mismatch("Context", parent_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "Context",
+                    type_id_display_name(parent_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -1949,9 +1993,12 @@ pub(crate) fn builtin_with_timeout(
                 .into())
             }
             _ => {
-                return Err(
-                    EvalError::type_mismatch("Duration", ms_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "Duration",
+                    type_id_display_name(ms_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -2009,7 +2056,7 @@ pub(crate) fn builtin_with_deadline(
         if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
-                clock_val.type_name(),
+                type_id_display_name(clock_val.type_decl_id_of()),
                 call_span.clone(),
             )
             .into());
@@ -2021,9 +2068,12 @@ pub(crate) fn builtin_with_deadline(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(
-                    EvalError::type_mismatch("Context", parent_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "Context",
+                    type_id_display_name(parent_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -2037,7 +2087,7 @@ pub(crate) fn builtin_with_deadline(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Int or Timestamp",
-                    ts_val.type_name(),
+                    type_id_display_name(ts_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2104,7 +2154,12 @@ pub(crate) fn builtin_cancelled_q(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Context",
+                type_id_display_name(ctx_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -2143,12 +2198,17 @@ pub(crate) fn builtin_cancel_task(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Context",
+                type_id_display_name(ctx_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -2195,7 +2255,7 @@ pub(crate) fn builtin_cancel_root(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2280,7 +2340,7 @@ pub(crate) fn builtin_drain(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2328,7 +2388,12 @@ pub(crate) fn builtin_exit_now(
         let exit_code = match code_val {
             Value::Int { n, .. } => n.clamp(0, 255) as i32,
             _ => {
-                return Err(EvalError::type_mismatch("Int", code_val.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(code_val.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
 
@@ -2416,9 +2481,12 @@ pub(crate) fn builtin_with_context(
         let new_cancel = match context_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(
-                    EvalError::type_mismatch("Context", context_val.type_name(), call_span).into(),
+                return Err(EvalError::type_mismatch(
+                    "Context",
+                    type_id_display_name(context_val.type_decl_id_of()),
+                    call_span,
                 )
+                .into())
             }
         };
 
@@ -2521,9 +2589,12 @@ pub(crate) fn builtin_cell_get(
                 let current = cell_inner.receiver.borrow().clone();
                 ok_val(current, call_span)
             }
-            _ => Err(
-                EvalError::type_mismatch("ReactiveCell", cell_val.type_name(), call_span).into(),
-            ),
+            _ => Err(EvalError::type_mismatch(
+                "ReactiveCell",
+                type_id_display_name(cell_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -2574,14 +2645,17 @@ pub(crate) fn builtin_cell_set(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
             }
-            _ => Err(
-                EvalError::type_mismatch("ReactiveCell", cell_val.type_name(), call_span).into(),
-            ),
+            _ => Err(EvalError::type_mismatch(
+                "ReactiveCell",
+                type_id_display_name(cell_val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }

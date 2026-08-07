@@ -35,7 +35,7 @@ use crate::ast::Span;
 use crate::type_def::Variance;
 use crate::type_infer::InferenceContext;
 use crate::type_tags::*;
-use crate::value::{HashableValue, Thunk, Value};
+use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 /// Maximum depth for atom subtype checking (coinductive Recursive type comparison).
 const MAX_ATOM_SUBTYPE_DEPTH: usize = 256;
@@ -225,7 +225,7 @@ fn make_payload_thunk(fields: IndexMap<String, Arc<Value>>, span: Span) -> Arc<T
     Arc::new(Thunk::value(
         Value::Dict {
             entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         span,
     ))
@@ -249,7 +249,7 @@ fn make_payload_typevalue(ctor: &str, payload_thunk: Arc<Thunk>) -> Arc<Value> {
         ctor: Arc::from(ctor),
         payload: Some(payload_thunk),
 
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     })
 }
 
@@ -720,12 +720,15 @@ pub fn is_atom_subtype(
         (Some(TV_NOMINAL_VARIANT), Some(TV_NOMINAL)) => {
             let sub_tycon = typevalue_payload(sub)
                 .and_then(|p| payload_string_field(p, FIELD_TYCON).map(String::from));
-            let sup_name = typevalue_payload(sup)
-                .and_then(|p| payload_string_field(p, FIELD_NAME).map(String::from));
-            match sup_name.as_deref() {
-                Some(name) => match ctx.tycon_env.get(name) {
+            let sup_id = crate::type_infer::typevalue_nominal_id(sup);
+            match sup_id {
+                Some(id) => match ctx.tycon_env.get(&id) {
                     Some(def) => is_subtype_bas_with_sigma(sub, &def.body, ctx, sigma, depth + 1),
-                    None => sub_tycon.as_deref() == Some(name),
+                    None => {
+                        // Fallback: compare NominalVariant's tycon string against display name
+                        let sup_name = ctx.type_display_names.get(&id);
+                        sub_tycon.as_deref() == sup_name.map(|s| s.as_str())
+                    }
                 },
                 None => false,
             }
@@ -745,12 +748,9 @@ pub fn is_atom_subtype(
             if sub_id == sup_id {
                 return true;
             }
-            let sup_name = ctx.type_display_names.get(&sup_id);
-            match sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
+            match ctx.tycon_env.get(&sup_id) {
                 Some(def) => {
-                    if let Some(ref builtin_disc) = def.builtin_type {
-                        ctx.type_name_to_id.get(builtin_disc.as_str()).copied() == Some(sub_id)
-                    } else if !def.constructors.is_empty() {
+                    if !def.constructors.is_empty() {
                         false
                     } else {
                         is_subtype_bas_with_sigma(sub, &def.body, ctx, sigma, depth + 1)
@@ -760,7 +760,7 @@ pub fn is_atom_subtype(
             }
         }
 
-        // Repr vs App(TyCon, _): extract the root TyCon name, dispatch on its builtin_type.
+        // Repr vs App(TyCon, _): extract the root TyCon name, dispatch on its nominal id.
         (Some(TV_NOMINAL), Some(TV_APP)) => {
             // For a parameterized TyCon (e.g., App(Seq, Int)), the value-level type is
             // determined by the root TyCon, not the argument. Extract op (must be TV_NOMINAL).
@@ -1162,43 +1162,41 @@ fn is_record_subtype(
     }
 }
 
-/// Walk the curried App spine to find the root TyCon name and spine depth.
+/// Walk the curried App spine to find the root TyCon id and spine depth.
 ///
-/// For a type application `App(App(App(TyCon("Map"), K), V), W)`, the current
-/// `is_app_subtype` call sees `op = App(App(TyCon("Map"), K), V)` and `arg = W`.
+/// For a type application `App(App(App(Nominal(id), K), V), W)`, the current
+/// `is_app_subtype` call sees `op = App(App(Nominal(id), K), V)` and `arg = W`.
 /// The spine depth of `W` in `Map[K, V, W]` is 2 (zero-indexed: K=0, V=1, W=2).
 ///
 /// This function takes the `op` field of the **current** App node and returns:
-/// - `Some((root_name, spine_depth))` where `root_name` is the `TypeValue.Op`
-///   name at the base of the spine and `spine_depth` is the zero-based parameter
-///   index for the **current** App node's `arg`.
-/// - `None` if the op chain does not terminate at a `TypeValue.Op` (e.g., a
+/// - `Some((root_id, spine_depth))` where `root_id` is the `TypeValue.Nominal`
+///   type_decl_id at the base of the spine and `spine_depth` is the zero-based
+///   parameter index for the **current** App node's `arg`.
+/// - `None` if the op chain does not terminate at a `TypeValue.Nominal` (e.g., a
 ///   TypeVar-headed application — treat as Invariant at the call site).
 ///
 /// ## Spine depth derivation
 ///
 /// Given `op` for the current `App(op, arg)`:
-/// - If `op` is `TypeValue.Op { name }`: depth = 0 (first type parameter).
+/// - If `op` is `TypeValue.Nominal { id }`: depth = 0 (first type parameter).
 /// - If `op` is `TypeValue.App { op: inner_op, arg: _ }`: depth = 1 + depth(inner_op).
 ///
 /// This mirrors the standard treatment of curried type constructors in HM + row
 /// polymorphism (e.g., Rémy 1994, Leijen 2005): multi-parameter TyCons are encoded
 /// as left-spine curried applications, and the n-th parameter is applied at depth n.
-fn app_spine_root_and_depth(op: &Arc<Value>) -> Option<(String, usize)> {
+fn app_spine_root_and_depth(op: &Arc<Value>) -> Option<(u64, usize)> {
     match typevalue_ctor(op) {
         Some(TV_NOMINAL) => {
             // Root of the spine: this is the TyCon itself.
-            let name = typevalue_payload(op)
-                .and_then(|p| payload_string_field(p, FIELD_NAME))
-                .map(|s| s.to_string())?;
-            Some((name, 0))
+            let id = crate::type_infer::typevalue_nominal_id(op)?;
+            Some((id, 0))
         }
         Some(TV_APP) => {
             // Intermediate App node: recurse into its op and add one level.
             let inner_op =
                 typevalue_payload(op).and_then(|p| payload_typevalue_field(p, FIELD_OP))?;
-            let (name, inner_depth) = app_spine_root_and_depth(&inner_op)?;
-            Some((name, inner_depth + 1))
+            let (id, inner_depth) = app_spine_root_and_depth(&inner_op)?;
+            Some((id, inner_depth + 1))
         }
         _ => None, // TypeVar-headed or unknown application — cannot determine variance
     }
@@ -1248,9 +1246,9 @@ fn is_app_subtype(
             // the depth is always 0 (same as the old `.first()` call). For multi-
             // parameter TyCons like Map[K,V], the outer App for V has depth=1 and
             // correctly selects variance[1] rather than variance[0] (K's variance).
-            let variance = match app_spine_root_and_depth(&so).and_then(|(name, spine_depth)| {
+            let variance = match app_spine_root_and_depth(&so).and_then(|(id, spine_depth)| {
                 ctx.tycon_env
-                    .get(&name)
+                    .get(&id)
                     .and_then(|def| def.variance.get(spine_depth).copied())
             }) {
                 Some(v) => v,
@@ -1446,7 +1444,7 @@ pub(crate) fn substitute_recursive_ref(
                         if any_changed {
                             Some(Arc::new(Value::Dict {
                                 entries: new_entries,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             }))
                         } else {
                             None // unchanged
@@ -1525,7 +1523,7 @@ pub(crate) fn substitute_recursive_ref(
                         if any_changed {
                             Some(Arc::new(Value::Dict {
                                 entries: new_entries,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             }))
                         } else {
                             None
@@ -1692,7 +1690,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let inner_dict = Value::Dict {
         entries: inner_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     // Outer dict: { members: inner_dict }
     let mut outer_entries = IndexMap::new();
@@ -1703,7 +1701,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
     let payload_thunk = Arc::new(Thunk::value(
         Value::Dict {
             entries: outer_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         span,
     ));
@@ -1819,23 +1817,9 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
             let b_id = crate::type_infer::typevalue_nominal_id(b);
             match (a_id, b_id) {
                 (Some(ai), Some(bi)) if ai == bi => false,
-                (Some(ai), Some(bi)) => {
-                    // Check if one aliases the other via builtin_type.
-                    let a_aliases_b = ctx
-                        .type_display_names
-                        .get(&bi)
-                        .and_then(|n| ctx.tycon_env.get(n.as_str()))
-                        .and_then(|def| def.builtin_type.as_ref())
-                        .and_then(|disc| ctx.type_name_to_id.get(disc.as_str()).copied())
-                        == Some(ai);
-                    let b_aliases_a = ctx
-                        .type_display_names
-                        .get(&ai)
-                        .and_then(|n| ctx.tycon_env.get(n.as_str()))
-                        .and_then(|def| def.builtin_type.as_ref())
-                        .and_then(|disc| ctx.type_name_to_id.get(disc.as_str()).copied())
-                        == Some(bi);
-                    !a_aliases_b && !b_aliases_a
+                (Some(_ai), Some(_bi)) => {
+                    // Different nominal IDs are always disjoint.
+                    true
                 }
                 _ => false,
             }
@@ -2397,26 +2381,20 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
         if sub_id == sup_id {
             return true;
         }
-        // Check TyCon alias: does sup's TyCon have a builtin_type that maps to sub's id?
+        // Check TyCon alias chain for structural body match.
         if let (Some(si), Some(pi)) = (sub_id, sup_id) {
-            let sup_name = ctx.type_display_names.get(&pi);
-            if let Some(def) = sup_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
-                if let Some(ref builtin_disc) = def.builtin_type {
-                    return ctx.type_name_to_id.get(builtin_disc.as_str()).copied() == Some(si);
-                }
+            if let Some(def) = ctx.tycon_env.get(&pi) {
                 if !def.constructors.is_empty() {
                     return false;
                 }
                 return is_subtype_bas(sub, &def.body, ctx);
             }
-            // Check reverse: does sub's TyCon alias sup's id?
-            let sub_name = ctx.type_display_names.get(&si);
-            if let Some(def) = sub_name.and_then(|n| ctx.tycon_env.get(n.as_str())) {
-                if let Some(ref builtin_disc) = def.builtin_type {
-                    if ctx.type_name_to_id.get(builtin_disc.as_str()).copied() == Some(pi) {
-                        return true;
-                    }
+            // Check reverse: does sub's TyCon body match sup?
+            if let Some(def) = ctx.tycon_env.get(&si) {
+                if !def.constructors.is_empty() {
+                    return false;
                 }
+                return is_subtype_bas(&def.body, sup, ctx);
             }
         }
         return false;
@@ -2479,7 +2457,7 @@ mod tests {
             ctor: Arc::from(TV_TOP),
             payload: None,
 
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         })
     }
 
@@ -2488,7 +2466,7 @@ mod tests {
             ctor: Arc::from(TV_NEVER),
             payload: None,
 
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         })
     }
 
@@ -2497,7 +2475,7 @@ mod tests {
             ctor: Arc::from(TV_UNKNOWN),
             payload: None,
 
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         })
     }
 
@@ -2588,7 +2566,7 @@ mod tests {
         }
         let params_dict = Arc::new(Value::Dict {
             entries: params_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         });
         let mut fields = IndexMap::new();
         fields.insert(FIELD_PARAMS.to_string(), params_dict);
@@ -2608,12 +2586,12 @@ mod tests {
         }
         let fields_dict = Arc::new(Value::Dict {
             entries: field_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         });
         // Closed tail: empty dict []
         let tail_dict = Arc::new(Value::Dict {
             entries: IndexMap::new(),
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         });
         let mut payload_fields = IndexMap::new();
         payload_fields.insert(FIELD_FIELDS.to_string(), fields_dict);

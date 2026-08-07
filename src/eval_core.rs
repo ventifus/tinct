@@ -19,7 +19,9 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceMatchArm, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
-use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value};
+use crate::value::{
+    string_val, type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT,
+};
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
 // (TypeAnnotation OnceLock). The lowerer wraps them in CoreExpr::TypeAssert during lowering.
@@ -142,7 +144,7 @@ async fn collect_seq_elements(
         _ => {
             return Err(EvalError::type_mismatch(
                 "Seq or integer-keyed Dict",
-                current.type_name(),
+                type_id_display_name(current.type_decl_id_of()),
                 span,
             )
             .into());
@@ -282,7 +284,7 @@ fn eval_quote_preprocess<'a>(
                             _ => {
                                 return Err(EvalError::type_mismatch(
                                     "Dict",
-                                    value.type_name(),
+                                    type_id_display_name(value.type_decl_id_of()),
                                     inner_span,
                                 )
                                 .into())
@@ -661,10 +663,18 @@ pub(crate) fn eval_core_expr<'a>(
         let span = expr.span.clone();
         match &expr.node {
             // Literals produce values directly — no thunk wrapping needed
-            CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(Value::Int { n: *n }, span.clone()))),
-            CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(Value::U64 { n: *n }, span.clone()))),
-            CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(Value::Float { n: *f }, span.clone()))),
-            CoreExpr::Str(s) => Ok(Arc::new(Thunk::value(string_val(s), span.clone()))),
+            CoreExpr::Int { value: n, .. } => {
+                Ok(Arc::new(Thunk::value(Value::Int { n: *n }, span.clone())))
+            }
+            CoreExpr::U64 { value: n, .. } => {
+                Ok(Arc::new(Thunk::value(Value::U64 { n: *n }, span.clone())))
+            }
+            CoreExpr::Float { value: f, .. } => {
+                Ok(Arc::new(Thunk::value(Value::Float { n: *f }, span.clone())))
+            }
+            CoreExpr::Str { value: s, .. } => {
+                Ok(Arc::new(Thunk::value(string_val(s), span.clone())))
+            }
 
             // Variable lookup via EvalFrame closure-conversion.
             // All names — builtins, capabilities, and user-defined — resolve through the
@@ -723,6 +733,7 @@ pub(crate) fn eval_core_expr<'a>(
                 tag,
                 payload,
                 type_decl_id,
+                ..
             } => match payload {
                 None => Ok(Arc::new(Thunk::value(
                     Value::Variant {
@@ -754,6 +765,7 @@ pub(crate) fn eval_core_expr<'a>(
                 tycon,
                 ctor,
                 type_decl_id,
+                ..
             } => Ok(Arc::new(Thunk::value(
                 Value::Variant {
                     type_decl_id: *type_decl_id,
@@ -768,7 +780,7 @@ pub(crate) fn eval_core_expr<'a>(
             // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
             // evaluation via LetrecChainStep continuations.
             // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
-            CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::core_expr(
+            CoreExpr::Sequential { .. } => Ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
                 Arc::clone(frame),
                 Arc::clone(ctx),
@@ -778,7 +790,7 @@ pub(crate) fn eval_core_expr<'a>(
             // Dict: call eval_dict_core with the current frame so dict value thunks inherit
             // the outer closure_env for ClosureCapture variable lookups, and so the letrec
             // group Vec is populated with the dict's own static-key thunks.
-            CoreExpr::Dict(entries) => eval_dict_core(entries, frame, ctx, &span).await,
+            CoreExpr::Dict { entries, .. } => eval_dict_core(entries, frame, ctx, &span).await,
 
             // Call: use eval_call_core with the current EvalFrame so argument expressions
             // resolve Dispatch/ClosureCapture variables against the call site's scope.
@@ -927,7 +939,7 @@ pub(crate) fn eval_core_expr<'a>(
             ))),
 
             // Rest: error (only valid in type expressions)
-            CoreExpr::Rest(_) => Err(EvalError::internal(
+            CoreExpr::Rest { .. } => Err(EvalError::internal(
                 "rest marker (...) is only valid inside type expressions".to_string(),
                 span.clone(),
             )
@@ -947,20 +959,20 @@ pub(crate) fn eval_core_expr<'a>(
             // The inner CoreExpr was lowered (giving unquotes proper variable slots),
             // then converted back here for structural traversal. CoreExpr::Var preserves
             // the original name alongside the slot so the round-trip is lossless.
-            CoreExpr::Quote(inner) => {
+            CoreExpr::Quote { expr: inner, .. } => {
                 let surface_node = crate::lower::core_expr_to_surface_node(inner);
                 eval_quote_walk(surface_node, frame, ctx).await
             }
 
             // Unquote: error (only valid inside quote)
-            CoreExpr::Unquote(_) => Err(EvalError::internal(
+            CoreExpr::Unquote { .. } => Err(EvalError::internal(
                 "unquote is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
             .into()),
 
             // UnquoteSplice: error (only valid inside quote)
-            CoreExpr::UnquoteSplice(_) => Err(EvalError::internal(
+            CoreExpr::UnquoteSplice { .. } => Err(EvalError::internal(
                 "unquote-splice is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
@@ -979,7 +991,7 @@ pub(crate) fn eval_core_expr<'a>(
             // (lower_let_decl_binding converts declaration-position VarRef/Annotated/Rest to Str)
             // Pairs are (bindings[2i], bindings[2i+1]).
             // Returns a Dict so the LetrecChainStep can extract keys via its Dict-based binding logic.
-            CoreExpr::LetDecl { bindings } => {
+            CoreExpr::LetDecl { bindings, .. } => {
                 let mut dict: IndexMap<HashableValue, Arc<crate::value::Thunk>> = IndexMap::new();
                 let mut i = 0;
                 while i + 1 < bindings.len() {
@@ -987,7 +999,7 @@ pub(crate) fn eval_core_expr<'a>(
                     let val_expr = &bindings[i + 1];
                     let name = match &name_expr.node {
                         // lower_let_decl_binding converts declaration-position names to Str literals.
-                        CoreExpr::Str(n) => n.clone(),
+                        CoreExpr::Str { value: n, .. } => n.clone(),
                         // Var node in declaration position: extract the name string directly.
                         // Annotated Var (Var { annotation: Some(_) }) is also handled here.
                         CoreExpr::Var { name: n, .. } => n.clone(),
@@ -1017,13 +1029,13 @@ pub(crate) fn eval_core_expr<'a>(
                 Ok(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: dict,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     span.clone(),
                 )))
             }
 
-            CoreExpr::Placeholder => Err(EvalError::unimplemented(
+            CoreExpr::Placeholder { .. } => Err(EvalError::unimplemented(
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),
                 span.clone(),
             )
@@ -1051,6 +1063,7 @@ pub(crate) fn eval_core_expr<'a>(
                 type_name,
                 type_decl_id,
                 inner,
+                ..
             } => {
                 // Create the type identity: a fresh Arc<Value> unique to this type declaration.
                 // The value is a unit Variant with ctor = type_name. This makes the identity
@@ -1095,6 +1108,7 @@ pub(crate) fn eval_core_expr<'a>(
                 repr,
                 is_pred,
                 inner,
+                ..
             } => {
                 // Evaluate the inner constructor dict.
                 let inner_thunk = eval_core_expr(inner, frame, ctx).await?;
@@ -1164,14 +1178,22 @@ mod tests {
         crate::eval::materialize(&thunk, Some(&span), ctx).await
     }
 
-    /// `CoreExpr::Int(42)` evaluates to `Value::Int(42)`.
+    /// `CoreExpr::Int { value: 42 }` evaluates to `Value::Int(42)`.
     ///
     /// Int literals return a pre-materialized Thunk::value without going
     /// through the CEK machine.
     #[tokio::test]
     async fn test_eval_int_literal() {
         let ctx = test_ctx();
-        let val = eval_and_materialize(CoreExpr::Int(42), &ctx).await.unwrap();
+        let val = eval_and_materialize(
+            CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             val,
             Value::Int { n: 42 },
@@ -1179,20 +1201,26 @@ mod tests {
         );
     }
 
-    /// `CoreExpr::Str("hello")` evaluates to the corresponding string Value.
+    /// `CoreExpr::Str { value: "hello" }` evaluates to the corresponding string Value.
     ///
     /// String literals return Thunk::value directly — no CEK machine needed.
     /// We verify the value using string_val to account for the intern/slice representation.
     #[tokio::test]
     async fn test_eval_string_literal() {
         let ctx = test_ctx();
-        let val = eval_and_materialize(CoreExpr::Str("hello".to_string()), &ctx)
-            .await
-            .unwrap();
+        let val = eval_and_materialize(
+            CoreExpr::Str {
+                value: "hello".to_string(),
+                inferred_type_id: 0,
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             val,
             string_val("hello"),
-            "CoreExpr::Str(\"hello\") must evaluate to the string value 'hello'"
+            "CoreExpr::Str must evaluate to the string value 'hello'"
         );
     }
 
@@ -1222,6 +1250,7 @@ mod tests {
                 name: "test-binding".to_string(),
                 addr: VarAddr::Dispatch(0, 0),
                 annotation: None,
+                inferred_type_id: 0,
             },
             span.clone(),
         );

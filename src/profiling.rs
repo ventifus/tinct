@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 
 use crate::eval::EvalContext;
 use crate::rust_span;
-use crate::value::{string_val, HashableValue, Thunk, Value};
+use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 /// Format a string as a tinct string literal with proper escaping.
 ///
@@ -136,7 +136,7 @@ impl SpanRecord {
         fn empty() -> Value {
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }
         }
 
@@ -265,7 +265,7 @@ impl SpanRecord {
 
         Value::Dict {
             entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     }
 }
@@ -489,7 +489,7 @@ impl ProfilingCollector {
         }
         Value::Dict {
             entries: dict,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     }
 }

@@ -28,7 +28,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{BuiltinArgs, Thunk, Value};
+use crate::value::{type_id_display_name, BuiltinArgs, Thunk, Value};
 
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
@@ -96,7 +96,11 @@ pub(crate) fn builtin_div_float(
             }
             _ => Err(EvalError::type_mismatch(
                 "Int or Float",
-                &format!("{} and {}", left.type_name(), right.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(left.type_decl_id_of()),
+                    type_id_display_name(right.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -134,7 +138,11 @@ pub(crate) fn builtin_eq_int(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Int",
-                &format!("{} and {}", left.type_name(), right.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(left.type_decl_id_of()),
+                    type_id_display_name(right.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -172,7 +180,11 @@ pub(crate) fn builtin_eq_float(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", left.type_name(), right.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(left.type_decl_id_of()),
+                    type_id_display_name(right.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -226,7 +238,11 @@ pub(crate) fn builtin_eq_string(
             }
             _ => Err(EvalError::type_mismatch(
                 "String",
-                &format!("{} and {}", left.type_name(), right.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(left.type_decl_id_of()),
+                    type_id_display_name(right.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -270,7 +286,11 @@ pub(crate) fn builtin_lt(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                &format!("{} and {}", left.type_name(), right.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(left.type_decl_id_of()),
+                    type_id_display_name(right.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -305,7 +325,11 @@ pub(crate) fn builtin_float_lt(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -353,7 +377,11 @@ pub(crate) fn builtin_str_lt(
             ),
             _ => Err(EvalError::type_mismatch(
                 "String",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -429,7 +457,7 @@ fn extract_single_float(
         _ => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Int or Float",
-            val.type_name(),
+            type_id_display_name(val.type_decl_id_of()),
             thunk0.span.clone(),
         )
         .into()),
@@ -460,7 +488,7 @@ fn extract_two_floats(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int or Float",
-                left.type_name(),
+                type_id_display_name(left.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into())
@@ -474,7 +502,7 @@ fn extract_two_floats(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int or Float",
-                right.type_name(),
+                type_id_display_name(right.type_decl_id_of()),
                 thunk1.span.clone(),
             )
             .into())
@@ -813,7 +841,7 @@ fn extract_int_pair(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int",
-                left.type_name(),
+                type_id_display_name(left.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into())
@@ -826,7 +854,7 @@ fn extract_int_pair(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int",
-                right.type_name(),
+                type_id_display_name(right.type_decl_id_of()),
                 thunk1.span.clone(),
             )
             .into())
@@ -987,7 +1015,7 @@ pub(crate) fn builtin_float(
             _ => Err(EvalError::type_mismatch_ctx(
                 "float".to_string(),
                 "Int or Float",
-                val.type_name(),
+                type_id_display_name(val.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into()),
@@ -1025,7 +1053,11 @@ pub(crate) fn builtin_int_add(
                 }),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1056,7 +1088,11 @@ pub(crate) fn builtin_float_add(
             }
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1087,7 +1123,12 @@ pub(crate) fn builtin_int_to_float(
                 check_int_to_float_precision(n, thunk0.span.clone())?;
                 ok_val(Value::Float { n: n as f64 }, call_span)
             }
-            _ => Err(EvalError::type_mismatch("Integer", v.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Integer",
+                type_id_display_name(v.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1139,7 +1180,12 @@ pub(crate) fn builtin_float_to_int(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch("Float", v.type_name(), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                type_id_display_name(v.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1170,7 +1216,11 @@ pub(crate) fn builtin_int_sub(
                 }),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1201,7 +1251,11 @@ pub(crate) fn builtin_float_sub(
             }
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1235,7 +1289,11 @@ pub(crate) fn builtin_int_mul(
                 }),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1266,7 +1324,11 @@ pub(crate) fn builtin_float_mul(
             }
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1303,7 +1365,11 @@ pub(crate) fn builtin_int_gt(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1337,7 +1403,11 @@ pub(crate) fn builtin_float_gt(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1384,7 +1454,11 @@ pub(crate) fn builtin_str_gt(
             ),
             _ => Err(EvalError::type_mismatch(
                 "String",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1418,7 +1492,11 @@ pub(crate) fn builtin_int_gte(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1452,7 +1530,11 @@ pub(crate) fn builtin_float_gte(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1499,7 +1581,11 @@ pub(crate) fn builtin_str_gte(
             ),
             _ => Err(EvalError::type_mismatch(
                 "String",
-                &format!("{} and {}", a.type_name(), b.type_name()),
+                &format!(
+                    "{} and {}",
+                    type_id_display_name(a.type_decl_id_of()),
+                    type_id_display_name(b.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),

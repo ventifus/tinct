@@ -273,45 +273,47 @@ The three-way binding below defines the contract. Any deviation — in the annot
 
 | Tinct annotation | `builtin_core.llt` type-stage declaration | Rust `TypeValue` constructor |
 |---|---|---|
-| `@Integer` | `Integer: TypeNode.Int` | `TypeValue.Repr("Value::Int")` |
-| `@Float` | `Float: TypeNode.Float` | `TypeValue.Repr("Value::Float")` |
-| `@String` | `String: TypeNode.String` | `TypeValue.Repr("Value::String")` |
-| `@Bytes` | `Bytes: TypeNode.Bytes` | `TypeValue.Repr("Value::Bytes")` |
+| `@Integer` | `Integer: TypeNode.Int` | `TypeValue.Nominal(TYPE_ID_INT)` |
+| `@Float` | `Float: TypeNode.Float` | `TypeValue.Nominal(TYPE_ID_FLOAT)` |
+| `@String` | `String: TypeNode.String` | `TypeValue.Nominal(TYPE_ID_STRING)` |
+| `@Bytes` | `Bytes: TypeNode.Bytes` | `TypeValue.Nominal(TYPE_ID_BYTES)` |
 | `@Any` | `Any: TypeNode.Top` | `TypeValue.Top` |
 | `@Unknown` | `Unknown: TypeNode.Unknown` | `TypeValue.Unknown` |
 | `@Never` | `Never: TypeNode.Never` | `TypeValue.Never` |
 | `@Absent` | `Absent: TypeNode.Absent` | `TypeValue.Record { fields: {}, tail: closed }` — the empty closed record; the static type of the null/absent sentinel `[]` |
-| `@Proxy` | `Proxy: TypeNode.Proxy` | `TypeValue.Repr("Value::Proxy")` |
+| `@Proxy` | `Proxy: TypeNode.Proxy` | `TypeValue.Nominal(TYPE_ID_PROXY)` |
 | `@Callable` | `builtin_core.llt` declares `TypeNode.Callable` constructor; `prelude.llt` exports `Callable: TypeNode.Callable` | `TypeValue.Fn { params: [], variadic: true, return: Unknown }` |
 | `@Dict` | `Dict: [TypeNode.Dict fields:[] open:1 ..]` | `TypeValue.Record { fields: {}, tail: Uniform(Top) }` — open record |
 
-**Opaque types** — map to `TypeValue.Op(name)`, matched only by tag. Tinct definition is the annotation name; Rust definition is the `Value` variant.
+**Note:** TYPE_ID_* constants are reserved IDs defined in `src/value.rs` (lines 713-751): TYPE_ID_INT = 1, TYPE_ID_FLOAT = 3, TYPE_ID_STRING = 4, TYPE_ID_BYTES = 16, etc. User-defined types get sequential IDs ≥100.
+
+**Opaque types** — map to `TypeValue.Nominal(id)`, matched only by type identity. Tinct definition is the annotation name; Rust definition is the `Value` variant and its corresponding TYPE_ID_* constant.
 
 | Tinct annotation | `builtin_core.llt` declaration | Rust `TypeValue` constructor |
 |---|---|---|
-| `@DirCap` | `DirCap: TypeNode.DirCap` | `TypeValue.Op("DirCap")` |
-| `@NetCap` | `NetCap: TypeNode.NetCap` | `TypeValue.Op("NetCap")` |
-| `@Handle` | `Handle: TypeNode.Handle` | `TypeValue.Op("Handle")` |
-| `@File` | `File: TypeNode.File` | `TypeValue.Op("File")` |
-| `@BuilderHandle` | `BuilderHandle: TypeNode.BuilderHandle` | `TypeValue.Op("BuilderHandle")` |
-| `@Task` | `Task: TypeNode.Task` | `TypeValue.Op("Task")` |
-| `@Channel` | `Channel: TypeNode.Channel` | `TypeValue.Op("Channel")` |
-| `@Context` | `Context: TypeNode.Context` | `TypeValue.Op("Context")` |
-| `@ReactiveCell` | `ReactiveCell: TypeNode.ReactiveCell` | `TypeValue.Op("ReactiveCell")` |
-| `@ClockCap` | `ClockCap: TypeNode.ClockCap` | `TypeValue.Op("ClockCap")` |
-| `@Timezone` | `Timezone: TypeNode.Timezone` | `TypeValue.Op("Timezone")` |
-| `@Decimal` | `Decimal: TypeNode.Decimal` | `TypeValue.Op("Decimal")` |
-| `@BigInt` | `BigInt: TypeNode.BigInt` | `TypeValue.Op("BigInt")` |
-| `@Program` | `Program: TypeNode.Program` | `TypeValue.Op("Program")` |
-| `@Document` | `Document: TypeNode.Document` | `TypeValue.Op("Document")` |
-| `@CoreDocument` | `CoreDocument: TypeNode.CoreDocument` | `TypeValue.Op("CoreDocument")` |
-| `@TypeContext` | `TypeContext: TypeNode.TypeContext` | `TypeValue.Op("TypeContext")` |
-| `@QuicSession` | `QuicSession: TypeNode.QuicSession` | `TypeValue.Op("QuicSession")` |
-| `@QuicDatagramHandle` | `QuicDatagramHandle: TypeNode.QuicDatagramHandle` | `TypeValue.Op("QuicDatagramHandle")` |
-| `@Http2Session` | `Http2Session: TypeNode.Http2Session` | `TypeValue.Op("Http2Session")` |
-| `@Http3Session` | `Http3Session: TypeNode.Http3Session` | `TypeValue.Op("Http3Session")` |
-| `@Uri` | `Uri: TypeNode.Uri` | `TypeValue.Op("Uri")` |
-| `@Urn` | `Urn: TypeNode.Urn` | `TypeValue.Op("Urn")` |
+| `@DirCap` | `DirCap: TypeNode.DirCap` | `TypeValue.Nominal(TYPE_ID_DIRCAP)` |
+| `@NetCap` | `NetCap: TypeNode.NetCap` | `TypeValue.Nominal(TYPE_ID_NETCAP)` |
+| `@Handle` | `Handle: TypeNode.Handle` | `TypeValue.Nominal(TYPE_ID_FILE)` |
+| `@File` | `File: TypeNode.File` | `TypeValue.Nominal(TYPE_ID_FILE)` |
+| `@BuilderHandle` | `BuilderHandle: TypeNode.BuilderHandle` | `TypeValue.Nominal(TYPE_ID_BUILDER)` |
+| `@Task` | `Task: TypeNode.Task` | `TypeValue.Nominal(TYPE_ID_TASK)` |
+| `@Channel` | `Channel: TypeNode.Channel` | `TypeValue.Nominal(TYPE_ID_CHANNEL)` |
+| `@Context` | `Context: TypeNode.Context` | `TypeValue.Nominal(TYPE_ID_CONTEXT)` |
+| `@ReactiveCell` | `ReactiveCell: TypeNode.ReactiveCell` | `TypeValue.Nominal(TYPE_ID_REACTIVE_CELL)` |
+| `@ClockCap` | `ClockCap: TypeNode.ClockCap` | `TypeValue.Nominal(TYPE_ID_CLOCKCAP)` |
+| `@Timezone` | `Timezone: TypeNode.Timezone` | `TypeValue.Nominal(TYPE_ID_TIMEZONE)` |
+| `@Decimal` | `Decimal: TypeNode.Decimal` | `TypeValue.Nominal(TYPE_ID_DECIMAL)` |
+| `@BigInt` | `BigInt: TypeNode.BigInt` | `TypeValue.Nominal(TYPE_ID_BIGINT)` |
+| `@Program` | `Program: TypeNode.Program` | `TypeValue.Nominal(TYPE_ID_PROGRAM)` |
+| `@Document` | `Document: TypeNode.Document` | `TypeValue.Nominal(TYPE_ID_DOCUMENT)` |
+| `@CoreDocument` | `CoreDocument: TypeNode.CoreDocument` | `TypeValue.Nominal(TYPE_ID_CORE_DOCUMENT)` |
+| `@TypeContext` | `TypeContext: TypeNode.TypeContext` | `TypeValue.Nominal(TYPE_ID_TYPE_CONTEXT)` |
+| `@QuicSession` | `QuicSession: TypeNode.QuicSession` | `TypeValue.Nominal(TYPE_ID_QUIC_SESSION)` |
+| `@QuicDatagramHandle` | `QuicDatagramHandle: TypeNode.QuicDatagramHandle` | `TypeValue.Nominal(TYPE_ID_QUIC_DATAGRAM_HANDLE)` |
+| `@Http2Session` | `Http2Session: TypeNode.Http2Session` | `TypeValue.Nominal(TYPE_ID_HTTP2_SESSION)` |
+| `@Http3Session` | `Http3Session: TypeNode.Http3Session` | `TypeValue.Nominal(TYPE_ID_HTTP3_SESSION)` |
+| `@Uri` | `Uri: TypeNode.Uri` | `TypeValue.Nominal(TYPE_ID_URI)` |
+| `@Urn` | `Urn: TypeNode.Urn` | `TypeValue.Nominal(TYPE_ID_URI)` |
 
 ### The canonical mapping functions
 

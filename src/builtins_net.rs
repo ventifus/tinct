@@ -36,7 +36,10 @@ use crate::ast::Span;
 use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_string};
 
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk, Value};
+use crate::value::{
+    string_val, type_id_display_name, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk,
+    Value, TYPE_ID_DICT,
+};
 
 /// Guards rustls crypto provider initialization. `get_or_init` ensures
 /// `install_default()` is called exactly once per process lifetime, making
@@ -232,7 +235,7 @@ pub(crate) async fn build_tls_config(
             return Err(EvalError::type_mismatch_ctx(
                 "tls-connect opts".to_string(),
                 "Dict",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 opts_span,
             )
             .into())
@@ -413,7 +416,7 @@ async fn extract_alpn_protocols(
             return Err(EvalError::type_mismatch_ctx(
                 "tls-connect opts.alpn".to_string(),
                 "Dict of String",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 span,
             )
             .into())
@@ -430,7 +433,7 @@ async fn extract_alpn_protocols(
                 return Err(EvalError::type_mismatch_ctx(
                     "tls-connect opts.alpn".to_string(),
                     "String",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     span,
                 )
                 .into())
@@ -548,7 +551,7 @@ pub(crate) fn builtin_quic_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "quic-session".to_string(),
                     "NetCap",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -570,7 +573,7 @@ pub(crate) fn builtin_quic_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "quic-session".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -718,7 +721,7 @@ pub(crate) fn builtin_quic_open_datagram(
                 return Err(EvalError::type_mismatch_ctx(
                     "quic-open-datagram".to_string(),
                     "QuicSession",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -774,7 +777,7 @@ pub(crate) fn builtin_http2_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "http2-session".to_string(),
                     "NetCap",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -915,7 +918,7 @@ pub(crate) fn builtin_http3_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "http3-session".to_string(),
                     "QuicSession",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1042,7 +1045,7 @@ pub(crate) fn builtin_http_request(
                 return Err(EvalError::type_mismatch_ctx(
                     "http-request".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1079,7 +1082,7 @@ pub(crate) fn builtin_http_request(
             other => Err(EvalError::type_mismatch_ctx(
                 "http-request".to_string(),
                 "Http2Session or Http3Session",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span.clone(),
             )
             .into()),
@@ -1198,7 +1201,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
         ok_val(
             Value::Dict {
                 entries: headers_map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             span.clone(),
         )?,
@@ -1213,7 +1216,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     ok_val(
         Value::Dict {
             entries: inner,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         span,
     )
@@ -1358,7 +1361,7 @@ fn http_request_h3(
         ok_val(
             Value::Dict {
                 entries: headers_map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             span.clone(),
         )?,
@@ -1373,7 +1376,7 @@ fn http_request_h3(
     ok_val(
         Value::Dict {
             entries: inner,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         span,
     )
@@ -1420,7 +1423,7 @@ pub(crate) fn builtin_icmp_ping(
                 return Err(EvalError::type_mismatch_ctx(
                     "icmp-ping".to_string(),
                     "NetCap",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1442,7 +1445,7 @@ pub(crate) fn builtin_icmp_ping(
                 return Err(EvalError::type_mismatch_ctx(
                     "icmp-ping".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1688,7 +1691,7 @@ fn icmp_ping_impl(
     ok_val(
         Value::Dict {
             entries: result,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         span,
     )
@@ -1764,7 +1767,7 @@ pub(crate) fn builtin_send_datagram(
                 return Err(EvalError::type_mismatch_ctx(
                     "send-datagram".to_string(),
                     "String or Bytes",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1788,7 +1791,7 @@ pub(crate) fn builtin_send_datagram(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1797,7 +1800,7 @@ pub(crate) fn builtin_send_datagram(
             other => Err(EvalError::type_mismatch_ctx(
                 "send-datagram".to_string(),
                 "QuicDatagramHandle",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span.clone(),
             )
             .into()),
@@ -1848,7 +1851,7 @@ pub(crate) fn builtin_recv_datagram(
             ok_val(
                 Value::Dict {
                     entries: dict,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span.clone(),
             )
@@ -1871,7 +1874,7 @@ pub(crate) fn builtin_recv_datagram(
             other => Err(EvalError::type_mismatch_ctx(
                 "recv-datagram".to_string(),
                 "QuicDatagramHandle",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span.clone(),
             )
             .into()),
@@ -1907,7 +1910,12 @@ pub(crate) fn builtin_uri(
                 ..
             } => &source[start..end],
             _ => {
-                return Err(EvalError::type_mismatch("String", val.type_name(), call_span).into());
+                return Err(EvalError::type_mismatch(
+                    "String",
+                    type_id_display_name(val.type_decl_id_of()),
+                    call_span,
+                )
+                .into());
             }
         };
 
@@ -1925,7 +1933,7 @@ pub(crate) fn builtin_uri(
             let username = if parsed.username().is_empty() {
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }
             } else {
                 string_val(parsed.username())
@@ -1940,7 +1948,7 @@ pub(crate) fn builtin_uri(
                 Some(pw) => string_val(pw),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
             };
             dict.insert(
@@ -1953,7 +1961,7 @@ pub(crate) fn builtin_uri(
                 Some(h) => string_val(h),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
             };
             dict.insert(
@@ -1966,7 +1974,7 @@ pub(crate) fn builtin_uri(
                 Some(p) => Value::Int { n: i64::from(p) },
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
             };
             dict.insert(
@@ -1985,7 +1993,7 @@ pub(crate) fn builtin_uri(
                 Some(q) => string_val(q),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
             };
             dict.insert(
@@ -1998,7 +2006,7 @@ pub(crate) fn builtin_uri(
                 Some(f) => string_val(f),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
             };
             dict.insert(
@@ -2009,7 +2017,7 @@ pub(crate) fn builtin_uri(
             return ok_val(
                 Value::Dict {
                     entries: dict,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             );
@@ -2042,7 +2050,7 @@ pub(crate) fn builtin_uri(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span.clone(),
                 )?,
@@ -2064,7 +2072,7 @@ pub(crate) fn builtin_uri(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span.clone(),
                 )?,
@@ -2074,7 +2082,7 @@ pub(crate) fn builtin_uri(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2105,7 +2113,12 @@ pub(crate) fn builtin_url(
                 ..
             } => &source[start..end],
             _ => {
-                return Err(EvalError::type_mismatch("String", val.type_name(), call_span).into());
+                return Err(EvalError::type_mismatch(
+                    "String",
+                    type_id_display_name(val.type_decl_id_of()),
+                    call_span,
+                )
+                .into());
             }
         };
 
@@ -2134,7 +2147,7 @@ pub(crate) fn builtin_url(
         let username = if parsed.username().is_empty() {
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }
         } else {
             string_val(parsed.username())
@@ -2149,7 +2162,7 @@ pub(crate) fn builtin_url(
             Some(pw) => string_val(pw),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         };
         dict.insert(
@@ -2190,7 +2203,7 @@ pub(crate) fn builtin_url(
             Some(q) => string_val(q),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         };
         dict.insert(
@@ -2203,7 +2216,7 @@ pub(crate) fn builtin_url(
             Some(f) => string_val(f),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         };
         dict.insert(
@@ -2214,7 +2227,7 @@ pub(crate) fn builtin_url(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2246,7 +2259,12 @@ pub(crate) fn builtin_urn(
                 ..
             } => &source[start..end],
             _ => {
-                return Err(EvalError::type_mismatch("String", val.type_name(), call_span).into());
+                return Err(EvalError::type_mismatch(
+                    "String",
+                    type_id_display_name(val.type_decl_id_of()),
+                    call_span,
+                )
+                .into());
             }
         };
 
@@ -2316,7 +2334,7 @@ pub(crate) fn builtin_urn(
             Some(r) => string_val(r),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         };
         dict.insert(
@@ -2329,7 +2347,7 @@ pub(crate) fn builtin_urn(
             Some(q) => string_val(q),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         };
         dict.insert(
@@ -2342,7 +2360,7 @@ pub(crate) fn builtin_urn(
             Some(f) => string_val(f),
             None => Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         };
         dict.insert(
@@ -2353,7 +2371,7 @@ pub(crate) fn builtin_urn(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )

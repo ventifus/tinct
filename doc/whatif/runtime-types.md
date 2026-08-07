@@ -89,19 +89,19 @@ VarDecl: [type [name: String  kind: TypeValue]]
 ConstraintDecl: [type [class: TypeValue  args: Dict]]
 ```
 
-Kinds are TypeValues: `Type = TypeValue.Op "Type"` (the kind `*`), `TypeValue.Fn` with `params: [Type]` and `return: Type` is the kind `* → *`, `Row` is the row kind.
+Kinds are TypeValues: `Type = TypeValue.Nominal(TYPE_ID_TYPE)` (the kind `*`), `TypeValue.Fn` with `params: [Type]` and `return: Type` is the kind `* → *`, `Row` is the row kind.
 
 ## Runtime Type Identity
 
-`builtin-type-of` returns a value's `type_val` directly:
+`builtin-type-of` returns a value's type identity based on its `type_decl_id`:
 
 | Value | `builtin-type-of` returns |
 |---|---|
-| `42` | `NativeInt` (TypeValue.Repr with `repr: "Value::Int"`) |
-| `3.14` | `Float64` (TypeValue.Repr with `repr: "Value::Float"`) |
-| `"hello"` | `String` (TypeValue.Repr with `repr: "Value::String"`) |
-| `[a: 1]` | `Dict` (TypeValue.Repr with `repr: "Value::Dict"`) |
-| `Color.True` | `Color.True` variant TypeValue (booleans are nominal ADTs, not Repr) |
+| `42` | `NativeInt` (TypeValue.Nominal(TYPE_ID_INT)) |
+| `3.14` | `Float64` (TypeValue.Nominal(TYPE_ID_FLOAT)) |
+| `"hello"` | `String` (TypeValue.Nominal(TYPE_ID_STRING)) |
+| `[a: 1]` | `Dict` (TypeValue.Nominal(TYPE_ID_DICT)) |
+| `Color.True` | `Color.True` variant TypeValue (booleans are nominal ADTs, not primitives) |
 | `Color.Red` | The TypeValue of the declared type (`Color`) |
 | `[fn [let x] x]` | TypeValue.Fn describing the function's signature |
 | `[@NativeInt 42]` | `NativeInt` after TypeAssert narrows |
@@ -592,7 +592,7 @@ struct InferState {
 - **matchable-patterns.md** — depends on this. Pattern matching on TypeValues in match arms is specified here. `bind-primitive`/`bind-opaque` are replaced by `repr:`.
 - **type-stage-foundation.md** — the long-term vision: type inference algorithms become tinct typeclass operations. This proposal does not require that; it is a prerequisite for it.
 - **equirecursive-types.md** — de Bruijn `Recursive`/`RecursiveRef` specified here supersedes the gensym approach in equirecursive-types.md.
-- **user-type-constructors.md** — `Type::TyCon` and `Type::App` variants are eliminated; replaced by `TypeValue.Op` and `TypeValue.App`.
+- **user-type-constructors.md** — `Type::TyCon` and `Type::App` variants are eliminated; replaced by `TypeValue.Nominal` and `TypeValue.App`.
 
 ## Prior Art
 

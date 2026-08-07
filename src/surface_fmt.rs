@@ -16,7 +16,7 @@ use crate::env::Env;
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
-use crate::value::{HashableValue, Thunk, Value};
+use crate::value::{type_id_display_name, HashableValue, Thunk, Value};
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
 ///
@@ -300,12 +300,12 @@ fn collect_free_vars(
 ) {
     match expr {
         // Leaves — no variable references
-        CoreExpr::Int(_)
-        | CoreExpr::U64(_)
-        | CoreExpr::Float(_)
-        | CoreExpr::Str(_)
-        | CoreExpr::Placeholder
-        | CoreExpr::Rest(_)
+        CoreExpr::Int { .. }
+        | CoreExpr::U64 { .. }
+        | CoreExpr::Float { .. }
+        | CoreExpr::Str { .. }
+        | CoreExpr::Placeholder { .. }
+        | CoreExpr::Rest { .. }
         | CoreExpr::UnitVariant { .. } => {}
 
         // Variant: tag is a literal, payload may contain variable references.
@@ -325,7 +325,7 @@ fn collect_free_vars(
         }
 
         // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
-        CoreExpr::Sequential(exprs) => {
+        CoreExpr::Sequential { exprs, .. } => {
             // Mirror the resolver's sequential scope injection (resolve.rs:118-134):
             // after each intermediate expression, collect any static dict keys it introduces
             // and add them to param_scope for subsequent expressions.
@@ -334,11 +334,11 @@ fn collect_free_vars(
                 collect_free_vars(&e.node, &seq_scope, stdlib_env, out);
                 // After all but the last expression, inject static dict keys into scope.
                 if i + 1 < exprs.len() {
-                    if let CoreExpr::Dict(entries) = &e.node {
+                    if let CoreExpr::Dict { entries, .. } = &e.node {
                         for entry in entries {
                             if let Some(key) = &entry.node.key {
                                 if core_expr_is_static_key(&key.node) {
-                                    if let CoreExpr::Str(name) = &key.node {
+                                    if let CoreExpr::Str { value: name, .. } = &key.node {
                                         seq_scope.insert(name.clone());
                                     // Annotated Var (Var { annotation: Some(_) }) is a static key.
                                     } else if let CoreExpr::Var {
@@ -357,7 +357,7 @@ fn collect_free_vars(
             }
         }
 
-        CoreExpr::Dict(entries) => {
+        CoreExpr::Dict { entries, .. } => {
             // Mirror the resolver's dict letrec scoping (resolve.rs:83-97, eval_dict.rs:66-68):
             // all static key names are bound within the dict scope and visible to all entry
             // values (letrec, enabling mutual recursion). Collect static keys first, then
@@ -367,7 +367,7 @@ fn collect_free_vars(
             for entry in entries {
                 if let Some(key) = &entry.node.key {
                     if core_expr_is_static_key(&key.node) {
-                        if let CoreExpr::Str(name) = &key.node {
+                        if let CoreExpr::Str { value: name, .. } = &key.node {
                             dict_scope.insert(name.clone());
                         // Annotated Var (Var { annotation: Some(_) }) is a static key.
                         } else if let CoreExpr::Var {
@@ -421,7 +421,9 @@ fn collect_free_vars(
             collect_free_vars(&expr.node, param_scope, stdlib_env, out);
         }
 
-        CoreExpr::Match { scrutinee, arms } => {
+        CoreExpr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_free_vars(&scrutinee.node, param_scope, stdlib_env, out);
             for arm in arms {
                 // T-1750: patterns are now SurfaceNode and introduce no bindings
@@ -435,16 +437,16 @@ fn collect_free_vars(
 
         // Quote is opaque AST data — do not substitute into it.
         // Only recurse into nested Unquote/UnquoteSplice sub-expressions.
-        CoreExpr::Quote(inner) => {
+        CoreExpr::Quote { expr: inner, .. } => {
             collect_free_vars_in_quote(&inner.node, 1, param_scope, stdlib_env, out);
         }
 
-        CoreExpr::Unquote(inner) | CoreExpr::UnquoteSplice(inner) => {
+        CoreExpr::Unquote { expr: inner, .. } | CoreExpr::UnquoteSplice { expr: inner, .. } => {
             // Unquote outside Quote is a no-op in the surface language; recurse normally.
             collect_free_vars(&inner.node, param_scope, stdlib_env, out);
         }
 
-        CoreExpr::PatternDecl { bindings } | CoreExpr::LetDecl { bindings } => {
+        CoreExpr::PatternDecl { bindings, .. } | CoreExpr::LetDecl { bindings, .. } => {
             for binding in bindings {
                 collect_free_vars(&binding.node, param_scope, stdlib_env, out);
             }
@@ -476,10 +478,10 @@ fn collect_free_vars_in_quote(
     out: &mut HashSet<String>,
 ) {
     match expr {
-        CoreExpr::Quote(inner) => {
+        CoreExpr::Quote { expr: inner, .. } => {
             collect_free_vars_in_quote(&inner.node, depth + 1, param_scope, stdlib_env, out);
         }
-        CoreExpr::Unquote(inner) | CoreExpr::UnquoteSplice(inner) => {
+        CoreExpr::Unquote { expr: inner, .. } | CoreExpr::UnquoteSplice { expr: inner, .. } => {
             if depth == 1 {
                 // Returning to evaluation context — recurse normally
                 collect_free_vars(&inner.node, param_scope, stdlib_env, out);
@@ -514,7 +516,7 @@ fn collect_free_vars_in_quote(
                 collect_free_vars_in_quote(&clause.body.node, depth, param_scope, stdlib_env, out);
             }
         }
-        CoreExpr::Dict(entries) => {
+        CoreExpr::Dict { entries, .. } => {
             for entry in entries {
                 if let Some(key) = &entry.node.key {
                     collect_free_vars_in_quote(&key.node, depth, param_scope, stdlib_env, out);
@@ -528,12 +530,12 @@ fn collect_free_vars_in_quote(
                 );
             }
         }
-        CoreExpr::Sequential(exprs) => {
+        CoreExpr::Sequential { exprs, .. } => {
             for e in exprs {
                 collect_free_vars_in_quote(&e.node, depth, param_scope, stdlib_env, out);
             }
         }
-        CoreExpr::Match { scrutinee, arms } => {
+        CoreExpr::Match { scrutinee, arms, .. } => {
             collect_free_vars_in_quote(&scrutinee.node, depth, param_scope, stdlib_env, out);
             for arm in arms {
                 if let Some(guard) = &arm.guard {
@@ -545,7 +547,7 @@ fn collect_free_vars_in_quote(
         CoreExpr::TypeAssert { expr, .. } => {
             collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
         }
-        CoreExpr::PatternDecl { bindings } | CoreExpr::LetDecl { bindings } => {
+        CoreExpr::PatternDecl { bindings, .. } | CoreExpr::LetDecl { bindings, .. } => {
             for b in bindings {
                 collect_free_vars_in_quote(&b.node, depth, param_scope, stdlib_env, out);
             }
@@ -568,14 +570,14 @@ fn collect_free_vars_in_quote(
             collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
         }
         // Leaves — nothing to do even inside quotes
-        CoreExpr::Int(_)
-        | CoreExpr::U64(_)
-        | CoreExpr::Float(_)
-        | CoreExpr::Str(_)
+        CoreExpr::Int { .. }
+        | CoreExpr::U64 { .. }
+        | CoreExpr::Float { .. }
+        | CoreExpr::Str { .. }
         | CoreExpr::Var { .. }  // includes annotated Var (Var { annotation: Some(_) })
-        | CoreExpr::Rest(_)
+        | CoreExpr::Rest { .. }
         | CoreExpr::UnitVariant { .. }
-        | CoreExpr::Placeholder => {}
+        | CoreExpr::Placeholder { .. } => {}
     }
 }
 
@@ -594,16 +596,16 @@ fn core_expr_to_tinct(
 ) -> Result<String, String> {
     match expr {
         // Literals — direct serialization
-        CoreExpr::Int(n) => Ok(fmt_int(*n)),
-        CoreExpr::U64(n) => Ok(format!("{n}u")),
-        CoreExpr::Float(f) => fmt_float(*f),
-        CoreExpr::Str(s) => Ok(fmt_string(s)),
+        CoreExpr::Int { value: n, .. } => Ok(fmt_int(*n)),
+        CoreExpr::U64 { value: n, .. } => Ok(format!("{n}u")),
+        CoreExpr::Float { value: f, .. } => fmt_float(*f),
+        CoreExpr::Str { value: s, .. } => Ok(fmt_string(s)),
 
         // Placeholder — dead-code marker, emitted as opaque marker string
-        CoreExpr::Placeholder => Ok("_".to_string()),
+        CoreExpr::Placeholder { .. } => Ok("_".to_string()),
 
         // Rest parameter reference
-        CoreExpr::Rest(name) => match name {
+        CoreExpr::Rest { name, .. } => match name {
             Some(n) => Ok(format!("...{}", n)),
             None => Ok("...".to_string()),
         },
@@ -634,7 +636,7 @@ fn core_expr_to_tinct(
         // bindings into scope so that later expressions can reference names introduced by
         // earlier dict expressions without treating them as free variables that need
         // substitution. Mirrors the resolver's sequential scope injection (resolve.rs:118-134).
-        CoreExpr::Sequential(exprs) => {
+        CoreExpr::Sequential { exprs, .. } => {
             let mut seq_scope = param_scope.clone();
             let mut parts = Vec::with_capacity(exprs.len());
             for (i, e) in exprs.iter().enumerate() {
@@ -648,11 +650,11 @@ fn core_expr_to_tinct(
                 // After all but the last expression, inject static dict keys into scope
                 // so subsequent expressions do not substitute these names.
                 if i + 1 < exprs.len() {
-                    if let CoreExpr::Dict(entries) = &e.node {
+                    if let CoreExpr::Dict { entries, .. } = &e.node {
                         for entry in entries {
                             if let Some(key) = &entry.node.key {
                                 if core_expr_is_static_key(&key.node) {
-                                    if let CoreExpr::Str(name) = &key.node {
+                                    if let CoreExpr::Str { value: name, .. } = &key.node {
                                         seq_scope.insert(name.clone());
                                     // Annotated Var (Var { annotation: Some(_) }) is a static key.
                                     } else if let CoreExpr::Var {
@@ -678,13 +680,13 @@ fn core_expr_to_tinct(
         // names, mirroring eval_dict_core / the resolver (resolve.rs:83-97, eval_dict.rs:66-68).
         // This prevents dict-local variable references from being treated as free variables
         // and incorrectly replaced by substitution.
-        CoreExpr::Dict(entries) => {
+        CoreExpr::Dict { entries, .. } => {
             // Collect static key names first to build the letrec dict scope.
             let mut dict_scope = param_scope.clone();
             for entry in entries {
                 if let Some(key) = &entry.node.key {
                     if core_expr_is_static_key(&key.node) {
-                        if let CoreExpr::Str(name) = &key.node {
+                        if let CoreExpr::Str { value: name, .. } = &key.node {
                             dict_scope.insert(name.clone());
                         // Annotated Var (Var { annotation: Some(_) }) is a static key.
                         } else if let CoreExpr::Var {
@@ -824,7 +826,9 @@ fn core_expr_to_tinct(
         }
 
         // Match: `[match scrutinee arm ...]`
-        CoreExpr::Match { scrutinee, arms } => {
+        CoreExpr::Match {
+            scrutinee, arms, ..
+        } => {
             let scrutinee_str =
                 core_expr_to_tinct(&scrutinee.node, param_scope, substitutions, rename_map, ctx)?;
             let mut arm_parts: Vec<String> = Vec::with_capacity(arms.len());
@@ -884,7 +888,7 @@ fn core_expr_to_tinct(
 
         // Quote: emit as-is — we do not substitute inside quotes.
         // Unquote sub-expressions ARE emitted with substitution applied.
-        CoreExpr::Quote(inner) => {
+        CoreExpr::Quote { expr: inner, .. } => {
             let inner_str = core_expr_to_tinct_in_quote(
                 &inner.node,
                 1,
@@ -896,19 +900,19 @@ fn core_expr_to_tinct(
             Ok(format!("(quote {})", inner_str))
         }
 
-        CoreExpr::Unquote(inner) => {
+        CoreExpr::Unquote { expr: inner, .. } => {
             let inner_str =
                 core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
             Ok(format!("(unquote {})", inner_str))
         }
 
-        CoreExpr::UnquoteSplice(inner) => {
+        CoreExpr::UnquoteSplice { expr: inner, .. } => {
             let inner_str =
                 core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
             Ok(format!("(unquote-splice {})", inner_str))
         }
 
-        CoreExpr::PatternDecl { bindings } => {
+        CoreExpr::PatternDecl { bindings, .. } => {
             let mut parts = Vec::with_capacity(bindings.len());
             for b in bindings {
                 parts.push(core_expr_to_tinct(
@@ -922,7 +926,7 @@ fn core_expr_to_tinct(
             Ok(format!("[pattern {}]", parts.join(" ")))
         }
 
-        CoreExpr::LetDecl { bindings } => {
+        CoreExpr::LetDecl { bindings, .. } => {
             let mut parts = Vec::with_capacity(bindings.len());
             for b in bindings {
                 parts.push(core_expr_to_tinct(
@@ -981,7 +985,7 @@ fn core_expr_to_tinct_in_quote(
     ctx: &Arc<EvalContext>,
 ) -> Result<String, String> {
     match expr {
-        CoreExpr::Quote(inner) => {
+        CoreExpr::Quote { expr: inner, .. } => {
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth + 1,
@@ -992,7 +996,7 @@ fn core_expr_to_tinct_in_quote(
             )?;
             Ok(format!("(quote {})", s))
         }
-        CoreExpr::Unquote(inner) => {
+        CoreExpr::Unquote { expr: inner, .. } => {
             if depth == 1 {
                 let s =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
@@ -1009,7 +1013,7 @@ fn core_expr_to_tinct_in_quote(
                 Ok(format!("(unquote {})", s))
             }
         }
-        CoreExpr::UnquoteSplice(inner) => {
+        CoreExpr::UnquoteSplice { expr: inner, .. } => {
             if depth == 1 {
                 let s =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
@@ -1042,12 +1046,12 @@ fn core_expr_to_tinct_raw(
     ctx: &Arc<EvalContext>,
 ) -> Result<String, String> {
     match expr {
-        CoreExpr::Int(n) => Ok(fmt_int(*n)),
-        CoreExpr::U64(n) => Ok(format!("{n}u")),
-        CoreExpr::Float(f) => fmt_float(*f),
-        CoreExpr::Str(s) => Ok(fmt_string(s)),
-        CoreExpr::Placeholder => Ok("_".to_string()),
-        CoreExpr::Rest(name) => match name {
+        CoreExpr::Int { value: n, .. } => Ok(fmt_int(*n)),
+        CoreExpr::U64 { value: n, .. } => Ok(format!("{n}u")),
+        CoreExpr::Float { value: f, .. } => fmt_float(*f),
+        CoreExpr::Str { value: s, .. } => Ok(fmt_string(s)),
+        CoreExpr::Placeholder { .. } => Ok("_".to_string()),
+        CoreExpr::Rest { name, .. } => match name {
             Some(n) => Ok(format!("...{}", n)),
             None => Ok("...".to_string()),
         },
@@ -1055,7 +1059,7 @@ fn core_expr_to_tinct_raw(
         // Annotated Var (Var { annotation: Some(_) }) also uses the name field.
         CoreExpr::Var { name, .. } => Ok(name.clone()),
 
-        CoreExpr::Sequential(exprs) => {
+        CoreExpr::Sequential { exprs, .. } => {
             let mut parts = Vec::new();
             for e in exprs {
                 parts.push(core_expr_to_tinct_in_quote(
@@ -1069,7 +1073,7 @@ fn core_expr_to_tinct_raw(
             }
             Ok(parts.join("\n"))
         }
-        CoreExpr::Dict(entries) => {
+        CoreExpr::Dict { entries, .. } => {
             let mut out = String::from("[");
             for (i, entry) in entries.iter().enumerate() {
                 if i > 0 {
@@ -1171,7 +1175,9 @@ fn core_expr_to_tinct_raw(
             rename_map,
             ctx,
         ),
-        CoreExpr::Match { scrutinee, arms } => {
+        CoreExpr::Match {
+            scrutinee, arms, ..
+        } => {
             let ss = core_expr_to_tinct_in_quote(
                 &scrutinee.node,
                 depth,
@@ -1234,7 +1240,7 @@ fn core_expr_to_tinct_raw(
             }
             Ok(format!("[match {}  {}]", ss, arm_parts.join("  ")))
         }
-        CoreExpr::Quote(inner) => {
+        CoreExpr::Quote { expr: inner, .. } => {
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth + 1,
@@ -1248,7 +1254,7 @@ fn core_expr_to_tinct_raw(
         // These arms are unreachable: `core_expr_to_tinct_in_quote` matches
         // Unquote/UnquoteSplice explicitly before delegating to `core_expr_to_tinct_raw`
         // via the `other =>` catch-all. They are kept for exhaustiveness only.
-        CoreExpr::Unquote(inner) => {
+        CoreExpr::Unquote { expr: inner, .. } => {
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth - 1,
@@ -1259,7 +1265,7 @@ fn core_expr_to_tinct_raw(
             )?;
             Ok(format!("(unquote {})", s))
         }
-        CoreExpr::UnquoteSplice(inner) => {
+        CoreExpr::UnquoteSplice { expr: inner, .. } => {
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth - 1,
@@ -1270,7 +1276,7 @@ fn core_expr_to_tinct_raw(
             )?;
             Ok(format!("(unquote-splice {})", s))
         }
-        CoreExpr::PatternDecl { bindings } => {
+        CoreExpr::PatternDecl { bindings, .. } => {
             let mut parts = Vec::new();
             for b in bindings {
                 parts.push(core_expr_to_tinct_in_quote(
@@ -1284,7 +1290,7 @@ fn core_expr_to_tinct_raw(
             }
             Ok(format!("[pattern {}]", parts.join(" ")))
         }
-        CoreExpr::LetDecl { bindings } => {
+        CoreExpr::LetDecl { bindings, .. } => {
             let mut parts = Vec::new();
             for b in bindings {
                 parts.push(core_expr_to_tinct_in_quote(
@@ -1452,72 +1458,111 @@ impl Value {
             }
             Value::Duration { nanos, .. } => Ok(format!("[duration-nanos {}]", nanos)),
             // Non-serializable values — no tinct representation exists
-            Value::DirCap { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::NetCap { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::ClockCap { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::RevocableDirCap { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::File { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::QuicSession { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Http2Session { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Http3Session { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::QuicDatagramHandle { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Task { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::Channel { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Context { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Builder(_) => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::Proxy { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::Timezone { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Program { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Document { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Uri { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::ReactiveCell { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
+            Value::DirCap { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::NetCap { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::ClockCap { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::RevocableDirCap { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::File { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::QuicSession { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Http2Session { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Http3Session { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::QuicDatagramHandle { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Task { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Channel { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Context { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Builder(_) => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Proxy { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Timezone { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Program { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Document { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Uri { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::ReactiveCell { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
             Value::BroadcastChannel { .. }
             | Value::OneshotSender { .. }
-            | Value::OneshotReceiver { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
+            | Value::OneshotReceiver { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
             Value::U64 { n, .. } => Ok(format!("{n}u")),
             // Annotated is transparent — delegate to inner value.
             Value::Annotated { inner, .. } => inner.to_tinct(ctx),
-            Value::TypeContext { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Expression { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Arena { .. } => Err(format!("no tinct representation for {}", self.type_name())),
-            Value::CoreDocument { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::Scope { .. } => Err(format!("no tinct representation for {}", self.type_name())),
+            Value::TypeContext { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Expression { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Arena { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::CoreDocument { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
+            Value::Scope { .. } => Err(format!(
+                "no tinct representation for {}",
+                type_id_display_name(self.type_decl_id_of())
+            )),
         }
     }
 }

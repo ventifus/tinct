@@ -47,7 +47,9 @@ use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_materialize::make_span_dict;
 use crate::rust_span;
-use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value};
+use crate::value::{
+    string_val, type_id_display_name, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT,
+};
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
@@ -95,7 +97,7 @@ fn serialize_diagnostic(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
                 entries: ss,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
     }
@@ -103,7 +105,7 @@ fn serialize_diagnostic(
         HashableValue::Str("secondary-spans".into()),
         mk(crate::value::Value::Dict {
             entries: secondary,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }),
     );
 
@@ -116,7 +118,7 @@ fn serialize_diagnostic(
         HashableValue::Str("notes".into()),
         mk(crate::value::Value::Dict {
             entries: notes_dict,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }),
     );
 
@@ -129,7 +131,7 @@ fn serialize_diagnostic(
         HashableValue::Str("help".into()),
         mk(crate::value::Value::Dict {
             entries: help_dict,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }),
     );
 
@@ -143,7 +145,7 @@ fn serialize_diagnostic(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
                 entries: frame,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
     }
@@ -151,7 +153,7 @@ fn serialize_diagnostic(
         HashableValue::Str("call-stack".into()),
         mk(crate::value::Value::Dict {
             entries: call_stack_dict,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }),
     );
 
@@ -159,12 +161,12 @@ fn serialize_diagnostic(
         let inner_entries = serialize_diagnostic(inner, call_span);
         crate::value::Value::Dict {
             entries: inner_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     } else {
         crate::value::Value::Dict {
             entries: IndexMap::new(),
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     };
     w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -176,7 +178,7 @@ fn serialize_diagnostic(
             Some(b) => string_val(b),
             None => crate::value::Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         }),
     );
@@ -390,7 +392,7 @@ pub(crate) fn builtin_try(
                 ok_val(
                     Value::Dict {
                         entries: map,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -430,7 +432,7 @@ pub(crate) fn builtin_try(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
                             entries: ss,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         }),
                     );
                 }
@@ -438,7 +440,7 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("secondary-spans".into()),
                     mk(Value::Dict {
                         entries: secondary,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }),
                 );
                 let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -449,14 +451,14 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("notes".into()),
                     mk(Value::Dict {
                         entries: notes_dict,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }),
                 );
                 w.insert(
                     HashableValue::Str("help".into()),
                     mk(Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }),
                 );
                 // call-stack: [{label, span}] from EvalError.stack
@@ -475,7 +477,7 @@ pub(crate) fn builtin_try(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
                             entries: fd,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         }),
                     );
                 }
@@ -483,7 +485,7 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("call-stack".into()),
                     mk(Value::Dict {
                         entries: stack,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }),
                 );
                 let macro_val = if let Some((name, span)) = &e.macro_expansion {
@@ -492,12 +494,12 @@ pub(crate) fn builtin_try(
                     me.insert(HashableValue::Str("span".into()), mk_span(span));
                     Value::Dict {
                         entries: me,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }
                 } else {
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }
                 };
                 w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -505,13 +507,13 @@ pub(crate) fn builtin_try(
                     HashableValue::Str("blame".into()),
                     mk(Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: w,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -570,7 +572,7 @@ pub(crate) fn builtin_gensym(
                 v => Err(EvalError::type_mismatch_ctx(
                     format!("builtin-gensym {name}"),
                     "String",
-                    v.type_name(),
+                    type_id_display_name(v.type_decl_id_of()),
                     span.clone(),
                 )
                 .into()),
@@ -643,7 +645,7 @@ pub(crate) fn builtin_macro_injects(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -768,29 +770,8 @@ pub(crate) fn builtin_type_of(
             &ctx,
             call_span.clone(),
         )?;
-        let type_id = match &val {
-            crate::value::Value::Int { .. } => crate::value::TYPE_ID_INT,
-            crate::value::Value::U64 { .. } => crate::value::TYPE_ID_U64,
-            crate::value::Value::Float { .. } => crate::value::TYPE_ID_FLOAT,
-            crate::value::Value::String { .. } => crate::value::TYPE_ID_STRING,
-            crate::value::Value::Bytes { .. } => crate::value::TYPE_ID_BYTES,
-            crate::value::Value::Dict { type_decl_id, .. } => {
-                if *type_decl_id > 0 {
-                    *type_decl_id
-                } else {
-                    crate::value::TYPE_ID_DICT
-                }
-            }
-            crate::value::Value::Function { .. } => crate::value::TYPE_ID_FUNCTION,
-            crate::value::Value::Builtin { .. } => crate::value::TYPE_ID_BUILTIN,
-            crate::value::Value::Variant { type_decl_id, .. } => *type_decl_id,
-            _ => 0,
-        };
-        let tv = if type_id > 0 {
-            crate::type_infer::make_typevalue_nominal(type_id)
-        } else {
-            crate::type_infer::make_typevalue_unknown()
-        };
+        let type_id = val.type_decl_id_of();
+        let tv = { crate::type_infer::make_typevalue_nominal(type_id) };
         Ok(Arc::new(Thunk::value(tv.as_ref().clone(), call_span)))
     })
 }
@@ -887,7 +868,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             )));
@@ -906,7 +887,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             )));
@@ -932,7 +913,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             )));
@@ -958,7 +939,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             )));
@@ -991,7 +972,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             )));
@@ -1055,7 +1036,7 @@ pub(crate) fn builtin_ast_of(
                 None => Arc::new(crate::value::Thunk::value(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span.clone(),
                 )),
@@ -1084,7 +1065,7 @@ pub(crate) fn builtin_ast_of(
                     Ok(Arc::new(crate::value::Thunk::value(
                         Value::Dict {
                             entries: param_dict,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         },
                         call_span.clone(),
                     )))
@@ -1101,7 +1082,7 @@ pub(crate) fn builtin_ast_of(
                 Arc::new(Thunk::value(
                     Value::Dict {
                         entries: params_dict,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span.clone(),
                 )),
@@ -1110,7 +1091,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 Value::Dict {
                     entries: dict,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             )));
@@ -1119,7 +1100,12 @@ pub(crate) fn builtin_ast_of(
         // ast-of is defined only for unevaluated expressions (AstNodeField) and
         // Value::Function. If the thunk holds any other materialized value, the caller
         // should have passed the unevaluated form instead.
-        Err(EvalError::type_mismatch("Expr.*", val.type_name(), call_span).into())
+        Err(EvalError::type_mismatch(
+            "Expr.*",
+            type_id_display_name(val.type_decl_id_of()),
+            call_span,
+        )
+        .into())
     })
 }
 
@@ -1227,7 +1213,7 @@ pub(crate) fn builtin_tag_of(
             Value::Variant { ctor, .. } => ok_val(string_val(ctor.as_ref()), call_span),
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
-                peeled.type_name(),
+                type_id_display_name(peeled.type_decl_id_of()),
                 call_span,
             ))),
         }
@@ -1367,7 +1353,7 @@ pub(crate) fn builtin_span_of(
                                 } else {
                                     Value::Dict {
                                         entries: IndexMap::new(),
-                                        type_decl_id: 0,
+                                        type_decl_id: TYPE_ID_DICT,
                                     }
                                 };
 
@@ -1393,7 +1379,7 @@ pub(crate) fn builtin_span_of(
                                 return ok_val(
                                     Value::Dict {
                                         entries: w,
-                                        type_decl_id: 0,
+                                        type_decl_id: TYPE_ID_DICT,
                                     },
                                     call_span,
                                 );
@@ -1408,7 +1394,7 @@ pub(crate) fn builtin_span_of(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1447,7 +1433,7 @@ pub(crate) fn builtin_var_resolution(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1460,7 +1446,7 @@ pub(crate) fn builtin_var_resolution(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1473,7 +1459,7 @@ pub(crate) fn builtin_var_resolution(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
                     "Program",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1579,7 +1565,7 @@ pub(crate) fn builtin_var_resolution(
             None => ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             ),
@@ -1603,7 +1589,7 @@ pub(crate) fn builtin_var_resolution(
                 ok_val(
                     Value::Dict {
                         entries: result,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1686,7 +1672,7 @@ pub(crate) fn builtin_annotation_of(
                 ok_val(
                     Value::Dict {
                         entries,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1701,7 +1687,7 @@ pub(crate) fn builtin_annotation_of(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1744,7 +1730,7 @@ pub(crate) fn builtin_make_annotated(
         if !matches!(ann_val, Value::Dict { .. }) {
             return Err(Box::new(EvalError::type_mismatch(
                 "Dict",
-                ann_val.type_name(),
+                type_id_display_name(ann_val.type_decl_id_of()),
                 call_span,
             )));
         }
@@ -1886,7 +1872,7 @@ pub(crate) fn builtin_cap_identity(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "DirCap",
-                    val.type_name(),
+                    type_id_display_name(val.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into());
@@ -1965,7 +1951,7 @@ pub(crate) fn builtin_parse(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-parse".to_string(),
                     "Bytes",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2015,7 +2001,7 @@ pub(crate) fn builtin_parse(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }),
             );
         }
@@ -2039,13 +2025,13 @@ pub(crate) fn builtin_parse(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: errors_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )))
@@ -2110,7 +2096,10 @@ pub(crate) fn builtin_resolve(
             d
         } else {
             return Err(EvalError::internal(
-                format!("expected Document, got {}", doc_val.type_name()),
+                format!(
+                    "expected Document, got {}",
+                    type_id_display_name(doc_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into());
@@ -2125,7 +2114,7 @@ pub(crate) fn builtin_resolve(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-resolve env".to_string(),
                     "Scope",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -2192,7 +2181,7 @@ pub(crate) fn builtin_resolve(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }),
             );
         }
@@ -2224,21 +2213,21 @@ pub(crate) fn builtin_resolve(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: diagnostics_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
         result_dict.insert(
             HashableValue::Str("unreferenced".into()),
             mk(Value::Dict {
                 entries: unreferenced_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
         result_dict.insert(HashableValue::Str("doc-span".into()), mk_span(&doc_span));
         ok_val(
             Value::Dict {
                 entries: result_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2302,7 +2291,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 return Err(EvalError::internal(
                     format!(
                         "builtin-lint-pipeline-docs: expected Dict, got {}",
-                        other.type_name()
+                        type_id_display_name(other.type_decl_id_of())
                     ),
                     call_span,
                 )
@@ -2337,7 +2326,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 return Err(EvalError::internal(
                     format!(
                         "builtin-lint-pipeline-docs: entry is not a Document: {}",
-                        val.type_name()
+                        type_id_display_name(val.type_decl_id_of())
                     ),
                     call_span,
                 )
@@ -2369,7 +2358,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }),
             );
         }
@@ -2377,7 +2366,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
         ok_val(
             Value::Dict {
                 entries: diagnostics_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2428,7 +2417,7 @@ pub(crate) fn builtin_typecheck_doc(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-typecheck-doc".to_string(),
                     "Document",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     args[0].span.clone(),
                 )
                 .into());
@@ -2447,7 +2436,7 @@ pub(crate) fn builtin_typecheck_doc(
                 return Err(EvalError::internal(
                     format!(
                         "builtin-typecheck-doc arg2 (doc-env) is not a Dict: {}",
-                        env_val.type_name()
+                        type_id_display_name(env_val.type_decl_id_of())
                     ),
                     call_span,
                 )
@@ -2730,7 +2719,7 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }),
             );
         }
@@ -2747,13 +2736,13 @@ pub(crate) fn builtin_typecheck_doc(
             HashableValue::Str("diagnostics".into()),
             mk(Value::Dict {
                 entries: diagnostics_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2926,7 +2915,7 @@ pub(crate) fn builtin_fork_type_ctx(
             other => Err(EvalError::type_mismatch_ctx(
                 "builtin-fork-type-ctx".to_string(),
                 "TypeContext",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -2983,7 +2972,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-update-type-stage-env".to_string(),
                     "TypeContext",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2997,7 +2986,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-update-type-stage-env".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -3135,7 +3124,7 @@ pub(crate) fn builtin_program(
                             return Err(EvalError::type_mismatch_ctx(
                                 "builtin-program".to_string(),
                                 "Document",
-                                doc_val.type_name(),
+                                type_id_display_name(doc_val.type_decl_id_of()),
                                 call_span,
                             )
                             .into());
@@ -3147,7 +3136,7 @@ pub(crate) fn builtin_program(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-program".to_string(),
                     "Dict of Document values",
-                    val.type_name(),
+                    type_id_display_name(val.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3199,7 +3188,7 @@ pub(crate) fn builtin_desugar(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-desugar".to_string(),
                     "Program",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3249,7 +3238,7 @@ pub(crate) fn builtin_expand(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-expand".to_string(),
                     "Program",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3295,7 +3284,7 @@ pub(crate) fn builtin_program_docs(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-program-docs".to_string(),
                     "Program",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3323,7 +3312,7 @@ pub(crate) fn builtin_program_docs(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -3368,7 +3357,7 @@ pub(crate) fn builtin_doc_expressions(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-expressions".to_string(),
                     "Document",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3388,7 +3377,7 @@ pub(crate) fn builtin_doc_expressions(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -3429,7 +3418,7 @@ pub(crate) fn builtin_doc_meta(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-meta".to_string(),
                     "Document",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3452,7 +3441,7 @@ pub(crate) fn builtin_doc_meta(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -3503,7 +3492,7 @@ pub(crate) fn builtin_builtin_module(
                 ok_val(
                     Value::Dict {
                         entries: dict_map,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -3576,7 +3565,7 @@ pub(crate) fn builtin_scope_extend(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-scope-extend".to_string(),
                     "Scope",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3591,7 +3580,7 @@ pub(crate) fn builtin_scope_extend(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-scope-extend additions".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3658,7 +3647,7 @@ pub(crate) fn builtin_scope_exports(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-scope-exports".to_string(),
                     "Scope",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3678,7 +3667,7 @@ pub(crate) fn builtin_scope_exports(
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: dict_map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )))
@@ -3738,7 +3727,7 @@ pub(crate) fn builtin_eval(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval".to_string(),
                     "CoreDocument",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3753,7 +3742,7 @@ pub(crate) fn builtin_eval(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval env".to_string(),
                     "Scope",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3831,14 +3820,14 @@ pub(crate) fn builtin_variant_payload(
             Value::Variant { payload: None, .. } => ok_val(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             ),
             other => Err(EvalError::type_mismatch_ctx(
                 "variant-payload".to_string(),
                 "Variant",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -3931,7 +3920,7 @@ pub(crate) fn builtin_eval_macro_ast(
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-macro-ast".to_string(),
                     "Expr.*",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4029,7 +4018,7 @@ pub(crate) fn builtin_eval_types(
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-types".to_string(),
                     "Document or Dict of Expression",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4057,7 +4046,7 @@ pub(crate) fn builtin_eval_types(
                     return Err(EvalError::type_mismatch_ctx(
                         "eval-types".to_string(),
                         "Expr.*",
-                        other.type_name(),
+                        type_id_display_name(other.type_decl_id_of()),
                         call_span,
                     )
                     .into())
@@ -4103,7 +4092,7 @@ pub(crate) fn builtin_eval_types(
         ok_val(
             Value::Dict {
                 entries: result_dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -4657,7 +4646,7 @@ pub(crate) fn builtin_sequential(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-sequential".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4684,7 +4673,7 @@ pub(crate) fn builtin_sequential(
                     return Err(EvalError::type_mismatch_ctx(
                         "builtin-sequential".to_string(),
                         "Expr.*",
-                        other.type_name(),
+                        type_id_display_name(other.type_decl_id_of()),
                         call_span,
                     )
                     .into())
@@ -4776,7 +4765,7 @@ pub(crate) fn builtin_ast_to_program(
                 return Err(EvalError::type_mismatch_ctx(
                     "ast-to-program".to_string(),
                     "span dict (for call-site-span: argument)",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4807,7 +4796,7 @@ pub(crate) fn builtin_ast_to_program(
                 return Err(EvalError::type_mismatch_ctx(
                     "ast-to-program".to_string(),
                     "Expr.*",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4886,7 +4875,7 @@ pub(crate) fn builtin_check_type(
             Err(EvalError::type_mismatch_ctx(
                 "expects validation".to_string(),
                 &type_name,
-                value.type_name(),
+                type_id_display_name(value.type_decl_id_of()),
                 call_span,
             )
             .into())
@@ -4936,7 +4925,7 @@ pub(crate) fn builtin_cap_env_has(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-cap-env-has?".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4993,7 +4982,7 @@ pub(crate) fn builtin_lower(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
                     "Document",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -5255,6 +5244,7 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::value::TYPE_ID_DICT;
     use indexmap::IndexMap;
 
     use super::{builtin_current_env, builtin_tag_of};
@@ -5304,7 +5294,7 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
@@ -5328,13 +5318,13 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("SimpleType.Leaf"),
             payload: None,
         };
         let annotation = Value::Dict {
             entries: IndexMap::new(),
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let annotated = Value::Annotated {
             inner: Box::new(variant),
@@ -5360,7 +5350,7 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
         };
@@ -5368,14 +5358,14 @@ mod tests {
             inner: Box::new(variant),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         };
         let outer_annotated = Value::Annotated {
             inner: Box::new(inner_annotated),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         };
         let ctx = test_ctx();
@@ -5449,7 +5439,7 @@ mod tests {
             inner: Box::new(Value::Int { n: 42 }),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         };
         let ctx = test_ctx();

@@ -7,7 +7,7 @@ use crate::ast::{
 };
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::type_tags::*;
-use crate::value::{EvalFrame, HashableValue, Thunk, Value};
+use crate::value::{type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 use indexmap::IndexMap;
 
 // Import eval function and context from eval module
@@ -511,8 +511,8 @@ pub(crate) async fn invoke_function_tco(
         .positional
         .iter()
         .map(|arg| match arg.peek_result() {
-            Some(Ok(val)) => val.type_name().to_string(),
-            _ => "_".to_string(),
+            Some(Ok(val)) => type_id_display_name(val.type_decl_id_of()).to_string(),
+            _ => type_id_display_name(arg.type_decl_id).to_string(),
         })
         .collect();
     err.notes
@@ -523,8 +523,10 @@ pub(crate) async fn invoke_function_tco(
             let named_types: Vec<String> = named
                 .iter()
                 .map(|(k, thunk)| match thunk.peek_result() {
-                    Some(Ok(val)) => format!("{k}: {}", val.type_name()),
-                    _ => format!("{k}: _"),
+                    Some(Ok(val)) => {
+                        format!("{k}: {}", type_id_display_name(val.type_decl_id_of()))
+                    }
+                    _ => format!("{k}: {}", type_id_display_name(thunk.type_decl_id)),
                 })
                 .collect();
             err.notes
@@ -884,7 +886,7 @@ pub(crate) async fn bind_args_thunks(
             param_slots[slot] = Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: dict,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span.clone(),
             )));
@@ -897,7 +899,7 @@ pub(crate) async fn bind_args_thunks(
             let rest_thunk = Arc::new(Thunk::value(
                 Value::Dict {
                     entries: rest_dict,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span.clone(),
             ));
@@ -949,6 +951,7 @@ mod tests {
             name: "my_func".to_string(),
             addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
+            inferred_type_id: 0,
         };
         let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("my_func"));
@@ -969,12 +972,16 @@ mod tests {
     fn test_func_label_desugared_lambda() {
         // Test func_label_core with a desugared lambda
         let expr = CoreExpr::Fn {
-            clauses: vec![make_test_clause(sp(CoreExpr::Int(42)))],
+            clauses: vec![make_test_clause(sp(CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            }))],
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
 
             resolved_fn_type: None,
             return_ann: None,
+            inferred_type_id: 0,
         };
         let label = func_label_core(&expr);
         assert!(label
@@ -987,12 +994,16 @@ mod tests {
     fn test_func_label_regular_lambda() {
         // Test func_label_core with a regular (non-desugared) lambda — anonymous, returns None
         let expr = CoreExpr::Fn {
-            clauses: vec![make_test_clause(sp(CoreExpr::Int(42)))],
+            clauses: vec![make_test_clause(sp(CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            }))],
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
 
             resolved_fn_type: None,
             return_ann: None,
+            inferred_type_id: 0,
         };
         let label = func_label_core(&expr);
         assert_eq!(label, None);

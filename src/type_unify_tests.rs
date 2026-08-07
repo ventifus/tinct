@@ -12,7 +12,7 @@ use crate::types::InferState;
 use std::sync::Arc;
 // Constraint deleted in S-1003 — constraints are Vec<Arc<Value>> ConstraintDecls.
 // Kind deleted in S-1003 — kind is now Arc<Value> (TypeValue.Op{name}).
-use crate::value::Value;
+use crate::value::{Value, TYPE_ID_DICT};
 
 const TEST_ID_BOOL: u64 = 1000;
 const TEST_ID_SEQ: u64 = 1001;
@@ -69,7 +69,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     }
     let params_dict = Value::Dict {
         entries: params_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -85,10 +85,10 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: pe,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_FN),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -109,7 +109,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     }
     let fields_dict = Value::Dict {
         entries: field_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -121,17 +121,17 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             crate::rust_span!(),
         )),
     );
     let payload = Value::Dict {
         entries: pe,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -152,7 +152,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     }
     let fields_dict = Value::Dict {
         entries: field_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -168,10 +168,10 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     );
     let payload = Value::Dict {
         entries: pe,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -192,7 +192,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let members_dict = Value::Dict {
         entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -201,10 +201,10 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: pe,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -1098,13 +1098,12 @@ async fn test_variance_is_copy() {
 #[tokio::test]
 async fn test_tycondef_construction() {
     let def = TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec!["a".to_string()],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![("Maybe.Some".to_string(), 1), ("Maybe.None".to_string(), 0)],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -1115,20 +1114,18 @@ async fn test_tycondef_construction() {
     assert_eq!(def.constructors.len(), 2);
     assert_eq!(def.constructors[0], ("Maybe.Some".to_string(), 1));
     assert_eq!(def.constructors[1], ("Maybe.None".to_string(), 0));
-    assert!(def.builtin_type.is_none());
 }
 
 /// T-1020e: TyConDef with multiple variance parameters (bivariant map).
 #[tokio::test]
 async fn test_tycondef_multi_variance() {
     let def = TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec!["a".to_string(), "b".to_string()],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Contravariant, Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -1138,26 +1135,6 @@ async fn test_tycondef_multi_variance() {
     assert_eq!(def.variance.len(), 2);
     assert_eq!(def.variance[0], Variance::Contravariant);
     assert_eq!(def.variance[1], Variance::Covariant);
-}
-
-/// T-1020f: TyConDef with builtin_type discriminant.
-#[tokio::test]
-async fn test_tycondef_builtin_type() {
-    let def = TyConDef {
-        type_decl_id: 0,
-        params: vec!["a".to_string()],
-        body: crate::type_infer::make_typevalue_unknown(),
-        constraints: vec![],
-        variance: vec![Variance::Covariant],
-        constructors: vec![],
-        builtin_type: Some("TestSeq".to_string()),
-        annotation: None,
-        field_annotations: indexmap::IndexMap::new(),
-        constructor_constants: indexmap::IndexMap::new(),
-        definition_span: None,
-    };
-
-    assert_eq!(def.builtin_type, Some("TestSeq".to_string()));
 }
 
 /// T-1020g: UNIFY-TYCON — same name unifies successfully.
@@ -1456,26 +1433,24 @@ async fn test_variance_clone() {
 #[tokio::test]
 async fn test_tycondef_partialeq() {
     let def1 = TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec![],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     };
     let def2 = TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec![],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -1488,26 +1463,24 @@ async fn test_tycondef_partialeq() {
 #[tokio::test]
 async fn test_tycondef_partialeq_different_variance() {
     let def1 = TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec![],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     };
     let def2 = TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec![],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -2154,19 +2127,19 @@ async fn test_constrain_app_covariant_arg() {
     // type_unify.rs, which calls unify(Int, x). The unify U-VAR-LEVEL arm binds x=Int
     // in ctx.subst. This verifies the C-App covariant path produces a concrete binding.
     let cov_def = Arc::new(TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec!["a".to_string()],
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     });
-    state.tycon_env.insert("CovF".to_string(), cov_def);
+    let cov_id = cov_def.type_decl_id;
+    state.tycon_env.insert(cov_id, cov_def);
 
     let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     let tv_x = make_typevar_value("x");
@@ -2824,7 +2797,6 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -2840,7 +2812,6 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -2848,8 +2819,10 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     });
 
     // Register in ctx.tycon_env (not state.tycon_env -- that's a separate field).
-    state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
-    state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
+    let id_a = def_a.type_decl_id;
+    let id_b = def_b.type_decl_id;
+    state.ctx.tycon_env.insert(id_a, def_a);
+    state.ctx.tycon_env.insert(id_b, def_b);
     // Register display names so extract_op_name can resolve Nominal ids to names.
     state
         .ctx
@@ -2891,13 +2864,12 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
 
     // AliasA body = Repr(Int) -- constant body.
     let def_a = Arc::new(TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec!["a".to_string()],
         body: Arc::clone(&int_tv),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -2906,21 +2878,22 @@ async fn test_unify_tycon_expand_different_ops_expand_to_different_bodies_fails(
 
     // AliasB body = Repr(String) -- different constant body.
     let def_b = Arc::new(TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec!["a".to_string()],
         body: Arc::clone(&str_tv),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     });
 
-    state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
-    state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
+    let id_a = def_a.type_decl_id;
+    let id_b = def_b.type_decl_id;
+    state.ctx.tycon_env.insert(id_a, def_a);
+    state.ctx.tycon_env.insert(id_b, def_b);
 
     let op_a = make_typevalue_nominal(TEST_ID_ALIAS_A);
     let op_b = make_typevalue_nominal(TEST_ID_ALIAS_B);
@@ -2951,19 +2924,19 @@ async fn test_unify_tycon_expand_one_op_not_registered_fails() {
 
     // Register only "KnownAlias".
     let def = Arc::new(TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         params: vec!["a".to_string()],
         body: Arc::clone(&int_tv),
         constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
-        builtin_type: None,
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
         definition_span: None,
     });
-    state.ctx.tycon_env.insert("KnownAlias".to_string(), def);
+    let known_id = def.type_decl_id;
+    state.ctx.tycon_env.insert(known_id, def);
 
     let op_known = make_typevalue_nominal(TEST_ID_KNOWN_ALIAS);
     let op_unknown = make_typevalue_nominal(TEST_ID_UNKNOWN_OP); // not in tycon_env
@@ -3195,7 +3168,7 @@ async fn test_rowvar_occurs_check() {
         );
         let fields_dict = Value::Dict {
             entries: fields,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let mut payload_entries = IndexMap::new();
         payload_entries.insert(
@@ -3208,10 +3181,10 @@ async fn test_rowvar_occurs_check() {
         );
         let payload = Value::Dict {
             entries: payload_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         Arc::new(Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),
         })
@@ -3462,10 +3435,10 @@ fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Ar
     }
     let payload = Value::Dict {
         entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(RT_UNIFORM),
         payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
     })

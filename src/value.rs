@@ -745,8 +745,7 @@ pub const TYPE_ID_ONESHOT_SENDER: u64 = 32;
 pub const TYPE_ID_ONESHOT_RECEIVER: u64 = 33;
 pub const TYPE_ID_CONTEXT: u64 = 34;
 pub const TYPE_ID_REACTIVE_CELL: u64 = 35;
-#[cfg(test)]
-pub(crate) const TYPE_ID_ARENA: u64 = 36;
+pub const TYPE_ID_ARENA: u64 = 36;
 pub const TYPE_ID_TYPE_CONTEXT: u64 = 37;
 pub const TYPE_ID_CORE_DOCUMENT: u64 = 38;
 pub const TYPE_ID_SCOPE: u64 = 39;
@@ -754,6 +753,73 @@ pub const TYPE_ID_SCOPE: u64 = 39;
 /// Maximum reserved type ID for primitive types.
 /// User-defined variant `type_decl_id` values start at `TYPE_ID_RESERVED_MAX + 1` (100).
 pub const TYPE_ID_RESERVED_MAX: u64 = 99;
+
+/// Derives a type_decl_id from a CoreExpr variant when statically known.
+///
+/// Returns the TYPE_ID for literal and constructor expressions. Returns 0
+/// for dynamic expressions (Call, Match, Sequential) whose result type
+/// is only known after evaluation.
+pub fn type_decl_id_from_core_expr(expr: &CoreExpr) -> u64 {
+    match expr {
+        CoreExpr::Int { .. } => TYPE_ID_INT,
+        CoreExpr::U64 { .. } => TYPE_ID_U64,
+        CoreExpr::Float { .. } => TYPE_ID_FLOAT,
+        CoreExpr::Str { .. } => TYPE_ID_STRING,
+        CoreExpr::Dict { .. } => TYPE_ID_DICT,
+        CoreExpr::Variant { type_decl_id, .. } => *type_decl_id,
+        CoreExpr::UnitVariant { type_decl_id, .. } => *type_decl_id,
+        CoreExpr::Fn { .. } => TYPE_ID_FUNCTION,
+        _ => 0,
+    }
+}
+
+/// Returns a human-readable display name for a type_decl_id.
+///
+/// Reserved IDs (1–39) return fixed names matching the Rust-side protocol.
+/// User-defined IDs (≥100) return "Variant" — use `type_display_names` registry
+/// for nominal type names when available.
+pub fn type_id_display_name(id: u64) -> &'static str {
+    match id {
+        TYPE_ID_INT | TYPE_ID_U64 => "Int",
+        TYPE_ID_FLOAT => "Float",
+        TYPE_ID_STRING => "String",
+        TYPE_ID_DICT => "Dict",
+        TYPE_ID_BUILDER => "Builder",
+        TYPE_ID_FUNCTION => "Function",
+        TYPE_ID_BUILTIN => "Builtin",
+        TYPE_ID_PROXY => "Proxy",
+        TYPE_ID_DIRCAP | TYPE_ID_REVOCABLE_DIRCAP => "DirCap",
+        TYPE_ID_NETCAP => "NetCap",
+        TYPE_ID_FILE => "File",
+        TYPE_ID_DECIMAL => "Decimal",
+        TYPE_ID_BIGINT => "BigInt",
+        TYPE_ID_BYTES => "Bytes",
+        TYPE_ID_URI => "Uri",
+        TYPE_ID_TIMESTAMP => "Timestamp",
+        TYPE_ID_DURATION => "Duration",
+        TYPE_ID_CLOCKCAP => "ClockCap",
+        TYPE_ID_TIMEZONE => "Timezone",
+        TYPE_ID_QUIC_SESSION => "QuicSession",
+        TYPE_ID_HTTP2_SESSION => "Http2Session",
+        TYPE_ID_HTTP3_SESSION => "Http3Session",
+        TYPE_ID_QUIC_DATAGRAM_HANDLE => "QuicDatagramHandle",
+        TYPE_ID_PROGRAM => "Program",
+        TYPE_ID_DOCUMENT => "Document",
+        TYPE_ID_EXPRESSION => "Expression",
+        TYPE_ID_TASK => "Task",
+        TYPE_ID_CHANNEL => "Channel",
+        TYPE_ID_BROADCAST_CHANNEL => "BroadcastChannel",
+        TYPE_ID_ONESHOT_SENDER => "OneshotSender",
+        TYPE_ID_ONESHOT_RECEIVER => "OneshotReceiver",
+        TYPE_ID_CONTEXT => "Context",
+        TYPE_ID_REACTIVE_CELL => "ReactiveCell",
+        TYPE_ID_ARENA => "Arena",
+        TYPE_ID_TYPE_CONTEXT => "TypeContext",
+        TYPE_ID_CORE_DOCUMENT => "CoreDocument",
+        TYPE_ID_SCOPE => "Scope",
+        _ => "Variant",
+    }
+}
 
 /// A materialized runtime value.
 pub enum Value {
@@ -986,9 +1052,12 @@ impl Clone for Value {
                 start: *start,
                 end: *end,
             },
-            Value::Dict { entries, .. } => Value::Dict {
+            Value::Dict {
+                entries,
+                type_decl_id,
+            } => Value::Dict {
                 entries: entries.clone(),
-                type_decl_id: 0,
+                type_decl_id: *type_decl_id,
             },
             Value::Builder(b) => Value::Builder(Arc::clone(b)),
             Value::Function {
@@ -1189,50 +1258,54 @@ pub fn bytes_val(data: &[u8]) -> Value {
 }
 
 impl Value {
-    /// Returns a human-readable type name for error messages and diagnostics.
-    pub fn type_name(&self) -> &'static str {
+    /// Returns the TYPE_ID constant for this value's Rust-level type.
+    ///
+    /// Maps each Value variant to its corresponding reserved TYPE_ID.
+    /// For Dict and Variant, returns the struct-level TYPE_ID constant
+    /// (TYPE_ID_DICT / user-defined ID), not the embedded type_decl_id field.
+    pub fn type_decl_id_of(&self) -> u64 {
         match self {
-            Value::Int { .. } => "Int",
-            Value::U64 { .. } => "Int",
-            Value::Float { .. } => "Float",
-            Value::String { .. } => "String",
-            Value::Dict { .. } => "Dict",
-            Value::Builder(_) => "Builder",
-            Value::Function { .. } => "Function",
-            Value::Builtin { .. } => "Builtin",
-            Value::Proxy { .. } => "Proxy",
-            Value::DirCap { .. } => "DirCap",
-            Value::NetCap { .. } => "NetCap",
-            Value::File { .. } => "File",
-            Value::RevocableDirCap { .. } => "DirCap",
-            Value::Variant { .. } => "Variant",
-            Value::Decimal { .. } => "Decimal",
-            Value::BigInt { .. } => "BigInt",
-            Value::Bytes { .. } => "Bytes",
-            Value::Uri { .. } => "Uri",
-            Value::Timestamp { .. } => "Timestamp",
-            Value::Duration { .. } => "Duration",
-            Value::ClockCap { .. } => "ClockCap",
-            Value::Timezone { .. } => "Timezone",
-            Value::QuicSession { .. } => "QuicSession",
-            Value::Http2Session { .. } => "Http2Session",
-            Value::Http3Session { .. } => "Http3Session",
-            Value::QuicDatagramHandle { .. } => "QuicDatagramHandle",
-            Value::Program { .. } => "Program",
-            Value::Document { .. } => "Document",
-            Value::Expression { .. } => "Expression",
-            Value::Task { .. } => "Task",
-            Value::Channel { .. } => "Channel",
-            Value::BroadcastChannel { .. } => "BroadcastChannel",
-            Value::OneshotSender { .. } => "OneshotSender",
-            Value::OneshotReceiver { .. } => "OneshotReceiver",
-            Value::Context { .. } => "Context",
-            Value::ReactiveCell { .. } => "ReactiveCell",
-            Value::Arena { .. } => "Arena",
-            Value::Annotated { inner, .. } => inner.type_name(),
-            Value::TypeContext { .. } => "TypeContext",
-            Value::CoreDocument { .. } => "CoreDocument",
-            Value::Scope { .. } => "Scope",
+            Value::Int { .. } => TYPE_ID_INT,
+            Value::U64 { .. } => TYPE_ID_U64,
+            Value::Float { .. } => TYPE_ID_FLOAT,
+            Value::String { .. } => TYPE_ID_STRING,
+            Value::Dict { .. } => TYPE_ID_DICT,
+            Value::Builder(_) => TYPE_ID_BUILDER,
+            Value::Function { .. } => TYPE_ID_FUNCTION,
+            Value::Builtin { .. } => TYPE_ID_BUILTIN,
+            Value::Proxy { .. } => TYPE_ID_PROXY,
+            Value::DirCap { .. } => TYPE_ID_DIRCAP,
+            Value::NetCap { .. } => TYPE_ID_NETCAP,
+            Value::File { .. } => TYPE_ID_FILE,
+            Value::RevocableDirCap { .. } => TYPE_ID_REVOCABLE_DIRCAP,
+            Value::Variant { type_decl_id, .. } => *type_decl_id,
+            Value::Decimal { .. } => TYPE_ID_DECIMAL,
+            Value::BigInt { .. } => TYPE_ID_BIGINT,
+            Value::Bytes { .. } => TYPE_ID_BYTES,
+            Value::Uri { .. } => TYPE_ID_URI,
+            Value::Timestamp { .. } => TYPE_ID_TIMESTAMP,
+            Value::Duration { .. } => TYPE_ID_DURATION,
+            Value::ClockCap { .. } => TYPE_ID_CLOCKCAP,
+            Value::Timezone { .. } => TYPE_ID_TIMEZONE,
+            Value::QuicSession { .. } => TYPE_ID_QUIC_SESSION,
+            Value::Http2Session { .. } => TYPE_ID_HTTP2_SESSION,
+            Value::Http3Session { .. } => TYPE_ID_HTTP3_SESSION,
+            Value::QuicDatagramHandle { .. } => TYPE_ID_QUIC_DATAGRAM_HANDLE,
+            Value::Program { .. } => TYPE_ID_PROGRAM,
+            Value::Document { .. } => TYPE_ID_DOCUMENT,
+            Value::Expression { .. } => TYPE_ID_EXPRESSION,
+            Value::Task { .. } => TYPE_ID_TASK,
+            Value::Channel { .. } => TYPE_ID_CHANNEL,
+            Value::BroadcastChannel { .. } => TYPE_ID_BROADCAST_CHANNEL,
+            Value::OneshotSender { .. } => TYPE_ID_ONESHOT_SENDER,
+            Value::OneshotReceiver { .. } => TYPE_ID_ONESHOT_RECEIVER,
+            Value::Context { .. } => TYPE_ID_CONTEXT,
+            Value::ReactiveCell { .. } => TYPE_ID_REACTIVE_CELL,
+            Value::Arena { .. } => TYPE_ID_ARENA,
+            Value::Annotated { inner, .. } => inner.type_decl_id_of(),
+            Value::TypeContext { .. } => TYPE_ID_TYPE_CONTEXT,
+            Value::CoreDocument { .. } => TYPE_ID_CORE_DOCUMENT,
+            Value::Scope { .. } => TYPE_ID_SCOPE,
         }
     }
 
@@ -1729,12 +1802,24 @@ impl Thunk {
     }
 
     /// Create an unevaluated thunk from a CoreExpr body (no Expr round-trip).
+    ///
+    /// Derives `type_decl_id` from the CoreExpr variant when statically known
+    /// (literals, constructors). For dynamic expressions (Call, Match, Sequential),
+    /// the type_decl_id is set to 0 and resolved when the thunk settles.
     pub fn core_expr(
         expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
         frame: std::sync::Arc<EvalFrame>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
+        let type_decl_id = {
+            let inferred = expr.node.inferred_type_id();
+            if inferred != 0 {
+                inferred
+            } else {
+                type_decl_id_from_core_expr(&expr.node)
+            }
+        };
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -1745,7 +1830,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
-            type_decl_id: 0,
+            type_decl_id,
         }
     }
 
@@ -1793,7 +1878,12 @@ impl Thunk {
             Value::CoreDocument { .. } => TYPE_ID_CORE_DOCUMENT,
             Value::TypeContext { .. } => TYPE_ID_TYPE_CONTEXT,
             Value::Scope { .. } => TYPE_ID_SCOPE,
-            _ => 0,
+            Value::Builder(_) => TYPE_ID_BUILDER,
+            Value::Proxy { .. } => TYPE_ID_PROXY,
+            Value::Decimal { .. } => TYPE_ID_DECIMAL,
+            Value::BigInt { .. } => TYPE_ID_BIGINT,
+            Value::Arena { .. } => TYPE_ID_ARENA,
+            Value::Annotated { inner, .. } => return Self::value(inner.as_ref().clone(), span),
         };
         if inner.result.set(Ok(value)).is_err() {
             panic!("value thunk cell freshly created: set cannot fail");
@@ -2221,9 +2311,13 @@ impl fmt::Debug for Thunk {
             Ok(guard) => {
                 if let Some(result) = self.inner.result.get() {
                     match result {
-                        Ok(value) => {
-                            s.field("state", &format!("Materialized({:?})", value.type_name()))
-                        }
+                        Ok(value) => s.field(
+                            "state",
+                            &format!(
+                                "Materialized({:?})",
+                                type_id_display_name(value.type_decl_id_of())
+                            ),
+                        ),
                         Err(_) => s.field("state", &"Failed"),
                     };
                 } else if guard.0.is_some() {
@@ -2259,7 +2353,13 @@ mod tests {
     fn test_state_of_unevaluated() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let expr = Arc::new(Spanned::new(
+            CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            },
+            span.clone(),
+        ));
         let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx, span);
 
         assert!(!thunk.is_settled(), "Expected unevaluated (not settled)");
@@ -2402,7 +2502,13 @@ mod tests {
     fn test_try_claim_transitions_to_inprogress() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let expr = Arc::new(Spanned::new(
+            CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            },
+            span.clone(),
+        ));
         let thunk = Thunk::core_expr(expr.clone(), EvalFrame::empty(), ctx.clone(), span);
 
         let state = thunk.try_claim();
@@ -2428,7 +2534,13 @@ mod tests {
     fn test_try_claim_returns_none_when_inprogress() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let expr = Arc::new(Spanned::new(
+            CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            },
+            span.clone(),
+        ));
         let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx, span);
 
         let first_claim = thunk.try_claim();
@@ -2442,7 +2554,13 @@ mod tests {
     fn test_reset_restores_unevaluated() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
+        let expr = Arc::new(Spanned::new(
+            CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0,
+            },
+            span.clone(),
+        ));
         let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx.clone(), span);
 
         let state = thunk.try_claim().expect("try_claim should succeed");
@@ -2760,6 +2878,132 @@ mod tests {
 
         let nan = HashableValue::Float(f64::NAN.to_bits());
         assert_eq!(nan.to_string(), "NaN");
+    }
+
+    #[test]
+    fn test_type_decl_id_of_primitives() {
+        assert_eq!(Value::Int { n: 42 }.type_decl_id_of(), TYPE_ID_INT);
+        assert_eq!(Value::U64 { n: 42 }.type_decl_id_of(), TYPE_ID_U64);
+        assert_eq!(Value::Float { n: 3.14 }.type_decl_id_of(), TYPE_ID_FLOAT);
+        let s: Arc<str> = Arc::from("hello");
+        assert_eq!(
+            Value::String {
+                source: s.clone(),
+                start: 0,
+                end: 5,
+            }
+            .type_decl_id_of(),
+            TYPE_ID_STRING
+        );
+    }
+
+    #[test]
+    fn test_type_decl_id_of_dict_returns_dict() {
+        let dict = Value::Dict {
+            entries: indexmap::IndexMap::new(),
+            type_decl_id: 105,
+        };
+        assert_eq!(dict.type_decl_id_of(), TYPE_ID_DICT);
+    }
+
+    #[test]
+    fn test_type_decl_id_of_variant_returns_field() {
+        let variant = Value::Variant {
+            type_decl_id: 200,
+            ctor: Arc::from("MyType.Ctor"),
+            payload: None,
+        };
+        assert_eq!(variant.type_decl_id_of(), 200);
+    }
+
+    #[test]
+    fn test_type_id_display_name_reserved() {
+        assert_eq!(type_id_display_name(TYPE_ID_INT), "Int");
+        assert_eq!(type_id_display_name(TYPE_ID_U64), "Int");
+        assert_eq!(type_id_display_name(TYPE_ID_FLOAT), "Float");
+        assert_eq!(type_id_display_name(TYPE_ID_STRING), "String");
+        assert_eq!(type_id_display_name(TYPE_ID_DICT), "Dict");
+        assert_eq!(type_id_display_name(TYPE_ID_FUNCTION), "Function");
+        assert_eq!(type_id_display_name(TYPE_ID_BUILTIN), "Builtin");
+        assert_eq!(type_id_display_name(TYPE_ID_DIRCAP), "DirCap");
+        assert_eq!(type_id_display_name(TYPE_ID_REVOCABLE_DIRCAP), "DirCap");
+        assert_eq!(type_id_display_name(TYPE_ID_SCOPE), "Scope");
+    }
+
+    #[test]
+    fn test_type_id_display_name_user_types() {
+        assert_eq!(type_id_display_name(100), "Variant");
+        assert_eq!(type_id_display_name(200), "Variant");
+        assert_eq!(type_id_display_name(0), "Variant");
+    }
+
+    #[test]
+    fn test_type_decl_id_from_core_expr_literals() {
+        assert_eq!(
+            type_decl_id_from_core_expr(&CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0
+            }),
+            TYPE_ID_INT
+        );
+        assert_eq!(
+            type_decl_id_from_core_expr(&CoreExpr::Float {
+                value: 3.14,
+                inferred_type_id: 0
+            }),
+            TYPE_ID_FLOAT
+        );
+        assert_eq!(
+            type_decl_id_from_core_expr(&CoreExpr::Str {
+                value: "hello".to_string(),
+                inferred_type_id: 0
+            }),
+            TYPE_ID_STRING
+        );
+        assert_eq!(
+            type_decl_id_from_core_expr(&CoreExpr::U64 {
+                value: 42,
+                inferred_type_id: 0
+            }),
+            TYPE_ID_U64
+        );
+    }
+
+    #[test]
+    fn test_type_decl_id_from_core_expr_variant() {
+        let variant = CoreExpr::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+            type_decl_id: 150,
+            inferred_type_id: 0,
+        };
+        assert_eq!(type_decl_id_from_core_expr(&variant), 150);
+
+        let unit = CoreExpr::UnitVariant {
+            tycon: "Color".to_string(),
+            ctor: "Red".to_string(),
+            type_decl_id: 150,
+            inferred_type_id: 0,
+        };
+        assert_eq!(type_decl_id_from_core_expr(&unit), 150);
+    }
+
+    #[test]
+    fn test_type_decl_id_from_core_expr_unknown() {
+        let call = CoreExpr::Call {
+            func: Arc::new(Spanned {
+                node: CoreExpr::Int {
+                    value: 0,
+                    inferred_type_id: 0,
+                },
+                span: test_span(1, 1, 1, 1),
+            }),
+            args: vec![],
+            named_args: vec![],
+            implied: false,
+            inferred_type_id: 0,
+        };
+        assert_eq!(type_decl_id_from_core_expr(&call), 0);
     }
 }
 

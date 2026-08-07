@@ -46,7 +46,9 @@ use crate::builtins::{ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::rust_span;
-use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value};
+use crate::value::{
+    string_val, type_id_display_name, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT,
+};
 
 /// Convert a runtime `Value` to a `HashableValue` dict key.
 /// Returns an error if the value is not hashable (Function, Handle, Seq, etc.).
@@ -96,7 +98,7 @@ fn value_to_hashable_key(
         other => Err(EvalError::type_mismatch_ctx(
             builtin_name.to_string(),
             "Int, Float, String, or Variant",
-            other.type_name(),
+            type_id_display_name(other.type_decl_id_of()),
             span,
         )
         .into()),
@@ -119,7 +121,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
             }
             Value::Dict {
                 entries: map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }
         }
         HashableValue::Variant { tag, payload } => {
@@ -183,7 +185,7 @@ pub(crate) fn builtin_keys(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -305,7 +307,12 @@ pub(crate) fn builtin_get(
                     }
                 }
             }
-            other => Err(EvalError::type_mismatch("Dict", other.type_name(), target_span).into()),
+            other => Err(EvalError::type_mismatch(
+                "Dict",
+                type_id_display_name(other.type_decl_id_of()),
+                target_span,
+            )
+            .into()),
         }
     })
 }
@@ -387,7 +394,12 @@ pub(crate) fn builtin_dict_has_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(other.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
         if idx < 0 {
@@ -443,7 +455,12 @@ pub(crate) fn builtin_dict_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(other.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
         let entry = match usize::try_from(idx) {
@@ -501,7 +518,12 @@ pub(crate) fn builtin_dict_has_key_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(other.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
         if idx < 0 {
@@ -556,7 +578,12 @@ pub(crate) fn builtin_dict_key_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(other.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
         let entry = match usize::try_from(idx) {
@@ -617,7 +644,12 @@ pub(crate) fn builtin_dict_has_kv_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(other.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
         if idx < 0 {
@@ -672,7 +704,12 @@ pub(crate) fn builtin_dict_kv_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+                return Err(EvalError::type_mismatch(
+                    "Int",
+                    type_id_display_name(other.type_decl_id_of()),
+                    call_span,
+                )
+                .into())
             }
         };
         let entry = match usize::try_from(idx) {
@@ -691,7 +728,7 @@ pub(crate) fn builtin_dict_kv_nth(
                 ok_val(
                     Value::Dict {
                         entries: kv,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -753,7 +790,7 @@ pub(crate) fn builtin_builder_get_or(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get-or".to_string(),
                     "Int, Float, or String (for key)",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -772,7 +809,7 @@ pub(crate) fn builtin_builder_get_or(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get-or".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into())
@@ -863,7 +900,7 @@ pub(crate) fn builtin_build_dict(
                             return Err(EvalError::type_mismatch_ctx(
                                 "build-dict".to_string(),
                                 "Int, Float, or String (for key)",
-                                other.type_name(),
+                                type_id_display_name(other.type_decl_id_of()),
                                 key_thunk.span.clone(),
                             )
                             .into())
@@ -874,7 +911,7 @@ pub(crate) fn builtin_build_dict(
                 ok_val(
                     Value::Dict {
                         entries: result,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -883,7 +920,7 @@ pub(crate) fn builtin_build_dict(
             other => Err(EvalError::type_mismatch_ctx(
                 "build-dict".to_string(),
                 "Dict of [key: K  value: V] pairs",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into()),
@@ -937,7 +974,7 @@ pub(crate) fn builtin_make_builder(
                         return Err(EvalError::type_mismatch_ctx(
                             "make-builder".to_string(),
                             "Int",
-                            other.type_name(),
+                            type_id_display_name(other.type_decl_id_of()),
                             cap_thunk.span.clone(),
                         )
                         .into())
@@ -996,7 +1033,7 @@ pub(crate) fn builtin_builder_set(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-set".to_string(),
                     "Int, Float, or String (for key)",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1015,7 +1052,7 @@ pub(crate) fn builtin_builder_set(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-set".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into())
@@ -1070,7 +1107,7 @@ pub(crate) fn builtin_builder_delete(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-delete".to_string(),
                     "Int, Float, or String (for key)",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1086,7 +1123,7 @@ pub(crate) fn builtin_builder_delete(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-delete".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -1131,7 +1168,7 @@ pub(crate) fn builtin_builder_finish(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-finish".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1146,7 +1183,7 @@ pub(crate) fn builtin_builder_finish(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1181,7 +1218,7 @@ pub(crate) fn builtin_builder_snapshot(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-snapshot".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1196,7 +1233,7 @@ pub(crate) fn builtin_builder_snapshot(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1240,7 +1277,7 @@ pub(crate) fn builtin_builder_has(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-has?".to_string(),
                     "Int, Float, or String (for key)",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1256,7 +1293,7 @@ pub(crate) fn builtin_builder_has(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-has?".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -1318,7 +1355,7 @@ pub(crate) fn builtin_builder_get(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get".to_string(),
                     "Int, Float, or String (for key)",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1334,7 +1371,7 @@ pub(crate) fn builtin_builder_get(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get".to_string(),
                     "Builder",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -1403,7 +1440,7 @@ pub(crate) fn builtin_get_by_field(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-get-by-field".to_string(),
                     "String",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -1431,7 +1468,7 @@ pub(crate) fn builtin_get_by_field(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-get-by-field".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into())
@@ -1486,7 +1523,14 @@ pub(crate) fn builtin_get_by_field(
             }
         };
 
-        let def = match tycon_env.get(type_name.as_str()) {
+        // Bridge type name → u64 id via TypeContextData.type_name_to_id,
+        // then look up the TyConDef by id in the u64-keyed tycon_env.
+        let type_id = ctx.type_context.lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|tc| tc.type_name_to_id.get(type_name.as_str()).copied())
+        });
+        let def = match type_id.and_then(|id| tycon_env.get(&id)) {
             Some(d) => d,
             None => {
                 return Err(EvalError::user_error(
@@ -1593,7 +1637,7 @@ pub(crate) fn builtin_dict_merge(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1632,7 +1676,7 @@ pub(crate) fn builtin_take(
                 return Err(EvalError::type_mismatch_ctx(
                     "take".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1645,7 +1689,7 @@ pub(crate) fn builtin_take(
             return ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             );
@@ -1663,7 +1707,7 @@ pub(crate) fn builtin_take(
                 ok_val(
                     Value::Dict {
                         entries: taken,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1671,7 +1715,7 @@ pub(crate) fn builtin_take(
             other => Err(EvalError::type_mismatch_ctx(
                 "take".to_string(),
                 "Dict",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1708,7 +1752,7 @@ pub(crate) fn builtin_drop(
                 return Err(EvalError::type_mismatch_ctx(
                     "drop".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1733,7 +1777,7 @@ pub(crate) fn builtin_drop(
                 ok_val(
                     Value::Dict {
                         entries: dropped,
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1741,7 +1785,7 @@ pub(crate) fn builtin_drop(
             other => Err(EvalError::type_mismatch_ctx(
                 "drop".to_string(),
                 "Dict",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1817,7 +1861,7 @@ pub(crate) fn builtin_concat(
                         ok_val(
                             Value::Dict {
                                 entries: result,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             },
                             call_span,
                         )
@@ -1825,7 +1869,7 @@ pub(crate) fn builtin_concat(
                     other => Err(EvalError::type_mismatch_ctx(
                         "concat".to_string(),
                         "Dict",
-                        other.type_name(),
+                        type_id_display_name(other.type_decl_id_of()),
                         ys_span,
                     )
                     .with_materialization_span(call_span)
@@ -1835,7 +1879,7 @@ pub(crate) fn builtin_concat(
             other => Err(EvalError::type_mismatch_ctx(
                 "concat".to_string(),
                 "Dict",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 xs_span,
             )
             .with_materialization_span(call_span)

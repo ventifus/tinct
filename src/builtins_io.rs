@@ -47,7 +47,10 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, Value};
+use crate::value::{
+    string_val, type_id_display_name, BuiltinArgs, DirPerms, HashableValue, Thunk, Value,
+    TYPE_ID_DICT,
+};
 
 /// Maximum bytes per single `builtin-file-read` call. Prevents unbounded heap allocation.
 const MAX_FILE_READ_BYTES: usize = 256 * 1024 * 1024; // 256 MB
@@ -79,7 +82,7 @@ pub(crate) fn extract_dir_cap<'a>(
         other => Err(EvalError::type_mismatch_ctx(
             builtin_name.to_string(),
             "DirCap",
-            other.type_name(),
+            type_id_display_name(other.type_decl_id_of()),
             span,
         )
         .into()),
@@ -136,7 +139,7 @@ pub(crate) fn builtin_emit(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -360,7 +363,7 @@ pub(crate) fn builtin_narrow(
                         return Err(EvalError::type_mismatch_ctx(
                             "narrow".to_string(),
                             "Variant (capability flag) or String (subpath)",
-                            other.type_name(),
+                            type_id_display_name(other.type_decl_id_of()),
                             flag_thunk.span.clone(),
                         )
                         .into());
@@ -466,7 +469,7 @@ pub(crate) fn builtin_narrow(
             Err(EvalError::type_mismatch_ctx(
                 "narrow".to_string(),
                 "String (subpath) or Variant (capability flag)",
-                second_arg_val.type_name(),
+                type_id_display_name(second_arg_val.type_decl_id_of()),
                 thunk1.span.clone(),
             )
             .into())
@@ -515,7 +518,7 @@ pub(crate) fn builtin_revocable(
                 return Err(EvalError::type_mismatch_ctx(
                     "revocable".to_string(),
                     "DirCap",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into())
@@ -566,7 +569,7 @@ pub(crate) fn builtin_revoke_cap(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -574,7 +577,7 @@ pub(crate) fn builtin_revoke_cap(
             other => Err(EvalError::type_mismatch_ctx(
                 "revoke-cap".to_string(),
                 "RevocableDirCap",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -649,7 +652,7 @@ pub(crate) fn builtin_write(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -767,7 +770,7 @@ pub(crate) fn builtin_write_atomic(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -907,7 +910,7 @@ pub(crate) fn builtin_list_dir(
 
             entry_values.push(Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             });
         }
 
@@ -922,7 +925,7 @@ pub(crate) fn builtin_list_dir(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1074,7 +1077,7 @@ pub(crate) fn builtin_stat(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1286,7 +1289,7 @@ pub(crate) fn builtin_stat_symlink(
         ok_val(
             Value::Dict {
                 entries: dict,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1360,7 +1363,7 @@ pub(crate) fn builtin_copy_file(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1462,7 +1465,7 @@ pub(crate) fn builtin_symlink(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1517,7 +1520,7 @@ pub(crate) fn builtin_set_permissions(
                 return Err(EvalError::type_mismatch_ctx(
                     "set-permissions".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into());
@@ -1561,7 +1564,7 @@ pub(crate) fn builtin_set_permissions(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1642,7 +1645,7 @@ pub(crate) fn builtin_get_xattr(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1734,7 +1737,7 @@ pub(crate) fn builtin_set_xattr(
                 return Err(EvalError::type_mismatch_ctx(
                     "set-xattr".to_string(),
                     "Bytes",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk3.span.clone(),
                 )
                 .into())
@@ -1768,7 +1771,7 @@ pub(crate) fn builtin_set_xattr(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -1857,7 +1860,7 @@ pub(crate) fn builtin_remove_xattr(
             Ok(()) => ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 call_span,
             ),
@@ -1866,7 +1869,7 @@ pub(crate) fn builtin_remove_xattr(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     call_span,
                 )
@@ -1975,7 +1978,7 @@ pub(crate) fn builtin_list_xattrs(
         ok_val(
             Value::Dict {
                 entries: result,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2044,7 +2047,7 @@ pub(crate) fn builtin_make_dir(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2105,7 +2108,7 @@ pub(crate) fn builtin_remove(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2166,7 +2169,7 @@ pub(crate) fn builtin_rename(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2224,7 +2227,7 @@ pub(crate) fn builtin_link(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             call_span,
         )
@@ -2338,7 +2341,7 @@ pub(crate) fn builtin_file_open(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into());
@@ -2354,7 +2357,7 @@ pub(crate) fn builtin_file_open(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Integer",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk3.span.clone(),
                 )
                 .into());
@@ -2365,7 +2368,7 @@ pub(crate) fn builtin_file_open(
             return Err(EvalError::type_mismatch_ctx(
                 "builtin-file-open".to_string(),
                 "Integer",
-                mode_raw.type_name(),
+                type_id_display_name(mode_raw.type_decl_id_of()),
                 thunk3.span.clone(),
             )
             .into());
@@ -2380,7 +2383,7 @@ pub(crate) fn builtin_file_open(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Integer",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk4.span.clone(),
                 )
                 .into());
@@ -2391,7 +2394,7 @@ pub(crate) fn builtin_file_open(
             return Err(EvalError::type_mismatch_ctx(
                 "builtin-file-open".to_string(),
                 "Integer",
-                flags_raw.type_name(),
+                type_id_display_name(flags_raw.type_decl_id_of()),
                 thunk4.span.clone(),
             )
             .into());
@@ -2491,7 +2494,7 @@ pub(crate) fn builtin_file_read(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
                     "File",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -2511,7 +2514,7 @@ pub(crate) fn builtin_file_read(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -2582,7 +2585,7 @@ pub(crate) fn builtin_file_write(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-write".to_string(),
                     "File",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -2636,7 +2639,7 @@ pub(crate) fn builtin_file_flush(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-flush".to_string(),
                     "File",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into())
@@ -2688,7 +2691,7 @@ pub(crate) fn builtin_file_close(
             other => Err(EvalError::type_mismatch_ctx(
                 "builtin-file-close".to_string(),
                 "File",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -2728,7 +2731,7 @@ pub(crate) fn builtin_file_seek(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
                     "File",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -2748,7 +2751,7 @@ pub(crate) fn builtin_file_seek(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -2884,7 +2887,7 @@ pub(crate) fn builtin_read_stdin(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-read-stdin".to_string(),
                     "Int",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())

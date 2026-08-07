@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::type_tags::*;
+use crate::value::TYPE_ID_DICT;
 
 // T-2004: Old Type-enum-based functions (instantiate_at_level, instantiate_scheme,
 // generalize, generalize_with_doc) deleted. All callers now use the TypeValue-based
@@ -237,10 +238,10 @@ pub fn apply_typevalue_renaming(
                             // Reconstruct the Variant with the new payload dict.
                             let new_payload_dict = Value::Dict {
                                 entries: new_entries,
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             };
                             Arc::new(Value::Variant {
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::clone(ctor),
                                 payload: Some(Arc::new(crate::value::Thunk::value(
                                     new_payload_dict,
@@ -343,11 +344,11 @@ pub fn generalize_tv_with_meta(
                 );
                 Value::Dict {
                     entries: d,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }
             };
             let var_decl = Value::Variant {
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
                 ctor: Arc::from(TV_VAR_DECL),
                 payload: Some(Arc::new(crate::value::Thunk::value(
                     var_decl_payload,
@@ -361,14 +362,14 @@ pub fn generalize_tv_with_meta(
         }
         Value::Dict {
             entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     };
 
     // Build constraints dict: empty (future work: include typeclass constraints).
     let constraints_dict = Value::Dict {
         entries: indexmap::IndexMap::new(),
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
 
     // Build narrowings dict: { 0: TypeValue | [], 1: TypeValue | [], ... }
@@ -382,7 +383,7 @@ pub fn generalize_tv_with_meta(
                 Some(tv) => tv.as_ref().clone(),
                 None => Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
             };
             narrowing_entries.insert(
@@ -392,7 +393,7 @@ pub fn generalize_tv_with_meta(
         }
         Some(Value::Dict {
             entries: narrowing_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         })
     };
 
@@ -439,12 +440,12 @@ pub fn generalize_tv_with_meta(
         }
         Value::Dict {
             entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }
     };
 
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_SCHEME),
         payload: Some(Arc::new(crate::value::Thunk::value(
             scheme_payload,
@@ -570,10 +571,10 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let var_decl = Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_VAR_DECL),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 var_decl_payload,
@@ -590,11 +591,11 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let constraints_dict = Value::Dict {
             entries: indexmap::IndexMap::new(),
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let body_var = make_typevar_value("a"); // body is TypeValue.Var{name:"a"}
 
@@ -621,11 +622,11 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
 
         let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_SCHEME),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 scheme_payload,

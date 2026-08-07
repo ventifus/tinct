@@ -1251,7 +1251,7 @@ async fn resolve_property_dict_as_record(
             let is_tycon_error = entries.first().is_some_and(|first| {
                 first.node.key.is_none()
                     && matches!(&first.node.value.expr, SurfaceExpression::VarRef { name, .. }
-                        if state.tycon_env.contains_key(name.as_str()))
+                        if state.type_name_to_id.get(name.as_str()).is_some_and(|id| state.tycon_env.contains_key(id)))
             });
             if entries_look_like_type_dict(entries) || is_tycon_error {
                 Err(e)
@@ -1673,7 +1673,11 @@ async fn resolve_type_head(
     // Step 5: check tycon_env for runtime type declarations (e.g., Boolean: [type True False]).
     // Annotations resolve in the type-stage env first, then fall back to runtime scope.
     // This handles types declared in the same dict or an enclosing runtime scope.
-    if state.tycon_env.contains_key(name) {
+    if state
+        .type_name_to_id
+        .get(name)
+        .is_some_and(|id| state.tycon_env.contains_key(id))
+    {
         if args.is_empty() {
             return Ok(make_typevalue_nominal(
                 *state.type_name_to_id.get(name).unwrap_or(&0),
@@ -1730,7 +1734,11 @@ pub(crate) async fn resolve_type_name(
                     let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
-                        if !state.tycon_env.contains_key(name) {
+                        if !state
+                            .type_name_to_id
+                            .get(name)
+                            .is_some_and(|id| state.tycon_env.contains_key(id))
+                        {
                             return Err(Diagnostic::error(
                                 "type-error",
                                 format!(
@@ -2057,7 +2065,12 @@ pub(crate) async fn resolve_type_expr(
             // Primary path: look up via TyConDef (covers user-defined types and builtin TyCons
             // registered in T-1018: Seq, Map, Handle). Falls through to kind_env for unregistered names.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(def) = state.tycon_env.get(name).cloned() {
+                if let Some(def) = state
+                    .type_name_to_id
+                    .get(name.as_str())
+                    .and_then(|id| state.tycon_env.get(id))
+                    .cloned()
+                {
                     let arity = def.arity();
                     if arity > 0 {
                         let mut result =
@@ -2082,7 +2095,12 @@ pub(crate) async fn resolve_type_expr(
 
             // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(alias) = state.tycon_env.get(name).cloned() {
+                if let Some(alias) = state
+                    .type_name_to_id
+                    .get(name.as_str())
+                    .and_then(|id| state.tycon_env.get(id))
+                    .cloned()
+                {
                     // Resolve all type arguments
                     let mut type_args = Vec::new();
                     for arg in args {
@@ -2123,10 +2141,11 @@ pub(crate) async fn resolve_type_expr(
             // Check if func is an uppercase VarRef (nominal constructor name).
             // Builtin type names (Int, Float, etc.) must NOT be treated as NominalVariant.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                let tycon_env_ref = state.tycon_env_ref();
-                let is_builtin = tycon_env_ref
-                    .get(name)
-                    .is_some_and(|def| def.builtin_type.is_some());
+                let is_builtin = state
+                    .type_name_to_id
+                    .get(name.as_str())
+                    .and_then(|id| state.tycon_env.get(id))
+                    .is_some();
                 if crate::eval::is_constructor_name(name) && !is_builtin {
                     // This is a nominal variant constructor with named fields and/or constants.
                     //
@@ -2336,12 +2355,16 @@ pub(crate) async fn resolve_type_expr(
 /// Used by `resolve_type_expr` to populate `NominalVariant.tycon` when only the ctor
 /// name is available (e.g. bare uppercase VarRef fallback, implied-call constructor).
 fn lookup_tycon_for_ctor(state: &InferState, ctor_name: &str) -> String {
-    for (tycon_name, def) in &state.tycon_env {
+    for (tycon_id, def) in &state.tycon_env {
         for (qualified_tag, _arity) in &def.constructors {
             // Qualified tag format: "TyConName.CtorName"
             if let Some((_, bare_ctor)) = qualified_tag.split_once('.') {
                 if bare_ctor == ctor_name {
-                    return tycon_name.clone();
+                    return state
+                        .type_display_names
+                        .get(tycon_id)
+                        .cloned()
+                        .unwrap_or_else(|| tycon_id.to_string());
                 }
             }
         }
@@ -2699,10 +2722,11 @@ pub(crate) async fn resolve_type_dict(
                     // BUT: builtin type names (Int, Float, String, Bool, Number, etc.) also
                     // start with uppercase and must NOT be treated as NominalVariant.
                     // Resolve builtin type names through resolve_type_name first.
-                    let tycon_env_ref2 = state.tycon_env_ref();
-                    let is_builtin_type = tycon_env_ref2
-                        .get(&tag)
-                        .is_some_and(|def| def.builtin_type.is_some());
+                    let is_builtin_type = state
+                        .type_name_to_id
+                        .get(tag.as_str())
+                        .and_then(|id| state.tycon_env.get(id))
+                        .is_some();
                     if entries.len() == 1 && first.node.key.is_none() {
                         // Single positional entry: try resolve_type_name first.
                         // This handles builtin type names (Int, Float, String, etc.) and

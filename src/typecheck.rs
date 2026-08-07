@@ -14,7 +14,7 @@ use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::InferenceContext;
 use crate::types::{generalize_tv, InferState};
-use crate::value::Value;
+use crate::value::{Value, TYPE_ID_DICT};
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]
@@ -519,7 +519,7 @@ fn make_typevalue_record(
     }
     let fields_dict_val = Value::Dict {
         entries: fields_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     // tail: None → closed record → RowTail.Closed variant
     let tail_val = tail
@@ -538,10 +538,10 @@ fn make_typevalue_record(
     );
     let payload_dict = Value::Dict {
         entries: payload_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(Thunk::value(payload_dict, crate::rust_span!()))),
     })
@@ -604,7 +604,7 @@ pub(crate) async fn process_document(
     // by the DictPassZero handler (it discards the schemes return from run_typecheck_dict).
     // We reconstruct them by diffing tycon_env against this snapshot: new zero-arity TyCon
     // entries represent types declared here.
-    let tycon_keys_before: std::collections::HashSet<String> =
+    let tycon_keys_before: std::collections::HashSet<u64> =
         state.tycon_env.keys().cloned().collect();
 
     // Route all document nodes through the CEK machine's Sequential arm — the single
@@ -699,13 +699,18 @@ pub(crate) async fn process_document(
     // state.tycon_env against the pre-run snapshot:
     //   1. The type name itself (e.g., "Direction") → adt_value_type(body) — the constructor dict
     //   2. Each constructor name (e.g., "North", "South") → the NominalVariant type
-    for (name, def) in &state.tycon_env {
-        if !tycon_keys_before.contains(name) && def.params.is_empty() {
+    for (id, def) in &state.tycon_env {
+        if !tycon_keys_before.contains(id) && def.params.is_empty() {
             let value_ty = typecheck_cek::adt_value_type(&def.body);
+            let name = state
+                .type_display_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string());
             // Use resolver-assigned slot if available; otherwise append at end.
-            let slot = find_slot_in_frames(&state.resolver_frames, name)
+            let slot = find_slot_in_frames(&state.resolver_frames, &name)
                 .unwrap_or_else(|| result_env_inner.slots.len());
-            result_env_inner.insert_at_slot(slot, name.clone(), Arc::clone(&value_ty), None);
+            result_env_inner.insert_at_slot(slot, name, Arc::clone(&value_ty), None);
             // Insert each constructor name with its variant TypeValue.
             if let Some(ctor_fields) = extract_record_fields(&value_ty) {
                 for (ctor_name, ctor_tv) in ctor_fields {
@@ -880,10 +885,9 @@ pub(crate) fn infer_class_decl_from_surface(
     // injectivity for TV_APP~TV_APP without requiring access to the full Env.
     if !class_decl.resolver_injective {
         if let Some(ref resolver_name) = class_decl.resolver {
-            state
-                .ctx
-                .non_injective_resolvers
-                .insert(resolver_name.clone());
+            if let Some(&id) = state.type_name_to_id.get(resolver_name.as_str()) {
+                state.ctx.non_injective_resolvers.insert(id);
+            }
         }
     }
 

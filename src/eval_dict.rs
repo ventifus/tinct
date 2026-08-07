@@ -12,7 +12,9 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value};
+use crate::value::{
+    string_val, type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT,
+};
 
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
@@ -53,7 +55,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
         }
         _ => Err(EvalError::type_mismatch(
             "String, Int, Float, or Variant",
-            value.type_name(),
+            type_id_display_name(value.type_decl_id_of()),
             span.clone(),
         )
         .into()),
@@ -231,7 +233,7 @@ async fn eval_annotation_property_dict(
 
     Ok(Value::Dict {
         entries: dict_map,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     })
 }
 
@@ -272,7 +274,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
     // Annotated VarRef (Var { annotation: Some(_) }) is now a static key too.
     matches!(
         k,
-        CoreExpr::Str(_)
+        CoreExpr::Str { .. }
             | CoreExpr::Var {
                 annotation: Some(_),
                 ..
@@ -364,11 +366,11 @@ pub(crate) async fn eval_dict_core(
         // so we can replace its frame after the group Vec is assembled.
         let (value_thunk, core_expr_thunk): (Arc<Thunk>, Option<Arc<Thunk>>) =
             match &entry.node.value.node {
-                CoreExpr::Int(n) => (
+                CoreExpr::Int { value: n, .. } => (
                     Arc::new(Thunk::value(Value::Int { n: *n }, entry_span)),
                     None,
                 ),
-                CoreExpr::U64(n) => (
+                CoreExpr::U64 { value: n, .. } => (
                     Arc::new(Thunk::value(
                         Value::BigInt {
                             n: num_bigint::BigInt::from(*n),
@@ -377,11 +379,13 @@ pub(crate) async fn eval_dict_core(
                     )),
                     None,
                 ),
-                CoreExpr::Float(f) => (
+                CoreExpr::Float { value: f, .. } => (
                     Arc::new(Thunk::value(Value::Float { n: *f }, entry_span)),
                     None,
                 ),
-                CoreExpr::Str(s) => (Arc::new(Thunk::value(string_val(s), entry_span)), None),
+                CoreExpr::Str { value: s, .. } => {
+                    (Arc::new(Thunk::value(string_val(s), entry_span)), None)
+                }
                 // Non-literal: create with EvalFrame::empty() as a placeholder.
                 // The real letrec frame is patched in below via try_claim/reset after
                 // the group Vec is assembled. ALL non-literal thunks are patched (both
@@ -461,9 +465,9 @@ pub(crate) async fn eval_dict_core(
             // key was moved; reconstruct string representation from entry for error message
             let key_str = match &entry.node.key {
                 Some(k_expr) => match &k_expr.node {
-                    CoreExpr::Str(s) => s.clone(),
-                    CoreExpr::Int(n) => n.to_string(),
-                    CoreExpr::U64(n) => n.to_string(),
+                    CoreExpr::Str { value: s, .. } => s.clone(),
+                    CoreExpr::Int { value: n, .. } => n.to_string(),
+                    CoreExpr::U64 { value: n, .. } => n.to_string(),
                     CoreExpr::Var { name, .. } => name.clone(),
                     _ => "<computed key>".to_string(),
                 },
@@ -491,7 +495,7 @@ pub(crate) async fn eval_dict_core(
                     Arc::new(Thunk::value(
                         Value::Dict {
                             entries: IndexMap::new(),
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         },
                         crate::rust_span!(),
                     ))
@@ -580,7 +584,7 @@ pub(crate) async fn eval_dict_core(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict_map,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         dict_span.clone(),
     )))
@@ -597,11 +601,11 @@ pub(crate) async fn eval_key_core(
 ) -> EvalResult<HashableValue> {
     // Direct key evaluation for statically-known keys — avoids thunk creation and materialization
     match &key_expr.node {
-        CoreExpr::Str(s) => return Ok(HashableValue::Str(Arc::from(s.as_str()))),
-        CoreExpr::Int(n) => return Ok(HashableValue::Int(*n)),
-        CoreExpr::Float(f) => return Ok(HashableValue::Float(f.to_bits())),
+        CoreExpr::Str { value: s, .. } => return Ok(HashableValue::Str(Arc::from(s.as_str()))),
+        CoreExpr::Int { value: n, .. } => return Ok(HashableValue::Int(*n)),
+        CoreExpr::Float { value: f, .. } => return Ok(HashableValue::Float(f.to_bits())),
         // U64 keys that fit in i64 are used as integer keys; larger values error.
-        CoreExpr::U64(n) => {
+        CoreExpr::U64 { value: n, .. } => {
             if let Ok(i) = i64::try_from(*n) {
                 return Ok(HashableValue::Int(i));
             }

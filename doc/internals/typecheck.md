@@ -174,7 +174,7 @@ When the type checker encounters an uppercase annotation name (e.g., `@Integer`,
    - `TypeStageEntry::Class(ClassDecl)` → fresh TypeVar with class constraint; break from loop
 3. **Undefined** — returns a `TypeError`
 
-This is the mechanism by which `@Integer` resolves to a `TypeValue.Repr{repr:"Value::Int"}` in user code: `builtin_core.llt`'s type-stage section defines `Integer = TypeNode.Int`, the loader evaluates it and wires the scope via `builtin-tc-update-type-stage-env`, and `resolve_type_head` finds it in the scope chain.
+This is the mechanism by which `@Integer` resolves to a `TypeValue.Nominal(TYPE_ID_INT)` in user code: `builtin_core.llt`'s type-stage section defines `Integer = TypeNode.Int`, the loader evaluates it and wires the scope via `builtin-tc-update-type-stage-env`, and `resolve_type_head` finds it in the scope chain.
 
 ---
 
@@ -463,7 +463,7 @@ Before the CEK machine, call type checking had three separate code paths that ha
 3. **`check_call`** in `typecheck_call.rs` — the general case dispatcher
 
 The CEK machine consolidates all three into a single path through `CallFunc` and `CallArg`. There is no `CALL-MONO`/`CALL-POLY` dispatch — unification handles both cases uniformly. `typecheck_call.rs` now contains only two small helper functions:
-- `widen_literal_types(tv: Arc<Value>) -> Arc<Value>` — `TypeValue.IntLit → TypeValue.Repr{Value::Int}`, etc. before arg unification
+- `widen_literal_types(tv: Arc<Value>) -> Arc<Value>` — `TypeValue.IntLit → TypeValue.Nominal(TYPE_ID_INT)`, etc. before arg unification
 - `is_concrete_type(tv: &Arc<Value>) -> bool` — predicate for gradual typing boundary detection
 
 ---

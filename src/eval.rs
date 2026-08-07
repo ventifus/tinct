@@ -26,7 +26,7 @@ use crate::type_tags::*;
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::value::{EvalFrame, HashableValue, Thunk, Value};
+use crate::value::{type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 // ============================================================================
 // Document pipeline evaluation
@@ -58,7 +58,7 @@ thread_local! {
     static EMPTY_DICT_THUNK: Arc<Thunk> = Arc::new(Thunk::value(
         Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         rust_span!(),
     ));
@@ -82,7 +82,7 @@ pub(crate) async fn eval_document_exprs_with_env(
         return Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             rust_span!(),
         )));
@@ -172,7 +172,7 @@ pub(crate) async fn eval_document_exprs_with_env(
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     node_span,
                 )));
             }
@@ -236,7 +236,7 @@ pub(crate) async fn eval_core_document_exprs(
             Arc::new(Thunk::value(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 rust_span!(),
             )),
@@ -284,7 +284,7 @@ pub(crate) async fn eval_core_document_exprs(
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
                     "Dict",
-                    other.type_name(),
+                    type_id_display_name(other.type_decl_id_of()),
                     entry_span,
                 )));
             }
@@ -459,7 +459,7 @@ pub struct TypeContextData {
     /// ClockCap, Handle, etc.) declared in `builtin_core.llt` to subsequent module
     /// type-checks (builtin_io.llt, builtin_async.llt, ...) without requiring them to
     /// re-declare types they receive from the runtime environment.
-    pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    pub tycon_env: std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
     /// Type-stage scope chain: pre-computed resolved TypeValues from type-stage evaluation.
     /// Vec[0] = innermost (highest priority); Vec[N-1] = outermost.
     /// Populated by builtin-tc-update-type-stage-env and builtin_typecheck_doc write-back.
@@ -755,7 +755,7 @@ impl EvalContext {
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
             repr_registry,
             is_predicates,
@@ -800,7 +800,7 @@ impl EvalContext {
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
             repr_registry,
             is_predicates,
@@ -1261,16 +1261,8 @@ pub(crate) fn thunk_matches_nominal_type(
 
     // TypeValue.Nominal: compare type_decl_id directly.
     if ctor.as_ref() == TV_NOMINAL {
-        let expected_id = crate::type_infer::typevalue_nominal_id(expected);
-        match expected_id {
-            Some(0) => return Some(true), // Nominal(0) = unknown type = wildcard
-            Some(id) => {
-                if thunk.type_decl_id == 0 {
-                    return None; // Anonymous thunk — must materialize to determine type.
-                }
-                return Some(thunk.type_decl_id == id);
-            }
-            None => return None,
+        if let Some(id) = crate::type_infer::typevalue_nominal_id(expected) {
+            return Some(thunk.type_decl_id == id);
         }
     }
 
@@ -1305,7 +1297,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     // present. Under BAS width subtyping, extra fields are always accepted.
     //
     // This arm cannot be delegated to BAS because BAS operates on abstract TypeValues
-    // (ground_typevalue_of erases field structure by mapping Value::Dict → Repr("Value::Dict")),
+    // (value.type_decl_id_of() returns TYPE_ID_DICT for all Dict values regardless of field structure),
     // whereas this check requires access to the concrete value's field set.
     //
     // Note: field TYPE checking is deferred to guard thunks (validate_and_wrap_record in
@@ -1338,7 +1330,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     //
     // Handled here (rather than delegated to BAS) because union members may include
     // TypeValue.Record, which requires concrete value access (see Record arm above).
-    // BAS's is_consistent_subtype handles Union on sup, but uses ground_typevalue_of(value)
+    // BAS's is_consistent_subtype handles Union on sup, but uses value.type_decl_id_of()
     // which erases field structure, making Record members always fail.
     if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNION) {
         if let Value::Variant {
@@ -1415,44 +1407,24 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
         Some(e) => e.clone(),
         None => std::collections::HashMap::new(), // tycon_env not wired (e.g., --no-typecheck or test context).
     };
-    // Build type_display_names (id → name) from tycon_env so BAS can resolve
-    // Nominal ids back to TyCon names for builtin_type dispatch and structural alias expansion.
-    let display_names: std::collections::HashMap<u64, String> = tycon_env
-        .iter()
-        .map(|(name, def)| (def.type_decl_id, name.clone()))
-        .collect();
-    let mut name_to_id: std::collections::HashMap<String, u64> = display_names
-        .iter()
-        .map(|(id, name)| (name.clone(), *id))
-        .collect();
-    // Also populate from TypeContext if available (has the full type-stage scope mappings).
+    // Build type_display_names (id → name) and name_to_id (name → id) from TypeContextData.
+    // tycon_env is keyed by u64 so names come from TypeContextData.type_name_to_id.
+    let mut display_names: std::collections::HashMap<u64, String> =
+        std::collections::HashMap::new();
+    let mut name_to_id: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     if let Some(tc_guard) = ctx.type_context.lock().ok() {
         if let Some(ref tc) = *tc_guard {
             for (name, id) in &tc.type_name_to_id {
-                name_to_id.entry(name.clone()).or_insert(*id);
+                display_names.insert(*id, name.clone());
+                name_to_id.insert(name.clone(), *id);
             }
         }
     }
     let mut inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
     inference_ctx.type_display_names = display_names;
     inference_ctx.type_name_to_id = name_to_id;
-    let sub_id = match value {
-        Value::Int { .. } => crate::value::TYPE_ID_INT,
-        Value::U64 { .. } => crate::value::TYPE_ID_U64,
-        Value::Float { .. } => crate::value::TYPE_ID_FLOAT,
-        Value::String { .. } => crate::value::TYPE_ID_STRING,
-        Value::Bytes { .. } => crate::value::TYPE_ID_BYTES,
-        Value::Dict { type_decl_id, .. } => *type_decl_id,
-        Value::Function { .. } => crate::value::TYPE_ID_FUNCTION,
-        Value::Builtin { .. } => crate::value::TYPE_ID_BUILTIN,
-        Value::Variant { type_decl_id, .. } => *type_decl_id,
-        _ => 0,
-    };
-    let sub_tv = if sub_id > 0 {
-        crate::type_infer::make_typevalue_nominal(sub_id)
-    } else {
-        crate::type_infer::make_typevalue_unknown()
-    };
+    let sub_id = value.type_decl_id_of();
+    let sub_tv = crate::type_infer::make_typevalue_nominal(sub_id);
     crate::bas::is_consistent_subtype(&sub_tv, expected, &inference_ctx)
 }
 
@@ -1468,27 +1440,10 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                 TV_NOMINAL => {
                     if let Some(id) = crate::type_infer::typevalue_nominal_id(ty) {
                         return match id {
-                            crate::value::TYPE_ID_INT => "Int".to_string(),
-                            crate::value::TYPE_ID_U64 => "Int".to_string(),
-                            crate::value::TYPE_ID_FLOAT => "Float".to_string(),
-                            crate::value::TYPE_ID_STRING => "String".to_string(),
-                            crate::value::TYPE_ID_BYTES => "Bytes".to_string(),
                             crate::value::TYPE_ID_FUNCTION | crate::value::TYPE_ID_BUILTIN => {
                                 "Fn".to_string()
                             }
-                            crate::value::TYPE_ID_DICT => "Dict".to_string(),
-                            crate::value::TYPE_ID_PROXY => "Proxy".to_string(),
-                            crate::value::TYPE_ID_DIRCAP => "DirCap".to_string(),
-                            crate::value::TYPE_ID_NETCAP => "NetCap".to_string(),
-                            crate::value::TYPE_ID_FILE => "File".to_string(),
-                            crate::value::TYPE_ID_SCOPE => "Scope".to_string(),
-                            crate::value::TYPE_ID_TYPE_CONTEXT => "TypeContext".to_string(),
-                            crate::value::TYPE_ID_TASK => "Task".to_string(),
-                            crate::value::TYPE_ID_CHANNEL => "Channel".to_string(),
-                            crate::value::TYPE_ID_CONTEXT => "Context".to_string(),
-                            crate::value::TYPE_ID_PROGRAM => "Program".to_string(),
-                            crate::value::TYPE_ID_DOCUMENT => "Document".to_string(),
-                            other => format!("Nominal({})", other),
+                            _ => crate::value::type_id_display_name(id).to_string(),
                         };
                     }
                     TV_NOMINAL.to_string()
@@ -2072,7 +2027,7 @@ async fn call_to_match_by_name(
             return Err(EvalError::type_mismatch_ctx(
                 format!("call_to_match_by_name({name})"),
                 "Function",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 span.clone(),
             )
             .into());
@@ -2097,7 +2052,7 @@ async fn call_to_match_by_name(
         other => Err(EvalError::type_mismatch_ctx(
             format!("call_to_match_by_name({name}) result"),
             "Int",
-            other.type_name(),
+            type_id_display_name(other.type_decl_id_of()),
             span.clone(),
         )
         .into()),
@@ -2343,8 +2298,6 @@ mod tests {
     use crate::test_util::{sp, test_span};
 
     const TEST_ID_MY_TYPE: u64 = 2000;
-    const TEST_ID_MY_INT: u64 = 2001;
-    const TEST_ID_MY_DICT: u64 = 2002;
     const TEST_ID_COLOR: u64 = 2003;
     const TEST_ID_MY_SEQ: u64 = 2004;
     const TEST_ID_SHAPE: u64 = 2005;
@@ -2676,17 +2629,28 @@ mod tests {
         // and a second materialize attempt should return the SAME error, NOT "circular dependency".
         let ctx = test_ctx();
         let dict_core = Spanned::new(
-            CoreExpr::Dict(vec![Spanned::new(
-                CoreEntry {
-                    key: Some(Arc::new(Spanned::new(
-                        CoreExpr::Str("x".to_string()),
-                        test_span(1, 1, 1, 2),
-                    ))),
-                    value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: 0,
-                },
-                test_span(1, 1, 1, 15),
-            )]),
+            CoreExpr::Dict {
+                entries: vec![Spanned::new(
+                    CoreEntry {
+                        key: Some(Arc::new(Spanned::new(
+                            CoreExpr::Str {
+                                value: "x".to_string(),
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 1, 1, 2),
+                        ))),
+                        value: Arc::new(Spanned::new(
+                            CoreExpr::Placeholder {
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 5, 1, 15),
+                        )),
+                        assigned_slot: 0,
+                    },
+                    test_span(1, 1, 1, 15),
+                )],
+                inferred_type_id: 0,
+            },
             test_span(1, 1, 1, 15),
         );
         let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
@@ -2919,9 +2883,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "hello".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -2945,11 +2916,18 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 42,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(
                     crate::value::TYPE_ID_STRING,
                 )),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -2983,9 +2961,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "hello".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3044,7 +3029,13 @@ mod tests {
         ];
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "hello".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Source {
                     annotation: Spanned::new(
                         crate::ast::Annotation::PropertyDict(entries),
@@ -3052,6 +3043,7 @@ mod tests {
                     ),
                 },
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3070,9 +3062,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "hello".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3113,7 +3112,12 @@ mod tests {
         let error_span = test_span(1, 5, 1, 15);
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Placeholder, error_span)),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Placeholder {
+                        inferred_type_id: 0,
+                    },
+                    error_span,
+                )),
                 check: TypeAssertCheck::Source {
                     annotation: Spanned::new(
                         crate::ast::Annotation::PropertyDict(entries),
@@ -3121,6 +3125,7 @@ mod tests {
                     ),
                 },
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3138,12 +3143,19 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 42,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_record(
                     indexmap::indexmap! { "name".to_string() => make_typevalue_nominal(crate::value::TYPE_ID_STRING) },
                     None,
                 )),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3171,12 +3183,19 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 42,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_record(
                     indexmap::indexmap! { "name".to_string() => make_typevalue_nominal(crate::value::TYPE_ID_STRING) },
                     None,
                 )),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3212,17 +3231,28 @@ mod tests {
         // The materialization span passed to materialize() should be attached to the error.
         let ctx = test_ctx();
         let dict_core = Spanned::new(
-            CoreExpr::Dict(vec![Spanned::new(
-                CoreEntry {
-                    key: Some(Arc::new(Spanned::new(
-                        CoreExpr::Str("x".to_string()),
-                        test_span(1, 1, 1, 2),
-                    ))),
-                    value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: 0,
-                },
-                test_span(1, 1, 1, 15),
-            )]),
+            CoreExpr::Dict {
+                entries: vec![Spanned::new(
+                    CoreEntry {
+                        key: Some(Arc::new(Spanned::new(
+                            CoreExpr::Str {
+                                value: "x".to_string(),
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 1, 1, 2),
+                        ))),
+                        value: Arc::new(Spanned::new(
+                            CoreExpr::Placeholder {
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 5, 1, 15),
+                        )),
+                        assigned_slot: 0,
+                    },
+                    test_span(1, 1, 1, 15),
+                )],
+                inferred_type_id: 0,
+            },
             test_span(1, 1, 1, 15),
         );
         let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
@@ -3353,7 +3383,12 @@ mod tests {
         let (env, ctx) = core_env_and_ctx();
         let placeholder_span = test_span(1, 1, 1, 12);
         let err = eval_core_for_test(
-            Spanned::new(CoreExpr::Placeholder, placeholder_span),
+            Spanned::new(
+                CoreExpr::Placeholder {
+                    inferred_type_id: 0,
+                },
+                placeholder_span,
+            ),
             Arc::clone(&env),
             &ctx,
         )
@@ -3376,6 +3411,7 @@ mod tests {
             name: "f".to_string(),
             addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
+            inferred_type_id: 0,
         });
         assert_eq!(label.as_deref(), Some("f"));
     }
@@ -3389,6 +3425,7 @@ mod tests {
             name: "builtin-dict-get".to_string(),
             addr: crate::ast::VarAddr::ClosureCapture(0),
             annotation: None,
+            inferred_type_id: 0,
         };
         let label = func_label_core(&func_var);
         assert_eq!(label.as_deref(), Some("builtin-dict-get"));
@@ -3398,7 +3435,13 @@ mod tests {
     async fn test_func_label_anonymous() {
         use crate::eval_call::func_label_core;
         // Anonymous calls return None (no origin label adds diagnostic value)
-        assert_eq!(func_label_core(&CoreExpr::Int(42)), None);
+        assert_eq!(
+            func_label_core(&CoreExpr::Int {
+                value: 42,
+                inferred_type_id: 0
+            }),
+            None
+        );
     }
 
     #[tokio::test]
@@ -3412,6 +3455,7 @@ mod tests {
                 name: "missing".to_string(),
                 addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                 annotation: None,
+                inferred_type_id: 0,
             },
             test_span(1, 1, 1, 8),
         );
@@ -3472,17 +3516,28 @@ mod tests {
         // and return the cached error on subsequent materialization attempts.
         let ctx = test_ctx();
         let dict_core = Spanned::new(
-            CoreExpr::Dict(vec![Spanned::new(
-                CoreEntry {
-                    key: Some(Arc::new(Spanned::new(
-                        CoreExpr::Str("x".to_string()),
-                        test_span(1, 1, 1, 2),
-                    ))),
-                    value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: 0,
-                },
-                test_span(1, 1, 1, 15),
-            )]),
+            CoreExpr::Dict {
+                entries: vec![Spanned::new(
+                    CoreEntry {
+                        key: Some(Arc::new(Spanned::new(
+                            CoreExpr::Str {
+                                value: "x".to_string(),
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 1, 1, 2),
+                        ))),
+                        value: Arc::new(Spanned::new(
+                            CoreExpr::Placeholder {
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 5, 1, 15),
+                        )),
+                        assigned_slot: 0,
+                    },
+                    test_span(1, 1, 1, 15),
+                )],
+                inferred_type_id: 0,
+            },
             test_span(1, 1, 1, 15),
         );
         let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
@@ -3538,6 +3593,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
+                    inferred_type_id: 0,
                 },
                 error_span.clone(),
             )),
@@ -3577,17 +3633,28 @@ mod tests {
         // CoreExpr::Placeholder produces an Unimplemented error which is cacheable.
         let ctx = test_ctx();
         let dict_core = Spanned::new(
-            CoreExpr::Dict(vec![Spanned::new(
-                CoreEntry {
-                    key: Some(Arc::new(Spanned::new(
-                        CoreExpr::Str("x".to_string()),
-                        test_span(1, 1, 1, 2),
-                    ))),
-                    value: Arc::new(Spanned::new(CoreExpr::Placeholder, test_span(1, 5, 1, 15))),
-                    assigned_slot: 0,
-                },
-                test_span(1, 1, 1, 15),
-            )]),
+            CoreExpr::Dict {
+                entries: vec![Spanned::new(
+                    CoreEntry {
+                        key: Some(Arc::new(Spanned::new(
+                            CoreExpr::Str {
+                                value: "x".to_string(),
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 1, 1, 2),
+                        ))),
+                        value: Arc::new(Spanned::new(
+                            CoreExpr::Placeholder {
+                                inferred_type_id: 0,
+                            },
+                            test_span(1, 5, 1, 15),
+                        )),
+                        assigned_slot: 0,
+                    },
+                    test_span(1, 1, 1, 15),
+                )],
+                inferred_type_id: 0,
+            },
             test_span(1, 1, 1, 15),
         );
         let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
@@ -3635,9 +3702,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 42,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3656,9 +3730,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "hello".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3680,11 +3761,18 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "hello".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(
                     crate::value::TYPE_ID_STRING,
                 )),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3702,9 +3790,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Str("anything".into()), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str {
+                        value: "anything".into(),
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_top()),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3722,9 +3817,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(99), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 99,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(make_typevalue_top()),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3752,37 +3854,56 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::TypeAssert {
                 expr: Arc::new(Spanned::new(
-                    CoreExpr::Dict(vec![
-                        Spanned::new(
-                            crate::ast::CoreEntry {
-                                key: Some(Arc::new(Spanned::new(
-                                    CoreExpr::Str("name".into()),
-                                    span.clone(),
-                                ))),
-                                value: Arc::new(Spanned::new(
-                                    CoreExpr::Str("Alice".into()),
-                                    span.clone(),
-                                )),
-                                assigned_slot: 0,
-                            },
-                            span.clone(),
-                        ),
-                        Spanned::new(
-                            crate::ast::CoreEntry {
-                                key: Some(Arc::new(Spanned::new(
-                                    CoreExpr::Str("age".into()),
-                                    span.clone(),
-                                ))),
-                                value: Arc::new(Spanned::new(CoreExpr::Int(30), span.clone())),
-                                assigned_slot: 1,
-                            },
-                            span.clone(),
-                        ),
-                    ]),
+                    CoreExpr::Dict {
+                        entries: vec![
+                            Spanned::new(
+                                crate::ast::CoreEntry {
+                                    key: Some(Arc::new(Spanned::new(
+                                        CoreExpr::Str {
+                                            value: "name".into(),
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    ))),
+                                    value: Arc::new(Spanned::new(
+                                        CoreExpr::Str {
+                                            value: "Alice".into(),
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    )),
+                                    assigned_slot: 0,
+                                },
+                                span.clone(),
+                            ),
+                            Spanned::new(
+                                crate::ast::CoreEntry {
+                                    key: Some(Arc::new(Spanned::new(
+                                        CoreExpr::Str {
+                                            value: "age".into(),
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    ))),
+                                    value: Arc::new(Spanned::new(
+                                        CoreExpr::Int {
+                                            value: 30,
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    )),
+                                    assigned_slot: 1,
+                                },
+                                span.clone(),
+                            ),
+                        ],
+                        inferred_type_id: 0,
+                    },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3815,24 +3936,34 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::TypeAssert {
                 expr: Arc::new(Spanned::new(
-                    CoreExpr::Dict(vec![Spanned::new(
-                        crate::ast::CoreEntry {
-                            key: Some(Arc::new(Spanned::new(
-                                CoreExpr::Str("name".into()),
-                                span.clone(),
-                            ))),
-                            value: Arc::new(Spanned::new(
-                                CoreExpr::Str("Alice".into()),
-                                span.clone(),
-                            )),
-                            assigned_slot: 0,
-                        },
-                        span.clone(),
-                    )]),
+                    CoreExpr::Dict {
+                        entries: vec![Spanned::new(
+                            crate::ast::CoreEntry {
+                                key: Some(Arc::new(Spanned::new(
+                                    CoreExpr::Str {
+                                        value: "name".into(),
+                                        inferred_type_id: 0,
+                                    },
+                                    span.clone(),
+                                ))),
+                                value: Arc::new(Spanned::new(
+                                    CoreExpr::Str {
+                                        value: "Alice".into(),
+                                        inferred_type_id: 0,
+                                    },
+                                    span.clone(),
+                                )),
+                                assigned_slot: 0,
+                            },
+                            span.clone(),
+                        )],
+                        inferred_type_id: 0,
+                    },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3863,34 +3994,56 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::TypeAssert {
                 expr: Arc::new(Spanned::new(
-                    CoreExpr::Dict(vec![
-                        Spanned::new(
-                            crate::ast::CoreEntry {
-                                key: Some(Arc::new(Spanned::new(
-                                    CoreExpr::Str("x".into()),
-                                    span.clone(),
-                                ))),
-                                value: Arc::new(Spanned::new(CoreExpr::Int(1), span.clone())),
-                                assigned_slot: 0,
-                            },
-                            span.clone(),
-                        ),
-                        Spanned::new(
-                            crate::ast::CoreEntry {
-                                key: Some(Arc::new(Spanned::new(
-                                    CoreExpr::Str("extra".into()),
-                                    span.clone(),
-                                ))),
-                                value: Arc::new(Spanned::new(CoreExpr::Int(2), span.clone())),
-                                assigned_slot: 1,
-                            },
-                            span.clone(),
-                        ),
-                    ]),
+                    CoreExpr::Dict {
+                        entries: vec![
+                            Spanned::new(
+                                crate::ast::CoreEntry {
+                                    key: Some(Arc::new(Spanned::new(
+                                        CoreExpr::Str {
+                                            value: "x".into(),
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    ))),
+                                    value: Arc::new(Spanned::new(
+                                        CoreExpr::Int {
+                                            value: 1,
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    )),
+                                    assigned_slot: 0,
+                                },
+                                span.clone(),
+                            ),
+                            Spanned::new(
+                                crate::ast::CoreEntry {
+                                    key: Some(Arc::new(Spanned::new(
+                                        CoreExpr::Str {
+                                            value: "extra".into(),
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    ))),
+                                    value: Arc::new(Spanned::new(
+                                        CoreExpr::Int {
+                                            value: 2,
+                                            inferred_type_id: 0,
+                                        },
+                                        span.clone(),
+                                    )),
+                                    assigned_slot: 1,
+                                },
+                                span.clone(),
+                            ),
+                        ],
+                        inferred_type_id: 0,
+                    },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3925,21 +4078,34 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::TypeAssert {
                 expr: Arc::new(Spanned::new(
-                    CoreExpr::Dict(vec![Spanned::new(
-                        crate::ast::CoreEntry {
-                            key: Some(Arc::new(Spanned::new(
-                                CoreExpr::Str("x".into()),
-                                span.clone(),
-                            ))),
-                            value: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                            assigned_slot: 0,
-                        },
-                        span.clone(),
-                    )]),
+                    CoreExpr::Dict {
+                        entries: vec![Spanned::new(
+                            crate::ast::CoreEntry {
+                                key: Some(Arc::new(Spanned::new(
+                                    CoreExpr::Str {
+                                        value: "x".into(),
+                                        inferred_type_id: 0,
+                                    },
+                                    span.clone(),
+                                ))),
+                                value: Arc::new(Spanned::new(
+                                    CoreExpr::Int {
+                                        value: 42,
+                                        inferred_type_id: 0,
+                                    },
+                                    span.clone(),
+                                )),
+                                assigned_slot: 0,
+                            },
+                            span.clone(),
+                        )],
+                        inferred_type_id: 0,
+                    },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -3970,9 +4136,16 @@ mod tests {
         let span = rust_span!();
         let inner_expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 42,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -4136,9 +4309,16 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Int {
+                        value: 42,
+                        inferred_type_id: 0,
+                    },
+                    span.clone(),
+                )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
+                inferred_type_id: 0,
             },
             span,
         );
@@ -4213,7 +4393,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &top_tv,
             &ctx,
@@ -4231,7 +4411,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &var_tv,
             &ctx,
@@ -4241,7 +4421,7 @@ mod tests {
     #[tokio::test]
     async fn test_value_matches_type_proxy() {
         use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
-        // Proxy values return TypeValue.Unknown from ground_typevalue_of — passes any annotation.
+        // Proxy values have type_decl_id TYPE_ID_PROXY but are treated as Unknown for gradual typing — passes any annotation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
         let handler = Arc::new(Thunk::value(Value::Int { n: 42 }, span));
@@ -4277,22 +4457,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_value_matches_type_tycon_builtin_int() {
+    async fn test_value_matches_type_tycon_int() {
         use crate::type_def::{TyConDef, TyConEnv};
         use crate::type_infer::make_typevalue_nominal;
         use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
-            "MyInt".to_string(),
+            TYPE_ID_INT,
             Arc::new(TyConDef {
-                type_decl_id: TEST_ID_MY_INT,
+                type_decl_id: TYPE_ID_INT,
                 params: vec![],
                 body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
-                builtin_type: Some("Int".to_string()),
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
@@ -4300,43 +4479,30 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        // Seed type_name_to_id so BAS builtin_type dispatch can resolve "Int" → TYPE_ID_INT.
-        let mut tni = std::collections::HashMap::new();
-        tni.insert("Int".to_string(), crate::value::TYPE_ID_INT);
-        tni.insert("Float".to_string(), crate::value::TYPE_ID_FLOAT);
-        tni.insert("String".to_string(), crate::value::TYPE_ID_STRING);
-        ctx.init_type_context(TypeContextData {
-            inference_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-            tycon_env: std::collections::HashMap::new(),
-            type_stage_scope: vec![],
-            type_stage_fns: std::collections::HashMap::new(),
-            type_stage_type_vars: std::collections::HashMap::new(),
-            type_diagnostics: vec![],
-            type_name_to_id: tni,
-        });
-        let tycon = make_typevalue_nominal(TEST_ID_MY_INT);
+        let tycon = make_typevalue_nominal(TYPE_ID_INT);
+        // Int values match — same type_decl_id
         assert!(value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx));
+        // Different types do not match
         assert!(!value_matches_type(&Value::Float { n: 1.0 }, &tycon, &ctx));
         assert!(!value_matches_type(&string_val("x"), &tycon, &ctx));
     }
 
     #[tokio::test]
-    async fn test_value_matches_type_tycon_builtin_dict() {
+    async fn test_value_matches_type_tycon_dict() {
         use crate::type_def::{TyConDef, TyConEnv};
         use crate::type_infer::make_typevalue_nominal;
         use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
-            "MyDict".to_string(),
+            TYPE_ID_DICT,
             Arc::new(TyConDef {
-                type_decl_id: TEST_ID_MY_DICT,
+                type_decl_id: TYPE_ID_DICT,
                 params: vec![],
                 body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
-                builtin_type: Some("Dict".to_string()),
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
@@ -4344,17 +4510,17 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        let tycon = make_typevalue_nominal(TEST_ID_MY_DICT);
-        // Dict values match
+        let tycon = make_typevalue_nominal(TYPE_ID_DICT);
+        // Dict values match — same type_decl_id
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &tycon,
             &ctx
         ));
-        // Non-Dict values do not match
+        // Non-Dict values do not match — different type_decl_id
         assert!(!value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx));
         assert!(!value_matches_type(&Value::Float { n: 1.0 }, &tycon, &ctx));
     }
@@ -4369,7 +4535,7 @@ mod tests {
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
-            "Color".to_string(),
+            TEST_ID_COLOR,
             Arc::new(TyConDef {
                 type_decl_id: TEST_ID_COLOR,
                 params: vec![],
@@ -4377,7 +4543,6 @@ mod tests {
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
-                builtin_type: None,
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
@@ -4415,7 +4580,7 @@ mod tests {
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
-            "MySeq".to_string(),
+            TEST_ID_MY_SEQ,
             Arc::new(TyConDef {
                 type_decl_id: TEST_ID_MY_SEQ,
                 params: vec![],
@@ -4423,7 +4588,6 @@ mod tests {
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
-                builtin_type: Some("String".to_string()),
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
@@ -4443,12 +4607,22 @@ mod tests {
             type_diagnostics: vec![],
             type_name_to_id: tni,
         });
-        // App(Nominal(MY_SEQ), Nominal(INT)) — arg is ignored; dispatch on String builtin_type.
+        // App(Nominal(MY_SEQ), Nominal(INT)) — identity-based: value type_decl_id must match root TyCon.
         let app_type = make_type_app(
             make_typevalue_nominal(TEST_ID_MY_SEQ),
             make_typevalue_nominal(crate::value::TYPE_ID_INT),
         );
-        assert!(value_matches_type(&string_val("hello"), &app_type, &ctx));
+        // A Variant with type_decl_id=MY_SEQ matches App(MY_SEQ, ...)
+        assert!(value_matches_type(
+            &Value::Variant {
+                type_decl_id: TEST_ID_MY_SEQ,
+                ctor: Arc::from("MySeq.Cons"),
+                payload: None,
+            },
+            &app_type,
+            &ctx
+        ));
+        // Int does not match App(MY_SEQ, ...)
         assert!(!value_matches_type(&Value::Int { n: 1 }, &app_type, &ctx));
     }
 
@@ -4473,12 +4647,11 @@ mod tests {
             ],
             constructor_constants: indexmap::IndexMap::new(),
             field_annotations: indexmap::IndexMap::new(),
-            builtin_type: None,
             annotation: None,
             definition_span: None,
         });
         let mut tycon_env: TyConEnv = std::collections::HashMap::new();
-        tycon_env.insert("Color".to_string(), color_def);
+        tycon_env.insert(TEST_ID_COLOR, color_def);
 
         let ctx = test_ctx();
         ctx.set_tycon_env(tycon_env);
@@ -4972,7 +5145,10 @@ mod tests {
 
         // Create an inner thunk that will produce a type mismatch when wrapped with Guarded
         // (we expect Int but will get String)
-        let inner_expr = Arc::new(sp(CoreExpr::Str("hello".into())));
+        let inner_expr = Arc::new(sp(CoreExpr::Str {
+            value: "hello".into(),
+            inferred_type_id: 0,
+        }));
         let ctx = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
             inner_expr,
@@ -5182,7 +5358,10 @@ mod tests {
 
         // Build an unevaluated thunk that evaluates to an empty dict.
         // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict { entries: IndexMap::new(), type_val: crate::type_infer::make_typevalue_unknown() }`.
-        let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
+        let dict_expr = Arc::new(sp(CoreExpr::Dict {
+            entries: vec![],
+            inferred_type_id: 0,
+        }));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
             EvalFrame::empty(),

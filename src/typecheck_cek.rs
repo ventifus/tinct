@@ -404,6 +404,12 @@ pub(crate) async fn run_typecheck(
                 // Record this node's inferred type in type_map for LSP.
                 record_type_map(type_map, &current_node.span, &ty);
 
+                // Wire inferred type_decl_id to SurfaceNode for the lowerer.
+                let resolved = state.apply(&ty);
+                if let Some(id) = crate::type_infer::typevalue_nominal_id(&resolved) {
+                    current_node.inferred_type_decl_id.set(id);
+                }
+
                 // Pop and apply continuations until we get an Eval action or empty stack.
                 let mut result_ty = ty;
                 loop {
@@ -879,7 +885,11 @@ async fn infer_step(
         // nominal type by looking up the tycon in tycon_env. TypeDecl and ReprDecl wrap
         // an inner expression — recurse into it.
         SurfaceExpression::UnitVariant { tycon, .. } => {
-            let tv = if state.tycon_env.contains_key(tycon.as_str()) {
+            let tv = if state
+                .type_name_to_id
+                .get(tycon.as_str())
+                .is_some_and(|id| state.tycon_env.contains_key(id))
+            {
                 crate::type_infer::make_typevalue_nominal(
                     state
                         .type_name_to_id
@@ -894,7 +904,11 @@ async fn infer_step(
         }
         SurfaceExpression::MakeVariant { tag, .. } => {
             let tycon = tag.split('.').next().unwrap_or("");
-            let tv = if state.tycon_env.contains_key(tycon) {
+            let tv = if state
+                .type_name_to_id
+                .get(tycon)
+                .is_some_and(|id| state.tycon_env.contains_key(id))
+            {
                 crate::type_infer::make_typevalue_nominal(
                     state.type_name_to_id.get(tycon).copied().unwrap_or(0),
                 )
@@ -1802,7 +1816,7 @@ async fn infer_var_ref(
                         // The method signature is a TypeValue.Fn using the class's type parameters
                         // as TypeValue.Var nodes. Wrap the signature in a TypeValue.Scheme with
                         // the class params as quantified vars, then instantiate at current level.
-                        use crate::value::{HashableValue, Value};
+                        use crate::value::{HashableValue, Value, TYPE_ID_DICT};
                         use indexmap::IndexMap;
 
                         // Build vars dict: class params → empty VarDecl dicts (kind is not used by instantiate_scheme_tv).
@@ -1812,7 +1826,7 @@ async fn infer_var_ref(
                             // VarDecl payload: empty dict (instantiate_scheme_tv only reads var names from keys).
                             let empty_dict = Value::Dict {
                                 entries: IndexMap::new(),
-                                type_decl_id: 0,
+                                type_decl_id: TYPE_ID_DICT,
                             };
                             vars_entries.insert(
                                 var_key,
@@ -1824,7 +1838,7 @@ async fn infer_var_ref(
                         }
                         let vars_dict = Value::Dict {
                             entries: vars_entries,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         };
                         let vars_thunk =
                             Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!()));
@@ -1832,7 +1846,7 @@ async fn infer_var_ref(
                         // Build constraints dict: empty (no constraints for method signatures).
                         let constraints_dict = Value::Dict {
                             entries: IndexMap::new(),
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         };
                         let constraints_thunk = Arc::new(crate::value::Thunk::value(
                             constraints_dict,
@@ -1857,7 +1871,7 @@ async fn infer_var_ref(
                             .insert(HashableValue::Str(Arc::from(FIELD_BODY)), body_thunk);
                         let scheme_payload = Value::Dict {
                             entries: scheme_payload_entries,
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                         };
                         let scheme_payload_thunk = Arc::new(crate::value::Thunk::value(
                             scheme_payload,
@@ -1866,7 +1880,7 @@ async fn infer_var_ref(
 
                         // Build the TypeValue.Scheme variant.
                         let scheme = Arc::new(Value::Variant {
-                            type_decl_id: 0,
+                            type_decl_id: TYPE_ID_DICT,
                             ctor: Arc::from(TV_SCHEME),
                             payload: Some(scheme_payload_thunk),
                         });
@@ -3870,12 +3884,12 @@ fn run_match_exhaustiveness_check(
             // TyCon reference — look up in tycon_env for constructors.
             let id = crate::type_infer::typevalue_nominal_id(scrutinee_ty)
                 .expect("invariant: TV_NOMINAL TypeValue must have an id field");
-            let name = state
+            let _name = state
                 .type_display_names
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| id.to_string());
-            match tycon_env_ref.get(name.as_str()) {
+            match tycon_env_ref.get(&id) {
                 Some(def) if !def.constructors.is_empty() => {
                     let constructors = def
                         .constructors
@@ -4881,7 +4895,6 @@ pub(crate) async fn run_typecheck_dict(
                     constraints: Vec::new(),
                     variance: Vec::new(),
                     constructors,
-                    builtin_type: None,
                     annotation: None,
                     field_annotations: indexmap::IndexMap::new(),
                     constructor_constants: indexmap::IndexMap::new(),
@@ -4899,7 +4912,10 @@ pub(crate) async fn run_typecheck_dict(
                         .write()
                         .unwrap()
                         .insert_tycon_def(name.clone(), std::sync::Arc::clone(&tycon_def));
-                    state.tycon_env.entry(name.clone()).or_insert(tycon_def);
+                    state
+                        .tycon_env
+                        .entry(*ast_type_decl_id)
+                        .or_insert(tycon_def);
                     // Wire type declarations into type_stage_scope so
                     // resolve_type_head can find user-declared types via the
                     // scope chain. or_insert preserves type-stage entries
@@ -5814,7 +5830,11 @@ pub(crate) async fn run_typecheck_dict(
     for (key_name, is_alias, _) in &key_entries {
         if *is_alias {
             if let Some(name) = key_name {
-                if let Some(def) = state.tycon_env.get(name.as_str()) {
+                if let Some(def) = state
+                    .type_name_to_id
+                    .get(name.as_str())
+                    .and_then(|id| state.tycon_env.get(id))
+                {
                     if def.params.is_empty() {
                         let mut env_write = dict_env.write().unwrap();
                         let slot = env_write
@@ -5907,6 +5927,7 @@ mod tests {
             span: crate::rust_span!(),
             type_guard: TypeAnnotation::new(),
             provenance: crate::ast::Provenance::new(),
+            inferred_type_decl_id: crate::ast::InferredTypeId::new(),
         })
     }
 

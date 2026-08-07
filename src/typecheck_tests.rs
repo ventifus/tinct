@@ -6,7 +6,7 @@ use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
 use crate::types::unify;
 // TypeScheme deleted in S-1003 — TypeValues stored directly.
-use crate::value::{HashableValue, Value};
+use crate::value::{HashableValue, Value, TYPE_ID_DICT};
 use crate::Annotation;
 use indexmap::IndexMap;
 use std::sync::Arc;
@@ -116,7 +116,7 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let members_dict = Value::Dict {
         entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     let mut payload_entries = indexmap::IndexMap::new();
     payload_entries.insert(
@@ -125,10 +125,10 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: payload_entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
@@ -163,7 +163,7 @@ fn surf_ann_entry_tc(
 /// Use this in tests that need to inspect TyConDef entries (type alias bodies, params, etc.).
 async fn doc_tycon_env(
     input: &str,
-) -> std::collections::HashMap<String, Arc<crate::type_def::TyConDef>> {
+) -> std::collections::HashMap<u64, Arc<crate::type_def::TyConDef>> {
     let desugared = crate::desugar::desugar_surface_program(
         &crate::parse(input, test_file(input)).unwrap().program,
     );
@@ -368,7 +368,8 @@ async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
     // After S-1003: RowTail::Uniform → TypeValue.Record tail.
     let tycon_env = doc_tycon_env("[MapLike: [type [let k v] [_@k: v]]]").await;
     let alias = tycon_env
-        .get("MapLike")
+        .values()
+        .next()
         .expect("MapLike alias should exist");
 
     // Alias body must be a TypeValue.Record — any other type is a regression.
@@ -563,7 +564,7 @@ async fn test_normalize_intersection_unknown_is_identity() {
         inter.as_ref()
             != &crate::value::Value::Dict {
                 entries: indexmap::IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
         "normalize_intersection must not return empty dict"
     );
@@ -707,7 +708,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         );
         let members = Value::Dict {
             entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let mut pe = indexmap::IndexMap::new();
         pe.insert(
@@ -716,10 +717,10 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         );
         let payload = Value::Dict {
             entries: pe,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         Arc::new(Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_INTER),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
         })
@@ -768,10 +769,10 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
         );
         let payload = Value::Dict {
             entries: pe,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         Arc::new(Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_RECURSIVE),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
         })
@@ -1310,7 +1311,7 @@ async fn test_typenode_float_literal_arm_conversion() {
             );
             m
         },
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     let typenode_float_literal = Value::Variant {
         ctor: Arc::from("TypeNode.FloatLiteral"),
@@ -1319,7 +1320,7 @@ async fn test_typenode_float_literal_arm_conversion() {
             crate::rust_span!(),
         ))),
 
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
 
     let ctx = crate::eval::EvalContext::new();
@@ -1788,7 +1789,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         "a".to_string(),
         Arc::new(Value::Dict {
             entries: IndexMap::new(),
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         }),
     )];
 

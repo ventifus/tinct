@@ -21,7 +21,10 @@ use crate::eval::{
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
-use crate::value::{string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value};
+use crate::value::{
+    string_val, type_id_display_name, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value,
+    TYPE_ID_DICT,
+};
 
 tokio::task_local! {
     pub(crate) static TASK_EVAL_STACK: std::cell::RefCell<Vec<(std::sync::Arc<str>, crate::ast::Span)>>;
@@ -538,7 +541,7 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
             } else {
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 }
             }
         }),
@@ -570,7 +573,7 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
     Arc::new(Thunk::value(
         Value::Dict {
             entries: w,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         },
         call_span.clone(),
     ))
@@ -623,7 +626,10 @@ pub(crate) fn apply_predicate_to_subject(
             caller_env_id,
             ctx: Arc::clone(ctx),
             original_call: Arc::new(Spanned {
-                node: CoreExpr::Int(0),
+                node: CoreExpr::Int {
+                    value: 0,
+                    inferred_type_id: 0,
+                },
                 span: pred_span,
             }),
             caller_evidence,
@@ -1004,6 +1010,7 @@ async fn dispatch_state(
                 check,
                 expr: inner,
                 pipeline_blame,
+                ..
             } = &core_expr.node
             {
                 // Source annotations: check if inner is a Placeholder with a default: fallback.
@@ -1011,7 +1018,7 @@ async fn dispatch_state(
                 let placeholder_default = match (check, &inner.node) {
                     (
                         crate::ast::TypeAssertCheck::Source { annotation },
-                        crate::ast::CoreExpr::Placeholder,
+                        crate::ast::CoreExpr::Placeholder { .. },
                     ) => annotation.node.get_property(DEFAULT_ANNOTATION_KEY),
                     _ => None,
                 };
@@ -1100,16 +1107,16 @@ async fn dispatch_state(
 
             // Handle CoreExpr::Sequential inline — prevents loop through eval_core_expr.
             // The CEK machine evaluates expressions iteratively via LetrecChainStep continuations.
-            if let crate::ast::CoreExpr::Sequential(exprs) = &core_expr.node {
+            if let crate::ast::CoreExpr::Sequential { exprs, .. } = &core_expr.node {
                 if exprs.is_empty() {
                     // Empty sequential: return empty dict
                     thunk.settle(Ok(Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }));
                     return Action::Continue(Ok(Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     }));
                 }
 
@@ -1143,7 +1150,10 @@ async fn dispatch_state(
 
             // Handle CoreExpr::Match inline — prevents loop through eval_core_expr.
             // The CEK machine evaluates arms iteratively via MatchDispatch continuations.
-            if let crate::ast::CoreExpr::Match { scrutinee, arms: _ } = &core_expr.node {
+            if let crate::ast::CoreExpr::Match {
+                scrutinee, arms: _, ..
+            } = &core_expr.node
+            {
                 // Evaluate the scrutinee first
                 let scrutinee_thunk = match eval_core_expr(scrutinee, &frame, &thunk_ctx).await {
                     Ok(t) => t,
@@ -1741,7 +1751,7 @@ pub(crate) async fn apply_cont(
                                     let ellipsis = if map.len() > 5 { ", ..." } else { "" };
                                     format!("Dict {{{}{}}}", keys.join(", "), ellipsis)
                                 }
-                                _ => other.type_name().to_string(),
+                                _ => type_id_display_name(other.type_decl_id_of()).to_string(),
                             };
                             let message = if let Some(name) = callee_label {
                                 format!(
@@ -1813,7 +1823,7 @@ pub(crate) async fn apply_cont(
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict {
                                         entries: new_entries,
-                                        type_decl_id: 0,
+                                        type_decl_id: TYPE_ID_DICT,
                                     };
                                     thunk.settle(Ok(guarded_value.clone()));
                                     Action::Continue(Ok(guarded_value))
@@ -1872,14 +1882,14 @@ pub(crate) async fn apply_cont(
                             let expected_str = format_type(&expected);
                             let mut err = EvalError::type_assert_failed(
                                 &format!("{}{}", field_path_prefix, expected_str),
-                                value.type_name(),
+                                type_id_display_name(value.type_decl_id_of()),
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
                             .with_note(format!(
                                 "actual:   {}{}",
                                 field_path_prefix,
-                                value.type_name()
+                                type_id_display_name(value.type_decl_id_of())
                             ))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
@@ -1930,14 +1940,14 @@ pub(crate) async fn apply_cont(
                             let expected_str = format_type(&expected);
                             let mut err = EvalError::type_assert_failed(
                                 &format!("{}{}", field_path_prefix, expected_str),
-                                value.type_name(),
+                                type_id_display_name(value.type_decl_id_of()),
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
                             .with_note(format!(
                                 "actual:   {}{}",
                                 field_path_prefix,
-                                value.type_name()
+                                type_id_display_name(value.type_decl_id_of())
                             ))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
@@ -2194,10 +2204,22 @@ pub(crate) async fn apply_cont(
                         _ => None,
                     };
                     match type_name {
-                        Some(name) => ctx
-                            .tycon_env()
-                            .and_then(|env| env.get(name.as_str()).map(|def| Arc::clone(&def.body)))
-                            .unwrap_or_else(crate::type_infer::make_typevalue_unknown),
+                        Some(name) => {
+                            // Bridge name → id via TypeContextData.type_name_to_id,
+                            // then look up the TyConDef by id in the u64-keyed tycon_env.
+                            let id_opt = ctx.type_context.lock().ok().and_then(|guard| {
+                                guard
+                                    .as_ref()
+                                    .and_then(|tc| tc.type_name_to_id.get(name.as_str()).copied())
+                            });
+                            match id_opt {
+                                Some(id) => ctx
+                                    .tycon_env()
+                                    .and_then(|env| env.get(&id).map(|def| Arc::clone(&def.body)))
+                                    .unwrap_or_else(crate::type_infer::make_typevalue_unknown),
+                                None => crate::type_infer::make_typevalue_unknown(),
+                            }
+                        }
                         None => crate::type_infer::make_typevalue_unknown(),
                     }
                 }
@@ -2281,7 +2303,7 @@ pub(crate) async fn apply_cont(
                                 Ok(new_entries) => {
                                     let wrapped = Value::Dict {
                                         entries: new_entries,
-                                        type_decl_id: 0,
+                                        type_decl_id: TYPE_ID_DICT,
                                     };
                                     return Action::Continue(Ok(wrapped));
                                 }
@@ -2333,7 +2355,7 @@ pub(crate) async fn apply_cont(
                     if value_matches_type(&value, &resolved, &ctx) {
                         Action::Continue(Ok(value))
                     } else {
-                        let fail_reason = value.type_name().to_string();
+                        let fail_reason = type_id_display_name(value.type_decl_id_of()).to_string();
                         // Type mismatch — try default: fallback before raising an error.
                         if let Some(default_node) = get_default() {
                             let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
@@ -2397,7 +2419,7 @@ pub(crate) async fn apply_cont(
                 seq_span,
             } = *data;
             let exprs = match &letrec_chain_expr.node {
-                CoreExpr::Sequential(exprs) => exprs,
+                CoreExpr::Sequential { exprs, .. } => exprs,
                 _ => unreachable!("LetrecChainStep letrec_chain_expr must be Sequential"),
             };
 
@@ -2418,7 +2440,7 @@ pub(crate) async fn apply_cont(
                     // Extract static keys from the CURRENT expression (at idx) for scope creation
                     let current_expr = &exprs[idx];
                     let static_keys: Option<HashSet<String>> = match &current_expr.node {
-                        CoreExpr::Dict(entries) => {
+                        CoreExpr::Dict { entries, .. } => {
                             use crate::eval::core_expr_is_static_key;
                             let keys: Vec<String> = entries
                                 .iter()
@@ -2426,7 +2448,7 @@ pub(crate) async fn apply_cont(
                                     entry.node.key.as_ref().and_then(|k| {
                                         if core_expr_is_static_key(&k.node) {
                                             match &k.node {
-                                                CoreExpr::Str(s) => Some(s.clone()),
+                                                CoreExpr::Str { value: s, .. } => Some(s.clone()),
                                                 // Annotated Var: name field is the bare identifier.
                                                 CoreExpr::Var { name, .. } => Some(name.clone()),
                                                 _ => None,
@@ -2446,13 +2468,14 @@ pub(crate) async fn apply_cont(
                         // LetDecl in sequential fn-body position: [let name value] pairs.
                         // Evaluated as a Dict (see eval.rs CoreExpr::LetDecl arm); extract names
                         // so the Dict-based binding logic creates the correct child_env scope.
-                        CoreExpr::LetDecl { bindings } => {
+                        CoreExpr::LetDecl { bindings, .. } => {
                             let mut keys = HashSet::new();
                             let mut i = 0;
                             while i + 1 < bindings.len() {
                                 match &bindings[i].node {
                                     // lower_let_decl_binding converts declaration names to Str literals.
-                                    CoreExpr::Str(name) | CoreExpr::Var { name, .. } => {
+                                    CoreExpr::Str { value: name, .. }
+                                    | CoreExpr::Var { name, .. } => {
                                         keys.insert(name.clone());
                                     }
                                     _ => {}
@@ -2499,7 +2522,7 @@ pub(crate) async fn apply_cont(
                                     EvalError::type_mismatch_ctx(
                                         format!("sequential expression #{}", idx + 1),
                                         "Dict or Variant",
-                                        intermediate_value.type_name(),
+                                        type_id_display_name(intermediate_value.type_decl_id_of()),
                                         current_expr.span.clone(),
                                     ),
                                 )));
@@ -2572,7 +2595,7 @@ pub(crate) async fn apply_cont(
                 current_expr_span,
             } = *data;
             let exprs = match &letrec_chain_expr.node {
-                CoreExpr::Sequential(exprs) => exprs,
+                CoreExpr::Sequential { exprs, .. } => exprs,
                 _ => {
                     unreachable!("VariantUnpackForLetrecChain letrec_chain_expr must be Sequential")
                 }
@@ -2753,8 +2776,8 @@ pub(crate) async fn apply_cont(
                                 // - CoreExpr::Call with Var func → guard expression (predicate: [< x 5])
                                 let is_structural = match &lowered_pattern.node {
                                     CoreExpr::Var { .. } => true,
-                                    CoreExpr::Placeholder => true,
-                                    CoreExpr::Dict(_) => true,
+                                    CoreExpr::Placeholder { .. } => true,
+                                    CoreExpr::Dict { .. } => true,
                                     CoreExpr::Call { func, .. } => {
                                         matches!(&func.node, CoreExpr::Call { .. })
                                     }
@@ -2978,7 +3001,7 @@ pub(crate) async fn apply_cont(
 
                     // No arm matched: non-exhaustive match
                     Action::Continue(Err(Box::new(EvalError::match_exhaustion(
-                        scrutinee_value.type_name(),
+                        type_id_display_name(scrutinee_value.type_decl_id_of()),
                         match_span.clone(),
                     ))))
                 }
@@ -3023,7 +3046,10 @@ pub(crate) async fn apply_cont(
                                     caller_env_id: 0,
                                     ctx: Arc::clone(&ctx),
                                     original_call: Arc::new(Spanned {
-                                        node: CoreExpr::Int(0),
+                                        node: CoreExpr::Int {
+                                            value: 0,
+                                            inferred_type_id: 0,
+                                        },
                                         span: match_span.clone(),
                                     }),
                                     caller_evidence: parent_frame.caller_evidence.clone(),
@@ -3223,13 +3249,14 @@ fn eval_structural_pattern_inner<'a>(
             // `_` in pattern position also becomes CoreExpr::Placeholder (conventional wildcard).
             // Other undefined VarRefs become CoreExpr::Var with a sentinel addr and are
             // handled below in the Var arm (bind_or_pin_name returns Ok(false) for the sentinel).
-            CoreExpr::Placeholder => Ok(true),
+            CoreExpr::Placeholder { .. } => Ok(true),
 
             // Plain name: bind or pin based on binding_map.
             CoreExpr::Var {
                 name,
                 annotation: None,
                 addr,
+                ..
             } => {
                 bind_or_pin_name(
                     name,
@@ -3250,6 +3277,7 @@ fn eval_structural_pattern_inner<'a>(
                 name,
                 annotation: Some(annotation),
                 addr,
+                ..
             } => {
                 // First, perform the bind-or-pin operation
                 let bind_result = bind_or_pin_name(
@@ -3333,12 +3361,16 @@ fn eval_structural_pattern_inner<'a>(
             }
 
             // Literal patterns: compare exact value
-            CoreExpr::Int(n) => Ok(matches!(scrutinee_value, Value::Int { n: v, .. } if v == n)),
-            CoreExpr::U64(n) => Ok(matches!(scrutinee_value, Value::U64 { n: v, .. } if v == n)),
-            CoreExpr::Float(f) => {
+            CoreExpr::Int { value: n, .. } => {
+                Ok(matches!(scrutinee_value, Value::Int { n: v, .. } if v == n))
+            }
+            CoreExpr::U64 { value: n, .. } => {
+                Ok(matches!(scrutinee_value, Value::U64 { n: v, .. } if v == n))
+            }
+            CoreExpr::Float { value: f, .. } => {
                 Ok(matches!(scrutinee_value, Value::Float { n: v, .. } if v == f))
             }
-            CoreExpr::Str(s) => {
+            CoreExpr::Str { value: s, .. } => {
                 // Not a wildcard (handled above): literal string comparison
                 Ok(scrutinee_value.as_str().is_some_and(|v| v == s.as_str()))
             }
@@ -3354,6 +3386,7 @@ fn eval_structural_pattern_inner<'a>(
                 args,
                 named_args,
                 implied,
+                ..
             } => {
                 // Evaluate the func expression (constructor lookup) using the pattern's
                 // evaluation frame. The resolver walks the pattern inside the case arm's
@@ -3507,6 +3540,7 @@ fn eval_structural_pattern_inner<'a>(
                                     args: args.to_vec(),
                                     named_args: named_args.to_vec(),
                                     implied: *implied,
+                                    inferred_type_id: 0,
                                 },
                                 match_span.clone(),
                             ));
@@ -3589,6 +3623,7 @@ fn eval_structural_pattern_inner<'a>(
                                     args: args.to_vec(),
                                     named_args: named_args.to_vec(),
                                     implied: *implied,
+                                    inferred_type_id: 0,
                                 },
                                 match_span.clone(),
                             ));
@@ -3612,7 +3647,7 @@ fn eval_structural_pattern_inner<'a>(
                         other => Err(EvalError::type_mismatch_ctx(
                             "pattern call".to_string(),
                             "Variant (constructor) or Function (predicate)",
-                            other.type_name(),
+                            type_id_display_name(other.type_decl_id_of()),
                             match_span.clone(),
                         )
                         .into()),
@@ -3621,7 +3656,7 @@ fn eval_structural_pattern_inner<'a>(
             }
 
             // Dict pattern: match fields of the scrutinee dict
-            CoreExpr::Dict(entries) => {
+            CoreExpr::Dict { entries, .. } => {
                 let Value::Dict {
                     entries: scrutinee_map,
                     ..
@@ -3631,8 +3666,10 @@ fn eval_structural_pattern_inner<'a>(
                 };
                 for entry in entries {
                     let key = match entry.node.key.as_ref().map(|k| &k.node) {
-                        Some(CoreExpr::Str(s)) => HashableValue::Str(s.clone().into()),
-                        Some(CoreExpr::Int(n)) => HashableValue::Int(*n),
+                        Some(CoreExpr::Str { value: s, .. }) => {
+                            HashableValue::Str(s.clone().into())
+                        }
+                        Some(CoreExpr::Int { value: n, .. }) => HashableValue::Int(*n),
                         _ => {
                             return Err(EvalError::internal(
                                 "pattern: dynamic key in dict pattern is not supported".to_string(),
@@ -3949,7 +3986,13 @@ mod tests {
         let value_span = test_span(5, 1, 5, 3); // Line 5: the value production site
         let ctx_for_test = test_ctx();
         let value_thunk = crate::value::Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Int(42), value_span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Int {
+                    value: 42,
+                    inferred_type_id: 0,
+                },
+                value_span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx_for_test),
             value_span.clone(),
@@ -4001,7 +4044,13 @@ mod tests {
         // Create a value at the same location as the guard
         let ctx_same = test_ctx();
         let value_thunk = crate::value::Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Int(42), same_span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Int {
+                    value: 42,
+                    inferred_type_id: 0,
+                },
+                same_span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx_same),
             same_span.clone(),
@@ -4040,7 +4089,13 @@ mod tests {
         let ctx = test_ctx();
 
         let thunk = Arc::new(Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Int {
+                    value: 42,
+                    inferred_type_id: 0,
+                },
+                span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx),
             span,
@@ -4105,6 +4160,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
+                    inferred_type_id: 0,
                 },
                 span.clone(),
             )),
@@ -4186,6 +4242,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
+                    inferred_type_id: 0,
                 },
                 span.clone(),
             )),
@@ -4283,7 +4340,10 @@ mod tests {
 
         // Default expression: a literal Int(99).
         // The default expression evaluates to 99 directly without a variable lookup.
-        let default_expr = Arc::new(sp(CoreExpr::Int(99)));
+        let default_expr = Arc::new(sp(CoreExpr::Int {
+            value: 99,
+            inferred_type_id: 0,
+        }));
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
             inner,
@@ -4400,7 +4460,13 @@ mod tests {
         // Create an unevaluated arg thunk: evaluates to an empty dict.
         // `CoreExpr::Dict(vec![])` produces `Value::Dict(IndexMap::new())`.
         let unevaluated_arg = Arc::new(Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Dict(vec![]), span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Dict {
+                    entries: vec![],
+                    inferred_type_id: 0,
+                },
+                span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
@@ -4481,7 +4547,13 @@ mod tests {
 
         // Arg0: unevaluated dict (will be forced and used by builtin_keys).
         let unevaluated_arg0 = Arc::new(Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Dict(vec![]), span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Dict {
+                    entries: vec![],
+                    inferred_type_id: 0,
+                },
+                span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
@@ -4493,7 +4565,13 @@ mod tests {
 
         // Arg1: unevaluated int (will be force-materialized but not used by builtin_keys).
         let unevaluated_arg1 = Arc::new(Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Int {
+                    value: 42,
+                    inferred_type_id: 0,
+                },
+                span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
@@ -4728,7 +4806,13 @@ mod cek_lifecycle_tests {
 
         // Create an Unevaluated thunk and force it to fail by settling with an error.
         let thunk = Arc::new(Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Int(0), span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Int {
+                    value: 0,
+                    inferred_type_id: 0,
+                },
+                span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
@@ -4785,7 +4869,13 @@ mod cek_lifecycle_tests {
 
         // Create an unevaluated thunk.
         let thunk = Arc::new(Thunk::core_expr(
-            Arc::new(Spanned::new(CoreExpr::Int(0), span.clone())),
+            Arc::new(Spanned::new(
+                CoreExpr::Int {
+                    value: 0,
+                    inferred_type_id: 0,
+                },
+                span.clone(),
+            )),
             EvalFrame::empty(),
             Arc::clone(&ctx),
             span.clone(),
@@ -4933,7 +5023,7 @@ fn force_dict_tree_impl<'a>(
                 }
                 Ok(Value::Dict {
                     entries: new_map,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 })
             }
             Value::Variant {

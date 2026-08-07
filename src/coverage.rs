@@ -40,6 +40,8 @@ use crate::ast::{SurfaceExpression, SurfaceNode};
 use crate::type_tags::*;
 use crate::value::Value;
 #[cfg(test)]
+use crate::value::TYPE_ID_DICT;
+#[cfg(test)]
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -516,7 +518,7 @@ pub fn ast_pattern_to_coverage(
                             _ => {}
                         }
                         if let (Some(id), Some(env)) = (nominal_id, tycon_env) {
-                            if let Some(def) = env.get(&id.to_string()) {
+                            if let Some(def) = env.get(&id) {
                                 if !def.constructors.is_empty() {
                                     let branches: Vec<CoveragePattern> = def
                                         .constructors
@@ -1395,7 +1397,7 @@ mod tests {
         }
         let fields_dict = Value::Dict {
             entries: field_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         let mut payload_entries = indexmap::IndexMap::new();
         payload_entries.insert(
@@ -1407,17 +1409,17 @@ mod tests {
             Arc::new(Thunk::value(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 crate::rust_span!(),
             )),
         );
         let payload = Value::Dict {
             entries: payload_entries,
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
         };
         Arc::new(Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(crate::value::Thunk::value(
                 payload,
@@ -1472,7 +1474,7 @@ mod tests {
         // TypeValue.Fn types cannot be expressed as a finite constructor set.
         // from_union must return None rather than a partial (unsound) signature.
         let fn_tv = Arc::new(Value::Variant {
-            type_decl_id: 0,
+            type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_FN),
             payload: None,
         });

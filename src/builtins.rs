@@ -24,7 +24,7 @@ use crate::error::{EvalError, EvalResult};
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
+use crate::value::{type_id_display_name, BuiltinArgs, HashableValue, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
 ///
@@ -215,8 +215,12 @@ pub(crate) async fn require_dict(
             }
         }
         other => {
-            let err =
-                EvalError::type_mismatch_ctx(name.to_string(), "Dict", other.type_name(), def_span);
+            let err = EvalError::type_mismatch_ctx(
+                name.to_string(),
+                "Dict",
+                type_id_display_name(other.type_decl_id_of()),
+                def_span,
+            );
             Err(err.into())
         }
     }
@@ -236,7 +240,7 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
             let err = EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "String",
-                other.type_name(),
+                type_id_display_name(other.type_decl_id_of()),
                 def_span,
             );
             // Secondary span would be redundant here since def_span is already the argument's span.
@@ -257,7 +261,7 @@ pub(crate) fn require_type_context(
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "TypeContext",
-            other.type_name(),
+            type_id_display_name(other.type_decl_id_of()),
             def_span,
         )
         .into()),
@@ -308,7 +312,7 @@ fn float_to_int_builtin(
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Int or Float",
-            other.type_name(),
+            type_id_display_name(other.type_decl_id_of()),
             arg0_span,
         )
         .into()),
@@ -522,6 +526,7 @@ mod tests {
     use crate::error::ErrorKind;
     use crate::rust_span;
     use crate::test_util::test_span;
+    use crate::value::TYPE_ID_DICT;
     use crate::value::{string_val, Strictness};
 
     /// Test type_decl_id for a synthetic Color type in builtin tests.
@@ -616,7 +621,9 @@ mod tests {
     fn make_undef_thunk(ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(crate::ast::Spanned::new(
-            crate::ast::CoreExpr::Placeholder,
+            crate::ast::CoreExpr::Placeholder {
+                inferred_type_id: 0,
+            },
             span.clone(),
         ));
         Arc::new(Thunk::core_expr(
@@ -636,7 +643,7 @@ mod tests {
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             test_span(1, 1, 1, 5),
         ))
@@ -861,7 +868,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 &ctx,
             )],
@@ -1550,7 +1557,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 &ctx,
             )],
@@ -1883,7 +1890,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 &ctx,
             )],
@@ -2089,7 +2096,7 @@ mod tests {
             HashableValue::Str("notes".into()),
             thunk(Value::Dict {
                 entries: notes,
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             }),
         );
         let err = run(builtin_raise(BuiltinArgs {
@@ -2357,9 +2364,9 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_int() {
-        // builtin_type_of now uses ground_typevalue_of, which returns TypeValue.Repr("Value::Int")
-        // for Value::Int regardless of the type_val field. This is stable even during bootstrap
-        // when all Values carry crate::type_infer::make_typevalue_unknown().
+        // builtin_type_of uses value.type_decl_id_of(), which returns TYPE_ID_INT for Value::Int.
+        // This is stable even during bootstrap when all Values carry type_decl_id = 0 initially
+        // (type_decl_id_of() returns the hardcoded TYPE_ID_* constant for each Value variant).
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(Value::Int { n: 42 }, &ctx)],
@@ -2370,7 +2377,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        // ground_typevalue_of(Int) → TypeValue.Repr("Value::Int") — a Variant, not unknown.
+        // value.type_decl_id_of() for Int → TYPE_ID_INT, wrapped as TypeValue.Nominal(TYPE_ID_INT) — a Variant.
         match &result {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
@@ -2381,14 +2388,14 @@ mod tests {
             }
             other => panic!(
                 "type_of_int: expected TypeValue.Repr Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
 
     #[tokio::test]
     async fn type_of_float() {
-        // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::Float").
+        // builtin_type_of uses value.type_decl_id_of() — returns TypeValue.Nominal(TYPE_ID_FLOAT).
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(Value::Float { n: 2.5 }, &ctx)],
@@ -2409,14 +2416,14 @@ mod tests {
             }
             other => panic!(
                 "type_of_float: expected TypeValue.Repr Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
 
     #[tokio::test]
     async fn type_of_string() {
-        // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::String").
+        // builtin_type_of uses value.type_decl_id_of() — returns TypeValue.Nominal(TYPE_ID_STRING).
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(string_val("hi"), &ctx)],
@@ -2437,7 +2444,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_string: expected TypeValue.Repr Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2450,7 +2457,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 &ctx,
             )],
@@ -2471,16 +2478,16 @@ mod tests {
             }
             other => panic!(
                 "type_of_dict: expected TypeValue.Nominal Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
 
     #[tokio::test]
     async fn type_of_function() {
-        // builtin_type_of now uses ground_typevalue_of.
-        // For a Function: returns TypeValue.Fn (if type_val is already TypeValue.Fn) or
-        // TypeValue.Repr("Value::Function") (gradual fallback). Either way it is a Variant.
+        // builtin_type_of uses thunk.type_decl_id for Function values.
+        // For a Function: returns TypeValue.Fn (if the function has resolved type metadata) or
+        // TypeValue.Nominal(TYPE_ID_FUNCTION) (gradual fallback). Either way it is a Variant.
         let ctx = test_ctx();
         let func = parse_eval("[fn [let] 0]", &ctx).await;
         let result = mat(builtin_type_of(BuiltinArgs {
@@ -2492,12 +2499,12 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        // ground_typevalue_of(Function) is always a Variant (TypeValue.Fn or TypeValue.Repr).
+        // thunk.type_decl_id for Function → TypeValue.Fn or TypeValue.Nominal(TYPE_ID_FUNCTION), both Variants.
         match &result {
             crate::value::Value::Variant { .. } => {}
             other => panic!(
                 "type_of_function: expected TypeValue Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2540,7 +2547,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_builtin: expected TypeValue.Nominal Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2577,7 +2584,7 @@ mod tests {
             }
             other => panic!(
                 "test_type_of_variant: expected TypeValue.Nominal Variant, got {:?}",
-                other.type_name()
+                type_id_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -3353,7 +3360,7 @@ mod tests {
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     &ctx,
                 ),
@@ -3742,7 +3749,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: map,
-                    type_decl_id: 0,
+                    type_decl_id: TYPE_ID_DICT,
                 },
                 &ctx,
             )],
@@ -4984,14 +4991,14 @@ mod tests {
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-                        type_decl_id: 0,
+                        type_decl_id: TYPE_ID_DICT,
                     },
                     &ctx,
                 ),
@@ -5255,7 +5262,7 @@ mod tests {
         let xs = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &ctx,
         );
@@ -5298,7 +5305,7 @@ mod tests {
         let ys = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &ctx,
         );
@@ -5396,7 +5403,7 @@ mod tests {
         let ys = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &ctx,
         );
@@ -5474,7 +5481,7 @@ mod tests {
         let xs = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-                type_decl_id: 0,
+                type_decl_id: TYPE_ID_DICT,
             },
             &ctx,
         ); // empty dict

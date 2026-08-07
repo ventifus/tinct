@@ -1248,7 +1248,7 @@ Mixed-stage routing for annotation brackets in general:
 
 | Annotation form | Stage | Destination |
 |-----------------|-------|-------------|
-| `x@Integer` | Type | `TypeValue.Repr { repr: "Value::Int" }` (via `expand_named` → `typenode_value_to_type`) |
+| `x@Integer` | Type | `TypeValue.Nominal(TYPE_ID_INT)` (via `expand_named` → `typenode_value_to_type`) |
 | `x@[or Int Null]` | Type-stage eval | `TypeValue.Union { members: Dict }` (via `eval_type_stage_expr` → `typenode_value_to_type`) |
 | `x@[type: Int  default: 0]` | Split | `type:` → type-stage, `default:` → runtime |
 | `fn@[bind: [a]  return: a  constraint: ...]` | Split | Per step table above |

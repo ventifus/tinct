@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 // TypeVarEntry deleted in S-1003 T-2004
 use crate::type_tags::*;
-use crate::value::Value;
+use crate::value::{Value, TYPE_ID_DICT};
 // Type import removed — Type enum deleted in S-1003 T-1986.
 // All functions that used &Type have been replaced with Arc<Value> equivalents.
 
@@ -144,10 +144,10 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
     );
     let payload = Value::Dict {
         entries,
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
     };
     Arc::new(Value::Variant {
-        type_decl_id: 0,
+        type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_APP),
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
