@@ -1598,7 +1598,7 @@ impl InferenceContext {
     /// The level is recorded in `self.levels` before the TypeValue is returned.
     /// `prefix` is a human-readable prefix used in diagnostic messages.
     pub fn fresh_typevar(&mut self, prefix: &str) -> TypeValue {
-        let name = format!("{}__{}", prefix, self.gensym_counter);
+        let name = format!("{}⦀{}", prefix, self.gensym_counter);
         self.gensym_counter += 1;
         // Register the creation-time level BEFORE returning the TypeValue.
         self.levels.insert(name.clone(), self.current_level);
