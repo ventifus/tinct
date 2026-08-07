@@ -181,10 +181,12 @@ impl ConstructorSignature {
     /// (e.g., `TypeValue.Fn` — function types have no finite constructor set).
     ///
     /// The `_tycon_env` parameter is reserved for future nominal type constructor lookups.
+    /// `display_names` maps type_decl_id to display name for nominal types.
     #[cfg(test)]
     pub fn from_union(
         members: &[Arc<crate::value::Value>],
         _tycon_env: &crate::type_def::TyConEnv,
+        display_names: &std::collections::HashMap<u64, String>,
     ) -> Option<Self> {
         use crate::type_infer::typevalue_ctor;
         let mut constructors: Vec<(ConstructorTag, usize)> = Vec::with_capacity(members.len());
@@ -192,8 +194,11 @@ impl ConstructorSignature {
             let ctor_tag = typevalue_ctor(member)?;
             let entry = match ctor_tag {
                 TV_NOMINAL => {
-                    let _id = crate::type_infer::typevalue_nominal_id(member)?;
-                    let name = crate::eval::format_type(member);
+                    let id = crate::type_infer::typevalue_nominal_id(member)?;
+                    let name = display_names
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Type({})", id));
                     (ConstructorTag::Variant(name), 0)
                 }
                 TV_STR_LIT => {
@@ -1436,9 +1441,13 @@ mod tests {
             make_record_typevalue_test(&[("ok", unknown_tv)]),
             make_record_typevalue_test(&[("err", str_tv)]),
         ];
-        let sig =
-            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
-                .expect("all members are representable");
+        let no_names = std::collections::HashMap::new();
+        let sig = ConstructorSignature::from_union(
+            &union_members,
+            &std::collections::HashMap::new(),
+            &no_names,
+        )
+        .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
         assert!(tags.contains(&ConstructorTag::DictKey("ok".to_string())));
@@ -1451,9 +1460,18 @@ mod tests {
             make_typevalue_nominal(crate::value::TYPE_ID_INT),
             make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         ];
-        let sig =
-            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
-                .expect("all members are representable");
+        let display_names: std::collections::HashMap<u64, String> = [
+            (crate::value::TYPE_ID_INT, "Int".to_string()),
+            (crate::value::TYPE_ID_STRING, "String".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let sig = ConstructorSignature::from_union(
+            &union_members,
+            &std::collections::HashMap::new(),
+            &display_names,
+        )
+        .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
         assert!(tags.contains(&ConstructorTag::Variant("Int".to_string())));
@@ -1463,9 +1481,13 @@ mod tests {
     #[test]
     fn test_sig_from_union_string_literals() {
         let union_members = vec![make_typevalue_str_lit("ok"), make_typevalue_str_lit("err")];
-        let sig =
-            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
-                .expect("all members are representable");
+        let no_names = std::collections::HashMap::new();
+        let sig = ConstructorSignature::from_union(
+            &union_members,
+            &std::collections::HashMap::new(),
+            &no_names,
+        )
+        .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
     }
 
@@ -1479,8 +1501,12 @@ mod tests {
             payload: None,
         });
         let union_members = vec![make_typevalue_nominal(crate::value::TYPE_ID_INT), fn_tv];
-        let sig =
-            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new());
+        let no_names = std::collections::HashMap::new();
+        let sig = ConstructorSignature::from_union(
+            &union_members,
+            &std::collections::HashMap::new(),
+            &no_names,
+        );
         assert!(
             sig.is_none(),
             "union containing TypeValue.Fn must return None — cannot verify exhaustiveness"

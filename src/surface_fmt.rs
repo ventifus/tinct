@@ -16,7 +16,7 @@ use crate::env::Env;
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
-use crate::value::{type_id_display_name, HashableValue, Thunk, Value};
+use crate::value::{HashableValue, Thunk, Value};
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
 ///
@@ -1460,108 +1460,183 @@ impl Value {
             // Non-serializable values — no tinct representation exists
             Value::DirCap { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::NetCap { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::ClockCap { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::RevocableDirCap { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::File { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::QuicSession { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Http2Session { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Http3Session { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::QuicDatagramHandle { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Task { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Channel { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Context { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Builder(_) => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Proxy { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Timezone { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Program { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Document { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Uri { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::ReactiveCell { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::BroadcastChannel { .. }
             | Value::OneshotSender { .. }
             | Value::OneshotReceiver { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::U64 { n, .. } => Ok(format!("{n}u")),
             // Annotated is transparent — delegate to inner value.
             Value::Annotated { inner, .. } => inner.to_tinct(ctx),
             Value::TypeContext { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Expression { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Arena { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::CoreDocument { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
             Value::Scope { .. } => Err(format!(
                 "no tinct representation for {}",
-                type_id_display_name(self.type_decl_id_of())
+                match ctx {
+                    Some(c) => c.type_display_name(self.type_decl_id_of()),
+                    None => format!("Type({})", self.type_decl_id_of()),
+                }
             )),
         }
     }

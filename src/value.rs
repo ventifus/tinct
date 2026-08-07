@@ -773,54 +773,6 @@ pub fn type_decl_id_from_core_expr(expr: &CoreExpr) -> u64 {
     }
 }
 
-/// Returns a human-readable display name for a type_decl_id.
-///
-/// Reserved IDs (1–39) return fixed names matching the Rust-side protocol.
-/// User-defined IDs (≥100) return "Variant" — use `type_display_names` registry
-/// for nominal type names when available.
-pub fn type_id_display_name(id: u64) -> &'static str {
-    match id {
-        TYPE_ID_INT | TYPE_ID_U64 => "Int",
-        TYPE_ID_FLOAT => "Float",
-        TYPE_ID_STRING => "String",
-        TYPE_ID_DICT => "Dict",
-        TYPE_ID_BUILDER => "Builder",
-        TYPE_ID_FUNCTION => "Function",
-        TYPE_ID_BUILTIN => "Builtin",
-        TYPE_ID_PROXY => "Proxy",
-        TYPE_ID_DIRCAP | TYPE_ID_REVOCABLE_DIRCAP => "DirCap",
-        TYPE_ID_NETCAP => "NetCap",
-        TYPE_ID_FILE => "File",
-        TYPE_ID_DECIMAL => "Decimal",
-        TYPE_ID_BIGINT => "BigInt",
-        TYPE_ID_BYTES => "Bytes",
-        TYPE_ID_URI => "Uri",
-        TYPE_ID_TIMESTAMP => "Timestamp",
-        TYPE_ID_DURATION => "Duration",
-        TYPE_ID_CLOCKCAP => "ClockCap",
-        TYPE_ID_TIMEZONE => "Timezone",
-        TYPE_ID_QUIC_SESSION => "QuicSession",
-        TYPE_ID_HTTP2_SESSION => "Http2Session",
-        TYPE_ID_HTTP3_SESSION => "Http3Session",
-        TYPE_ID_QUIC_DATAGRAM_HANDLE => "QuicDatagramHandle",
-        TYPE_ID_PROGRAM => "Program",
-        TYPE_ID_DOCUMENT => "Document",
-        TYPE_ID_EXPRESSION => "Expression",
-        TYPE_ID_TASK => "Task",
-        TYPE_ID_CHANNEL => "Channel",
-        TYPE_ID_BROADCAST_CHANNEL => "BroadcastChannel",
-        TYPE_ID_ONESHOT_SENDER => "OneshotSender",
-        TYPE_ID_ONESHOT_RECEIVER => "OneshotReceiver",
-        TYPE_ID_CONTEXT => "Context",
-        TYPE_ID_REACTIVE_CELL => "ReactiveCell",
-        TYPE_ID_ARENA => "Arena",
-        TYPE_ID_TYPE_CONTEXT => "TypeContext",
-        TYPE_ID_CORE_DOCUMENT => "CoreDocument",
-        TYPE_ID_SCOPE => "Scope",
-        _ => "Variant",
-    }
-}
-
 /// A materialized runtime value.
 pub enum Value {
     /// 64-bit signed integer
@@ -2315,7 +2267,7 @@ impl fmt::Debug for Thunk {
                             "state",
                             &format!(
                                 "Materialized({:?})",
-                                type_id_display_name(value.type_decl_id_of())
+                                format!("Type({})", value.type_decl_id_of())
                             ),
                         ),
                         Err(_) => s.field("state", &"Failed"),
@@ -2914,27 +2866,6 @@ mod tests {
             payload: None,
         };
         assert_eq!(variant.type_decl_id_of(), 200);
-    }
-
-    #[test]
-    fn test_type_id_display_name_reserved() {
-        assert_eq!(type_id_display_name(TYPE_ID_INT), "Int");
-        assert_eq!(type_id_display_name(TYPE_ID_U64), "Int");
-        assert_eq!(type_id_display_name(TYPE_ID_FLOAT), "Float");
-        assert_eq!(type_id_display_name(TYPE_ID_STRING), "String");
-        assert_eq!(type_id_display_name(TYPE_ID_DICT), "Dict");
-        assert_eq!(type_id_display_name(TYPE_ID_FUNCTION), "Function");
-        assert_eq!(type_id_display_name(TYPE_ID_BUILTIN), "Builtin");
-        assert_eq!(type_id_display_name(TYPE_ID_DIRCAP), "DirCap");
-        assert_eq!(type_id_display_name(TYPE_ID_REVOCABLE_DIRCAP), "DirCap");
-        assert_eq!(type_id_display_name(TYPE_ID_SCOPE), "Scope");
-    }
-
-    #[test]
-    fn test_type_id_display_name_user_types() {
-        assert_eq!(type_id_display_name(100), "Variant");
-        assert_eq!(type_id_display_name(200), "Variant");
-        assert_eq!(type_id_display_name(0), "Variant");
     }
 
     #[test]

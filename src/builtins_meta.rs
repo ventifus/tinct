@@ -700,7 +700,12 @@ pub(crate) fn builtin_decimal(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch("String or Int", &type_name(&val), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "String or Int",
+                ctx.type_display_name(val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -747,7 +752,12 @@ pub(crate) fn builtin_big_int(
                     .into()),
                 }
             }
-            _ => Err(EvalError::type_mismatch("Int or String", &type_name(&val), call_span).into()),
+            _ => Err(EvalError::type_mismatch(
+                "Int or String",
+                ctx.type_display_name(val.type_decl_id_of()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1750,54 +1760,6 @@ pub(crate) fn builtin_make_annotated(
 }
 
 // Type predicates are implemented in stdlib/prelude.llt via type pattern matching.
-
-/// Helper for runtime type name extraction.
-fn type_name(val: &Value) -> String {
-    match val {
-        Value::Int { .. } => "Int",
-        Value::Float { .. } => "Float",
-        Value::String { .. } => "String",
-        Value::Bytes { .. } => "Bytes",
-        Value::Dict { .. } => "Dict",
-        Value::Function { .. } => "Function",
-        Value::Builtin { .. } => "Builtin",
-        Value::Proxy { .. } => "Proxy",
-        Value::DirCap { .. } | Value::RevocableDirCap { .. } => "DirCap",
-        Value::NetCap { .. } => "NetCap",
-        Value::File { .. } => "File",
-        Value::Variant { ctor, .. } => return ctor.as_ref().to_string(),
-        Value::Decimal { .. } => "Decimal",
-        Value::BigInt { .. } => "BigInt",
-        Value::Uri { .. } => "Uri",
-        Value::Timestamp { .. } => "Timestamp",
-        Value::Duration { .. } => "Duration",
-        Value::ClockCap { .. } => "ClockCap",
-        Value::Timezone { .. } => "Timezone",
-        Value::QuicSession { .. } => "QuicSession",
-        Value::Http2Session { .. } => "Http2Session",
-        Value::Http3Session { .. } => "Http3Session",
-        Value::QuicDatagramHandle { .. } => "QuicDatagramHandle",
-        Value::Program { .. } => "Program",
-        Value::Document { .. } => "Document",
-        Value::Task { .. } => "Task",
-        Value::Channel { .. } => "Channel",
-        Value::Context { .. } => "Context",
-        Value::ReactiveCell { .. } => "ReactiveCell",
-        Value::Builder(_) => "Builder",
-        Value::BroadcastChannel { .. } => "BroadcastChannel",
-        Value::OneshotSender { .. } => "OneshotSender",
-        Value::OneshotReceiver { .. } => "OneshotReceiver",
-        Value::U64 { .. } => "U64",
-        // Annotated is transparent — delegate to inner value's type_name.
-        Value::Annotated { inner, .. } => return type_name(inner),
-        Value::TypeContext { .. } => "TypeContext",
-        Value::Expression { .. } => "Expression",
-        Value::Arena { .. } => "Arena",
-        Value::CoreDocument { .. } => "CoreDocument",
-        Value::Scope { .. } => "Scope",
-    }
-    .to_string()
-}
 
 /// Compute the blake3 hash of `bytes` and return a lowercase hex string.
 pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
@@ -4152,7 +4114,7 @@ pub(crate) fn builtin_validate(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Dict (schema)",
-                    &type_name(&schema),
+                    ctx.type_display_name(schema.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -4226,7 +4188,7 @@ fn validate_value(
             } = type_val
             {
                 let expected_type = &source[start..end];
-                let actual_type = type_name(&data);
+                let actual_type = ctx.type_display_name(data.type_decl_id_of());
                 if expected_type != actual_type {
                     violations.push((
                         path.clone(),
@@ -5286,7 +5248,9 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new_empty()
+        let ctx = crate::eval::EvalContext::new_empty();
+        crate::test_util::seed_test_type_context(&ctx, &[("Int", crate::value::TYPE_ID_INT)]);
+        ctx
     }
 
     fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {

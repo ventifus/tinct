@@ -1146,13 +1146,12 @@ impl EvalContext {
     /// share the same `Arc<Mutex<Option<TypeContextData>>>` and will see this initialization.
     ///
     /// Called by `builtin-make-type-ctx` (T-1341) when the pipeline is bootstrapping.
-    /// No-op (logs a warning) if the TypeContext is already initialized — TypeContext is
-    /// set once at the start of a pipeline and mutated in-place by `builtin-typecheck-doc`.
+    /// Replaces any existing TypeContextData (including the bootstrap seed from
+    /// `new_empty()`/`new_with_options()`) with the fully-loaded prelude data.
+    /// Subsequent mutations happen in-place via `builtin-typecheck-doc`.
     pub fn init_type_context(&self, data: TypeContextData) {
         let mut guard = self.type_context.lock().unwrap();
-        if guard.is_none() {
-            *guard = Some(data);
-        }
+        *guard = Some(data);
     }
 
     /// Get a clone of the current TypeContext data, if initialized.
@@ -1172,7 +1171,20 @@ impl EvalContext {
                 }
             }
         }
-        crate::value::type_id_display_name(id).to_string()
+        format!("Type({})", id)
+    }
+
+    /// Clone the full display names map from the TypeContext.
+    ///
+    /// Returns an empty map if the TypeContext has not been initialized.
+    /// Used by `format_type_with_names` call sites that need the registry.
+    pub fn type_display_names_snapshot(&self) -> std::collections::HashMap<u64, String> {
+        if let Ok(guard) = self.type_context.lock() {
+            if let Some(ref tc) = *guard {
+                return tc.type_display_names.clone();
+            }
+        }
+        std::collections::HashMap::new()
     }
 
     /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
@@ -1448,20 +1460,32 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
 /// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.
 ///
 /// Produces a human-readable string from a TypeValue for type assertion error messages.
-/// Future work: produce prettier output for complex TypeValues (Union, Record, etc.).
+/// Delegates to `format_type_with_names` with no display names — callers that have
+/// access to a display name registry should call `format_type_with_names` directly.
 pub(crate) fn format_type(ty: &Arc<Value>) -> String {
+    format_type_with_names(ty, &std::collections::HashMap::new())
+}
+
+/// Format a TypeValue with a caller-provided display name registry.
+///
+/// `display_names` maps `type_decl_id` to a human-readable name (e.g., `1 → "Int"`).
+/// For nominal types, the registry is consulted first; if absent, falls back to
+/// `"Type({id})"`. All recursive sub-types (union members, record fields, etc.)
+/// are also formatted through the same registry.
+pub(crate) fn format_type_with_names(
+    ty: &Arc<Value>,
+    display_names: &std::collections::HashMap<u64, String>,
+) -> String {
     // Extract the TypeValue ctor tag and payload for display.
     match ty.as_ref() {
         Value::Variant { ctor, payload, .. } => {
             match ctor.as_ref() {
                 TV_NOMINAL => {
                     if let Some(id) = crate::type_infer::typevalue_nominal_id(ty) {
-                        return match id {
-                            crate::value::TYPE_ID_FUNCTION | crate::value::TYPE_ID_BUILTIN => {
-                                "Fn".to_string()
-                            }
-                            _ => crate::value::type_id_display_name(id).to_string(),
-                        };
+                        if let Some(name) = display_names.get(&id) {
+                            return name.clone();
+                        }
+                        return format!("Type({})", id);
                     }
                     TV_NOMINAL.to_string()
                 }
@@ -1506,7 +1530,10 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                                     .values()
                                     .filter_map(|t| {
                                         if let Some(Ok(v)) = t.peek_result() {
-                                            Some(format_type(&Arc::new(v.clone())))
+                                            Some(format_type_with_names(
+                                                &Arc::new(v.clone()),
+                                                display_names,
+                                            ))
                                         } else {
                                             None
                                         }
@@ -1528,7 +1555,10 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                             entries.get(&HashableValue::Str(Arc::from(FIELD_OF)))
                         {
                             if let Some(Ok(inner)) = inner_thunk.peek_result() {
-                                return format!("~{}", format_type(&Arc::new(inner.clone())));
+                                return format!(
+                                    "~{}",
+                                    format_type_with_names(&Arc::new(inner.clone()), display_names)
+                                );
                             }
                         }
                     }
@@ -1558,7 +1588,10 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                                             Some(format!(
                                                 "{}: {}",
                                                 key_str,
-                                                format_type(&Arc::new(v.clone()))
+                                                format_type_with_names(
+                                                    &Arc::new(v.clone()),
+                                                    display_names
+                                                )
                                             ))
                                         } else {
                                             None
@@ -1583,12 +1616,12 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                                                         .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)))
                                                         .and_then(|t| t.peek_result())
                                                         .and_then(|r| r.ok())
-                                                        .map(|v| format_type(&Arc::new(v.clone())));
+                                                        .map(|v| format_type_with_names(&Arc::new(v.clone()), display_names));
                                                     let kt = u_entries
                                                         .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_KEY_TYPE)))
                                                         .and_then(|t| t.peek_result())
                                                         .and_then(|r| r.ok())
-                                                        .map(|v| format_type(&Arc::new(v.clone())));
+                                                        .map(|v| format_type_with_names(&Arc::new(v.clone()), display_names));
                                                     let kt_str = kt.as_deref().unwrap_or("?");
                                                     let vt_str = vt.as_deref().unwrap_or("?");
                                                     if !parts.is_empty() {
@@ -1657,7 +1690,9 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                             .get(&HashableValue::Str(Arc::from(FIELD_RETURN)))
                             .and_then(|t| t.peek_result())
                             .map(|r| match r {
-                                Ok(v) => format_type(&Arc::new(v.clone())),
+                                Ok(v) => {
+                                    format_type_with_names(&Arc::new(v.clone()), display_names)
+                                }
                                 Err(e) => format!("<error: {e}>"),
                             })
                             .unwrap_or_else(|| "?".to_string());
@@ -1673,7 +1708,10 @@ pub(crate) fn format_type(ty: &Arc<Value>) -> String {
                                         .map(|t| {
                                             t.peek_result()
                                                 .map(|r| match r {
-                                                    Ok(pv) => format_type(&Arc::new(pv.clone())),
+                                                    Ok(pv) => format_type_with_names(
+                                                        &Arc::new(pv.clone()),
+                                                        display_names,
+                                                    ),
                                                     Err(e) => format!("<error: {e}>"),
                                                 })
                                                 .unwrap_or_else(|| "?".to_string())
@@ -2325,7 +2363,15 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<EvalContext> {
-        EvalContext::new()
+        let ctx = EvalContext::new();
+        crate::test_util::seed_test_type_context(
+            &ctx,
+            &[
+                ("Int", crate::value::TYPE_ID_INT),
+                ("String", crate::value::TYPE_ID_STRING),
+            ],
+        );
+        ctx
     }
 
     /// Test helper for tests that need dot-access to work.
