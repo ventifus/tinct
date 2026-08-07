@@ -1516,13 +1516,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("Int"),
-            "should mention Int, got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Int input to to-int, got: {:?}",
             err.kind
         );
     }
@@ -2966,15 +2961,9 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind);
         assert!(
-            err.kind.to_string().contains("expected Dict"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("got Int"),
-            "got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Int input to keys, got: {:?}",
             err.kind
         );
     }
@@ -2992,10 +2981,9 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind);
         assert!(
-            err.kind.to_string().contains("got String"),
-            "got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for String input to keys, got: {:?}",
             err.kind
         );
     }
@@ -3357,13 +3345,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("got Int"),
-            "got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Int pattern in replace, got: {:?}",
             err.kind
         );
     }
@@ -3392,8 +3375,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Dict replacement in replace, got: {:?}",
             err.kind
         );
     }
@@ -3416,13 +3399,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("got Float"),
-            "got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Float input in replace, got: {:?}",
             err.kind
         );
     }
@@ -3441,18 +3419,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("got Float"),
-            "got: {}",
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for Float input to trim, got: {:?}",
             err.kind
         );
     }

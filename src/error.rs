@@ -1195,7 +1195,12 @@ impl EvalError {
         }
     }
 
-    pub fn type_mismatch_ctx(context: String, expected: impl AsRef<str>, got: impl AsRef<str>, span: Span) -> Self {
+    pub fn type_mismatch_ctx(
+        context: String,
+        expected: impl AsRef<str>,
+        got: impl AsRef<str>,
+        span: Span,
+    ) -> Self {
         Self {
             kind: ErrorKind::TypeMismatch {
                 context: Some(context),

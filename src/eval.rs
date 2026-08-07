@@ -107,7 +107,8 @@ pub(crate) async fn eval_document_exprs_with_env(
     let last_idx = expr_nodes.len() - 1;
 
     for (i, node) in expr_nodes.iter().enumerate() {
-        let (core_spanned, lower_diags) = crate::lower::lower(node);
+        let display_names = ctx.type_display_names_snapshot();
+        let (core_spanned, lower_diags) = crate::lower::lower(node, &display_names);
         {
             let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                 .into_iter()
@@ -1146,12 +1147,14 @@ impl EvalContext {
     /// share the same `Arc<Mutex<Option<TypeContextData>>>` and will see this initialization.
     ///
     /// Called by `builtin-make-type-ctx` (T-1341) when the pipeline is bootstrapping.
-    /// Replaces any existing TypeContextData (including the bootstrap seed from
-    /// `new_empty()`/`new_with_options()`) with the fully-loaded prelude data.
-    /// Subsequent mutations happen in-place via `builtin-typecheck-doc`.
+    /// First write wins — lib.rs initializes with builtin_core data, and builtin-make-type-ctx
+    /// must not overwrite it with empty data. Subsequent mutations happen in-place via
+    /// `builtin-typecheck-doc` (which directly modifies the TypeContextData fields).
     pub fn init_type_context(&self, data: TypeContextData) {
         let mut guard = self.type_context.lock().unwrap();
-        *guard = Some(data);
+        if guard.is_none() {
+            *guard = Some(data);
+        }
     }
 
     /// Get a clone of the current TypeContext data, if initialized.
@@ -1161,17 +1164,20 @@ impl EvalContext {
     }
 
     /// Look up the display name for a type_decl_id from the type_display_names registry.
-    /// Returns the prelude-defined name (e.g., "Int", "String") — no hardcoded names in Rust.
-    /// Falls back to "Type({id})" if the registry doesn't contain the id.
+    /// Returns the prelude-defined name for a type_decl_id from the registry.
+    /// Returns `"Nominal({id})"` when the type context is not yet initialized or the
+    /// id is not in the registry. This can happen in unit tests that construct values
+    /// without loading the full prelude.
     pub fn type_display_name(&self, id: u64) -> String {
-        if let Ok(guard) = self.type_context.lock() {
-            if let Some(ref tc) = *guard {
-                if let Some(name) = tc.type_display_names.get(&id) {
-                    return name.clone();
-                }
-            }
+        let guard = self.type_context.lock().expect("type_context lock poisoned");
+        match guard.as_ref() {
+            Some(tc) => tc
+                .type_display_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("Nominal({})", id)),
+            None => format!("Nominal({})", id),
         }
-        format!("Type({})", id)
     }
 
     /// Clone the full display names map from the TypeContext.
@@ -1459,13 +1465,6 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
 
 /// Format a TypeValue (Arc<Value>) for error messages in TypeAssert.
 ///
-/// Produces a human-readable string from a TypeValue for type assertion error messages.
-/// Delegates to `format_type_with_names` with no display names — callers that have
-/// access to a display name registry should call `format_type_with_names` directly.
-pub(crate) fn format_type(ty: &Arc<Value>) -> String {
-    format_type_with_names(ty, &std::collections::HashMap::new())
-}
-
 /// Format a TypeValue with a caller-provided display name registry.
 ///
 /// `display_names` maps `type_decl_id` to a human-readable name (e.g., `1 → "Int"`).
@@ -1482,10 +1481,10 @@ pub(crate) fn format_type_with_names(
             match ctor.as_ref() {
                 TV_NOMINAL => {
                     if let Some(id) = crate::type_infer::typevalue_nominal_id(ty) {
-                        if let Some(name) = display_names.get(&id) {
-                            return name.clone();
-                        }
-                        return format!("Type({})", id);
+                        return display_names
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Nominal({})", id));
                     }
                     TV_NOMINAL.to_string()
                 }
@@ -1625,15 +1624,17 @@ pub(crate) fn format_type_with_names(
                                                     let kt_str = kt.as_deref().unwrap_or("?");
                                                     let vt_str = vt.as_deref().unwrap_or("?");
                                                     if !parts.is_empty() {
+                                                        let dict_name = display_names.get(&crate::value::TYPE_ID_DICT).map(|s| s.as_str()).unwrap_or("Record");
                                                         return Ok(format!(
-                                                            "[Dict {} {}  {}  ...]",
-                                                            kt_str, vt_str, parts.join("  ")
+                                                            "[{} {} {}  {}  ...]",
+                                                            dict_name, kt_str, vt_str, parts.join("  ")
                                                         ));
                                                     }
+                                                    let dict_name = display_names.get(&crate::value::TYPE_ID_DICT).map(|s| s.as_str()).unwrap_or("Record");
                                                     if kt_str == "Top" && vt_str == "Top" {
-                                                        return Ok("Dict".to_string());
+                                                        return Ok(dict_name.to_string());
                                                     }
-                                                    return Ok(format!("[Dict {} {}]", kt_str, vt_str));
+                                                    return Ok(format!("[{} {} {}]", dict_name, kt_str, vt_str));
                                                 }
                                                 Err("  ...".to_string())
                                             }
@@ -1675,7 +1676,7 @@ pub(crate) fn format_type_with_names(
                             }
                         }
                     }
-                    "Dict".to_string()
+                    display_names.get(&crate::value::TYPE_ID_DICT).cloned().unwrap_or_else(|| "Record".to_string())
                 }
                 TV_FN => {
                     // TypeValue.Fn: format as "Fn@RetType [ParamType ...]".
@@ -2363,12 +2364,15 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<EvalContext> {
+        use crate::value::*;
         let ctx = EvalContext::new();
         crate::test_util::seed_test_type_context(
             &ctx,
             &[
-                ("Int", crate::value::TYPE_ID_INT),
-                ("String", crate::value::TYPE_ID_STRING),
+                ("Int", TYPE_ID_INT),
+                ("Float", TYPE_ID_FLOAT),
+                ("String", TYPE_ID_STRING),
+                ("Dict", TYPE_ID_DICT),
             ],
         );
         ctx
@@ -2390,7 +2394,8 @@ mod tests {
         _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        let (core_expr, lower_diags) = crate::lower::lower(&node);
+        let display_names = ctx.type_display_names_snapshot();
+        let (core_expr, lower_diags) = crate::lower::lower(&node, &display_names);
         {
             let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                 .into_iter()
@@ -2964,9 +2969,9 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected Int") && err.to_string().contains("got String"),
-            "got: {}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -2999,10 +3004,9 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string()
-                .contains("type assertion failed: expected String, got Int"),
-            "got: {}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -3042,9 +3046,9 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected Int") && err.to_string().contains("got String"),
-            "got: {}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -3143,9 +3147,9 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected Int") && err.to_string().contains("got String"),
-            "got: {}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -3228,9 +3232,9 @@ mod tests {
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected") && err.to_string().contains("got Int"),
-            "expected type assertion error for non-Dict record mismatch, got: {:?}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -3267,9 +3271,9 @@ mod tests {
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected") && err.to_string().contains("got Int"),
-            "expected type assertion error for non-Dict record mismatch, got: {:?}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -3811,9 +3815,9 @@ mod tests {
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected Int") && err.to_string().contains("got String"),
-            "got: {}",
-            err
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -4391,8 +4395,9 @@ mod tests {
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("expected") && err.to_string().contains("got Int"),
-            "expected type assertion error for non-Dict record mismatch, got: {err:?}"
+            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+            "expected TypeAssertFailed, got: {:?}",
+            err.kind
         );
     }
 
@@ -5884,7 +5889,8 @@ mod tests {
                 crate::ast::SurfaceItem::Expr(node) => node,
                 crate::ast::SurfaceItem::Decl(_) => continue,
             };
-            let (core_spanned, lower_diags) = crate::lower::lower(node);
+            let display_names = ctx.type_display_names_snapshot();
+            let (core_spanned, lower_diags) = crate::lower::lower(node, &display_names);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()

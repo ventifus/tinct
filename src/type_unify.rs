@@ -583,8 +583,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -602,8 +602,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -619,8 +619,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -634,8 +634,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -652,8 +652,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -668,8 +668,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -683,8 +683,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -702,8 +702,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -719,8 +719,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -734,8 +734,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ))
@@ -802,8 +802,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}: union member count differs ({} vs {})",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                         members_a.len(),
                         members_b.len(),
                     ),
@@ -892,7 +892,7 @@ pub async fn unify(
                         "type-error",
                         format!(
                             "cannot unify union types: no matching member found for type {}",
-                            crate::eval::format_type(ma)
+                            crate::eval::format_type_with_names(ma, &ctx.type_display_names)
                         ),
                         span,
                     ))
@@ -1080,8 +1080,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ));
@@ -1121,8 +1121,8 @@ pub async fn unify(
                 "type-error",
                 format!(
                     "cannot unify {} with {}",
-                    crate::eval::format_type(&a),
-                    crate::eval::format_type(&b),
+                    crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                    crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                 ),
                 span,
             ))
@@ -1142,8 +1142,8 @@ pub async fn unify(
                     "type-error",
                     format!(
                         "cannot unify {} with {}",
-                        crate::eval::format_type(&a),
-                        crate::eval::format_type(&b),
+                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                     ),
                     span,
                 ));
@@ -1181,8 +1181,8 @@ pub async fn unify(
                 "type-error",
                 format!(
                     "cannot unify {} with {}",
-                    crate::eval::format_type(&a),
-                    crate::eval::format_type(&b),
+                    crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                    crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                 ),
                 span,
             ))
@@ -1237,8 +1237,8 @@ pub async fn unify(
                 "type-error",
                 format!(
                     "cannot unify {} with {}",
-                    crate::eval::format_type(&a),
-                    crate::eval::format_type(&b),
+                    crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                    crate::eval::format_type_with_names(&b, &ctx.type_display_names),
                 ),
                 span,
             ))
@@ -1249,8 +1249,8 @@ pub async fn unify(
             "type-error",
             format!(
                 "cannot unify {} with {}",
-                crate::eval::format_type(&a),
-                crate::eval::format_type(&b),
+                crate::eval::format_type_with_names(&a, &ctx.type_display_names),
+                crate::eval::format_type_with_names(&b, &ctx.type_display_names),
             ),
             span,
         )),
@@ -1776,8 +1776,8 @@ async fn constrain_record(
                 format!("missing field '{}': record subtype constraint", k),
                 span,
             )
-            .with_note(format!("actual:   {}", crate::eval::format_type(sub)))
-            .with_note(format!("expected: {}", crate::eval::format_type(sup))));
+            .with_note(format!("actual:   {}", crate::eval::format_type_with_names(sub, &ctx.type_display_names)))
+            .with_note(format!("expected: {}", crate::eval::format_type_with_names(sup, &ctx.type_display_names))));
         }
     }
 

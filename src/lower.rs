@@ -118,9 +118,9 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 ///
 /// All cross-phase data (type annotations, field slots, provenance) is read from inline
 /// fields on the AST nodes — no external tables are consulted.
-pub fn lower(arc: &Arc<SurfaceNode>) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
+pub fn lower(arc: &Arc<SurfaceNode>, type_display_names: &std::collections::HashMap<u64, String>) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let spanned = lower_inner(arc, &mut diagnostics);
+    let spanned = lower_inner(arc, &mut diagnostics, type_display_names);
     (spanned, diagnostics)
 }
 
@@ -133,6 +133,7 @@ pub fn lower(arc: &Arc<SurfaceNode>) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
 pub(crate) fn lower_inner(
     arc: &Arc<SurfaceNode>,
     diagnostics: &mut Vec<Diagnostic>,
+    type_display_names: &std::collections::HashMap<u64, String>,
 ) -> Spanned<CoreExpr> {
     // Use the pipe_span from a pipe-desugared Call if present — it points at the specific
     // `|` operator rather than the outer bracket. Falls back to the node's own span.
@@ -145,7 +146,7 @@ pub(crate) fn lower_inner(
     } else {
         arc.span.clone()
     };
-    let core_expr = lower_expr(arc, &arc.expr, diagnostics);
+    let core_expr = lower_expr(arc, &arc.expr, diagnostics, type_display_names);
 
     // Apply type guard if the type checker set one on this node (T-2013).
     // Use TypeAssertCheck::Resolved — the guard_type is already a resolved TypeValue.
@@ -175,6 +176,7 @@ fn lower_expr(
     arc: &Arc<SurfaceNode>,
     expr: &SurfaceExpression,
     diagnostics: &mut Vec<Diagnostic>,
+    type_display_names: &std::collections::HashMap<u64, String>,
 ) -> CoreExpr {
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int {
@@ -326,7 +328,7 @@ fn lower_expr(
                 arc.span.clone(),
             ));
             let key_node = Arc::new(crate::ast::Spanned::new(key_core, arc.span.clone()));
-            let target_node = Arc::new(lower_inner(inner, diagnostics));
+            let target_node = Arc::new(lower_inner(inner, diagnostics, type_display_names));
 
             CoreExpr::Call {
                 func: getter_var,
@@ -398,8 +400,8 @@ fn lower_expr(
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
         SurfaceExpression::Pipe { lhs, rhs, .. } => CoreExpr::Call {
-            func: Arc::new(lower_inner(rhs, diagnostics)),
-            args: vec![Arc::new(lower_inner(lhs, diagnostics))],
+            func: Arc::new(lower_inner(rhs, diagnostics, type_display_names)),
+            args: vec![Arc::new(lower_inner(lhs, diagnostics, type_display_names))],
             named_args: vec![],
             implied: true,
             inferred_type_id: 0,
@@ -408,7 +410,7 @@ fn lower_expr(
         SurfaceExpression::Sequential(exprs) => CoreExpr::Sequential {
             exprs: exprs
                 .iter()
-                .map(|e| Arc::new(lower_inner(e, diagnostics)))
+                .map(|e| Arc::new(lower_inner(e, diagnostics, type_display_names)))
                 .collect(),
             inferred_type_id: 0,
         },
@@ -428,11 +430,11 @@ fn lower_expr(
                             value: name.clone(),
                             inferred_type_id: 0,
                         },
-                        _ => lower_expr(k, &k.expr, diagnostics),
+                        _ => lower_expr(k, &k.expr, diagnostics, type_display_names),
                     };
                     Arc::new(Spanned::new(lowered, k.span.clone()))
                 });
-                let value = Arc::new(lower_inner(&se.node.value, diagnostics));
+                let value = Arc::new(lower_inner(&se.node.value, diagnostics, type_display_names));
                 // Trivial self-reference: [name: name] where the entire RHS is a bare
                 // VarRef resolving to the same letrec binding. depth=0 means current
                 // group; name equality guarantees same slot (names are unique per group).
@@ -504,10 +506,10 @@ fn lower_expr(
             implied,
             ..
         } => CoreExpr::Call {
-            func: Arc::new(lower_inner(func, diagnostics)),
+            func: Arc::new(lower_inner(func, diagnostics, type_display_names)),
             args: args
                 .iter()
-                .map(|a| Arc::new(lower_inner(a, diagnostics)))
+                .map(|a| Arc::new(lower_inner(a, diagnostics, type_display_names)))
                 .collect(),
             named_args: named_args
                 .iter()
@@ -515,7 +517,7 @@ fn lower_expr(
                     Spanned::new(
                         CoreNamedArg {
                             name: na.node.name.clone(),
-                            value: Arc::new(lower_inner(&na.node.value, diagnostics)),
+                            value: Arc::new(lower_inner(&na.node.value, diagnostics, type_display_names)),
                         },
                         na.span.clone(),
                     )
@@ -534,7 +536,7 @@ fn lower_expr(
             resolved_return_annotation,
         } => {
             // Lower the body first to get its span for wrapping.
-            let lowered_body_spanned = lower_inner(body, diagnostics);
+            let lowered_body_spanned = lower_inner(body, diagnostics, type_display_names);
             let body_span = lowered_body_spanned.span.clone();
 
             // Build params and collect TypeAssert checks for each typed parameter.
@@ -706,7 +708,7 @@ fn lower_expr(
             if trace_level >= 1 {
                 let sig = resolved_fn_type
                     .as_ref()
-                    .map(|tv| crate::eval::format_type(tv))
+                    .map(|tv| crate::eval::format_type_with_names(tv, type_display_names))
                     .unwrap_or_else(|| "<no type>".to_string());
                 diagnostics.push(Diagnostic::info("trace-lower", sig, arc.span.clone()));
             }
@@ -753,7 +755,7 @@ fn lower_expr(
                 },
             };
             CoreExpr::TypeAssert {
-                expr: Arc::new(lower_inner(inner, diagnostics)),
+                expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
                 check,
                 pipeline_blame: None,
                 inferred_type_id: 0,
@@ -769,7 +771,7 @@ fn lower_expr(
         },
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
-            scrutinee: Arc::new(lower_inner(scrutinee, diagnostics)),
+            scrutinee: Arc::new(lower_inner(scrutinee, diagnostics, type_display_names)),
             inferred_type_id: 0,
             arms: arms
                 .iter()
@@ -825,7 +827,7 @@ fn lower_expr(
                     // - Keyed arms (let_bindings.is_none()): lowered_pattern is the key
                     //   expression (e.g. CoreExpr::Int, CoreExpr::Str, CoreExpr::Placeholder)
                     //   used by MatchDispatch for equality matching via eval_structural_pattern_inner.
-                    let lowered_pattern = Some(Arc::new(lower_inner(&arm.pattern, diagnostics)));
+                    let lowered_pattern = Some(Arc::new(lower_inner(&arm.pattern, diagnostics, type_display_names)));
                     let captures: Arc<Vec<(String, VarAddr)>> = if arm.let_bindings.is_some() {
                         arm.case_captures
                             .get()
@@ -840,9 +842,9 @@ fn lower_expr(
                         guard: arm
                             .guard
                             .as_ref()
-                            .map(|g| Arc::new(lower_inner(g, diagnostics))),
+                            .map(|g| Arc::new(lower_inner(g, diagnostics, type_display_names))),
                         // body is always a single node (parser wraps multi-body in Sequential).
-                        body: Arc::new(lower_inner(arm.body_expr(), diagnostics)),
+                        body: Arc::new(lower_inner(arm.body_expr(), diagnostics, type_display_names)),
                         captures,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
                     }
@@ -856,25 +858,25 @@ fn lower_expr(
             // OnceLock=None. We must not emit "undefined variable" diagnostics for them.
             let mut quote_diags = Vec::new();
             CoreExpr::Quote {
-                expr: Arc::new(lower_inner(inner, &mut quote_diags)),
+                expr: Arc::new(lower_inner(inner, &mut quote_diags, type_display_names)),
                 inferred_type_id: 0,
             }
         }
 
         SurfaceExpression::Unquote(inner) => CoreExpr::Unquote {
-            expr: Arc::new(lower_inner(inner, diagnostics)),
+            expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
             inferred_type_id: 0,
         },
 
         SurfaceExpression::UnquoteSplice(inner) => CoreExpr::UnquoteSplice {
-            expr: Arc::new(lower_inner(inner, diagnostics)),
+            expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
             inferred_type_id: 0,
         },
 
         SurfaceExpression::PatternDecl { bindings } => CoreExpr::PatternDecl {
             bindings: bindings
                 .iter()
-                .map(|b| lower_inner(b, diagnostics))
+                .map(|b| lower_inner(b, diagnostics, type_display_names))
                 .collect(),
             inferred_type_id: 0,
         },
@@ -885,9 +887,9 @@ fn lower_expr(
                 .enumerate()
                 .map(|(i, b)| {
                     if i % 2 == 0 {
-                        lower_let_decl_binding(b, diagnostics)
+                        lower_let_decl_binding(b, diagnostics, type_display_names)
                     } else {
-                        lower_inner(b, diagnostics)
+                        lower_inner(b, diagnostics, type_display_names)
                     }
                 })
                 .collect(),
@@ -915,7 +917,7 @@ fn lower_expr(
             type_decl_id,
         } => CoreExpr::Variant {
             tag: tag.clone(),
-            payload: Some(Arc::new(lower_inner(payload, diagnostics))),
+            payload: Some(Arc::new(lower_inner(payload, diagnostics, type_display_names))),
             type_decl_id: *type_decl_id,
             inferred_type_id: 0,
         },
@@ -928,7 +930,7 @@ fn lower_expr(
         } => CoreExpr::TypeDecl {
             type_name: type_name.clone(),
             type_decl_id: *type_decl_id,
-            inner: Arc::new(lower_inner(inner, diagnostics)),
+            inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
             inferred_type_id: 0,
         },
 
@@ -940,8 +942,8 @@ fn lower_expr(
             repr: *repr,
             is_pred: is_pred
                 .as_ref()
-                .map(|pred| Arc::new(lower_inner(pred, diagnostics))),
-            inner: Arc::new(lower_inner(inner, diagnostics)),
+                .map(|pred| Arc::new(lower_inner(pred, diagnostics, type_display_names))),
+            inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
             inferred_type_id: 0,
         },
 
@@ -1212,6 +1214,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
 fn lower_let_decl_binding(
     arc: &Arc<SurfaceNode>,
     diagnostics: &mut Vec<Diagnostic>,
+    type_display_names: &std::collections::HashMap<u64, String>,
 ) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
     let core_expr = match &arc.expr {
@@ -1231,7 +1234,7 @@ fn lower_let_decl_binding(
             inferred_type_id: 0,
         },
         // All other forms: lower normally (will produce Error if unresolvable).
-        _ => lower_expr(arc, &arc.expr, diagnostics),
+        _ => lower_expr(arc, &arc.expr, diagnostics, type_display_names),
     };
     Spanned::new(core_expr, span)
 }
@@ -1260,7 +1263,7 @@ mod tests {
         let span = rust_span!();
         let node = make_node(SurfaceExpression::Int(42), span.clone());
 
-        let (lowered, diags) = lower(&node);
+        let (lowered, diags) = lower(&node, &std::collections::HashMap::new());
 
         assert_eq!(lowered.span, span);
         assert!(matches!(lowered.node, CoreExpr::Int { value: 42, .. }));
@@ -1285,7 +1288,7 @@ mod tests {
             span,
         );
 
-        let (lowered, diags) = lower(&node);
+        let (lowered, diags) = lower(&node, &std::collections::HashMap::new());
 
         assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
         match lowered.node {
@@ -1314,7 +1317,7 @@ mod tests {
             span.clone(),
         );
 
-        let (lowered, diags) = lower(&node);
+        let (lowered, diags) = lower(&node, &std::collections::HashMap::new());
 
         // Unresolvable VarRef produces CoreExpr::Placeholder and a diagnostic.
         assert!(
@@ -1367,7 +1370,7 @@ mod tests {
             span,
         );
 
-        let (lowered, _diags) = lower(&node);
+        let (lowered, _diags) = lower(&node, &std::collections::HashMap::new());
 
         assert!(
             matches!(lowered.node, CoreExpr::Placeholder { .. }),
@@ -1416,7 +1419,7 @@ mod tests {
                 SurfaceItem::Expr(n) => n,
                 SurfaceItem::Decl(_) => continue,
             };
-            let (core_spanned, _diags) = lower(node);
+            let (core_spanned, _diags) = lower(node, &std::collections::HashMap::new());
             entries.push((format!("{expr_idx}"), Arc::new(core_spanned)));
             expr_idx += 1;
         }
@@ -1595,7 +1598,7 @@ mod tests {
         let span = rust_span!();
         let node = make_trace_fn_node(1, span);
 
-        let (_lowered, diags) = lower(&node);
+        let (_lowered, diags) = lower(&node, &std::collections::HashMap::new());
 
         let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
         assert!(
@@ -1622,7 +1625,7 @@ mod tests {
         // trace: 0 — value 0 must NOT trigger trace-lower (value-based guard, same as typecheck)
         let node = make_trace_fn_node(0, span);
 
-        let (_lowered, diags) = lower(&node);
+        let (_lowered, diags) = lower(&node, &std::collections::HashMap::new());
 
         let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
         assert!(
@@ -1660,7 +1663,7 @@ mod tests {
             span,
         ));
 
-        let (_lowered, diags) = lower(&node);
+        let (_lowered, diags) = lower(&node, &std::collections::HashMap::new());
 
         let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
         assert!(

@@ -175,7 +175,8 @@ async fn eval_annotation_property_dict(
                 // Non-literal annotation values are lowered to CoreExpr and evaluated.
                 // This handles VarRefs (type names like Dict, String), fn expressions, and calls.
                 let mut lower_diags = Vec::new();
-                let core_expr = crate::lower::lower_inner(&entry.node.value, &mut lower_diags);
+                let display_names = ctx.type_display_names_snapshot();
+                let core_expr = crate::lower::lower_inner(&entry.node.value, &mut lower_diags, &display_names);
                 {
                     let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                         .into_iter()

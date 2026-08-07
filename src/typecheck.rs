@@ -1289,14 +1289,14 @@ pub(crate) async fn infer_instance_decl_from_surface(
                                             )
                                             .with_note(format!(
                                                 "class signature expects: {}",
-                                                crate::eval::format_type(
-                                                    class_param
+                                                crate::eval::format_type_with_names(
+                                                    class_param, &state.ctx.type_display_names
                                                 )
                                             ))
                                             .with_note(format!(
                                                 "instance method has: {}",
-                                                crate::eval::format_type(
-                                                    method_param
+                                                crate::eval::format_type_with_names(
+                                                    method_param, &state.ctx.type_display_names
                                                 )
                                             ))
                                             .with_note(format!("unification failed: {}", err.message)),

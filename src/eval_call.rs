@@ -543,7 +543,7 @@ pub(crate) async fn invoke_function_tco(
                 let name = &p.node.name;
                 match &p.node.resolved_type {
                     Some(tv) if !is_typevalue_unknown(tv) => {
-                        format!("{}@{}", name, crate::eval::format_type(tv))
+                        format!("{}@{}", name, crate::eval::format_type_with_names(tv, &ctx.ctx.type_display_names_snapshot()))
                     }
                     _ => name.clone(),
                 }
@@ -711,7 +711,8 @@ pub(crate) async fn bind_args_thunks(
                 param_slots[slot] = Some(Arc::clone(named_thunk));
             } else if let Some(default_node) = get_default(param) {
                 // Default param: lower and wrap as a CoreExpr thunk with empty frame.
-                let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
+                let display_names = ctx.type_display_names_snapshot();
+                let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
                 {
                     let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                         .into_iter()
@@ -745,7 +746,8 @@ pub(crate) async fn bind_args_thunks(
             // else: required param with no coverage — already caught by arity check.
         } else if let Some(default_node) = get_default(param) {
             // Default param (no named args provided).
-            let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
+            let display_names = ctx.type_display_names_snapshot();
+            let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()

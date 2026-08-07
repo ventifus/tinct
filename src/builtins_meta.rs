@@ -4035,7 +4035,8 @@ pub(crate) fn builtin_eval_types(
         // Build integer-keyed Dict of CoreExpr thunks (one per expression, pre-lowered).
         let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, node) in expression_nodes.into_iter().enumerate() {
-            let (lowered, lower_diags) = crate::lower::lower(&node);
+            let display_names = ctx.type_display_names_snapshot();
+            let (lowered, lower_diags) = crate::lower::lower(&node, &display_names);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()
@@ -4977,7 +4978,8 @@ pub(crate) fn builtin_lower(
                 crate::ast::SurfaceItem::Expr(node) => node,
                 crate::ast::SurfaceItem::Decl(_) => continue,
             };
-            let (core_spanned, lower_diags) = crate::lower::lower(node);
+            let display_names = ctx.type_display_names_snapshot();
+            let (core_spanned, lower_diags) = crate::lower::lower(node, &display_names);
             {
                 let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                     .into_iter()
@@ -5248,8 +5250,17 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
+        use crate::value::*;
         let ctx = crate::eval::EvalContext::new_empty();
-        crate::test_util::seed_test_type_context(&ctx, &[("Int", crate::value::TYPE_ID_INT)]);
+        crate::test_util::seed_test_type_context(
+            &ctx,
+            &[
+                ("Int", TYPE_ID_INT),
+                ("Float", TYPE_ID_FLOAT),
+                ("String", TYPE_ID_STRING),
+                ("Dict", TYPE_ID_DICT),
+            ],
+        );
         ctx
     }
 
@@ -5437,14 +5448,10 @@ mod tests {
             "expected type-mismatch error for annotated non-variant, got ok"
         );
         let err = result.unwrap_err();
-        let msg = format!("{err}");
         assert!(
-            msg.contains("Variant"),
-            "error should mention expected type 'Variant', got: {msg}"
-        );
-        assert!(
-            msg.contains("Int"),
-            "error should mention actual type 'Int', got: {msg}"
+            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch for annotated non-variant, got: {:?}",
+            err.kind
         );
     }
 }

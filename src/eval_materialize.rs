@@ -1024,7 +1024,8 @@ async fn dispatch_state(
 
                 // Evaluate inner (or the default: fallback if inner is a Placeholder).
                 let inner_thunk = if let Some(default_node) = placeholder_default {
-                    let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                    let display_names = thunk_ctx.type_display_names_snapshot();
+                    let (lowered_default, lower_diags) = crate::lower::lower(default_node, &display_names);
                     {
                         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                             .into_iter()
@@ -2251,7 +2252,8 @@ pub(crate) async fn apply_cont(
                     // check for `default:` annotation and evaluate it instead of propagating the error.
                     // Only Source annotations have a `default:` property.
                     if let Some(default_node) = get_default() {
-                        let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
+                        let display_names = ctx.type_display_names_snapshot();
+                        let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
                         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                             .into_iter()
                             .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
@@ -2307,8 +2309,9 @@ pub(crate) async fn apply_cont(
                                 Err(err) => {
                                     // Missing required field — try default: fallback first.
                                     if let Some(default_node) = get_default() {
+                                        let display_names = ctx.type_display_names_snapshot();
                                         let (lowered_default, lower_diags) =
-                                            crate::lower::lower(&default_node);
+                                            crate::lower::lower(&default_node, &display_names);
                                         let (info_diags, other_diags): (Vec<_>, Vec<_>) =
                                             lower_diags.into_iter().partition(|d| {
                                                 d.level == crate::error::DiagnosticLevel::Info
@@ -2355,7 +2358,8 @@ pub(crate) async fn apply_cont(
                         let fail_reason = ctx.type_display_name(value.type_decl_id_of());
                         // Type mismatch — try default: fallback before raising an error.
                         if let Some(default_node) = get_default() {
-                            let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
+                            let display_names = ctx.type_display_names_snapshot();
+                            let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
                             let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                                 .into_iter()
                                 .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
@@ -3297,7 +3301,8 @@ fn eval_structural_pattern_inner<'a>(
 
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
-                    let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node);
+                    let display_names = ctx.type_display_names_snapshot();
+                    let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node, &display_names);
                     {
                         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                             .into_iter()

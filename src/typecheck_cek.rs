@@ -129,11 +129,11 @@ pub(crate) async fn run_fd_improvement_fixpoint(
                 Err(mut e) => {
                     e = e.with_note(format!(
                         "expected (FD-determined target): {}",
-                        crate::eval::format_type(&target)
+                        crate::eval::format_type_with_names(&target, &state.ctx.type_display_names)
                     ));
                     e = e.with_note(format!(
                         "actual (FD-computed type):        {}",
-                        crate::eval::format_type(&computed)
+                        crate::eval::format_type_with_names(&computed, &state.ctx.type_display_names)
                     ));
                     errors.push(e);
                 }
@@ -1009,8 +1009,8 @@ async fn apply_cont(
                                         "return type mismatch: body type is not consistent with declared return type",
                                         node_span.clone(),
                                     )
-                                    .with_note(format!("declared: {}", crate::eval::format_type(&declared_ret)))
-                                    .with_note(format!("inferred: {}", crate::eval::format_type(&body_resolved)))
+                                    .with_note(format!("declared: {}", crate::eval::format_type_with_names(&declared_ret, &state.ctx.type_display_names)))
+                                    .with_note(format!("inferred: {}", crate::eval::format_type_with_names(&body_resolved, &state.ctx.type_display_names)))
                                 );
                             }
                         }
@@ -1044,8 +1044,8 @@ async fn apply_cont(
                                                 "body type is not consistent with function annotation member",
                                                 node_span.clone(),
                                             )
-                                            .with_note(format!("declared member: {}", crate::eval::format_type(member)))
-                                            .with_note(format!("inferred:        {}", crate::eval::format_type(&body_resolved)))
+                                            .with_note(format!("declared member: {}", crate::eval::format_type_with_names(member, &state.ctx.type_display_names)))
+                                            .with_note(format!("inferred:        {}", crate::eval::format_type_with_names(&body_resolved, &state.ctx.type_display_names)))
                                         );
                                     }
                                 }
@@ -1092,11 +1092,11 @@ async fn apply_cont(
                                     )
                                     .with_note(format!(
                                         "declared: {}",
-                                        crate::eval::format_type(&declared_ret)
+                                        crate::eval::format_type_with_names(&declared_ret, &state.ctx.type_display_names)
                                     ))
                                     .with_note(format!(
                                         "inferred: {}",
-                                        crate::eval::format_type(&body_resolved)
+                                        crate::eval::format_type_with_names(&body_resolved, &state.ctx.type_display_names)
                                     )),
                                 );
                             }
@@ -1125,14 +1125,14 @@ async fn apply_cont(
 
             // Emit trace diagnostic if trace_level >= 1.
             if trace_level >= 1 {
-                let ret_str = crate::eval::format_type(&fn_ret_ty);
+                let ret_str = crate::eval::format_type_with_names(&fn_ret_ty, &state.ctx.type_display_names);
                 let params_str = params
                     .iter()
                     .map(|(name, ty)| {
                         format!(
                             "{}: {}",
                             name.as_deref().unwrap_or("_"),
-                            crate::eval::format_type(ty)
+                            crate::eval::format_type_with_names(ty, &state.ctx.type_display_names)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1159,7 +1159,7 @@ async fn apply_cont(
                     typed_variadics.iter().map(|(_, t)| Arc::clone(t)).collect(),
                     Some(&state.ctx),
                 );
-                let covered_display = crate::eval::format_type(&covered);
+                let covered_display = crate::eval::format_type_with_names(&covered, &state.ctx.type_display_names);
                 errors.push(Diagnostic::error("type-error",
                     format!(
                         "non-exhaustive variadic type dispatch: typed buckets cover {} but no fallback (...rest) handles other types — add ...rest for a wildcard bucket",
@@ -1519,11 +1519,11 @@ async fn apply_cont(
                     )
                     .with_note(format!(
                         "expected: {}",
-                        crate::eval::format_type(&expected_resolved)
+                        crate::eval::format_type_with_names(&expected_resolved, &state.ctx.type_display_names)
                     ))
                     .with_note(format!(
                         "actual:   {}",
-                        crate::eval::format_type(&default_resolved)
+                        crate::eval::format_type_with_names(&default_resolved, &state.ctx.type_display_names)
                     ));
                     errors.push(e);
                 }
@@ -2597,7 +2597,7 @@ async fn apply_cont_call_func(
                 "type-error",
                 format!(
                     "expected function type, got {}",
-                    crate::eval::format_type(&func_ty)
+                    crate::eval::format_type_with_names(&func_ty, &ctx.state.ctx.type_display_names)
                 ),
                 call_node.span.clone(),
             );
@@ -2684,12 +2684,12 @@ async fn finalize_call_no_positional_args(
                 {
                     e = e.with_note(format!(
                         "expected: {} (parameter '{}')",
-                        crate::eval::format_type(&ctx.state.apply(&param_ty)),
+                        crate::eval::format_type_with_names(&ctx.state.apply(&param_ty), &ctx.state.ctx.type_display_names),
                         na.node.name
                     ));
                     e = e.with_note(format!(
                         "actual:   {}",
-                        crate::eval::format_type(&ctx.state.apply(&arg_ty))
+                        crate::eval::format_type_with_names(&ctx.state.apply(&arg_ty), &ctx.state.ctx.type_display_names)
                     ));
                     ctx.errors.push(e);
                 }
@@ -2794,7 +2794,7 @@ async fn apply_call_args_poly(
                     });
 
                     if !has_matching_instance {
-                        let arg_ty_str = crate::eval::format_type(&arg_ty_applied);
+                        let arg_ty_str = crate::eval::format_type_with_names(&arg_ty_applied, &ctx.state.ctx.type_display_names);
                         if let Some(arg_node) = arg_nodes.first() {
                             ctx.state.diagnostics.push(Diagnostic::info(
                                 "missing-instance",
@@ -2877,12 +2877,12 @@ async fn apply_call_args_poly(
             };
             e = e.with_note(format!(
                 "expected: {}{}",
-                crate::eval::format_type(&ctx.state.apply(param_ty)),
+                crate::eval::format_type_with_names(&ctx.state.apply(param_ty), &ctx.state.ctx.type_display_names),
                 param_label,
             ));
             e = e.with_note(format!(
                 "actual:   {}",
-                crate::eval::format_type(&ctx.state.apply(&widened_arg)),
+                crate::eval::format_type_with_names(&ctx.state.apply(&widened_arg), &ctx.state.ctx.type_display_names),
             ));
             ctx.errors.push(e);
         }
@@ -2941,7 +2941,7 @@ async fn apply_call_args_poly(
                         "type-error",
                         format!(
                             "argument type does not match any variadic bucket, got {}",
-                            crate::eval::format_type(&widened)
+                            crate::eval::format_type_with_names(&widened, &ctx.state.ctx.type_display_names)
                         ),
                         span.clone(),
                     );
@@ -4037,10 +4037,10 @@ fn compute_type_assert_mismatch(
             "type assertion mismatch: actual type is not consistent with expected type",
             span.clone(),
         )
-        .with_note(format!("expected: {}", crate::eval::format_type(expected)))
+        .with_note(format!("expected: {}", crate::eval::format_type_with_names(expected, &state.ctx.type_display_names)))
         .with_note(format!(
             "actual:   {}",
-            crate::eval::format_type(actual)
+            crate::eval::format_type_with_names(actual, &state.ctx.type_display_names)
         ))])
     } else {
         None
