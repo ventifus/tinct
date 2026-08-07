@@ -312,6 +312,7 @@ pub async fn typecheck_program_bootstrap(
         }
     }
 
+    let base_env = env.clone();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
         // Skip type-stage documents — they are evaluated before type-checking runs and their
@@ -327,7 +328,8 @@ pub async fn typecheck_program_bootstrap(
         }) {
             continue;
         }
-        let (new_env, _, mut doc_errors) = process_document(doc, &env, &mut state, &mut None).await;
+        let (new_env, _, mut doc_errors) =
+            process_document(doc, &base_env, &mut state, &mut None).await;
         errors.append(&mut doc_errors);
         env = new_env;
     }

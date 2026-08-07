@@ -306,10 +306,7 @@
   # ── Async ─────────────────────────────────────────────────────────────────
   builtin-channel: [fn@[Channel Any] [] ...]
   builtin-send:    [fn@Any [let ch@[Channel Any] val@Any] ...]
-]
 
----
-[
   # ── Type system representation types ─────────────────────────────────────
 
   # TypeValue: runtime representation of types in the type system.

@@ -1307,25 +1307,25 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     // Note: field TYPE checking is deferred to guard thunks (validate_and_wrap_record in
     // Cont::TypeAssertCheck / Cont::GuardedValidate). This arm only performs the shape check.
     if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD) {
-        if let Value::Dict { ref entries, .. } = value {
-            if let Some(fields) = extract_typevalue_record_fields(expected) {
-                for field_name in fields.keys() {
-                    let has_field = entries
-                        .contains_key(&HashableValue::Str(Arc::from(field_name.as_str())))
-                        || if let Ok(idx) = field_name.parse::<i64>() {
-                            entries.contains_key(&HashableValue::Int(idx))
-                        } else {
-                            false
-                        };
-                    if !has_field {
-                        return false;
-                    }
-                }
-                return true;
-            }
+        let Value::Dict { ref entries, .. } = value else {
             return false;
+        };
+        if let Some(fields) = extract_typevalue_record_fields(expected) {
+            for field_name in fields.keys() {
+                let has_field = entries
+                    .contains_key(&HashableValue::Str(Arc::from(field_name.as_str())))
+                    || if let Ok(idx) = field_name.parse::<i64>() {
+                        entries.contains_key(&HashableValue::Int(idx))
+                    } else {
+                        false
+                    };
+                if !has_field {
+                    return false;
+                }
+            }
+            return true;
         }
-        // Non-Dict value against Record type: fall through to BAS for gradual typing.
+        return false;
         // Opaque types (Program, Scope, etc.) have Unknown ground types which are
         // consistent with any annotation under gradual typing semantics.
     }
