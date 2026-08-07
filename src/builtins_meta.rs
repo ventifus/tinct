@@ -5250,18 +5250,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        use crate::value::*;
-        let ctx = crate::eval::EvalContext::new_empty();
-        crate::test_util::seed_test_type_context(
-            &ctx,
-            &[
-                ("Int", TYPE_ID_INT),
-                ("Float", TYPE_ID_FLOAT),
-                ("String", TYPE_ID_STRING),
-                ("Dict", TYPE_ID_DICT),
-            ],
-        );
-        ctx
+        crate::eval::EvalContext::new_empty()
     }
 
     fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {

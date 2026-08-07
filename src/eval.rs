@@ -1169,7 +1169,10 @@ impl EvalContext {
     /// id is not in the registry. This can happen in unit tests that construct values
     /// without loading the full prelude.
     pub fn type_display_name(&self, id: u64) -> String {
-        let guard = self.type_context.lock().expect("type_context lock poisoned");
+        let guard = self
+            .type_context
+            .lock()
+            .expect("type_context lock poisoned");
         match guard.as_ref() {
             Some(tc) => tc
                 .type_display_names
@@ -1676,7 +1679,10 @@ pub(crate) fn format_type_with_names(
                             }
                         }
                     }
-                    display_names.get(&crate::value::TYPE_ID_DICT).cloned().unwrap_or_else(|| "Record".to_string())
+                    display_names
+                        .get(&crate::value::TYPE_ID_DICT)
+                        .cloned()
+                        .unwrap_or_else(|| "Record".to_string())
                 }
                 TV_FN => {
                     // TypeValue.Fn: format as "Fn@RetType [ParamType ...]".
@@ -2364,18 +2370,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<EvalContext> {
-        use crate::value::*;
-        let ctx = EvalContext::new();
-        crate::test_util::seed_test_type_context(
-            &ctx,
-            &[
-                ("Int", TYPE_ID_INT),
-                ("Float", TYPE_ID_FLOAT),
-                ("String", TYPE_ID_STRING),
-                ("Dict", TYPE_ID_DICT),
-            ],
-        );
-        ctx
+        EvalContext::new()
     }
 
     /// Test helper for tests that need dot-access to work.

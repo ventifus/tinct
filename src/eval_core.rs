@@ -632,7 +632,8 @@ pub(crate) async fn extract_fn_annotation_extra(
             _ => {
                 // Lower SurfaceNode → CoreExpr (inline fields provide all needed type info).
                 let display_names = ctx.type_display_names_snapshot();
-                let core_expr = crate::lower::lower_inner(&e.node.value, &mut Vec::new(), &display_names);
+                let core_expr =
+                    crate::lower::lower_inner(&e.node.value, &mut Vec::new(), &display_names);
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
                 match eval_core_expr(&core_expr, frame, ctx).await {

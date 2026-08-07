@@ -1776,8 +1776,14 @@ async fn constrain_record(
                 format!("missing field '{}': record subtype constraint", k),
                 span,
             )
-            .with_note(format!("actual:   {}", crate::eval::format_type_with_names(sub, &ctx.type_display_names)))
-            .with_note(format!("expected: {}", crate::eval::format_type_with_names(sup, &ctx.type_display_names))));
+            .with_note(format!(
+                "actual:   {}",
+                crate::eval::format_type_with_names(sub, &ctx.type_display_names)
+            ))
+            .with_note(format!(
+                "expected: {}",
+                crate::eval::format_type_with_names(sup, &ctx.type_display_names)
+            )));
         }
     }
 
