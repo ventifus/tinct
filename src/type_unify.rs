@@ -217,8 +217,6 @@ fn extract_indexed_members(tv: &TypeValue, ctor_tag: &str, field: &str) -> Optio
     }
 }
 
-
-
 // ── check_function_arity ──────────────────────────────────────────────────────
 
 /// Validate that two function types have compatible arity and variadic structure.

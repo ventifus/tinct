@@ -17,7 +17,7 @@ use crate::ast::{
 };
 use crate::error::EvalResult;
 use crate::rust_span;
-use crate::value::{string_val, type_id_display_name, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 /// Error type for AST dict validation failures during dict-to-AST conversion.
 #[derive(Debug, Clone)]
@@ -885,7 +885,7 @@ fn get_string_field(
                     Value::Dict { entries: d, .. } => format!("Dict with {} entries", d.len()),
                     _ => format!("{:?}", val),
                 },
-                type_id_display_name(val.type_decl_id_of())
+                ctx.type_display_name(val.type_decl_id_of())
             ),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
@@ -1366,7 +1366,7 @@ pub(crate) fn make_surface_node(expr: SurfaceExpression, span: Span) -> Arc<Surf
 /// generated `from_expr_variant` implementations.
 pub(crate) fn extract_tag_and_dict(
     val: &Value,
-    _ctx: &Arc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(String, IndexMap<HashableValue, Arc<Thunk>>), AstError> {
     match val {
         Value::Variant { ctor, payload, .. } => {
@@ -1387,7 +1387,7 @@ pub(crate) fn extract_tag_and_dict(
                 _ => Err(AstError {
                     message: format!(
                         "Expr variant payload must be Dict, got {}",
-                        type_id_display_name(payload_val.type_decl_id_of())
+                        ctx.type_display_name(payload_val.type_decl_id_of())
                     ),
                     field_path: vec![],
                 }),
@@ -1449,7 +1449,7 @@ pub(crate) fn get_string_field_with_aliases(
             message: format!(
                 "field '{}' must be String, got {}",
                 key,
-                type_id_display_name(val.type_decl_id_of())
+                ctx.type_display_name(val.type_decl_id_of())
             ),
             field_path: vec![key.to_string()],
         }),

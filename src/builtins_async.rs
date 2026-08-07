@@ -38,9 +38,7 @@ use crate::builtins::ok_val;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
-use crate::value::{
-    type_id_display_name, BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value, TYPE_ID_DICT,
-};
+use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
@@ -316,7 +314,7 @@ pub(crate) fn builtin_await(
             }
             _ => Err(EvalError::type_mismatch(
                 "Task",
-                type_id_display_name(task_val.type_decl_id_of()),
+                ctx.type_display_name(task_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -367,7 +365,7 @@ pub(crate) fn builtin_channel(
             .into()),
             _ => Err(EvalError::type_mismatch(
                 "Int",
-                type_id_display_name(capacity_val.type_decl_id_of()),
+                ctx.type_display_name(capacity_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -476,7 +474,7 @@ pub(crate) fn builtin_send(
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotSender",
-                type_id_display_name(chan_val.type_decl_id_of()),
+                ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -632,7 +630,7 @@ pub(crate) fn builtin_recv(
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotReceiver",
-                type_id_display_name(chan_val.type_decl_id_of()),
+                ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -702,7 +700,7 @@ pub(crate) fn builtin_broadcast_channel(
             .into()),
             _ => Err(EvalError::type_mismatch(
                 "Int",
-                type_id_display_name(capacity_val.type_decl_id_of()),
+                ctx.type_display_name(capacity_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -845,7 +843,7 @@ pub(crate) fn builtin_try_send(
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel",
-                type_id_display_name(chan_val.type_decl_id_of()),
+                ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -961,7 +959,7 @@ pub(crate) fn builtin_try_recv(
             }
             _ => Err(EvalError::type_mismatch(
                 "Channel",
-                type_id_display_name(chan_val.type_decl_id_of()),
+                ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1079,7 +1077,7 @@ pub(crate) fn builtin_try_recv_broadcast(
             }
             _ => Err(EvalError::type_mismatch(
                 "BroadcastChannel",
-                type_id_display_name(chan_val.type_decl_id_of()),
+                ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1224,7 +1222,7 @@ pub(crate) fn builtin_try_recv_oneshot(
             }
             _ => Err(EvalError::type_mismatch(
                 "OneshotReceiver",
-                type_id_display_name(chan_val.type_decl_id_of()),
+                ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1329,7 +1327,7 @@ pub(crate) fn builtin_signal_channel(
                 other => {
                     return Err(EvalError::type_mismatch(
                         "Dict of Signal",
-                        type_id_display_name(other.type_decl_id_of()),
+                        ctx.type_display_name(other.type_decl_id_of()),
                         call_span,
                     )
                     .into())
@@ -1344,7 +1342,7 @@ pub(crate) fn builtin_signal_channel(
                     _ => {
                         return Err(EvalError::type_mismatch(
                             "Signal",
-                            type_id_display_name(head_val.type_decl_id_of()),
+                            ctx.type_display_name(head_val.type_decl_id_of()),
                             call_span,
                         )
                         .into())
@@ -1485,7 +1483,7 @@ pub(crate) fn builtin_timer_channel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "ClockCap",
-                    type_id_display_name(clock_val.type_decl_id_of()),
+                    ctx.type_display_name(clock_val.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1507,7 +1505,7 @@ pub(crate) fn builtin_timer_channel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Duration",
-                    type_id_display_name(interval_val.type_decl_id_of()),
+                    ctx.type_display_name(interval_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1632,7 +1630,7 @@ pub(crate) fn builtin_watch_channel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "DirCap",
-                    type_id_display_name(dir_cap_val.type_decl_id_of()),
+                    ctx.type_display_name(dir_cap_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1647,7 +1645,7 @@ pub(crate) fn builtin_watch_channel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(path_val.type_decl_id_of()),
+                    ctx.type_display_name(path_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1877,7 +1875,7 @@ pub(crate) fn builtin_with_cancel(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Context",
-                    type_id_display_name(parent_val.type_decl_id_of()),
+                    ctx.type_display_name(parent_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1961,7 +1959,7 @@ pub(crate) fn builtin_with_timeout(
         if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
-                type_id_display_name(clock_val.type_decl_id_of()),
+                ctx.type_display_name(clock_val.type_decl_id_of()),
                 call_span.clone(),
             )
             .into());
@@ -1975,7 +1973,7 @@ pub(crate) fn builtin_with_timeout(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Context",
-                    type_id_display_name(parent_val.type_decl_id_of()),
+                    ctx.type_display_name(parent_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1995,7 +1993,7 @@ pub(crate) fn builtin_with_timeout(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Duration",
-                    type_id_display_name(ms_val.type_decl_id_of()),
+                    ctx.type_display_name(ms_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2056,7 +2054,7 @@ pub(crate) fn builtin_with_deadline(
         if !matches!(clock_val, Value::ClockCap { .. }) {
             return Err(EvalError::type_mismatch(
                 "ClockCap",
-                type_id_display_name(clock_val.type_decl_id_of()),
+                ctx.type_display_name(clock_val.type_decl_id_of()),
                 call_span.clone(),
             )
             .into());
@@ -2070,7 +2068,7 @@ pub(crate) fn builtin_with_deadline(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Context",
-                    type_id_display_name(parent_val.type_decl_id_of()),
+                    ctx.type_display_name(parent_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2087,7 +2085,7 @@ pub(crate) fn builtin_with_deadline(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Int or Timestamp",
-                    type_id_display_name(ts_val.type_decl_id_of()),
+                    ctx.type_display_name(ts_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2156,7 +2154,7 @@ pub(crate) fn builtin_cancelled_q(
             ),
             _ => Err(EvalError::type_mismatch(
                 "Context",
-                type_id_display_name(ctx_val.type_decl_id_of()),
+                ctx.type_display_name(ctx_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -2205,7 +2203,7 @@ pub(crate) fn builtin_cancel_task(
             }
             _ => Err(EvalError::type_mismatch(
                 "Context",
-                type_id_display_name(ctx_val.type_decl_id_of()),
+                ctx.type_display_name(ctx_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -2390,7 +2388,7 @@ pub(crate) fn builtin_exit_now(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Int",
-                    type_id_display_name(code_val.type_decl_id_of()),
+                    ctx.type_display_name(code_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2483,7 +2481,7 @@ pub(crate) fn builtin_with_context(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "Context",
-                    type_id_display_name(context_val.type_decl_id_of()),
+                    ctx.type_display_name(context_val.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2591,7 +2589,7 @@ pub(crate) fn builtin_cell_get(
             }
             _ => Err(EvalError::type_mismatch(
                 "ReactiveCell",
-                type_id_display_name(cell_val.type_decl_id_of()),
+                ctx.type_display_name(cell_val.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -2652,7 +2650,7 @@ pub(crate) fn builtin_cell_set(
             }
             _ => Err(EvalError::type_mismatch(
                 "ReactiveCell",
-                type_id_display_name(cell_val.type_decl_id_of()),
+                ctx.type_display_name(cell_val.type_decl_id_of()),
                 call_span,
             )
             .into()),

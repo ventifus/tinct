@@ -978,12 +978,12 @@ impl EvalError {
         }
     }
 
-    pub fn type_mismatch(expected: &str, got: &str, span: Span) -> Self {
+    pub fn type_mismatch(expected: impl AsRef<str>, got: impl AsRef<str>, span: Span) -> Self {
         Self {
             kind: ErrorKind::TypeMismatch {
                 context: None,
-                expected: expected.to_string(),
-                got: got.to_string(),
+                expected: expected.as_ref().to_string(),
+                got: got.as_ref().to_string(),
             },
             spans: vec![(span, String::new())],
             stack: SmallVec::new(),
@@ -1195,12 +1195,12 @@ impl EvalError {
         }
     }
 
-    pub fn type_mismatch_ctx(context: String, expected: &str, got: &str, span: Span) -> Self {
+    pub fn type_mismatch_ctx(context: String, expected: impl AsRef<str>, got: impl AsRef<str>, span: Span) -> Self {
         Self {
             kind: ErrorKind::TypeMismatch {
                 context: Some(context),
-                expected: expected.to_string(),
-                got: got.to_string(),
+                expected: expected.as_ref().to_string(),
+                got: got.as_ref().to_string(),
             },
             spans: vec![(span, String::new())],
             stack: SmallVec::new(),

@@ -24,7 +24,7 @@ use crate::error::{EvalError, EvalResult};
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::materialize;
-use crate::value::{type_id_display_name, BuiltinArgs, HashableValue, Thunk, Value};
+use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
 ///
@@ -218,7 +218,7 @@ pub(crate) async fn require_dict(
             let err = EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Dict",
-                type_id_display_name(other.type_decl_id_of()),
+                &ctx.type_display_name(other.type_decl_id_of()),
                 def_span,
             );
             Err(err.into())
@@ -228,7 +228,12 @@ pub(crate) async fn require_dict(
 
 /// Helper: require that a materialized value is a String, returning the inner String.
 /// `def_span` should be the thunk's span (where the value was defined), not call_span.
-pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalResult<String> {
+pub(crate) fn require_string(
+    name: &str,
+    value: Value,
+    def_span: Span,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<String> {
     match value {
         Value::String {
             ref source,
@@ -240,7 +245,7 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
             let err = EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "String",
-                type_id_display_name(other.type_decl_id_of()),
+                &ctx.type_display_name(other.type_decl_id_of()),
                 def_span,
             );
             // Secondary span would be redundant here since def_span is already the argument's span.
@@ -255,13 +260,14 @@ pub(crate) fn require_type_context(
     name: &str,
     value: Value,
     def_span: Span,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>> {
     match value {
         Value::TypeContext { ctx: tc, .. } => Ok(tc),
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "TypeContext",
-            type_id_display_name(other.type_decl_id_of()),
+            &ctx.type_display_name(other.type_decl_id_of()),
             def_span,
         )
         .into()),
@@ -312,7 +318,7 @@ fn float_to_int_builtin(
         other => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Int or Float",
-            type_id_display_name(other.type_decl_id_of()),
+            &ctx.type_display_name(other.type_decl_id_of()),
             arg0_span,
         )
         .into()),
@@ -386,7 +392,7 @@ pub(crate) fn builtin_to_int(
     Box::pin(async move {
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone())?;
         let arg0_span = args[0].span.clone();
-        let s = require_string("to-int", val, arg0_span)?;
+        let s = require_string("to-int", val, arg0_span, &ctx)?;
         match s.parse::<i64>() {
             Ok(n) => ok_val(Value::Int { n }, call_span),
             Err(_) => {
@@ -420,7 +426,7 @@ pub(crate) fn builtin_to_float(
     Box::pin(async move {
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone())?;
         let arg0_span = args[0].span.clone();
-        let s = require_string("to-float", val, arg0_span)?;
+        let s = require_string("to-float", val, arg0_span, &ctx)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float { n: f }, call_span),
             Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
@@ -2372,7 +2378,7 @@ mod tests {
             args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: None,
             caller_evidence: empty_evidence(),
         }))
@@ -2388,7 +2394,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_int: expected TypeValue.Repr Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2401,7 +2407,7 @@ mod tests {
             args: vec![alloc(Value::Float { n: 2.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: None,
             caller_evidence: empty_evidence(),
         }))
@@ -2416,7 +2422,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_float: expected TypeValue.Repr Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2429,7 +2435,7 @@ mod tests {
             args: vec![alloc(string_val("hi"), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: None,
             caller_evidence: empty_evidence(),
         }))
@@ -2444,7 +2450,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_string: expected TypeValue.Repr Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2463,7 +2469,7 @@ mod tests {
             )],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: None,
             caller_evidence: empty_evidence(),
         }))
@@ -2478,7 +2484,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_dict: expected TypeValue.Nominal Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2504,7 +2510,7 @@ mod tests {
             crate::value::Value::Variant { .. } => {}
             other => panic!(
                 "type_of_function: expected TypeValue Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2531,7 +2537,7 @@ mod tests {
             args: vec![alloc(builtin, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: None,
             caller_evidence: empty_evidence(),
         }))
@@ -2547,7 +2553,7 @@ mod tests {
             }
             other => panic!(
                 "type_of_builtin: expected TypeValue.Nominal Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }
@@ -2568,7 +2574,7 @@ mod tests {
             args: vec![variant],
             named: no_named(),
             call_span: call_span(),
-            ctx,
+            ctx: Arc::clone(&ctx),
             caller_env_id: None,
             caller_evidence: empty_evidence(),
         }))
@@ -2584,7 +2590,7 @@ mod tests {
             }
             other => panic!(
                 "test_type_of_variant: expected TypeValue.Nominal Variant, got {:?}",
-                type_id_display_name(other.type_decl_id_of())
+                ctx.type_display_name(other.type_decl_id_of())
             ),
         }
     }

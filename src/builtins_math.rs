@@ -28,7 +28,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{type_id_display_name, BuiltinArgs, Thunk, Value};
+use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
@@ -60,7 +60,7 @@ pub(crate) fn builtin_div_float(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -98,8 +98,8 @@ pub(crate) fn builtin_div_float(
                 "Int or Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(left.type_decl_id_of()),
-                    type_id_display_name(right.type_decl_id_of())
+                    ctx.type_display_name(left.type_decl_id_of()),
+                    ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -119,7 +119,7 @@ pub(crate) fn builtin_eq_int(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -140,8 +140,8 @@ pub(crate) fn builtin_eq_int(
                 "Int",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(left.type_decl_id_of()),
-                    type_id_display_name(right.type_decl_id_of())
+                    ctx.type_display_name(left.type_decl_id_of()),
+                    ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -161,7 +161,7 @@ pub(crate) fn builtin_eq_float(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -182,8 +182,8 @@ pub(crate) fn builtin_eq_float(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(left.type_decl_id_of()),
-                    type_id_display_name(right.type_decl_id_of())
+                    ctx.type_display_name(left.type_decl_id_of()),
+                    ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -203,7 +203,7 @@ pub(crate) fn builtin_eq_string(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -240,8 +240,8 @@ pub(crate) fn builtin_eq_string(
                 "String",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(left.type_decl_id_of()),
-                    type_id_display_name(right.type_decl_id_of())
+                    ctx.type_display_name(left.type_decl_id_of()),
+                    ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -265,7 +265,7 @@ pub(crate) fn builtin_lt(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -288,8 +288,8 @@ pub(crate) fn builtin_lt(
                 "Integer",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(left.type_decl_id_of()),
-                    type_id_display_name(right.type_decl_id_of())
+                    ctx.type_display_name(left.type_decl_id_of()),
+                    ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -306,7 +306,7 @@ pub(crate) fn builtin_float_lt(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -327,8 +327,8 @@ pub(crate) fn builtin_float_lt(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -345,7 +345,7 @@ pub(crate) fn builtin_str_lt(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -379,8 +379,8 @@ pub(crate) fn builtin_str_lt(
                 "String",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -442,7 +442,7 @@ fn extract_single_float(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    _ctx: &Arc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<f64> {
     if args.len() != 1 {
@@ -457,7 +457,7 @@ fn extract_single_float(
         _ => Err(EvalError::type_mismatch_ctx(
             name.to_string(),
             "Int or Float",
-            type_id_display_name(val.type_decl_id_of()),
+            ctx.type_display_name(val.type_decl_id_of()),
             thunk0.span.clone(),
         )
         .into()),
@@ -469,7 +469,7 @@ fn extract_two_floats(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    _ctx: &Arc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(f64, f64)> {
     if args.len() != 2 {
@@ -488,7 +488,7 @@ fn extract_two_floats(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int or Float",
-                type_id_display_name(left.type_decl_id_of()),
+                ctx.type_display_name(left.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into())
@@ -502,7 +502,7 @@ fn extract_two_floats(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int or Float",
-                type_id_display_name(right.type_decl_id_of()),
+                ctx.type_display_name(right.type_decl_id_of()),
                 thunk1.span.clone(),
             )
             .into())
@@ -823,7 +823,7 @@ fn extract_int_pair(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    _ctx: &Arc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(i64, i64)> {
     if args.len() != 2 {
@@ -841,7 +841,7 @@ fn extract_int_pair(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int",
-                type_id_display_name(left.type_decl_id_of()),
+                ctx.type_display_name(left.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into())
@@ -854,7 +854,7 @@ fn extract_int_pair(
             return Err(EvalError::type_mismatch_ctx(
                 name.to_string(),
                 "Int",
-                type_id_display_name(right.type_decl_id_of()),
+                ctx.type_display_name(right.type_decl_id_of()),
                 thunk1.span.clone(),
             )
             .into())
@@ -999,7 +999,7 @@ pub(crate) fn builtin_float(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1015,7 +1015,7 @@ pub(crate) fn builtin_float(
             _ => Err(EvalError::type_mismatch_ctx(
                 "float".to_string(),
                 "Int or Float",
-                type_id_display_name(val.type_decl_id_of()),
+                ctx.type_display_name(val.type_decl_id_of()),
                 thunk0.span.clone(),
             )
             .into()),
@@ -1034,7 +1034,7 @@ pub(crate) fn builtin_int_add(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1055,8 +1055,8 @@ pub(crate) fn builtin_int_add(
                 "Integer",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1072,7 +1072,7 @@ pub(crate) fn builtin_float_add(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1090,8 +1090,8 @@ pub(crate) fn builtin_float_add(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1107,7 +1107,7 @@ pub(crate) fn builtin_int_to_float(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1125,7 +1125,7 @@ pub(crate) fn builtin_int_to_float(
             }
             _ => Err(EvalError::type_mismatch(
                 "Integer",
-                type_id_display_name(v.type_decl_id_of()),
+                ctx.type_display_name(v.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1140,7 +1140,7 @@ pub(crate) fn builtin_float_to_int(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1182,7 +1182,7 @@ pub(crate) fn builtin_float_to_int(
             }
             _ => Err(EvalError::type_mismatch(
                 "Float",
-                type_id_display_name(v.type_decl_id_of()),
+                ctx.type_display_name(v.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -1197,7 +1197,7 @@ pub(crate) fn builtin_int_sub(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1218,8 +1218,8 @@ pub(crate) fn builtin_int_sub(
                 "Integer",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1235,7 +1235,7 @@ pub(crate) fn builtin_float_sub(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1253,8 +1253,8 @@ pub(crate) fn builtin_float_sub(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1270,7 +1270,7 @@ pub(crate) fn builtin_int_mul(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1291,8 +1291,8 @@ pub(crate) fn builtin_int_mul(
                 "Integer",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1308,7 +1308,7 @@ pub(crate) fn builtin_float_mul(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1326,8 +1326,8 @@ pub(crate) fn builtin_float_mul(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1346,7 +1346,7 @@ pub(crate) fn builtin_int_gt(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1367,8 +1367,8 @@ pub(crate) fn builtin_int_gt(
                 "Integer",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1384,7 +1384,7 @@ pub(crate) fn builtin_float_gt(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1405,8 +1405,8 @@ pub(crate) fn builtin_float_gt(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1422,7 +1422,7 @@ pub(crate) fn builtin_str_gt(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1456,8 +1456,8 @@ pub(crate) fn builtin_str_gt(
                 "String",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1473,7 +1473,7 @@ pub(crate) fn builtin_int_gte(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1494,8 +1494,8 @@ pub(crate) fn builtin_int_gte(
                 "Integer",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1511,7 +1511,7 @@ pub(crate) fn builtin_float_gte(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1532,8 +1532,8 @@ pub(crate) fn builtin_float_gte(
                 "Float",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -1549,7 +1549,7 @@ pub(crate) fn builtin_str_gte(
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -1583,8 +1583,8 @@ pub(crate) fn builtin_str_gte(
                 "String",
                 &format!(
                     "{} and {}",
-                    type_id_display_name(a.type_decl_id_of()),
-                    type_id_display_name(b.type_decl_id_of())
+                    ctx.type_display_name(a.type_decl_id_of()),
+                    ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
             )

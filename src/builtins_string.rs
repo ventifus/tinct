@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, type_id_display_name, BuiltinArgs, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
 /// `replace`: Replace all occurrences of a pattern in a string.
 ///
@@ -35,7 +35,7 @@ pub(crate) fn builtin_replace(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("replace", named.as_ref(), call_span.clone())?;
@@ -50,9 +50,9 @@ pub(crate) fn builtin_replace(
         let replacement_val = thunk1.require_value()?.clone();
         let input_val = thunk2.require_value()?.clone();
 
-        let pattern = require_string("replace", pattern_val, thunk0.span.clone())?;
-        let replacement = require_string("replace", replacement_val, thunk1.span.clone())?;
-        let input = require_string("replace", input_val, thunk2.span.clone())?;
+        let pattern = require_string("replace", pattern_val, thunk0.span.clone(), &ctx)?;
+        let replacement = require_string("replace", replacement_val, thunk1.span.clone(), &ctx)?;
+        let input = require_string("replace", input_val, thunk2.span.clone(), &ctx)?;
 
         // Pre-check output size to prevent memory exhaustion.
         // Empty pattern inserts replacement between every character.
@@ -109,7 +109,7 @@ pub(crate) fn builtin_trim(
             ..
         } = ctx_arg;
         let val = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("trim", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         ok_val(string_val(s.trim()), call_span)
     })
 }
@@ -130,7 +130,7 @@ pub(crate) fn builtin_str_length(
             ..
         } = ctx_arg;
         let val = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("str-length", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("str-length", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         let len = s.chars().count();
         let len_i64 = i64::try_from(len).map_err(|_| {
             EvalError::resource_limit_exceeded(
@@ -163,7 +163,12 @@ pub(crate) fn builtin_str_byte_count(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("str-byte-count", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string(
+            "str-byte-count",
+            val,
+            Arc::clone(&args[0]).span.clone(),
+            &ctx,
+        )?;
         ok_val(Value::Int { n: s.len() as i64 }, call_span)
     })
 }
@@ -179,7 +184,7 @@ pub(crate) fn builtin_str_has_nth_byte(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -198,7 +203,7 @@ pub(crate) fn builtin_str_has_nth_byte(
             other => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -209,7 +214,7 @@ pub(crate) fn builtin_str_has_nth_byte(
             other => {
                 return Err(EvalError::type_mismatch(
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -236,7 +241,7 @@ pub(crate) fn builtin_str_nth_byte(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -253,7 +258,7 @@ pub(crate) fn builtin_str_nth_byte(
             other => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -264,7 +269,7 @@ pub(crate) fn builtin_str_nth_byte(
             other => {
                 return Err(EvalError::type_mismatch(
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -295,7 +300,7 @@ pub(crate) fn builtin_str_slice(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("str-slice", named.as_ref(), call_span.clone())?;
@@ -320,7 +325,7 @@ pub(crate) fn builtin_str_slice(
                 return Err(EvalError::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "String",
-                    type_id_display_name(input_val.type_decl_id_of()),
+                    ctx.type_display_name(input_val.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into());
@@ -343,7 +348,7 @@ pub(crate) fn builtin_str_slice(
                 return Err(EvalError::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "Int",
-                    type_id_display_name(start_val.type_decl_id_of()),
+                    ctx.type_display_name(start_val.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into());
@@ -365,7 +370,7 @@ pub(crate) fn builtin_str_slice(
                 return Err(EvalError::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "Int",
-                    type_id_display_name(end_val.type_decl_id_of()),
+                    ctx.type_display_name(end_val.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into());
@@ -428,7 +433,7 @@ pub(crate) fn builtin_str_has_nth(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -446,7 +451,7 @@ pub(crate) fn builtin_str_has_nth(
             other => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -458,7 +463,7 @@ pub(crate) fn builtin_str_has_nth(
             other => {
                 return Err(EvalError::type_mismatch(
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -494,7 +499,7 @@ pub(crate) fn builtin_str_nth_char(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         if args.len() != 2 {
@@ -512,7 +517,7 @@ pub(crate) fn builtin_str_nth_char(
             other => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -524,7 +529,7 @@ pub(crate) fn builtin_str_nth_char(
             other => {
                 return Err(EvalError::type_mismatch(
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -591,7 +596,7 @@ pub(crate) fn builtin_char_code(
                 return Err(EvalError::type_mismatch_ctx(
                     "char-code".to_string(),
                     "String",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into());
@@ -647,7 +652,7 @@ pub(crate) fn builtin_chr(
             _ => Err(EvalError::type_mismatch_ctx(
                 "chr".to_string(),
                 "Int",
-                type_id_display_name(val.type_decl_id_of()),
+                ctx.type_display_name(val.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -692,7 +697,7 @@ pub(crate) fn builtin_str_bytes(
             None => Err(EvalError::type_mismatch_ctx(
                 "str-bytes".to_string(),
                 "String",
-                type_id_display_name(val.type_decl_id_of()),
+                ctx.type_display_name(val.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -718,7 +723,7 @@ pub(crate) fn builtin_str_index_of(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("str-index-of", named.as_ref(), call_span.clone())?;
@@ -731,8 +736,8 @@ pub(crate) fn builtin_str_index_of(
         let needle_val = thunk0.require_value()?.clone();
         let haystack_val = thunk1.require_value()?.clone();
 
-        let needle = require_string("str-index-of", needle_val, thunk0.span.clone())?;
-        let haystack = require_string("str-index-of", haystack_val, thunk1.span.clone())?;
+        let needle = require_string("str-index-of", needle_val, thunk0.span.clone(), &ctx)?;
+        let haystack = require_string("str-index-of", haystack_val, thunk1.span.clone(), &ctx)?;
 
         let index: i64 = match haystack.find(needle.as_str()) {
             Some(byte_idx) => {
@@ -770,7 +775,7 @@ pub(crate) fn builtin_trim_start(
             ..
         } = ctx_arg;
         let val = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim-start", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("trim-start", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         ok_val(string_val(s.trim_start()), call_span)
     })
 }
@@ -791,7 +796,7 @@ pub(crate) fn builtin_trim_end(
             ..
         } = ctx_arg;
         let val = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim-end", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("trim-end", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         ok_val(string_val(s.trim_end()), call_span)
     })
 }
@@ -840,7 +845,7 @@ pub(crate) fn builtin_bytes_str(
             None => Err(EvalError::type_mismatch_ctx(
                 "bytes-str".to_string(),
                 "Bytes",
-                type_id_display_name(val.type_decl_id_of()),
+                ctx.type_display_name(val.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -864,7 +869,7 @@ pub(crate) fn builtin_upper(
             ..
         } = ctx_arg;
         let val = expect_one_arg("upper", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("upper", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("upper", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         ok_val(string_val(&s.to_uppercase()), call_span)
     })
 }
@@ -885,7 +890,7 @@ pub(crate) fn builtin_lower(
             ..
         } = ctx_arg;
         let val = expect_one_arg("lower", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("lower", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("lower", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         ok_val(string_val(&s.to_lowercase()), call_span)
     })
 }
@@ -904,7 +909,7 @@ pub(crate) fn builtin_int_to_string(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("int->string", named.as_ref(), call_span.clone())?;
@@ -918,7 +923,7 @@ pub(crate) fn builtin_int_to_string(
             other => Err(EvalError::type_mismatch_ctx(
                 "int->string".to_string(),
                 "Int",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -940,7 +945,7 @@ pub(crate) fn builtin_float_to_string(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("float->string", named.as_ref(), call_span.clone())?;
@@ -954,7 +959,7 @@ pub(crate) fn builtin_float_to_string(
             other => Err(EvalError::type_mismatch_ctx(
                 "float->string".to_string(),
                 "Float",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -977,7 +982,7 @@ pub(crate) fn builtin_regex_match(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("regex-match?", named.as_ref(), call_span.clone())?;
@@ -990,8 +995,8 @@ pub(crate) fn builtin_regex_match(
         let pattern_val = thunk0.require_value()?.clone();
         let haystack_val = thunk1.require_value()?.clone();
 
-        let pattern = require_string("regex-match?", pattern_val, thunk0.span.clone())?;
-        let haystack = require_string("regex-match?", haystack_val, thunk1.span.clone())?;
+        let pattern = require_string("regex-match?", pattern_val, thunk0.span.clone(), &ctx)?;
+        let haystack = require_string("regex-match?", haystack_val, thunk1.span.clone(), &ctx)?;
 
         match regex::Regex::new(&pattern) {
             Ok(re) => ok_val(
@@ -1024,7 +1029,7 @@ pub(crate) fn builtin_string_concat(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         reject_named("builtin-string-concat", named.as_ref(), call_span.clone())?;
@@ -1037,8 +1042,8 @@ pub(crate) fn builtin_string_concat(
         let s1_val = thunk0.require_value()?.clone();
         let s2_val = thunk1.require_value()?.clone();
 
-        let s1 = require_string("builtin-string-concat", s1_val, thunk0.span.clone())?;
-        let s2 = require_string("builtin-string-concat", s2_val, thunk1.span.clone())?;
+        let s1 = require_string("builtin-string-concat", s1_val, thunk0.span.clone(), &ctx)?;
+        let s2 = require_string("builtin-string-concat", s2_val, thunk1.span.clone(), &ctx)?;
 
         let result = format!("{}{}", s1, s2);
         ok_val(string_val(&result), call_span)

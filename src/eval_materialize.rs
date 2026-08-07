@@ -22,8 +22,7 @@ use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
 use crate::value::{
-    string_val, type_id_display_name, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value,
-    TYPE_ID_DICT,
+    string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT,
 };
 
 tokio::task_local! {
@@ -1751,7 +1750,7 @@ pub(crate) async fn apply_cont(
                                     let ellipsis = if map.len() > 5 { ", ..." } else { "" };
                                     format!("Dict {{{}{}}}", keys.join(", "), ellipsis)
                                 }
-                                _ => type_id_display_name(other.type_decl_id_of()).to_string(),
+                                _ => thunk_ctx.type_display_name(other.type_decl_id_of()),
                             };
                             let message = if let Some(name) = callee_label {
                                 format!(
@@ -1880,17 +1879,14 @@ pub(crate) async fn apply_cont(
                                 format!("field {}: ", format_field_path(&field_path))
                             };
                             let expected_str = format_type(&expected);
+                            let got_str = guard_ctx.type_display_name(value.type_decl_id_of());
                             let mut err = EvalError::type_assert_failed(
                                 &format!("{}{}", field_path_prefix, expected_str),
-                                type_id_display_name(value.type_decl_id_of()),
+                                &got_str,
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
-                            .with_note(format!(
-                                "actual:   {}{}",
-                                field_path_prefix,
-                                type_id_display_name(value.type_decl_id_of())
-                            ))
+                            .with_note(format!("actual:   {}{}", field_path_prefix, got_str))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -1938,17 +1934,14 @@ pub(crate) async fn apply_cont(
                                 format!("field {}: ", format_field_path(&field_path))
                             };
                             let expected_str = format_type(&expected);
+                            let got_str = guard_ctx.type_display_name(value.type_decl_id_of());
                             let mut err = EvalError::type_assert_failed(
                                 &format!("{}{}", field_path_prefix, expected_str),
-                                type_id_display_name(value.type_decl_id_of()),
+                                &got_str,
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
-                            .with_note(format!(
-                                "actual:   {}{}",
-                                field_path_prefix,
-                                type_id_display_name(value.type_decl_id_of())
-                            ))
+                            .with_note(format!("actual:   {}{}", field_path_prefix, got_str))
                             .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -2355,7 +2348,7 @@ pub(crate) async fn apply_cont(
                     if value_matches_type(&value, &resolved, &ctx) {
                         Action::Continue(Ok(value))
                     } else {
-                        let fail_reason = type_id_display_name(value.type_decl_id_of()).to_string();
+                        let fail_reason = ctx.type_display_name(value.type_decl_id_of());
                         // Type mismatch — try default: fallback before raising an error.
                         if let Some(default_node) = get_default() {
                             let (lowered_default, lower_diags) = crate::lower::lower(&default_node);
@@ -2522,7 +2515,9 @@ pub(crate) async fn apply_cont(
                                     EvalError::type_mismatch_ctx(
                                         format!("sequential expression #{}", idx + 1),
                                         "Dict or Variant",
-                                        type_id_display_name(intermediate_value.type_decl_id_of()),
+                                        &ctx.type_display_name(
+                                            intermediate_value.type_decl_id_of(),
+                                        ),
                                         current_expr.span.clone(),
                                     ),
                                 )));
@@ -3001,7 +2996,7 @@ pub(crate) async fn apply_cont(
 
                     // No arm matched: non-exhaustive match
                     Action::Continue(Err(Box::new(EvalError::match_exhaustion(
-                        type_id_display_name(scrutinee_value.type_decl_id_of()),
+                        &ctx.type_display_name(scrutinee_value.type_decl_id_of()),
                         match_span.clone(),
                     ))))
                 }
@@ -3647,7 +3642,7 @@ fn eval_structural_pattern_inner<'a>(
                         other => Err(EvalError::type_mismatch_ctx(
                             "pattern call".to_string(),
                             "Variant (constructor) or Function (predicate)",
-                            type_id_display_name(other.type_decl_id_of()),
+                            &ctx.type_display_name(other.type_decl_id_of()),
                             match_span.clone(),
                         )
                         .into()),

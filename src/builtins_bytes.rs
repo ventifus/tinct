@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::builtins::{expect_one_arg, ok_val};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{bytes_val, type_id_display_name, BuiltinArgs, Thunk, Value};
+use crate::value::{bytes_val, BuiltinArgs, Thunk, Value};
 use subtle::ConstantTimeEq;
 
 /// `bytes`: Concatenate multiple Bytes values (variadic).
@@ -60,7 +60,7 @@ pub(crate) fn builtin_bytes(
                     return Err(EvalError::type_mismatch_ctx(
                         "bytes".to_string(),
                         "Bytes",
-                        type_id_display_name(val.type_decl_id_of()),
+                        ctx.type_display_name(val.type_decl_id_of()),
                         arg_thunk.span.clone(),
                     )
                     .into());
@@ -90,7 +90,7 @@ pub(crate) fn builtin_bytes_find(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -126,7 +126,7 @@ pub(crate) fn builtin_bytes_find(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-find".to_string(),
                     "Bytes",
-                    type_id_display_name(haystack_val.type_decl_id_of()),
+                    ctx.type_display_name(haystack_val.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into());
@@ -139,7 +139,7 @@ pub(crate) fn builtin_bytes_find(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-find".to_string(),
                     "Bytes",
-                    type_id_display_name(needle_val.type_decl_id_of()),
+                    ctx.type_display_name(needle_val.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into());
@@ -212,7 +212,7 @@ pub(crate) fn builtin_bytes_of(
                             return Err(EvalError::type_mismatch_ctx(
                                 "bytes-of".to_string(),
                                 "Int",
-                                type_id_display_name(item_val.type_decl_id_of()),
+                                ctx.type_display_name(item_val.type_decl_id_of()),
                                 call_span,
                             )
                             .into());
@@ -224,7 +224,7 @@ pub(crate) fn builtin_bytes_of(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-of".to_string(),
                     "Seq or Dict",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -253,7 +253,7 @@ pub(crate) fn builtin_bytes_concat(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -289,7 +289,7 @@ pub(crate) fn builtin_bytes_concat(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-concat".to_string(),
                     "Bytes",
-                    type_id_display_name(val1.type_decl_id_of()),
+                    ctx.type_display_name(val1.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into());
@@ -302,7 +302,7 @@ pub(crate) fn builtin_bytes_concat(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-concat".to_string(),
                     "Bytes",
-                    type_id_display_name(val2.type_decl_id_of()),
+                    ctx.type_display_name(val2.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into());
@@ -335,7 +335,7 @@ pub(crate) fn builtin_bytes_equal(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -371,7 +371,7 @@ pub(crate) fn builtin_bytes_equal(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-equal?".to_string(),
                     "Bytes",
-                    type_id_display_name(val1.type_decl_id_of()),
+                    ctx.type_display_name(val1.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into());
@@ -384,7 +384,7 @@ pub(crate) fn builtin_bytes_equal(
                 return Err(EvalError::type_mismatch_ctx(
                     "bytes-equal?".to_string(),
                     "Bytes",
-                    type_id_display_name(val2.type_decl_id_of()),
+                    ctx.type_display_name(val2.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into());
@@ -421,7 +421,7 @@ pub(crate) fn builtin_ct_equal(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -454,7 +454,7 @@ pub(crate) fn builtin_ct_equal(
                 return Err(EvalError::type_mismatch_ctx(
                     "ct-equal?".to_string(),
                     "Bytes",
-                    type_id_display_name(val1.type_decl_id_of()),
+                    ctx.type_display_name(val1.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into());
@@ -467,7 +467,7 @@ pub(crate) fn builtin_ct_equal(
                 return Err(EvalError::type_mismatch_ctx(
                     "ct-equal?".to_string(),
                     "Bytes",
-                    type_id_display_name(val2.type_decl_id_of()),
+                    ctx.type_display_name(val2.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into());
@@ -510,7 +510,7 @@ pub(crate) fn builtin_encode(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -548,7 +548,7 @@ pub(crate) fn builtin_encode(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-encode".to_string(),
                     "Int (format discriminant)",
-                    type_id_display_name(fmt_val.type_decl_id_of()),
+                    ctx.type_display_name(fmt_val.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into());
@@ -572,7 +572,7 @@ pub(crate) fn builtin_encode(
                 EvalError::type_mismatch_ctx(
                     "builtin-encode".to_string(),
                     "Int",
-                    type_id_display_name(num_val.type_decl_id_of()),
+                    ctx.type_display_name(num_val.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
             })
@@ -582,7 +582,7 @@ pub(crate) fn builtin_encode(
                 EvalError::type_mismatch_ctx(
                     "builtin-encode".to_string(),
                     "Float or Int",
-                    type_id_display_name(num_val.type_decl_id_of()),
+                    ctx.type_display_name(num_val.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
             })
@@ -647,7 +647,7 @@ pub(crate) fn builtin_bytes_get(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -683,7 +683,7 @@ pub(crate) fn builtin_bytes_get(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-get".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -696,7 +696,7 @@ pub(crate) fn builtin_bytes_get(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-get".to_string(),
                     "Bytes",
-                    type_id_display_name(b_val.type_decl_id_of()),
+                    ctx.type_display_name(b_val.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -736,7 +736,7 @@ pub(crate) fn builtin_bytes_to_int(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -770,7 +770,7 @@ pub(crate) fn builtin_bytes_to_int(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-to-int".to_string(),
                     "Bytes",
-                    type_id_display_name(b_val.type_decl_id_of()),
+                    ctx.type_display_name(b_val.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -812,7 +812,7 @@ pub(crate) fn builtin_bytes_slice(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -852,7 +852,7 @@ pub(crate) fn builtin_bytes_slice(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
                     "Bytes",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -865,7 +865,7 @@ pub(crate) fn builtin_bytes_slice(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -878,7 +878,7 @@ pub(crate) fn builtin_bytes_slice(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into())

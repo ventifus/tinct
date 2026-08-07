@@ -47,9 +47,7 @@ use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_materialize::make_span_dict;
 use crate::rust_span;
-use crate::value::{
-    string_val, type_id_display_name, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT,
-};
+use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
@@ -279,7 +277,7 @@ pub(crate) fn builtin_raise(
                 )
             })?;
         let message_val = materialize(message_thunk, Some(&call_span), &ctx).await?;
-        let message = require_string("raise", message_val, message_thunk.span.clone())?;
+        let message = require_string("raise", message_val, message_thunk.span.clone(), &ctx)?;
 
         let mut err = EvalError::user_error(message, call_span.clone());
 
@@ -297,7 +295,7 @@ pub(crate) fn builtin_raise(
             // Iterate in insertion order (integer keys 0, 1, 2, ...)
             for (_, note_thunk) in &notes_map {
                 let note_val = materialize(note_thunk, Some(&call_span), &ctx).await?;
-                let note = require_string("raise", note_val, note_thunk.span.clone())?;
+                let note = require_string("raise", note_val, note_thunk.span.clone(), &ctx)?;
                 err = err.with_note(note);
             }
         }
@@ -319,7 +317,7 @@ pub(crate) fn builtin_macro_error(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -339,7 +337,12 @@ pub(crate) fn builtin_macro_error(
         // Extract message (first argument) - materialized by Strictness::Seq
         let arg0_thunk = Arc::clone(&args[0]);
         let msg_val = arg0_thunk.require_value()?.clone();
-        let message = require_string("builtin-macro-error", msg_val, arg0_thunk.span.clone())?;
+        let message = require_string(
+            "builtin-macro-error",
+            msg_val,
+            arg0_thunk.span.clone(),
+            &ctx,
+        )?;
 
         // Determine the span to use for the error
         let error_span = if args.len() == 2 {
@@ -547,7 +550,7 @@ pub(crate) fn builtin_gensym(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -572,7 +575,7 @@ pub(crate) fn builtin_gensym(
                 v => Err(EvalError::type_mismatch_ctx(
                     format!("builtin-gensym {name}"),
                     "String",
-                    type_id_display_name(v.type_decl_id_of()),
+                    ctx.type_display_name(v.type_decl_id_of()),
                     span.clone(),
                 )
                 .into()),
@@ -626,6 +629,7 @@ pub(crate) fn builtin_macro_injects(
             "macro-injects",
             macro_name_val,
             Arc::clone(&args[0]).span.clone(),
+            &ctx,
         )?;
 
         // Look up the macro in the inject map
@@ -1102,7 +1106,7 @@ pub(crate) fn builtin_ast_of(
         // should have passed the unevaluated form instead.
         Err(EvalError::type_mismatch(
             "Expr.*",
-            type_id_display_name(val.type_decl_id_of()),
+            ctx.type_display_name(val.type_decl_id_of()),
             call_span,
         )
         .into())
@@ -1213,7 +1217,7 @@ pub(crate) fn builtin_tag_of(
             Value::Variant { ctor, .. } => ok_val(string_val(ctor.as_ref()), call_span),
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
-                type_id_display_name(peeled.type_decl_id_of()),
+                ctx.type_display_name(peeled.type_decl_id_of()),
                 call_span,
             ))),
         }
@@ -1433,7 +1437,7 @@ pub(crate) fn builtin_var_resolution(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1446,7 +1450,7 @@ pub(crate) fn builtin_var_resolution(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1459,7 +1463,7 @@ pub(crate) fn builtin_var_resolution(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-var-resolution".to_string(),
                     "Program",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1714,7 +1718,7 @@ pub(crate) fn builtin_make_annotated(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("make-annotated", named.as_ref(), call_span.clone())?;
@@ -1730,7 +1734,7 @@ pub(crate) fn builtin_make_annotated(
         if !matches!(ann_val, Value::Dict { .. }) {
             return Err(Box::new(EvalError::type_mismatch(
                 "Dict",
-                type_id_display_name(ann_val.type_decl_id_of()),
+                ctx.type_display_name(ann_val.type_decl_id_of()),
                 call_span,
             )));
         }
@@ -1824,7 +1828,7 @@ pub(crate) fn builtin_blake3(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("blake3", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("blake3", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         let hex = blake3_hex(s.as_bytes());
         ok_val(string_val(hex.as_str()), call_span)
     })
@@ -1872,7 +1876,7 @@ pub(crate) fn builtin_cap_identity(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "DirCap",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into());
@@ -1932,6 +1936,7 @@ pub(crate) fn builtin_parse(
             args,
             named,
             call_span,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-parse", named.as_ref(), call_span.clone())?;
@@ -1951,7 +1956,7 @@ pub(crate) fn builtin_parse(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-parse".to_string(),
                     "Bytes",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -1960,7 +1965,7 @@ pub(crate) fn builtin_parse(
 
         // Second arg: String (the path hint for error messages)
         let path_val = arg1_thunk.require_value()?.clone();
-        let path_str = require_string("builtin-parse", path_val, arg1_thunk.span.clone())?;
+        let path_str = require_string("builtin-parse", path_val, arg1_thunk.span.clone(), &ctx)?;
 
         // Decode bytes as UTF-8 source text
         let source = std::str::from_utf8(&source_bytes)
@@ -2098,7 +2103,7 @@ pub(crate) fn builtin_resolve(
             return Err(EvalError::internal(
                 format!(
                     "expected Document, got {}",
-                    type_id_display_name(doc_val.type_decl_id_of())
+                    ctx.type_display_name(doc_val.type_decl_id_of())
                 ),
                 call_span,
             )
@@ -2114,7 +2119,7 @@ pub(crate) fn builtin_resolve(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-resolve env".to_string(),
                     "Scope",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -2272,6 +2277,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                     "builtin-lint-pipeline-docs (pipeline-input:)",
                     val,
                     call_span.clone(),
+                    &ctx,
                 )?
             }
             None => {
@@ -2291,7 +2297,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 return Err(EvalError::internal(
                     format!(
                         "builtin-lint-pipeline-docs: expected Dict, got {}",
-                        type_id_display_name(other.type_decl_id_of())
+                        ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
                 )
@@ -2326,7 +2332,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 return Err(EvalError::internal(
                     format!(
                         "builtin-lint-pipeline-docs: entry is not a Document: {}",
-                        type_id_display_name(val.type_decl_id_of())
+                        ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
                 )
@@ -2417,7 +2423,7 @@ pub(crate) fn builtin_typecheck_doc(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-typecheck-doc".to_string(),
                     "Document",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     args[0].span.clone(),
                 )
                 .into());
@@ -2426,7 +2432,8 @@ pub(crate) fn builtin_typecheck_doc(
 
         // arg1: Value::TypeContext
         let tc_val = args[1].require_value()?.clone();
-        let tc_arc = require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone())?;
+        let tc_arc =
+            require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone(), &ctx)?;
 
         // arg2: Value::Dict — the doc-env (validated for type but value not retained here;
         // the doc_arc already holds the parsed document form).
@@ -2436,7 +2443,7 @@ pub(crate) fn builtin_typecheck_doc(
                 return Err(EvalError::internal(
                     format!(
                         "builtin-typecheck-doc arg2 (doc-env) is not a Dict: {}",
-                        type_id_display_name(env_val.type_decl_id_of())
+                        ctx.type_display_name(env_val.type_decl_id_of())
                     ),
                     call_span,
                 )
@@ -2677,10 +2684,14 @@ pub(crate) fn builtin_typecheck_doc(
                         .or_insert_with(|| entry.clone());
                 }
             }
-            // Write back type_name_to_id: merge new name→id mappings from typecheck
-            // into TypeContextData so subsequent typecheck calls see them.
+            // Write back type_name_to_id and type_display_names: merge new mappings
+            // into TypeContextData so subsequent typecheck calls and error messages see them.
             for (name, id) in &state.type_name_to_id {
                 guard.type_name_to_id.entry(name.clone()).or_insert(*id);
+                guard
+                    .type_display_names
+                    .entry(*id)
+                    .or_insert_with(|| name.clone());
             }
         }
 
@@ -2861,6 +2872,7 @@ pub(crate) fn builtin_make_type_ctx(
             type_stage_type_vars: type_stage_data.type_vars,
             type_diagnostics: Vec::new(),
             type_name_to_id: std::collections::HashMap::new(),
+            type_display_names: std::collections::HashMap::new(),
         };
         // Install it on EvalContext (no-op if already initialized).
         ctx.init_type_context(tc.clone());
@@ -2889,7 +2901,7 @@ pub(crate) fn builtin_fork_type_ctx(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-fork-type-ctx", named.as_ref(), call_span.clone())?;
@@ -2915,7 +2927,7 @@ pub(crate) fn builtin_fork_type_ctx(
             other => Err(EvalError::type_mismatch_ctx(
                 "builtin-fork-type-ctx".to_string(),
                 "TypeContext",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -2972,7 +2984,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-update-type-stage-env".to_string(),
                     "TypeContext",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -2986,7 +2998,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-tc-update-type-stage-env".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -3124,7 +3136,7 @@ pub(crate) fn builtin_program(
                             return Err(EvalError::type_mismatch_ctx(
                                 "builtin-program".to_string(),
                                 "Document",
-                                type_id_display_name(doc_val.type_decl_id_of()),
+                                ctx.type_display_name(doc_val.type_decl_id_of()),
                                 call_span,
                             )
                             .into());
@@ -3136,7 +3148,7 @@ pub(crate) fn builtin_program(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-program".to_string(),
                     "Dict of Document values",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3169,7 +3181,7 @@ pub(crate) fn builtin_desugar(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-desugar", named.as_ref(), call_span.clone())?;
@@ -3188,7 +3200,7 @@ pub(crate) fn builtin_desugar(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-desugar".to_string(),
                     "Program",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3219,7 +3231,7 @@ pub(crate) fn builtin_expand(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-expand", named.as_ref(), call_span.clone())?;
@@ -3238,7 +3250,7 @@ pub(crate) fn builtin_expand(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-expand".to_string(),
                     "Program",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3269,7 +3281,7 @@ pub(crate) fn builtin_program_docs(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-program-docs", named.as_ref(), call_span.clone())?;
@@ -3284,7 +3296,7 @@ pub(crate) fn builtin_program_docs(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-program-docs".to_string(),
                     "Program",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3357,7 +3369,7 @@ pub(crate) fn builtin_doc_expressions(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-expressions".to_string(),
                     "Document",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3418,7 +3430,7 @@ pub(crate) fn builtin_doc_meta(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-doc-meta".to_string(),
                     "Document",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3475,7 +3487,7 @@ pub(crate) fn builtin_builtin_module(
             call_span.clone(),
         )?;
 
-        let name = require_string("builtin-module", name_val, call_span.clone())?;
+        let name = require_string("builtin-module", name_val, call_span.clone(), &ctx)?;
 
         match crate::builtins::builtin_module(&name) {
             Some(defs) => {
@@ -3515,6 +3527,7 @@ pub(crate) fn builtin_empty_scope(
             args,
             named,
             call_span,
+            ctx: _,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-empty-scope", named.as_ref(), call_span.clone())?;
@@ -3550,6 +3563,7 @@ pub(crate) fn builtin_scope_extend(
             args,
             named,
             call_span,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-scope-extend", named.as_ref(), call_span.clone())?;
@@ -3565,7 +3579,7 @@ pub(crate) fn builtin_scope_extend(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-scope-extend".to_string(),
                     "Scope",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3580,7 +3594,7 @@ pub(crate) fn builtin_scope_extend(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-scope-extend additions".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3632,6 +3646,7 @@ pub(crate) fn builtin_scope_exports(
             args,
             named,
             call_span,
+            ctx,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-scope-exports", named.as_ref(), call_span.clone())?;
@@ -3647,7 +3662,7 @@ pub(crate) fn builtin_scope_exports(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-scope-exports".to_string(),
                     "Scope",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3727,7 +3742,7 @@ pub(crate) fn builtin_eval(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval".to_string(),
                     "CoreDocument",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3742,7 +3757,7 @@ pub(crate) fn builtin_eval(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-eval env".to_string(),
                     "Scope",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -3827,7 +3842,7 @@ pub(crate) fn builtin_variant_payload(
             other => Err(EvalError::type_mismatch_ctx(
                 "variant-payload".to_string(),
                 "Variant",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span,
             )
             .into()),
@@ -3848,6 +3863,7 @@ pub(crate) fn builtin_current_env(
             args,
             named,
             call_span,
+            ctx: _,
             caller_env_id,
             ..
         } = ctx_arg;
@@ -3920,7 +3936,7 @@ pub(crate) fn builtin_eval_macro_ast(
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-macro-ast".to_string(),
                     "Expr.*",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4018,7 +4034,7 @@ pub(crate) fn builtin_eval_types(
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-types".to_string(),
                     "Document or Dict of Expression",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4046,7 +4062,7 @@ pub(crate) fn builtin_eval_types(
                     return Err(EvalError::type_mismatch_ctx(
                         "eval-types".to_string(),
                         "Expr.*",
-                        type_id_display_name(other.type_decl_id_of()),
+                        ctx.type_display_name(other.type_decl_id_of()),
                         call_span,
                     )
                     .into())
@@ -4646,7 +4662,7 @@ pub(crate) fn builtin_sequential(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-sequential".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4673,7 +4689,7 @@ pub(crate) fn builtin_sequential(
                     return Err(EvalError::type_mismatch_ctx(
                         "builtin-sequential".to_string(),
                         "Expr.*",
-                        type_id_display_name(other.type_decl_id_of()),
+                        ctx.type_display_name(other.type_decl_id_of()),
                         call_span,
                     )
                     .into())
@@ -4765,7 +4781,7 @@ pub(crate) fn builtin_ast_to_program(
                 return Err(EvalError::type_mismatch_ctx(
                     "ast-to-program".to_string(),
                     "span dict (for call-site-span: argument)",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4796,7 +4812,7 @@ pub(crate) fn builtin_ast_to_program(
                 return Err(EvalError::type_mismatch_ctx(
                     "ast-to-program".to_string(),
                     "Expr.*",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4854,7 +4870,7 @@ pub(crate) fn builtin_check_type(
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
         let type_name_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
-        let type_name = require_string("check-type", type_name_val, arg0_thunk.span.clone())?;
+        let type_name = require_string("check-type", type_name_val, arg0_thunk.span.clone(), &ctx)?;
 
         let value = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
 
@@ -4875,7 +4891,7 @@ pub(crate) fn builtin_check_type(
             Err(EvalError::type_mismatch_ctx(
                 "expects validation".to_string(),
                 &type_name,
-                type_id_display_name(value.type_decl_id_of()),
+                ctx.type_display_name(value.type_decl_id_of()),
                 call_span,
             )
             .into())
@@ -4913,7 +4929,7 @@ pub(crate) fn builtin_cap_env_has(
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
         let name_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
-        let name = require_string("cap-env-has?", name_val, arg0_thunk.span.clone())?;
+        let name = require_string("cap-env-has?", name_val, arg0_thunk.span.clone(), &ctx)?;
 
         let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
         // Check whether name is a key in the env-dict (env-dict protocol, T-1775).
@@ -4925,7 +4941,7 @@ pub(crate) fn builtin_cap_env_has(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-cap-env-has?".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into())
@@ -4982,7 +4998,7 @@ pub(crate) fn builtin_lower(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-lower".to_string(),
                     "Document",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
                 .into());

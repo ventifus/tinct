@@ -12,14 +12,12 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{
-    string_val, type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT,
-};
+use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
 
-fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
+fn value_to_key(value: &Value, span: &Span, ctx: &Arc<EvalContext>) -> EvalResult<HashableValue> {
     match value {
         Value::String {
             ref source,
@@ -45,7 +43,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
                             .into())
                         }
                     };
-                    Some(Box::new(value_to_key(p_val, span)?))
+                    Some(Box::new(value_to_key(p_val, span, ctx)?))
                 }
             };
             Ok(HashableValue::Variant {
@@ -55,7 +53,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
         }
         _ => Err(EvalError::type_mismatch(
             "String, Int, Float, or Variant",
-            type_id_display_name(value.type_decl_id_of()),
+            &ctx.type_display_name(value.type_decl_id_of()),
             span.clone(),
         )
         .into()),
@@ -631,7 +629,7 @@ pub(crate) async fn eval_key_core(
     // Key expressions evaluate in the parent frame.
     let thunk = eval_core_expr(key_expr.as_ref(), frame, ctx).await?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
-    value_to_key(&value, &key_expr.span)
+    value_to_key(&value, &key_expr.span, ctx)
 }
 
 #[cfg(test)]

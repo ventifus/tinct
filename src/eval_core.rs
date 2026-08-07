@@ -19,9 +19,7 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceMatchArm, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
-use crate::value::{
-    string_val, type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT,
-};
+use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
 // (TypeAnnotation OnceLock). The lowerer wraps them in CoreExpr::TypeAssert during lowering.
@@ -144,7 +142,7 @@ async fn collect_seq_elements(
         _ => {
             return Err(EvalError::type_mismatch(
                 "Seq or integer-keyed Dict",
-                type_id_display_name(current.type_decl_id_of()),
+                &ctx.type_display_name(current.type_decl_id_of()),
                 span,
             )
             .into());
@@ -284,7 +282,7 @@ fn eval_quote_preprocess<'a>(
                             _ => {
                                 return Err(EvalError::type_mismatch(
                                     "Dict",
-                                    type_id_display_name(value.type_decl_id_of()),
+                                    &ctx.type_display_name(value.type_decl_id_of()),
                                     inner_span,
                                 )
                                 .into())

@@ -7,7 +7,7 @@ use crate::ast::{
 };
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::type_tags::*;
-use crate::value::{type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 use indexmap::IndexMap;
 
 // Import eval function and context from eval module
@@ -511,8 +511,8 @@ pub(crate) async fn invoke_function_tco(
         .positional
         .iter()
         .map(|arg| match arg.peek_result() {
-            Some(Ok(val)) => type_id_display_name(val.type_decl_id_of()).to_string(),
-            _ => type_id_display_name(arg.type_decl_id).to_string(),
+            Some(Ok(val)) => ctx.ctx.type_display_name(val.type_decl_id_of()),
+            _ => ctx.ctx.type_display_name(arg.type_decl_id),
         })
         .collect();
     err.notes
@@ -524,9 +524,9 @@ pub(crate) async fn invoke_function_tco(
                 .iter()
                 .map(|(k, thunk)| match thunk.peek_result() {
                     Some(Ok(val)) => {
-                        format!("{k}: {}", type_id_display_name(val.type_decl_id_of()))
+                        format!("{k}: {}", ctx.ctx.type_display_name(val.type_decl_id_of()))
                     }
-                    _ => format!("{k}: {}", type_id_display_name(thunk.type_decl_id)),
+                    _ => format!("{k}: {}", ctx.ctx.type_display_name(thunk.type_decl_id)),
                 })
                 .collect();
             err.notes

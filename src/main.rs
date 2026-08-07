@@ -1930,6 +1930,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             type_stage_fns: core_ts_data.fns,
             type_stage_type_vars: core_ts_data.type_vars,
             type_diagnostics: Vec::new(),
+            type_display_names: core_type_name_to_id
+                .iter()
+                .map(|(name, &id)| (id, name.clone()))
+                .collect(),
             type_name_to_id: core_type_name_to_id,
         });
         ctx

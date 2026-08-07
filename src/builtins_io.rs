@@ -47,10 +47,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{
-    string_val, type_id_display_name, BuiltinArgs, DirPerms, HashableValue, Thunk, Value,
-    TYPE_ID_DICT,
-};
+use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 /// Maximum bytes per single `builtin-file-read` call. Prevents unbounded heap allocation.
 const MAX_FILE_READ_BYTES: usize = 256 * 1024 * 1024; // 256 MB
@@ -58,6 +55,7 @@ const MAX_FILE_READ_BYTES: usize = 256 * 1024 * 1024; // 256 MB
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).
 /// Used by all DirCap-consuming builtins.
 pub(crate) fn extract_dir_cap<'a>(
+    ctx: &Arc<crate::eval::EvalContext>,
     val: &'a Value,
     builtin_name: &str,
     span: Span,
@@ -82,7 +80,7 @@ pub(crate) fn extract_dir_cap<'a>(
         other => Err(EvalError::type_mismatch_ctx(
             builtin_name.to_string(),
             "DirCap",
-            type_id_display_name(other.type_decl_id_of()),
+            ctx.type_display_name(other.type_decl_id_of()),
             span,
         )
         .into()),
@@ -127,7 +125,7 @@ pub(crate) fn builtin_emit(
             &ctx,
             call_span.clone(),
         )?;
-        let s = require_string("emit", val, Arc::clone(&args[0]).span.clone())?;
+        let s = require_string("emit", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
 
         // Write to stdout
         use std::io::Write;
@@ -166,7 +164,7 @@ pub(crate) fn builtin_env(
     Box::pin(async move {
         let val =
             crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let name = require_string("env", val, Arc::clone(&args[0]).span.clone())?;
+        let name = require_string("env", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
 
         // Check env_allowed
         // None = unrestricted (all allowed), Some(set) = only those in the set
@@ -221,7 +219,7 @@ pub(crate) fn builtin_env_has(
             &ctx,
             call_span.clone(),
         )?;
-        let name = require_string("env-has?", val, Arc::clone(&args[0]).span.clone())?;
+        let name = require_string("env-has?", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
 
         // Check env_allowed
         let allowed = match &ctx.env_allowed {
@@ -275,7 +273,7 @@ pub(crate) fn builtin_narrow(
         let dir_val = thunk0.require_value()?.clone();
 
         // Extract DirCap and current permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "narrow", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "narrow", thunk0.span.clone())?;
 
         // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
         let second_arg_val = thunk1.require_value()?.clone();
@@ -290,7 +288,7 @@ pub(crate) fn builtin_narrow(
                 .into());
             }
 
-            let subpath = require_string("narrow", second_arg_val, thunk1.span.clone())?;
+            let subpath = require_string("narrow", second_arg_val, thunk1.span.clone(), &ctx)?;
 
             // Open subdirectory (RESOLVE_BENEATH applies to subpath)
             let narrowed = dir.open_dir(&subpath).map_err(|e| {
@@ -363,7 +361,7 @@ pub(crate) fn builtin_narrow(
                         return Err(EvalError::type_mismatch_ctx(
                             "narrow".to_string(),
                             "Variant (capability flag) or String (subpath)",
-                            type_id_display_name(other.type_decl_id_of()),
+                            ctx.type_display_name(other.type_decl_id_of()),
                             flag_thunk.span.clone(),
                         )
                         .into());
@@ -469,7 +467,7 @@ pub(crate) fn builtin_narrow(
             Err(EvalError::type_mismatch_ctx(
                 "narrow".to_string(),
                 "String (subpath) or Variant (capability flag)",
-                type_id_display_name(second_arg_val.type_decl_id_of()),
+                ctx.type_display_name(second_arg_val.type_decl_id_of()),
                 thunk1.span.clone(),
             )
             .into())
@@ -518,7 +516,7 @@ pub(crate) fn builtin_revocable(
                 return Err(EvalError::type_mismatch_ctx(
                     "revocable".to_string(),
                     "DirCap",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into())
@@ -577,7 +575,7 @@ pub(crate) fn builtin_revoke_cap(
             other => Err(EvalError::type_mismatch_ctx(
                 "revoke-cap".to_string(),
                 "RevocableDirCap",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -601,7 +599,7 @@ pub(crate) fn builtin_write(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -619,7 +617,7 @@ pub(crate) fn builtin_write(
         let content_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "write", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "write", thunk0.span.clone())?;
         check_perm(
             perms,
             "Writable",
@@ -628,8 +626,8 @@ pub(crate) fn builtin_write(
             call_span.clone(),
         )?;
 
-        let path = require_string("write", path_val, thunk1.span.clone())?;
-        let content = require_string("write", content_val, thunk2.span.clone())?;
+        let path = require_string("write", path_val, thunk1.span.clone(), &ctx)?;
+        let content = require_string("write", content_val, thunk2.span.clone(), &ctx)?;
 
         // Open file for writing (create or truncate)
         use std::io::Write;
@@ -671,7 +669,7 @@ pub(crate) fn builtin_write_atomic(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -689,7 +687,7 @@ pub(crate) fn builtin_write_atomic(
         let content_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "write-atomic", thunk0.span.clone())?;
         check_perm(
             perms,
             "Writable",
@@ -698,8 +696,8 @@ pub(crate) fn builtin_write_atomic(
             call_span.clone(),
         )?;
 
-        let path = require_string("write-atomic", path_val, thunk1.span.clone())?;
-        let content = require_string("write-atomic", content_val, thunk2.span.clone())?;
+        let path = require_string("write-atomic", path_val, thunk1.span.clone(), &ctx)?;
+        let content = require_string("write-atomic", content_val, thunk2.span.clone(), &ctx)?;
 
         // Generate a unique temp filename in the same directory as the target
         // Use process ID and a random suffix to avoid collisions
@@ -793,7 +791,7 @@ pub(crate) fn builtin_list_dir(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -809,7 +807,7 @@ pub(crate) fn builtin_list_dir(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "list-dir", thunk0.span.clone())?;
         check_perm(
             perms,
             "Listable",
@@ -818,7 +816,7 @@ pub(crate) fn builtin_list_dir(
             call_span.clone(),
         )?;
 
-        let path = require_string("list-dir", path_val, thunk1.span.clone())?;
+        let path = require_string("list-dir", path_val, thunk1.span.clone(), &ctx)?;
 
         // Read directory entries
         let entries = dir.read_dir(&path).map_err(|e| {
@@ -943,7 +941,7 @@ pub(crate) fn builtin_stat(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -959,10 +957,10 @@ pub(crate) fn builtin_stat(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "stat", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "stat", thunk0.span.clone())?;
         check_perm(perms, "Statable", perms.statable, "stat", call_span.clone())?;
 
-        let path = require_string("stat", path_val, thunk1.span.clone())?;
+        let path = require_string("stat", path_val, thunk1.span.clone(), &ctx)?;
 
         // Get metadata
         let metadata = dir.metadata(&path).map_err(|e| {
@@ -1095,7 +1093,7 @@ pub(crate) fn builtin_exists(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1111,7 +1109,7 @@ pub(crate) fn builtin_exists(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "exists", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "exists", thunk0.span.clone())?;
         check_perm(
             perms,
             "Statable",
@@ -1120,7 +1118,7 @@ pub(crate) fn builtin_exists(
             call_span.clone(),
         )?;
 
-        let path = require_string("exists", path_val, thunk1.span.clone())?;
+        let path = require_string("exists", path_val, thunk1.span.clone(), &ctx)?;
 
         // Check existence
         let exists = dir.try_exists(&path).map_err(|e| {
@@ -1149,7 +1147,7 @@ pub(crate) fn builtin_stat_symlink(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1165,7 +1163,7 @@ pub(crate) fn builtin_stat_symlink(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "stat-symlink", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "stat-symlink", thunk0.span.clone())?;
         check_perm(
             perms,
             "Statable",
@@ -1174,7 +1172,7 @@ pub(crate) fn builtin_stat_symlink(
             call_span.clone(),
         )?;
 
-        let path = require_string("stat-symlink", path_val, thunk1.span.clone())?;
+        let path = require_string("stat-symlink", path_val, thunk1.span.clone(), &ctx)?;
 
         // Get metadata without following symlinks
         let metadata = dir.symlink_metadata(&path).map_err(|e| {
@@ -1307,7 +1305,7 @@ pub(crate) fn builtin_copy_file(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1327,7 +1325,8 @@ pub(crate) fn builtin_copy_file(
         let dst_path_val = thunk3.require_value()?.clone();
 
         // Extract src DirCap and check permissions
-        let (src_dir, src_perms) = extract_dir_cap(&src_dir_val, "copy-file", thunk0.span.clone())?;
+        let (src_dir, src_perms) =
+            extract_dir_cap(&ctx, &src_dir_val, "copy-file", thunk0.span.clone())?;
         check_perm(
             src_perms,
             "Readable",
@@ -1337,7 +1336,8 @@ pub(crate) fn builtin_copy_file(
         )?;
 
         // Extract dst DirCap and check permissions
-        let (dst_dir, dst_perms) = extract_dir_cap(&dst_dir_val, "copy-file", thunk2.span.clone())?;
+        let (dst_dir, dst_perms) =
+            extract_dir_cap(&ctx, &dst_dir_val, "copy-file", thunk2.span.clone())?;
         check_perm(
             dst_perms,
             "Writable",
@@ -1346,8 +1346,8 @@ pub(crate) fn builtin_copy_file(
             call_span.clone(),
         )?;
 
-        let src_path = require_string("copy-file", src_path_val, thunk1.span.clone())?;
-        let dst_path = require_string("copy-file", dst_path_val, thunk3.span.clone())?;
+        let src_path = require_string("copy-file", src_path_val, thunk1.span.clone(), &ctx)?;
+        let dst_path = require_string("copy-file", dst_path_val, thunk3.span.clone(), &ctx)?;
 
         // Copy file using cap-std's efficient kernel-level copy
         src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
@@ -1381,7 +1381,7 @@ pub(crate) fn builtin_symlink(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1399,7 +1399,7 @@ pub(crate) fn builtin_symlink(
         let link_path_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "symlink", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "symlink", thunk0.span.clone())?;
         check_perm(
             perms,
             "Symlinkable",
@@ -1408,8 +1408,8 @@ pub(crate) fn builtin_symlink(
             call_span.clone(),
         )?;
 
-        let target = require_string("symlink", target_val, thunk1.span.clone())?;
-        let link_path = require_string("symlink", link_path_val, thunk2.span.clone())?;
+        let target = require_string("symlink", target_val, thunk1.span.clone(), &ctx)?;
+        let link_path = require_string("symlink", link_path_val, thunk2.span.clone(), &ctx)?;
 
         // Create symlink (platform-specific)
         #[cfg(unix)]
@@ -1484,7 +1484,7 @@ pub(crate) fn builtin_set_permissions(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1502,7 +1502,7 @@ pub(crate) fn builtin_set_permissions(
         let mode_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "set-permissions", thunk0.span.clone())?;
         check_perm(
             perms,
             "PosixPermissions",
@@ -1511,7 +1511,7 @@ pub(crate) fn builtin_set_permissions(
             call_span.clone(),
         )?;
 
-        let path = require_string("set-permissions", path_val, thunk1.span.clone())?;
+        let path = require_string("set-permissions", path_val, thunk1.span.clone(), &ctx)?;
 
         // Extract mode as Int
         let mode = match mode_val {
@@ -1520,7 +1520,7 @@ pub(crate) fn builtin_set_permissions(
                 return Err(EvalError::type_mismatch_ctx(
                     "set-permissions".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into());
@@ -1584,7 +1584,7 @@ pub(crate) fn builtin_get_xattr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1602,7 +1602,7 @@ pub(crate) fn builtin_get_xattr(
         let name_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "get-xattr", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "get-xattr", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1611,8 +1611,8 @@ pub(crate) fn builtin_get_xattr(
             call_span.clone(),
         )?;
 
-        let path = require_string("get-xattr", path_val, thunk1.span.clone())?;
-        let attr_name = require_string("get-xattr", name_val, thunk2.span.clone())?;
+        let path = require_string("get-xattr", path_val, thunk1.span.clone(), &ctx)?;
+        let attr_name = require_string("get-xattr", name_val, thunk2.span.clone(), &ctx)?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
@@ -1689,7 +1689,7 @@ pub(crate) fn builtin_set_xattr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1709,7 +1709,7 @@ pub(crate) fn builtin_set_xattr(
         let value_val = thunk3.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "set-xattr", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "set-xattr", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1725,8 +1725,8 @@ pub(crate) fn builtin_set_xattr(
             call_span.clone(),
         )?;
 
-        let path = require_string("set-xattr", path_val, thunk1.span.clone())?;
-        let attr_name = require_string("set-xattr", name_val, thunk2.span.clone())?;
+        let path = require_string("set-xattr", path_val, thunk1.span.clone(), &ctx)?;
+        let attr_name = require_string("set-xattr", name_val, thunk2.span.clone(), &ctx)?;
 
         // Extract value as Bytes
         let value_bytes = match value_val {
@@ -1737,7 +1737,7 @@ pub(crate) fn builtin_set_xattr(
                 return Err(EvalError::type_mismatch_ctx(
                     "set-xattr".to_string(),
                     "Bytes",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk3.span.clone(),
                 )
                 .into())
@@ -1805,7 +1805,7 @@ pub(crate) fn builtin_remove_xattr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1823,7 +1823,7 @@ pub(crate) fn builtin_remove_xattr(
         let name_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "remove-xattr", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "remove-xattr", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1839,8 +1839,8 @@ pub(crate) fn builtin_remove_xattr(
             call_span.clone(),
         )?;
 
-        let path = require_string("remove-xattr", path_val, thunk1.span.clone())?;
-        let attr_name = require_string("remove-xattr", name_val, thunk2.span.clone())?;
+        let path = require_string("remove-xattr", path_val, thunk1.span.clone(), &ctx)?;
+        let attr_name = require_string("remove-xattr", name_val, thunk2.span.clone(), &ctx)?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
@@ -1913,7 +1913,7 @@ pub(crate) fn builtin_list_xattrs(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1929,7 +1929,7 @@ pub(crate) fn builtin_list_xattrs(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "list-xattrs", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "list-xattrs", thunk0.span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
@@ -1938,7 +1938,7 @@ pub(crate) fn builtin_list_xattrs(
             call_span.clone(),
         )?;
 
-        let path = require_string("list-xattrs", path_val, thunk1.span.clone())?;
+        let path = require_string("list-xattrs", path_val, thunk1.span.clone(), &ctx)?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
@@ -2009,7 +2009,7 @@ pub(crate) fn builtin_make_dir(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2025,7 +2025,7 @@ pub(crate) fn builtin_make_dir(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "make-dir", thunk0.span.clone())?;
         check_perm(
             perms,
             "Writable",
@@ -2034,7 +2034,7 @@ pub(crate) fn builtin_make_dir(
             call_span.clone(),
         )?;
 
-        let path = require_string("make-dir", path_val, thunk1.span.clone())?;
+        let path = require_string("make-dir", path_val, thunk1.span.clone(), &ctx)?;
 
         // Create directory (and parents)
         dir.create_dir_all(&path).map_err(|e| {
@@ -2065,7 +2065,7 @@ pub(crate) fn builtin_remove(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2081,7 +2081,7 @@ pub(crate) fn builtin_remove(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "remove", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "remove", thunk0.span.clone())?;
         check_perm(
             perms,
             "Deletable",
@@ -2090,7 +2090,7 @@ pub(crate) fn builtin_remove(
             call_span.clone(),
         )?;
 
-        let path = require_string("remove", path_val, thunk1.span.clone())?;
+        let path = require_string("remove", path_val, thunk1.span.clone(), &ctx)?;
 
         // Try to remove as file first, then as directory
         if let Err(file_err) = dir.remove_file(&path) {
@@ -2125,7 +2125,7 @@ pub(crate) fn builtin_rename(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2143,7 +2143,7 @@ pub(crate) fn builtin_rename(
         let new_path_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "rename", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "rename", thunk0.span.clone())?;
         check_perm(
             perms,
             "Renameable",
@@ -2152,8 +2152,8 @@ pub(crate) fn builtin_rename(
             call_span.clone(),
         )?;
 
-        let old_path = require_string("rename", old_path_val, thunk1.span.clone())?;
-        let new_path = require_string("rename", new_path_val, thunk2.span.clone())?;
+        let old_path = require_string("rename", old_path_val, thunk1.span.clone(), &ctx)?;
+        let new_path = require_string("rename", new_path_val, thunk2.span.clone(), &ctx)?;
 
         // Rename (both source and dest are in the same DirCap)
         dir.rename(&old_path, dir, &new_path).map_err(|e| {
@@ -2188,7 +2188,7 @@ pub(crate) fn builtin_link(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2206,11 +2206,11 @@ pub(crate) fn builtin_link(
         let link_path_val = thunk2.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "link", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "link", thunk0.span.clone())?;
         check_perm(perms, "Writable", perms.writable, "link", call_span.clone())?;
 
-        let existing_path = require_string("link", existing_path_val, thunk1.span.clone())?;
-        let link_path = require_string("link", link_path_val, thunk2.span.clone())?;
+        let existing_path = require_string("link", existing_path_val, thunk1.span.clone(), &ctx)?;
+        let link_path = require_string("link", link_path_val, thunk2.span.clone(), &ctx)?;
 
         // Create hard link
         dir.hard_link(&existing_path, dir, &link_path)
@@ -2244,7 +2244,7 @@ pub(crate) fn builtin_read_link(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2260,7 +2260,7 @@ pub(crate) fn builtin_read_link(
         let path_val = thunk1.require_value()?.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "read-link", thunk0.span.clone())?;
+        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "read-link", thunk0.span.clone())?;
         check_perm(
             perms,
             "Readable",
@@ -2269,7 +2269,7 @@ pub(crate) fn builtin_read_link(
             call_span.clone(),
         )?;
 
-        let path = require_string("read-link", path_val, thunk1.span.clone())?;
+        let path = require_string("read-link", path_val, thunk1.span.clone(), &ctx)?;
 
         // Read symlink target
         let target = dir.read_link(&path).map_err(|e| {
@@ -2331,8 +2331,9 @@ pub(crate) fn builtin_file_open(
         let mode_raw = thunk3.require_value()?.clone();
         let flags_raw = thunk4.require_value()?.clone();
 
-        let (dir, _perms) = extract_dir_cap(&dir_val, "builtin-file-open", thunk0.span.clone())?;
-        let path = require_string("builtin-file-open", path_val, thunk1.span.clone())?;
+        let (dir, _perms) =
+            extract_dir_cap(&ctx, &dir_val, "builtin-file-open", thunk0.span.clone())?;
+        let path = require_string("builtin-file-open", path_val, thunk1.span.clone(), &ctx)?;
 
         // Third arg: positional list of mode strings — ["read"], ["write" "create" "truncate"], etc.
         let modes_dict = match modes_raw {
@@ -2341,7 +2342,7 @@ pub(crate) fn builtin_file_open(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk2.span.clone(),
                 )
                 .into());
@@ -2357,7 +2358,7 @@ pub(crate) fn builtin_file_open(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Integer",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk3.span.clone(),
                 )
                 .into());
@@ -2368,7 +2369,7 @@ pub(crate) fn builtin_file_open(
             return Err(EvalError::type_mismatch_ctx(
                 "builtin-file-open".to_string(),
                 "Integer",
-                type_id_display_name(mode_raw.type_decl_id_of()),
+                ctx.type_display_name(mode_raw.type_decl_id_of()),
                 thunk3.span.clone(),
             )
             .into());
@@ -2383,7 +2384,7 @@ pub(crate) fn builtin_file_open(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Integer",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk4.span.clone(),
                 )
                 .into());
@@ -2394,7 +2395,7 @@ pub(crate) fn builtin_file_open(
             return Err(EvalError::type_mismatch_ctx(
                 "builtin-file-open".to_string(),
                 "Integer",
-                type_id_display_name(flags_raw.type_decl_id_of()),
+                ctx.type_display_name(flags_raw.type_decl_id_of()),
                 thunk4.span.clone(),
             )
             .into());
@@ -2474,7 +2475,7 @@ pub(crate) fn builtin_file_read(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2494,7 +2495,7 @@ pub(crate) fn builtin_file_read(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
                     "File",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -2514,7 +2515,7 @@ pub(crate) fn builtin_file_read(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -2565,7 +2566,7 @@ pub(crate) fn builtin_file_write(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2585,14 +2586,14 @@ pub(crate) fn builtin_file_write(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-write".to_string(),
                     "File",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
             }
         };
 
-        let s = require_string("builtin-file-write", s_val, thunk1.span.clone())?;
+        let s = require_string("builtin-file-write", s_val, thunk1.span.clone(), &ctx)?;
 
         use std::io::Write;
         file_rc
@@ -2639,7 +2640,7 @@ pub(crate) fn builtin_file_flush(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-flush".to_string(),
                     "File",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into())
@@ -2691,7 +2692,7 @@ pub(crate) fn builtin_file_close(
             other => Err(EvalError::type_mismatch_ctx(
                 "builtin-file-close".to_string(),
                 "File",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 Arc::clone(&args[0]).span.clone(),
             )
             .into()),
@@ -2711,7 +2712,7 @@ pub(crate) fn builtin_file_seek(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2731,7 +2732,7 @@ pub(crate) fn builtin_file_seek(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
                     "File",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())
@@ -2751,7 +2752,7 @@ pub(crate) fn builtin_file_seek(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk1.span.clone(),
                 )
                 .into())
@@ -2789,7 +2790,7 @@ pub(crate) fn builtin_write_stdout(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2801,7 +2802,7 @@ pub(crate) fn builtin_write_stdout(
         let thunk0 = Arc::clone(&args[0]);
         let s_val = thunk0.require_value()?.clone();
 
-        let s = require_string("builtin-write-stdout", s_val, thunk0.span.clone())?;
+        let s = require_string("builtin-write-stdout", s_val, thunk0.span.clone(), &ctx)?;
 
         use std::io::Write;
         std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
@@ -2824,7 +2825,7 @@ pub(crate) fn builtin_write_stderr(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2836,7 +2837,7 @@ pub(crate) fn builtin_write_stderr(
         let thunk0 = Arc::clone(&args[0]);
         let s_val = thunk0.require_value()?.clone();
 
-        let s = require_string("builtin-write-stderr", s_val, thunk0.span.clone())?;
+        let s = require_string("builtin-write-stderr", s_val, thunk0.span.clone(), &ctx)?;
 
         use std::io::Write;
         std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
@@ -2862,7 +2863,7 @@ pub(crate) fn builtin_read_stdin(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -2887,7 +2888,7 @@ pub(crate) fn builtin_read_stdin(
                 return Err(EvalError::type_mismatch_ctx(
                     "builtin-read-stdin".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     thunk0.span.clone(),
                 )
                 .into())

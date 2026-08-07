@@ -26,7 +26,7 @@ use crate::type_tags::*;
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::value::{type_id_display_name, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 // ============================================================================
 // Document pipeline evaluation
@@ -172,7 +172,7 @@ pub(crate) async fn eval_document_exprs_with_env(
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    &ctx.type_display_name(other.type_decl_id_of()),
                     node_span,
                 )));
             }
@@ -284,7 +284,7 @@ pub(crate) async fn eval_core_document_exprs(
                 return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
                     "document expression".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    &ctx.type_display_name(other.type_decl_id_of()),
                     entry_span,
                 )));
             }
@@ -478,6 +478,9 @@ pub struct TypeContextData {
     /// Derived from the type-stage scope; propagated from typecheck_program_bootstrap.
     /// Used to seed InferState.type_name_to_id for subsequent typecheck calls.
     pub type_name_to_id: std::collections::HashMap<String, u64>,
+    /// Maps type_decl_id → display name. Inverse of type_name_to_id.
+    /// Populated alongside type_name_to_id; used for error messages.
+    pub type_display_names: std::collections::HashMap<u64, String>,
 }
 
 /// Immutable session configuration shared across evaluation.
@@ -1156,6 +1159,20 @@ impl EvalContext {
     /// Returns `None` if `builtin-make-type-ctx` has not yet been called.
     pub fn get_type_context(&self) -> Option<TypeContextData> {
         self.type_context.lock().unwrap().clone()
+    }
+
+    /// Look up the display name for a type_decl_id from the type_display_names registry.
+    /// Returns the prelude-defined name (e.g., "Int", "String") — no hardcoded names in Rust.
+    /// Falls back to "Type({id})" if the registry doesn't contain the id.
+    pub fn type_display_name(&self, id: u64) -> String {
+        if let Ok(guard) = self.type_context.lock() {
+            if let Some(ref tc) = *guard {
+                if let Some(name) = tc.type_display_names.get(&id) {
+                    return name.clone();
+                }
+            }
+        }
+        crate::value::type_id_display_name(id).to_string()
     }
 
     /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
@@ -2027,7 +2044,7 @@ async fn call_to_match_by_name(
             return Err(EvalError::type_mismatch_ctx(
                 format!("call_to_match_by_name({name})"),
                 "Function",
-                type_id_display_name(other.type_decl_id_of()),
+                &ctx.type_display_name(other.type_decl_id_of()),
                 span.clone(),
             )
             .into());
@@ -2052,7 +2069,7 @@ async fn call_to_match_by_name(
         other => Err(EvalError::type_mismatch_ctx(
             format!("call_to_match_by_name({name}) result"),
             "Int",
-            type_id_display_name(other.type_decl_id_of()),
+            &ctx.type_display_name(other.type_decl_id_of()),
             span.clone(),
         )
         .into()),
@@ -4605,6 +4622,7 @@ mod tests {
             type_stage_fns: std::collections::HashMap::new(),
             type_stage_type_vars: std::collections::HashMap::new(),
             type_diagnostics: vec![],
+            type_display_names: tni.iter().map(|(n, &id)| (id, n.clone())).collect(),
             type_name_to_id: tni,
         });
         // App(Nominal(MY_SEQ), Nominal(INT)) — identity-based: value type_decl_id must match root TyCon.

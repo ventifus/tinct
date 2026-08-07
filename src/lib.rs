@@ -91,8 +91,6 @@ pub mod profiling;
 
 use std::sync::Arc;
 
-use crate::value::type_id_display_name;
-
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
@@ -314,7 +312,7 @@ pub async fn run_loader_pipeline(
                 other => {
                     return Err(format!(
                         "type-stage evaluation produced {}, expected Dict",
-                        type_id_display_name(other.type_decl_id_of())
+                        eval_ctx.type_display_name(other.type_decl_id_of())
                     ));
                 }
             }
@@ -432,6 +430,10 @@ pub async fn run_loader_pipeline(
         type_stage_fns: builtin_core_ts_data.fns,
         type_stage_type_vars: builtin_core_ts_data.type_vars,
         type_diagnostics: Vec::new(),
+        type_display_names: loader_type_name_to_id
+            .iter()
+            .map(|(name, &id)| (id, name.clone()))
+            .collect(),
         type_name_to_id: loader_type_name_to_id,
     });
 

@@ -37,8 +37,7 @@ use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_str
 
 use crate::error::{EvalError, EvalResult};
 use crate::value::{
-    string_val, type_id_display_name, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk,
-    Value, TYPE_ID_DICT,
+    string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk, Value, TYPE_ID_DICT,
 };
 
 /// Guards rustls crypto provider initialization. `get_or_init` ensures
@@ -235,7 +234,7 @@ pub(crate) async fn build_tls_config(
             return Err(EvalError::type_mismatch_ctx(
                 "tls-connect opts".to_string(),
                 "Dict",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 opts_span,
             )
             .into())
@@ -416,7 +415,7 @@ async fn extract_alpn_protocols(
             return Err(EvalError::type_mismatch_ctx(
                 "tls-connect opts.alpn".to_string(),
                 "Dict of String",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 span,
             )
             .into())
@@ -433,7 +432,7 @@ async fn extract_alpn_protocols(
                 return Err(EvalError::type_mismatch_ctx(
                     "tls-connect opts.alpn".to_string(),
                     "String",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     span,
                 )
                 .into())
@@ -551,14 +550,14 @@ pub(crate) fn builtin_quic_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "quic-session".to_string(),
                     "NetCap",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
             }
         };
 
-        let host_str = require_string("quic-session", host_val, call_span.clone())?;
+        let host_str = require_string("quic-session", host_val, call_span.clone(), &ctx)?;
 
         let port = match port_val {
             Value::Int { n, .. } if (1..=65535).contains(&n) => n as u16,
@@ -573,7 +572,7 @@ pub(crate) fn builtin_quic_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "quic-session".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -697,7 +696,7 @@ pub(crate) fn builtin_quic_open_datagram(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -721,7 +720,7 @@ pub(crate) fn builtin_quic_open_datagram(
                 return Err(EvalError::type_mismatch_ctx(
                     "quic-open-datagram".to_string(),
                     "QuicSession",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -749,7 +748,7 @@ pub(crate) fn builtin_http2_session(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -777,14 +776,14 @@ pub(crate) fn builtin_http2_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "http2-session".to_string(),
                     "NetCap",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
             }
         };
 
-        let base_url = require_string("http2-session", url_val, call_span.clone())?;
+        let base_url = require_string("http2-session", url_val, call_span.clone(), &ctx)?;
 
         // Parse the base_url to extract host and port for cap validation.
         // We need a host for the allowlist check. Parse scheme://host[:port].
@@ -893,7 +892,7 @@ pub(crate) fn builtin_http3_session(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -918,7 +917,7 @@ pub(crate) fn builtin_http3_session(
                 return Err(EvalError::type_mismatch_ctx(
                     "http3-session".to_string(),
                     "QuicSession",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1017,9 +1016,9 @@ pub(crate) fn builtin_http_request(
         let headers_val = Arc::clone(&args[3]).require_value()?.clone();
         let body_val = Arc::clone(&args[4]).require_value()?.clone();
 
-        let method_str = require_string("http-request", method_val, call_span.clone())?;
-        let path_str = require_string("http-request", path_val, call_span.clone())?;
-        let body_str = require_string("http-request", body_val, call_span.clone())?;
+        let method_str = require_string("http-request", method_val, call_span.clone(), &ctx)?;
+        let path_str = require_string("http-request", path_val, call_span.clone(), &ctx)?;
+        let body_str = require_string("http-request", body_val, call_span.clone(), &ctx)?;
 
         // Collect request headers from the Dict argument.
         // Each value is an Arc<Thunk> — materialize to extract the string.
@@ -1036,6 +1035,7 @@ pub(crate) fn builtin_http_request(
                         "http-request header value",
                         val_materialized,
                         call_span.clone(),
+                        &ctx,
                     )?;
                     out.push((key_str, val_str));
                 }
@@ -1045,7 +1045,7 @@ pub(crate) fn builtin_http_request(
                 return Err(EvalError::type_mismatch_ctx(
                     "http-request".to_string(),
                     "Dict",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1082,7 +1082,7 @@ pub(crate) fn builtin_http_request(
             other => Err(EvalError::type_mismatch_ctx(
                 "http-request".to_string(),
                 "Http2Session or Http3Session",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span.clone(),
             )
             .into()),
@@ -1423,14 +1423,14 @@ pub(crate) fn builtin_icmp_ping(
                 return Err(EvalError::type_mismatch_ctx(
                     "icmp-ping".to_string(),
                     "NetCap",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
             }
         };
 
-        let host = require_string("icmp-ping", host_val, call_span.clone())?;
+        let host = require_string("icmp-ping", host_val, call_span.clone(), &ctx)?;
 
         let timeout_ms = match timeout_val {
             Value::Int { n, .. } if n >= 0 => n,
@@ -1445,7 +1445,7 @@ pub(crate) fn builtin_icmp_ping(
                 return Err(EvalError::type_mismatch_ctx(
                     "icmp-ping".to_string(),
                     "Int",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1743,7 +1743,7 @@ pub(crate) fn builtin_send_datagram(
             args,
             named,
             call_span,
-            ctx: _,
+            ctx,
             ..
         } = ctx_arg;
 
@@ -1767,7 +1767,7 @@ pub(crate) fn builtin_send_datagram(
                 return Err(EvalError::type_mismatch_ctx(
                     "send-datagram".to_string(),
                     "String or Bytes",
-                    type_id_display_name(other.type_decl_id_of()),
+                    ctx.type_display_name(other.type_decl_id_of()),
                     call_span.clone(),
                 )
                 .into())
@@ -1800,7 +1800,7 @@ pub(crate) fn builtin_send_datagram(
             other => Err(EvalError::type_mismatch_ctx(
                 "send-datagram".to_string(),
                 "QuicDatagramHandle",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span.clone(),
             )
             .into()),
@@ -1874,7 +1874,7 @@ pub(crate) fn builtin_recv_datagram(
             other => Err(EvalError::type_mismatch_ctx(
                 "recv-datagram".to_string(),
                 "QuicDatagramHandle",
-                type_id_display_name(other.type_decl_id_of()),
+                ctx.type_display_name(other.type_decl_id_of()),
                 call_span.clone(),
             )
             .into()),
@@ -1912,7 +1912,7 @@ pub(crate) fn builtin_uri(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -2115,7 +2115,7 @@ pub(crate) fn builtin_url(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     call_span,
                 )
                 .into());
@@ -2261,7 +2261,7 @@ pub(crate) fn builtin_urn(
             _ => {
                 return Err(EvalError::type_mismatch(
                     "String",
-                    type_id_display_name(val.type_decl_id_of()),
+                    ctx.type_display_name(val.type_decl_id_of()),
                     call_span,
                 )
                 .into());
