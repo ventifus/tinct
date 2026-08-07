@@ -70,6 +70,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     let params_dict = Value::Dict {
         entries: params_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -86,6 +87,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     let payload = Value::Dict {
         entries: pe,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -94,6 +96,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -110,6 +113,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     let fields_dict = Value::Dict {
         entries: field_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -122,6 +126,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: None,
             },
             crate::rust_span!(),
         )),
@@ -129,6 +134,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     let payload = Value::Dict {
         entries: pe,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -137,6 +143,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -153,6 +160,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     let fields_dict = Value::Dict {
         entries: field_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -169,6 +177,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     let payload = Value::Dict {
         entries: pe,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -177,6 +186,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -193,6 +203,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     let members_dict = Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -202,6 +213,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     let payload = Value::Dict {
         entries: pe,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -210,6 +222,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -3169,6 +3182,7 @@ async fn test_rowvar_occurs_check() {
         let fields_dict = Value::Dict {
             entries: fields,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         let mut payload_entries = IndexMap::new();
         payload_entries.insert(
@@ -3182,11 +3196,13 @@ async fn test_rowvar_occurs_check() {
         let payload = Value::Dict {
             entries: payload_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),
+            type_val: None,
         })
     };
 
@@ -3436,11 +3452,13 @@ fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Ar
     let payload = Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(RT_UNIFORM),
         payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
+        type_val: None,
     })
 }
 

@@ -113,6 +113,72 @@ pub fn instantiate_scheme_tv(
     Some(apply_typevalue_renaming(&body, &renaming))
 }
 
+/// Like `instantiate_scheme_tv`, but also returns the renaming from original type parameter
+/// names to fresh TypeVar names. Used at polymorphic call sites to capture the type instantiation.
+///
+/// Returns `(instantiated_type, renaming)` where renaming maps e.g. `"a" → "a⦀42"`.
+pub fn instantiate_scheme_tv_with_renaming(
+    scheme: &crate::type_class::TypeValue,
+    ctx: &mut crate::type_infer::InferenceContext,
+    level: u32,
+) -> Option<(crate::type_class::TypeValue, HashMap<String, String>)> {
+    use crate::value::{HashableValue, Value};
+    use std::sync::Arc;
+
+    let (vars_thunk, body_thunk) = match scheme.as_ref() {
+        Value::Variant {
+            ctor,
+            payload: Some(payload_thunk),
+            ..
+        } if ctor.as_ref() == TV_SCHEME => match payload_thunk.peek_result()? {
+            Ok(Value::Dict { entries, .. }) => {
+                let vars_key = HashableValue::Str(Arc::from(FIELD_VARS));
+                let body_key = HashableValue::Str(Arc::from(FIELD_BODY));
+                let vars_thunk = entries.get(&vars_key)?.clone();
+                let body_thunk = entries.get(&body_key)?.clone();
+                (vars_thunk, body_thunk)
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    let var_names: Vec<String> = match vars_thunk.peek_result()? {
+        Ok(Value::Dict { entries, .. }) => entries
+            .keys()
+            .filter_map(|k| match k {
+                HashableValue::Str(s) => Some(s.as_ref().to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+
+    let body: crate::type_class::TypeValue = match body_thunk.peek_result()? {
+        Ok(v) => Arc::new(v.clone()),
+        _ => return None,
+    };
+
+    if var_names.is_empty() {
+        return Some((body, HashMap::new()));
+    }
+
+    let saved_level = ctx.current_level;
+    ctx.current_level = level;
+    let mut renaming: HashMap<String, crate::type_class::TypeValue> = HashMap::new();
+    let mut name_mapping: HashMap<String, String> = HashMap::new();
+    for var_name in &var_names {
+        let fresh = ctx.fresh_typevar(var_name);
+        if let Some(fresh_name) = crate::type_infer::typevalue_var_name(&fresh) {
+            name_mapping.insert(var_name.clone(), fresh_name);
+        }
+        renaming.insert(var_name.clone(), fresh);
+    }
+    ctx.current_level = saved_level;
+
+    Some((apply_typevalue_renaming(&body, &renaming), name_mapping))
+}
+
 /// Apply a name-to-TypeValue renaming to a TypeValue, substituting TypeValue.Var names.
 ///
 /// This is the TypeValue equivalent of `Substitution::apply()` for the migration period.
@@ -142,6 +208,7 @@ fn apply_renaming_to_value(
         Value::Dict {
             entries,
             type_decl_id,
+            ..
         } => {
             let mut new_entries = indexmap::IndexMap::new();
             let mut changed = false;
@@ -165,6 +232,7 @@ fn apply_renaming_to_value(
             let new_dict = Value::Dict {
                 entries: new_entries,
                 type_decl_id: *type_decl_id,
+                type_val: None,
             };
             (new_dict, changed)
         }
@@ -239,6 +307,7 @@ pub fn apply_typevalue_renaming(
                             let new_payload_dict = Value::Dict {
                                 entries: new_entries,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: None,
                             };
                             Arc::new(Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
@@ -247,6 +316,7 @@ pub fn apply_typevalue_renaming(
                                     new_payload_dict,
                                     crate::rust_span!(),
                                 ))),
+                                type_val: None,
                             })
                         }
                         _ => {
@@ -331,6 +401,7 @@ pub fn generalize_tv_with_meta(
                             source: Arc::from(var_name.as_str()),
                             start: 0,
                             end: var_name.len(),
+                            type_val: None,
                         },
                         crate::rust_span!(),
                     )),
@@ -345,6 +416,7 @@ pub fn generalize_tv_with_meta(
                 Value::Dict {
                     entries: d,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: None,
                 }
             };
             let var_decl = Value::Variant {
@@ -354,6 +426,7 @@ pub fn generalize_tv_with_meta(
                     var_decl_payload,
                     crate::rust_span!(),
                 ))),
+                type_val: None,
             };
             entries.insert(
                 HashableValue::Str(Arc::from(var_name.as_str())),
@@ -363,6 +436,7 @@ pub fn generalize_tv_with_meta(
         Value::Dict {
             entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         }
     };
 
@@ -370,6 +444,7 @@ pub fn generalize_tv_with_meta(
     let constraints_dict = Value::Dict {
         entries: indexmap::IndexMap::new(),
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
 
     // Build narrowings dict: { 0: TypeValue | [], 1: TypeValue | [], ... }
@@ -384,6 +459,7 @@ pub fn generalize_tv_with_meta(
                 None => Value::Dict {
                     entries: indexmap::IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: None,
                 },
             };
             narrowing_entries.insert(
@@ -394,6 +470,7 @@ pub fn generalize_tv_with_meta(
         Some(Value::Dict {
             entries: narrowing_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })
     };
 
@@ -432,6 +509,7 @@ pub fn generalize_tv_with_meta(
                 source: Arc::from(doc_str),
                 start: 0,
                 end: doc_str.len(),
+                type_val: None,
             };
             entries.insert(
                 HashableValue::Str(Arc::from(FIELD_DOC)),
@@ -441,6 +519,7 @@ pub fn generalize_tv_with_meta(
         Value::Dict {
             entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         }
     };
 
@@ -451,6 +530,7 @@ pub fn generalize_tv_with_meta(
             scheme_payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -558,6 +638,7 @@ mod typevalue_scheme_tests {
                             source: Arc::from("a"),
                             start: 0,
                             end: 1,
+                            type_val: None,
                         },
                         crate::rust_span!(),
                     )),
@@ -572,6 +653,7 @@ mod typevalue_scheme_tests {
                 d
             },
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         let var_decl = Value::Variant {
             type_decl_id: TYPE_ID_DICT,
@@ -580,6 +662,7 @@ mod typevalue_scheme_tests {
                 var_decl_payload,
                 crate::rust_span!(),
             ))),
+            type_val: None,
         };
 
         let vars_dict = Value::Dict {
@@ -592,10 +675,12 @@ mod typevalue_scheme_tests {
                 d
             },
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         let constraints_dict = Value::Dict {
             entries: indexmap::IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         let body_var = make_typevar_value("a"); // body is TypeValue.Var{name:"a"}
 
@@ -623,6 +708,7 @@ mod typevalue_scheme_tests {
                 d
             },
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
 
         let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
@@ -632,6 +718,7 @@ mod typevalue_scheme_tests {
                 scheme_payload,
                 crate::rust_span!(),
             ))),
+            type_val: None,
         });
 
         // Instantiate

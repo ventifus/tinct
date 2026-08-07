@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, format_diagnostic, literate, parse, string_val, EvalContext, HashableValue,
-    Thunk, Value, TYPE_ID_DICT,
+    build_core_env, format_diagnostic, literate, make_typevalue_nominal, parse, string_val,
+    EvalContext, HashableValue, Thunk, Value, TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP,
+    TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -1442,6 +1443,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let cwd_value = Value::DirCap {
             dir: cwd_dir,
             perms: tinct::DirPerms::full(),
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DIRCAP)),
         };
         let cwd_thunk = Arc::new(tinct::Thunk::value(cwd_value, tinct::rust_span!()));
         env.write()
@@ -1471,6 +1473,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_file = cap_std::fs::File::from_std(stdin_dup);
             let stdin_value = Value::File {
                 inner: Arc::new(Mutex::new(cap_file)),
+                type_val: Some(make_typevalue_nominal(TYPE_ID_FILE)),
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
             env.write()
@@ -1486,6 +1489,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let stdin_value = Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
             env.write()
@@ -1535,6 +1539,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                 let libdir_value = Value::DirCap {
                     dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
+                    type_val: Some(make_typevalue_nominal(TYPE_ID_DIRCAP)),
                 };
                 let libdir_thunk = Arc::new(tinct::Thunk::value(libdir_value, tinct::rust_span!()));
                 env.write()
@@ -1561,6 +1566,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_value = Value::DirCap {
                 dir: dir_for_cap,
                 perms,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_DIRCAP)),
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             // Inject as `%NAME` (auto-prefix %).
@@ -1616,6 +1622,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap {
                 entries: Arc::new(entries),
+                type_val: Some(make_typevalue_nominal(TYPE_ID_NETCAP)),
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             env.write().unwrap().insert_slot_name_only(name.clone());
@@ -1646,11 +1653,13 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             })?;
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
+                type_val: Some(make_typevalue_nominal(TYPE_ID_CLOCKCAP)),
             }
         } else {
             // Default: real system clock
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Real),
+                type_val: Some(make_typevalue_nominal(TYPE_ID_CLOCKCAP)),
             }
         };
 
@@ -1798,6 +1807,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_value = Value::DirCap {
                 dir: cap_dir,
                 perms,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_DIRCAP)),
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             // Inject as `%NAME` (auto-prefix %).
@@ -1992,11 +2002,13 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         let payload_id = alloc_val(Value::Dict {
                             entries: payload_dict,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                         });
                         Value::Variant {
                             type_decl_id: TYPE_ID_DICT,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                         }
                     } else {
                         // Regular file: consume the next pre-opened handle.
@@ -2013,6 +2025,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         let cap_file = cap_std::fs::File::from_std(raw_handle);
                         let handle_value = Value::File {
                             inner: Arc::new(Mutex::new(cap_file)),
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_FILE)),
                         };
 
                         // Build payload dict: { path: String, handle: Handle }
@@ -2026,11 +2039,13 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         let payload_id = alloc_val(Value::Dict {
                             entries: payload_dict,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                         });
                         Value::Variant {
                             type_decl_id: TYPE_ID_DICT,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                         }
                     }
                 }
@@ -2044,11 +2059,13 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     let payload_id = alloc_val(Value::Dict {
                         entries: payload_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                     });
                     Value::Variant {
                         type_decl_id: TYPE_ID_DICT,
                         ctor: Arc::from("ProgramItem.Expr"),
                         payload: Some(payload_id),
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                     }
                 }
             };
@@ -2057,6 +2074,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         }
     };
 
@@ -2089,12 +2107,14 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             HashableValue::Str("strict".into()),
             mk_thunk(Value::Int {
                 n: if strict { 1 } else { 0 },
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
             }),
         );
 
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         }
     };
 

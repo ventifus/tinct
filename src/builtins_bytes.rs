@@ -148,7 +148,15 @@ pub(crate) fn builtin_bytes_find(
 
         // Empty needle: found at position 0 (consistent with str-find behavior)
         if needle.is_empty() {
-            return ok_val(Value::Int { n: 0 }, call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                call_span,
+            );
         }
 
         // Find the first occurrence
@@ -161,7 +169,15 @@ pub(crate) fn builtin_bytes_find(
             None => -1,
         };
 
-        ok_val(Value::Int { n: result }, call_span)
+        ok_val(
+            Value::Int {
+                n: result,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -394,6 +410,9 @@ pub(crate) fn builtin_bytes_equal(
         ok_val(
             Value::Int {
                 n: if bytes1 == bytes2 { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )
@@ -476,7 +495,15 @@ pub(crate) fn builtin_ct_equal(
 
         // Different lengths: return false (still in constant time per subtle docs)
         if bytes1.len() != bytes2.len() {
-            return ok_val(Value::Int { n: 0 }, call_span);
+            return ok_val(
+                Value::Int {
+                    n: 0,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                call_span,
+            );
         }
 
         // Constant-time comparison
@@ -484,6 +511,9 @@ pub(crate) fn builtin_ct_equal(
         ok_val(
             Value::Int {
                 n: if result.into() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )
@@ -716,7 +746,15 @@ pub(crate) fn builtin_bytes_get(
         }
 
         let byte_val = bytes[i as usize] as i64;
-        ok_val(Value::Int { n: byte_val }, call_span)
+        ok_val(
+            Value::Int {
+                n: byte_val,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -790,7 +828,15 @@ pub(crate) fn builtin_bytes_to_int(
 
         let arr: [u8; 8] = bytes[..8].try_into().unwrap();
         let n = i64::from_le_bytes(arr);
-        ok_val(Value::Int { n }, call_span)
+        ok_val(
+            Value::Int {
+                n,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -927,6 +973,9 @@ pub(crate) fn builtin_bytes_slice(
                 source,
                 start: new_start,
                 end: new_end,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_BYTES,
+                )),
             },
             call_span,
         )

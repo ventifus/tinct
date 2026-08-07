@@ -96,6 +96,9 @@ fn serialize_diagnostic(
             mk(crate::value::Value::Dict {
                 entries: ss,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
         );
     }
@@ -104,6 +107,9 @@ fn serialize_diagnostic(
         mk(crate::value::Value::Dict {
             entries: secondary,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         }),
     );
 
@@ -117,6 +123,9 @@ fn serialize_diagnostic(
         mk(crate::value::Value::Dict {
             entries: notes_dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         }),
     );
 
@@ -130,6 +139,9 @@ fn serialize_diagnostic(
         mk(crate::value::Value::Dict {
             entries: help_dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         }),
     );
 
@@ -144,6 +156,9 @@ fn serialize_diagnostic(
             mk(crate::value::Value::Dict {
                 entries: frame,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
         );
     }
@@ -152,6 +167,9 @@ fn serialize_diagnostic(
         mk(crate::value::Value::Dict {
             entries: call_stack_dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         }),
     );
 
@@ -160,11 +178,17 @@ fn serialize_diagnostic(
         crate::value::Value::Dict {
             entries: inner_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         }
     } else {
         crate::value::Value::Dict {
             entries: IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         }
     };
     w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -177,6 +201,9 @@ fn serialize_diagnostic(
             None => crate::value::Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
         }),
     );
@@ -396,6 +423,9 @@ pub(crate) fn builtin_try(
                     Value::Dict {
                         entries: map,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -436,6 +466,9 @@ pub(crate) fn builtin_try(
                         mk(Value::Dict {
                             entries: ss,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
                         }),
                     );
                 }
@@ -444,6 +477,9 @@ pub(crate) fn builtin_try(
                     mk(Value::Dict {
                         entries: secondary,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }),
                 );
                 let mut notes_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -455,6 +491,9 @@ pub(crate) fn builtin_try(
                     mk(Value::Dict {
                         entries: notes_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }),
                 );
                 w.insert(
@@ -462,6 +501,9 @@ pub(crate) fn builtin_try(
                     mk(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }),
                 );
                 // call-stack: [{label, span}] from EvalError.stack
@@ -481,6 +523,9 @@ pub(crate) fn builtin_try(
                         mk(Value::Dict {
                             entries: fd,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
                         }),
                     );
                 }
@@ -489,6 +534,9 @@ pub(crate) fn builtin_try(
                     mk(Value::Dict {
                         entries: stack,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }),
                 );
                 let macro_val = if let Some((name, span)) = &e.macro_expansion {
@@ -498,11 +546,17 @@ pub(crate) fn builtin_try(
                     Value::Dict {
                         entries: me,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }
                 } else {
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }
                 };
                 w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
@@ -511,12 +565,18 @@ pub(crate) fn builtin_try(
                     mk(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: w,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -650,6 +710,9 @@ pub(crate) fn builtin_macro_injects(
             Value::Dict {
                 entries: dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -686,7 +749,15 @@ pub(crate) fn builtin_decimal(
                 let s = &source[start..end];
                 use std::str::FromStr;
                 match rust_decimal::Decimal::from_str(s) {
-                    Ok(d) => ok_val(Value::Decimal { n: d }, call_span),
+                    Ok(d) => ok_val(
+                        Value::Decimal {
+                            n: d,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DECIMAL,
+                            )),
+                        },
+                        call_span,
+                    ),
                     Err(e) => Err(EvalError::internal(
                         format!("decimal: cannot parse \"{s}\": {e}"),
                         call_span,
@@ -697,6 +768,9 @@ pub(crate) fn builtin_decimal(
             Value::Int { n, .. } => ok_val(
                 Value::Decimal {
                     n: rust_decimal::Decimal::from(n),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DECIMAL,
+                    )),
                 },
                 call_span,
             ),
@@ -733,6 +807,9 @@ pub(crate) fn builtin_big_int(
             Value::Int { n, .. } => ok_val(
                 Value::BigInt {
                     n: num_bigint::BigInt::from(n),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_BIGINT,
+                    )),
                 },
                 call_span,
             ),
@@ -744,7 +821,15 @@ pub(crate) fn builtin_big_int(
             } => {
                 let s = &source[start..end];
                 match s.parse::<num_bigint::BigInt>() {
-                    Ok(n) => ok_val(Value::BigInt { n }, call_span),
+                    Ok(n) => ok_val(
+                        Value::BigInt {
+                            n,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_BIGINT,
+                            )),
+                        },
+                        call_span,
+                    ),
                     Err(e) => Err(EvalError::internal(
                         format!("big-int: cannot parse \"{s}\": {e}"),
                         call_span,
@@ -821,6 +906,9 @@ pub(crate) fn builtin_is_variant(
         ok_val(
             Value::Int {
                 n: if is_variant { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )
@@ -883,6 +971,9 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             )));
@@ -902,6 +993,9 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             )));
@@ -928,6 +1022,9 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             )));
@@ -954,6 +1051,9 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             )));
@@ -987,6 +1087,9 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             )));
@@ -1051,6 +1154,9 @@ pub(crate) fn builtin_ast_of(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span.clone(),
                 )),
@@ -1080,6 +1186,9 @@ pub(crate) fn builtin_ast_of(
                         Value::Dict {
                             entries: param_dict,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
                         },
                         call_span.clone(),
                     )))
@@ -1097,6 +1206,9 @@ pub(crate) fn builtin_ast_of(
                     Value::Dict {
                         entries: params_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span.clone(),
                 )),
@@ -1106,6 +1218,9 @@ pub(crate) fn builtin_ast_of(
                 Value::Dict {
                     entries: dict,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             )));
@@ -1368,6 +1483,9 @@ pub(crate) fn builtin_span_of(
                                     Value::Dict {
                                         entries: IndexMap::new(),
                                         type_decl_id: TYPE_ID_DICT,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            crate::value::TYPE_ID_DICT,
+                                        )),
                                     }
                                 };
 
@@ -1376,24 +1494,47 @@ pub(crate) fn builtin_span_of(
                                 w.insert(HashableValue::Str("file".into()), mk(file_val));
                                 w.insert(
                                     HashableValue::Str("start-line".into()),
-                                    mk(Value::Int { n: sl }),
+                                    mk(Value::Int {
+                                        n: sl,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            crate::value::TYPE_ID_INT,
+                                        )),
+                                    }),
                                 );
                                 w.insert(
                                     HashableValue::Str("start-col".into()),
-                                    mk(Value::Int { n: sc }),
+                                    mk(Value::Int {
+                                        n: sc,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            crate::value::TYPE_ID_INT,
+                                        )),
+                                    }),
                                 );
                                 w.insert(
                                     HashableValue::Str("end-line".into()),
-                                    mk(Value::Int { n: el }),
+                                    mk(Value::Int {
+                                        n: el,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            crate::value::TYPE_ID_INT,
+                                        )),
+                                    }),
                                 );
                                 w.insert(
                                     HashableValue::Str("end-col".into()),
-                                    mk(Value::Int { n: ec }),
+                                    mk(Value::Int {
+                                        n: ec,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            crate::value::TYPE_ID_INT,
+                                        )),
+                                    }),
                                 );
                                 return ok_val(
                                     Value::Dict {
                                         entries: w,
                                         type_decl_id: TYPE_ID_DICT,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            crate::value::TYPE_ID_DICT,
+                                        )),
                                     },
                                     call_span,
                                 );
@@ -1409,6 +1550,9 @@ pub(crate) fn builtin_span_of(
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -1580,6 +1724,9 @@ pub(crate) fn builtin_var_resolution(
                 Value::Dict {
                     entries: IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             ),
@@ -1598,12 +1745,20 @@ pub(crate) fn builtin_var_resolution(
                 );
                 result.insert(
                     HashableValue::Str("index".into()),
-                    mk(Value::Int { n: index_val }),
+                    mk(Value::Int {
+                        n: index_val,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
+                    }),
                 );
                 ok_val(
                     Value::Dict {
                         entries: result,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -1687,6 +1842,9 @@ pub(crate) fn builtin_annotation_of(
                     Value::Dict {
                         entries,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -1702,6 +1860,9 @@ pub(crate) fn builtin_annotation_of(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -1753,6 +1914,7 @@ pub(crate) fn builtin_make_annotated(
             Value::Annotated {
                 inner: Box::new(inner_val),
                 annotation: Box::new(ann_val),
+                type_val: None,
             },
             call_span,
         )
@@ -1969,6 +2131,9 @@ pub(crate) fn builtin_parse(
                 mk(Value::Dict {
                     entries: w,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 }),
             );
         }
@@ -1983,6 +2148,9 @@ pub(crate) fn builtin_parse(
         let program_value = Value::Program {
             program: std::sync::Arc::new(surface_program),
             resolutions: std::sync::Arc::new(Default::default()),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_PROGRAM,
+            )),
         };
 
         // Return {program: Value::Program, diagnostics: integer-keyed Dict of diagnostic dicts}.
@@ -1993,12 +2161,18 @@ pub(crate) fn builtin_parse(
             mk(Value::Dict {
                 entries: errors_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
         );
         Ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )))
@@ -2149,6 +2323,9 @@ pub(crate) fn builtin_resolve(
                 mk(Value::Dict {
                     entries: w,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 }),
             );
         }
@@ -2159,7 +2336,12 @@ pub(crate) fn builtin_resolve(
         for name in &unreferenced_names {
             unreferenced_dict.insert(
                 HashableValue::Str(name.as_str().into()),
-                mk(Value::Int { n: 1 }),
+                mk(Value::Int {
+                    n: 1,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                }),
             );
         }
 
@@ -2174,6 +2356,9 @@ pub(crate) fn builtin_resolve(
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
                 resolver_frames: Arc::new(dispatcher_frames),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DOCUMENT,
+                )),
             }),
         );
         result_dict.insert(
@@ -2181,6 +2366,9 @@ pub(crate) fn builtin_resolve(
             mk(Value::Dict {
                 entries: diagnostics_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
         );
         result_dict.insert(
@@ -2188,6 +2376,9 @@ pub(crate) fn builtin_resolve(
             mk(Value::Dict {
                 entries: unreferenced_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
         );
         result_dict.insert(HashableValue::Str("doc-span".into()), mk_span(&doc_span));
@@ -2195,6 +2386,9 @@ pub(crate) fn builtin_resolve(
             Value::Dict {
                 entries: result_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -2327,6 +2521,9 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 mk(Value::Dict {
                     entries: w,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 }),
             );
         }
@@ -2335,6 +2532,9 @@ pub(crate) fn builtin_lint_pipeline_docs(
             Value::Dict {
                 entries: diagnostics_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -2693,6 +2893,9 @@ pub(crate) fn builtin_typecheck_doc(
                 mk(Value::Dict {
                     entries: w,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 }),
             );
         }
@@ -2703,6 +2906,9 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Document {
                 doc: doc_arc,
                 resolver_frames,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DOCUMENT,
+                )),
             }),
         );
         result.insert(
@@ -2710,12 +2916,18 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Dict {
                 entries: diagnostics_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
         );
         ok_val(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -2763,6 +2975,9 @@ pub(crate) fn builtin_get_type_context(
                 ok_val(
                     Value::TypeContext {
                         ctx: Arc::new(Mutex::new(tc_clone)),
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_TYPE_CONTEXT,
+                        )),
                     },
                     call_span,
                 )
@@ -2842,6 +3057,9 @@ pub(crate) fn builtin_make_type_ctx(
         ok_val(
             Value::TypeContext {
                 ctx: Arc::new(Mutex::new(tc)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TYPE_CONTEXT,
+                )),
             },
             call_span,
         )
@@ -2882,6 +3100,9 @@ pub(crate) fn builtin_fork_type_ctx(
                 ok_val(
                     Value::TypeContext {
                         ctx: Arc::new(Mutex::new(child_data)),
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_TYPE_CONTEXT,
+                        )),
                     },
                     call_span,
                 )
@@ -3039,7 +3260,15 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         }
 
         // Return same TypeContext Arc (mutations visible through it)
-        ok_val(Value::TypeContext { ctx: tc_arc }, call_span)
+        ok_val(
+            Value::TypeContext {
+                ctx: tc_arc,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TYPE_CONTEXT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -3125,6 +3354,9 @@ pub(crate) fn builtin_program(
             Value::Program {
                 program: std::sync::Arc::new(surface_program),
                 resolutions: std::sync::Arc::new(Default::default()),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_PROGRAM,
+                )),
             },
             call_span,
         )
@@ -3175,6 +3407,9 @@ pub(crate) fn builtin_desugar(
             Value::Program {
                 program: std::sync::Arc::new(desugared),
                 resolutions,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_PROGRAM,
+                )),
             },
             call_span,
         )
@@ -3225,6 +3460,9 @@ pub(crate) fn builtin_expand(
             Value::Program {
                 program: std::sync::Arc::new(expanded),
                 resolutions,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_PROGRAM,
+                )),
             },
             call_span,
         )
@@ -3278,6 +3516,9 @@ pub(crate) fn builtin_program_docs(
                 Value::Document {
                     doc: doc_arc,
                     resolver_frames: Arc::new(Vec::new()),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DOCUMENT,
+                    )),
                 },
                 call_span.clone(),
             ));
@@ -3287,6 +3528,9 @@ pub(crate) fn builtin_program_docs(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -3352,6 +3596,9 @@ pub(crate) fn builtin_doc_expressions(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -3416,6 +3663,9 @@ pub(crate) fn builtin_doc_meta(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -3458,7 +3708,12 @@ pub(crate) fn builtin_builtin_module(
                 for def in defs {
                     let name_arc: Arc<str> = Arc::from(def.name);
                     let builtin_thunk = Arc::new(Thunk::value(
-                        Value::Builtin { def },
+                        Value::Builtin {
+                            def,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_BUILTIN,
+                            )),
+                        },
                         call_span.clone().with_name(Arc::clone(&name_arc)),
                     ));
                     dict_map.insert(HashableValue::Str(name_arc), builtin_thunk);
@@ -3467,6 +3722,9 @@ pub(crate) fn builtin_builtin_module(
                     Value::Dict {
                         entries: dict_map,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -3500,6 +3758,9 @@ pub(crate) fn builtin_empty_scope(
             Value::Scope {
                 slots: Arc::new(Vec::new()),
                 names: Arc::new(IndexMap::new()),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_SCOPE,
+                )),
             },
             call_span,
         )))
@@ -3587,6 +3848,9 @@ pub(crate) fn builtin_scope_extend(
             Value::Scope {
                 slots: Arc::new(new_slots),
                 names: Arc::new(new_names),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_SCOPE,
+                )),
             },
             call_span,
         )))
@@ -3645,6 +3909,9 @@ pub(crate) fn builtin_scope_exports(
             Value::Dict {
                 entries: dict_map,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )))
@@ -3759,6 +4026,9 @@ pub(crate) fn builtin_eval(
             Value::Scope {
                 slots: Arc::new(final_slots),
                 names: Arc::new(result_names),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_SCOPE,
+                )),
             },
             call_span,
         )))
@@ -3798,6 +4068,9 @@ pub(crate) fn builtin_variant_payload(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             ),
@@ -3840,7 +4113,12 @@ pub(crate) fn builtin_current_env(
             "builtin-current-env: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
         );
         Ok(Arc::new(Thunk::value(
-            Value::Int { n: env_id as i64 },
+            Value::Int {
+                n: env_id as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
             call_span,
         )))
     })
@@ -4072,6 +4350,9 @@ pub(crate) fn builtin_eval_types(
             Value::Dict {
                 entries: result_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -4494,6 +4775,9 @@ pub(crate) fn builtin_is_contractive(
         ok_val(
             Value::Int {
                 n: if result { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )
@@ -4800,6 +5084,9 @@ pub(crate) fn builtin_ast_to_program(
             Value::Program {
                 program: std::sync::Arc::new(program),
                 resolutions: Arc::new(Default::default()),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_PROGRAM,
+                )),
             },
             call_span,
         )
@@ -4916,6 +5203,9 @@ pub(crate) fn builtin_cap_env_has(
         ok_val(
             Value::Int {
                 n: if found { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )
@@ -5023,6 +5313,9 @@ pub(crate) fn builtin_lower(
             Value::CoreDocument {
                 entries: std::sync::Arc::new(entries),
                 span,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CORE_DOCUMENT,
+                )),
             },
             call_span,
         )
@@ -5277,6 +5570,7 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Red"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
@@ -5301,14 +5595,19 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("SimpleType.Leaf"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let annotation = Value::Dict {
             entries: IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         };
         let annotated = Value::Annotated {
             inner: Box::new(variant),
             annotation: Box::new(annotation),
+            type_val: None,
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
@@ -5333,20 +5632,29 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let inner_annotated = Value::Annotated {
             inner: Box::new(variant),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
+            type_val: None,
         };
         let outer_annotated = Value::Annotated {
             inner: Box::new(inner_annotated),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
+            type_val: None,
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
@@ -5381,7 +5689,12 @@ mod tests {
         let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(
             val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "expected caller_env_id as Int(42)"
         );
         Ok(())
@@ -5392,7 +5705,12 @@ mod tests {
     async fn current_env_rejects_positional_args() {
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
-            args: vec![thunk_id(Value::Int { n: 1 })],
+            args: vec![thunk_id(Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            })],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -5416,11 +5734,20 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_non_variant_errors() {
         let annotated = Value::Annotated {
-            inner: Box::new(Value::Int { n: 42 }),
+            inner: Box::new(Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            }),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
+            type_val: None,
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {

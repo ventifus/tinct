@@ -145,6 +145,7 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
     let payload = Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -153,6 +154,7 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 

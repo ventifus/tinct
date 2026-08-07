@@ -128,7 +128,10 @@ pub use type_class::TypeValue;
 /// injected type env). These are the canonical single-path constructors — callers must
 /// not duplicate construction logic locally (Axiom 2).
 pub use type_infer::{make_typevalue_nominal, make_typevalue_open_dict, make_typevalue_unknown};
-pub use value::{TYPE_ID_DICT, TYPE_ID_DIRCAP, TYPE_ID_NETCAP};
+pub use value::{
+    TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP, TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP,
+    TYPE_ID_PROXY,
+};
 
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source_tinct;
@@ -1232,7 +1235,8 @@ pub fn find_libdir_path() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use test_util::test_span;
-    use value::{Thunk, Value};
+    use type_infer::make_typevalue_nominal;
+    use value::{Thunk, Value, TYPE_ID_INT, TYPE_ID_PROXY};
 
     // Async wrappers for async public functions — test code uses .await.
     async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
@@ -1261,6 +1265,7 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Red"),
             payload: None,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         };
         assert_eq!(format!("{v}"), "Color.Red");
     }
@@ -1279,11 +1284,13 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Red"),
             payload: None,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let green_val = Value::Variant {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Color.Green"),
             payload: None,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         };
 
         let red_display = value_to_display_string(&red_val, &ctx, rust_span!())
@@ -1308,6 +1315,7 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("MyBool.Yes"),
             payload: None,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let user_display = value_to_display_string(&user_val, &ctx, rust_span!())
             .await
@@ -1321,9 +1329,16 @@ mod tests {
     #[tokio::test]
     async fn test_display_proxy() {
         let ctx = test_ctx().await;
-        let handler_thunk = Arc::new(Thunk::value(Value::Int { n: 42 }, test_span(1, 1, 1, 1)));
+        let handler_thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
+            },
+            test_span(1, 1, 1, 1),
+        ));
         let proxy = Value::Proxy {
             handler: handler_thunk,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_PROXY)),
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await

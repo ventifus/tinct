@@ -89,6 +89,7 @@ fn string_value(s: &str) -> Value {
         source,
         start: 0,
         end,
+        type_val: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn single_field_dict(key: &str, value: Value) -> Value {
     Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     }
 }
 
@@ -110,6 +112,7 @@ fn two_field_dict(key1: &str, val1: Value, key2: &str, val2: Value) -> Value {
     Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     }
 }
 
@@ -120,6 +123,7 @@ fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
         payload: payload.map(|p| settled_thunk(p)),
 
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     }
 }
 
@@ -164,6 +168,7 @@ pub fn make_constraint_decl(class_tv: TypeValue, args: Vec<TypeValue>) -> TypeVa
     let args_dict = Value::Dict {
         entries: args_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
 
     let class_val = arc_into_value(class_tv);
@@ -834,6 +839,7 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
                 payload: None,
 
                 type_decl_id: TYPE_ID_DICT,
+                type_val: None,
             }))
         }
         Some(TV_VAR) => {
@@ -846,18 +852,21 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
             payload: None,
 
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })),
         Some(TV_TOP) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_TOP),
             payload: None,
 
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })),
         Some(TV_NEVER) => Some(Arc::new(Value::Variant {
             ctor: Arc::from(TN_NEVER),
             payload: None,
 
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })),
         _ => None, // Compound types not yet converted — extend as needed.
     }

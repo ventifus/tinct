@@ -27,7 +27,9 @@ use crate::rust_span;
 // ============================================================================
 
 use crate::ast::{Annotation, DotKey, Spanned};
-use crate::value::{string_val, HashableValue, Value, TYPE_ID_DICT};
+use crate::value::{
+    string_val, HashableValue, Value, TYPE_ID_DICT, TYPE_ID_FLOAT, TYPE_ID_INT, TYPE_ID_U64,
+};
 
 /// Extract a named field from a `SurfaceNode` as a `Value`.
 ///
@@ -47,6 +49,7 @@ pub fn surface_node_get_field(
     let null = || Value::Dict {
         entries: indexmap::IndexMap::new(),
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     };
     let expr_variant =
         |n: &Arc<SurfaceNode>| crate::surface_convert::surface_node_to_expr_variant(n, ctx);
@@ -56,13 +59,22 @@ pub fn surface_node_get_field(
         (_, "span") => span_to_value(&node.span, ctx),
 
         // --- IntLiteral ---
-        (SurfaceExpression::Int(n), "value") => Value::Int { n: *n },
+        (SurfaceExpression::Int(n), "value") => Value::Int {
+            n: *n,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+        },
 
         // --- U64Literal ---
-        (SurfaceExpression::U64(n), "value") => Value::U64 { n: *n },
+        (SurfaceExpression::U64(n), "value") => Value::U64 {
+            n: *n,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_U64)),
+        },
 
         // --- FloatLiteral ---
-        (SurfaceExpression::Float(n), "value") => Value::Float { n: *n },
+        (SurfaceExpression::Float(n), "value") => Value::Float {
+            n: *n,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_FLOAT)),
+        },
 
         // --- StringLiteral ---
         (SurfaceExpression::StringLiteral { content: s, .. }, "value") => string_val(s),
@@ -71,6 +83,7 @@ pub fn surface_node_get_field(
         (SurfaceExpression::VarRef { name, .. }, "name") => string_val(name),
         (SurfaceExpression::VarRef { escaped, .. }, "escaped") => Value::Int {
             n: if *escaped { 1 } else { 0 },
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         },
 
         // --- DotAccess ---
@@ -104,6 +117,7 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::Call { implied, .. }, "implied") => Value::Int {
             n: if *implied { 1 } else { 0 },
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         },
 
         // --- Fn ---
@@ -114,6 +128,7 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::Int {
             n: if *desugared { 1 } else { 0 },
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         },
 
         // --- TypeAssert ---
@@ -158,6 +173,7 @@ pub fn surface_node_get_field(
             if let SurfaceDeclaration::TypeAlias { params, .. } = decl.as_ref() {
                 Value::Int {
                     n: params.len() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                 }
             } else {
                 null()
@@ -187,6 +203,7 @@ fn nodes_to_list_dict(
     Value::Dict {
         entries: map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -211,6 +228,7 @@ fn surface_entries_to_list_dict(
             || Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             |k| crate::surface_convert::surface_node_to_expr_variant(k, ctx),
         );
@@ -232,9 +250,11 @@ fn surface_entries_to_list_dict(
                 Value::Dict {
                     entries: payload,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 },
                 entry.span.clone(),
             ))),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -242,6 +262,7 @@ fn surface_entries_to_list_dict(
     Value::Dict {
         entries: map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -273,9 +294,11 @@ fn named_args_to_list_dict(
                 Value::Dict {
                     entries: payload,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 },
                 na.span.clone(),
             ))),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let thunk = Arc::new(Thunk::value(na_variant, na.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -283,6 +306,7 @@ fn named_args_to_list_dict(
     Value::Dict {
         entries: map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -305,6 +329,7 @@ fn params_to_list_dict(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: if p.node.variadic { 1 } else { 0 },
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                 },
                 p.span.clone(),
             )),
@@ -323,9 +348,11 @@ fn params_to_list_dict(
                 Value::Dict {
                     entries: payload,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 },
                 p.span.clone(),
             ))),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let thunk = Arc::new(Thunk::value(p_variant, p.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -333,6 +360,7 @@ fn params_to_list_dict(
     Value::Dict {
         entries: map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -355,6 +383,7 @@ fn match_arms_to_list_dict(
             || Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             |g| crate::surface_convert::surface_node_to_expr_variant(g, ctx),
         );
@@ -377,6 +406,7 @@ fn match_arms_to_list_dict(
             Value::Dict {
                 entries: arm_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             span.clone(),
         ));
@@ -385,6 +415,7 @@ fn match_arms_to_list_dict(
     Value::Dict {
         entries: map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -410,16 +441,24 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                     Value::Dict {
                         entries: payload_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span,
                 ))),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             }
         }
         DotKey::Int(index) => {
             let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload_dict.insert(
                 HashableValue::Str("index".into()),
-                Arc::new(Thunk::value(Value::Int { n: *index }, span.clone())),
+                Arc::new(Thunk::value(
+                    Value::Int {
+                        n: *index,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                    },
+                    span.clone(),
+                )),
             );
             Value::Variant {
                 type_decl_id: TYPE_ID_DICT,
@@ -428,9 +467,11 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                     Value::Dict {
                         entries: payload_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span,
                 ))),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             }
         }
     }
@@ -527,9 +568,13 @@ fn annotation_inner_to_value(
                                 Value::Dict {
                                     entries: p,
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        TYPE_ID_DICT,
+                                    )),
                                 },
                                 pos_entry.span.clone(),
                             ))),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                         }
                     }
                     SurfaceExpression::VarRef {
@@ -555,9 +600,13 @@ fn annotation_inner_to_value(
                                 Value::Dict {
                                     entries: p,
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        TYPE_ID_DICT,
+                                    )),
                                 },
                                 pos_entry.span.clone(),
                             ))),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                         }
                     }
                     _ => {
@@ -577,9 +626,13 @@ fn annotation_inner_to_value(
                                 Value::Dict {
                                     entries: p,
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        TYPE_ID_DICT,
+                                    )),
                                 },
                                 pos_entry.span.clone(),
                             ))),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                         }
                     }
                 };
@@ -594,6 +647,7 @@ fn annotation_inner_to_value(
                     Value::Dict {
                         entries: parts_map,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 )),
@@ -668,9 +722,11 @@ fn annotation_inner_to_value(
             Value::Dict {
                 entries: payload_map,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             span,
         ))),
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -683,6 +739,7 @@ pub fn annotation_opt_to_value(
         None => Value::Dict {
             entries: indexmap::IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
     }
 }
@@ -708,6 +765,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_line as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -717,6 +775,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_col as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -726,6 +785,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_line as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -735,6 +795,7 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_col as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -743,6 +804,7 @@ pub fn span_to_value(
     Value::Dict {
         entries: map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 

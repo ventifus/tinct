@@ -22,7 +22,7 @@ use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
 use crate::value::{
-    string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT,
+    string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
 };
 
 tokio::task_local! {
@@ -541,6 +541,7 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 }
             }
         }),
@@ -549,30 +550,35 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
         HashableValue::Str("start-line".into()),
         mk(Value::Int {
             n: span.start_line as i64,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         }),
     );
     w.insert(
         HashableValue::Str("start-col".into()),
         mk(Value::Int {
             n: span.start_col as i64,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         }),
     );
     w.insert(
         HashableValue::Str("end-line".into()),
         mk(Value::Int {
             n: span.end_line as i64,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         }),
     );
     w.insert(
         HashableValue::Str("end-col".into()),
         mk(Value::Int {
             n: span.end_col as i64,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         }),
     );
     Arc::new(Thunk::value(
         Value::Dict {
             entries: w,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         call_span.clone(),
     ))
@@ -627,7 +633,7 @@ pub(crate) fn apply_predicate_to_subject(
             original_call: Arc::new(Spanned {
                 node: CoreExpr::Int {
                     value: 0,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span: pred_span,
             }),
@@ -1025,7 +1031,8 @@ async fn dispatch_state(
                 // Evaluate inner (or the default: fallback if inner is a Placeholder).
                 let inner_thunk = if let Some(default_node) = placeholder_default {
                     let display_names = thunk_ctx.type_display_names_snapshot();
-                    let (lowered_default, lower_diags) = crate::lower::lower(default_node, &display_names);
+                    let (lowered_default, lower_diags) =
+                        crate::lower::lower(default_node, &display_names);
                     {
                         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                             .into_iter()
@@ -1113,10 +1120,12 @@ async fn dispatch_state(
                     thunk.settle(Ok(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     }));
                     return Action::Continue(Ok(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     }));
                 }
 
@@ -1452,6 +1461,11 @@ pub(crate) async fn apply_cont(
                                         Arc::new(Thunk::value(
                                             Value::Int {
                                                 n: caller_env_id as i64,
+                                                type_val: Some(
+                                                    crate::type_infer::make_typevalue_nominal(
+                                                        TYPE_ID_INT,
+                                                    ),
+                                                ),
                                             },
                                             call_span.clone(),
                                         )),
@@ -1506,6 +1520,14 @@ pub(crate) async fn apply_cont(
                                     ));
                             }
 
+                            let call_type_inst = match &original_call.node {
+                                crate::ast::CoreExpr::Call {
+                                    type_instantiation: Some(ref ti),
+                                    ..
+                                } => ti.clone(),
+                                _ => std::collections::HashMap::new(),
+                            };
+
                             if tail_hint {
                                 let invoke_result = {
                                     let call_ctx = CallContext {
@@ -1516,6 +1538,7 @@ pub(crate) async fn apply_cont(
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
                                         caller_evidence: caller_evidence.clone(),
+                                        type_instantiation: call_type_inst.clone(),
                                     };
                                     invoke_function_tco(&call_ctx).await
                                 };
@@ -1554,6 +1577,7 @@ pub(crate) async fn apply_cont(
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
                                         caller_evidence: caller_evidence.clone(),
+                                        type_instantiation: call_type_inst,
                                     };
                                     invoke_function(&call_ctx).await
                                 };
@@ -1705,6 +1729,7 @@ pub(crate) async fn apply_cont(
                             type_decl_id,
                             ctor,
                             payload: None,
+                            ..
                         } if args.as_ref().is_some_and(|v| v.len() == 1)
                             && named
                                 .as_ref()
@@ -1716,6 +1741,9 @@ pub(crate) async fn apply_cont(
                                 type_decl_id,
                                 ctor,
                                 payload: Some(payload_thunk),
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    type_decl_id,
+                                )),
                             };
                             // Variant constructor produces a literal Value — no thunk to materialize.
                             if !tail_hint {
@@ -1824,6 +1852,9 @@ pub(crate) async fn apply_cont(
                                     let guarded_value = Value::Dict {
                                         entries: new_entries,
                                         type_decl_id: TYPE_ID_DICT,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            TYPE_ID_DICT,
+                                        )),
                                     };
                                     thunk.settle(Ok(guarded_value.clone()));
                                     Action::Continue(Ok(guarded_value))
@@ -2203,11 +2234,12 @@ pub(crate) async fn apply_cont(
                         Some(name) => {
                             // Bridge name → id via TypeContextData.type_name_to_id,
                             // then look up the TyConDef by id in the u64-keyed tycon_env.
-                            let id_opt = ctx.type_context.lock().ok().and_then(|guard| {
-                                guard
-                                    .as_ref()
-                                    .and_then(|tc| tc.type_name_to_id.get(name.as_str()).copied())
-                            });
+                            let id_opt = ctx
+                                .type_context
+                                .lock()
+                                .expect("type_context lock poisoned")
+                                .as_ref()
+                                .and_then(|tc| tc.type_name_to_id.get(name.as_str()).copied());
                             match id_opt {
                                 Some(id) => ctx
                                     .tycon_env()
@@ -2253,7 +2285,8 @@ pub(crate) async fn apply_cont(
                     // Only Source annotations have a `default:` property.
                     if let Some(default_node) = get_default() {
                         let display_names = ctx.type_display_names_snapshot();
-                        let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
+                        let (lowered_default, lower_diags) =
+                            crate::lower::lower(&default_node, &display_names);
                         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                             .into_iter()
                             .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
@@ -2303,6 +2336,9 @@ pub(crate) async fn apply_cont(
                                     let wrapped = Value::Dict {
                                         entries: new_entries,
                                         type_decl_id: TYPE_ID_DICT,
+                                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                            TYPE_ID_DICT,
+                                        )),
                                     };
                                     return Action::Continue(Ok(wrapped));
                                 }
@@ -2359,7 +2395,8 @@ pub(crate) async fn apply_cont(
                         // Type mismatch — try default: fallback before raising an error.
                         if let Some(default_node) = get_default() {
                             let display_names = ctx.type_display_names_snapshot();
-                            let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
+                            let (lowered_default, lower_diags) =
+                                crate::lower::lower(&default_node, &display_names);
                             let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                                 .into_iter()
                                 .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
@@ -2554,6 +2591,7 @@ pub(crate) async fn apply_cont(
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
                             caller_evidence: frame.caller_evidence.clone(),
+                            type_inst: frame.type_inst.clone(),
                         });
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
@@ -2645,6 +2683,7 @@ pub(crate) async fn apply_cont(
                             closure_env: std::sync::Arc::clone(&frame.closure_env),
                             params: std::sync::Arc::clone(&frame.params),
                             caller_evidence: frame.caller_evidence.clone(),
+                            type_inst: frame.type_inst.clone(),
                         });
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
@@ -3051,7 +3090,7 @@ pub(crate) async fn apply_cont(
                                     original_call: Arc::new(Spanned {
                                         node: CoreExpr::Int {
                                             value: 0,
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span: match_span.clone(),
                                     }),
@@ -3147,6 +3186,7 @@ pub(crate) async fn apply_cont(
                     let value = Value::Annotated {
                         inner: Box::new(inner_val),
                         annotation,
+                        type_val: None,
                     };
                     thunk.settle(Ok(value.clone()));
                     Action::Continue(Ok(value))
@@ -3302,7 +3342,8 @@ fn eval_structural_pattern_inner<'a>(
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
                     let display_names = ctx.type_display_names_snapshot();
-                    let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node, &display_names);
+                    let (lowered_pred, lower_diags) =
+                        crate::lower::lower(pred_surface_node, &display_names);
                     {
                         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                             .into_iter()
@@ -3544,7 +3585,8 @@ fn eval_structural_pattern_inner<'a>(
                                     args: args.to_vec(),
                                     named_args: named_args.to_vec(),
                                     implied: *implied,
-                                    inferred_type_id: 0,
+                                    inferred_type: None,
+                                    type_instantiation: None,
                                 },
                                 match_span.clone(),
                             ));
@@ -3627,7 +3669,8 @@ fn eval_structural_pattern_inner<'a>(
                                     args: args.to_vec(),
                                     named_args: named_args.to_vec(),
                                     implied: *implied,
-                                    inferred_type_id: 0,
+                                    inferred_type: None,
+                                    type_instantiation: None,
                                 },
                                 match_span.clone(),
                             ));
@@ -3993,7 +4036,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 value_span.clone(),
             )),
@@ -4051,7 +4094,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 same_span.clone(),
             )),
@@ -4096,7 +4139,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4123,7 +4166,13 @@ mod tests {
 
         // Verify the result is correct
         assert!(result.is_ok(), "Expected successful materialization");
-        assert_eq!(result.unwrap(), Value::Int { n: 42 });
+        assert_eq!(
+            result.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            }
+        );
 
         // Verify the thunk transitioned to Materialized state
         let peeked = thunk
@@ -4132,7 +4181,10 @@ mod tests {
             .expect("thunk must not have errored after successful materialization");
         assert_eq!(
             peeked,
-            &Value::Int { n: 42 },
+            &Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            },
             "Cached value should be Int(42)"
         );
 
@@ -4146,7 +4198,13 @@ mod tests {
             &ctx,
         )
         .await;
-        assert_eq!(result2.unwrap(), Value::Int { n: 42 });
+        assert_eq!(
+            result2.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            }
+        );
     }
 
     #[tokio::test]
@@ -4164,7 +4222,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4246,7 +4304,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4294,7 +4352,13 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: an Int value that satisfies the Int guard.
-        let inner = Arc::new(Thunk::value(Value::Int { n: 42 }, span.clone()));
+        let inner = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+            },
+            span.clone(),
+        ));
 
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4312,7 +4376,13 @@ mod tests {
             "Int value should pass Int guard, got: {:?}",
             result.unwrap_err()
         );
-        assert_eq!(result.unwrap(), Value::Int { n: 42 });
+        assert_eq!(
+            result.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            }
+        );
 
         // After success, thunk must be in Materialized state (memoized).
         let peeked = guarded
@@ -4321,7 +4391,10 @@ mod tests {
             .expect("thunk must not have errored after successful validation");
         assert_eq!(
             peeked,
-            &Value::Int { n: 42 },
+            &Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            },
             "after successful validation, thunk should be Materialized(Int(42))"
         );
     }
@@ -4346,7 +4419,7 @@ mod tests {
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int {
             value: 99,
-            inferred_type_id: 0,
+            inferred_type: None,
         }));
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4367,7 +4440,10 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Int { n: 99 },
+            Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            },
             "default expression should yield 99 (from caller's env)"
         );
 
@@ -4378,7 +4454,10 @@ mod tests {
             .expect("thunk must not have errored after default fallback");
         assert_eq!(
             peeked,
-            &Value::Int { n: 99 },
+            &Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            },
             "after default fallback, thunk should be Materialized(Int(99))"
         );
     }
@@ -4395,7 +4474,15 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: a Float value — fails the Int guard.
-        let inner = Arc::new(Thunk::value(Value::Float { n: 1.0 }, span.clone()));
+        let inner = Arc::new(Thunk::value(
+            Value::Float {
+                n: 1.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT,
+                )),
+            },
+            span.clone(),
+        ));
 
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4467,7 +4554,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4554,7 +4641,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4572,7 +4659,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4598,7 +4685,15 @@ mod tests {
                 "arg1 must be settled Ok by force_count=2"
             );
             let span = args.call_span;
-            Box::pin(async move { Ok(Arc::new(Thunk::value(Value::Int { n: 1 }, span))) })
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::value(
+                    Value::Int {
+                        n: 1,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                    },
+                    span,
+                )))
+            })
         };
 
         const DUMMY_STRICTNESS: &[Strictness] = &[];
@@ -4637,7 +4732,10 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Int { n: 1 },
+            Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            },
             "dummy builtin must succeed with both args pre-materialized"
         );
     }
@@ -4721,7 +4819,13 @@ mod cek_lifecycle_tests {
     #[tokio::test]
     async fn test_cont_memoize_construction() {
         let span = test_span(1, 1, 1, 10);
-        let thunk = Arc::new(Thunk::value(Value::Int { n: 7 }, span.clone()));
+        let thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 7,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+            },
+            span.clone(),
+        ));
         let origin: Option<Arc<str>> = Some(Arc::from("test-origin"));
 
         let data = MemoizeData {
@@ -4760,7 +4864,13 @@ mod cek_lifecycle_tests {
         let ctx = test_ctx();
 
         // A pre-materialized thunk: created with Thunk::value → already in Materialized state.
-        let thunk = Arc::new(Thunk::value(Value::Int { n: 99 }, span.clone()));
+        let thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+            },
+            span.clone(),
+        ));
 
         let peeked = thunk
             .peek_result()
@@ -4768,7 +4878,10 @@ mod cek_lifecycle_tests {
             .expect("Thunk::value must not have errored — invariant violation");
         assert_eq!(
             peeked,
-            &Value::Int { n: 99 },
+            &Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+            },
             "Thunk::value must start Materialized"
         );
 
@@ -4780,7 +4893,10 @@ mod cek_lifecycle_tests {
             Action::Continue(Ok(v)) => {
                 assert_eq!(
                     v,
-                    Value::Int { n: 99 },
+                    Value::Int {
+                        n: 99,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+                    },
                     "expected the materialized value Int(99)"
                 );
             }
@@ -4813,7 +4929,7 @@ mod cek_lifecycle_tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 0,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -4876,7 +4992,7 @@ mod cek_lifecycle_tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 0,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 span.clone(),
             )),
@@ -5028,12 +5144,14 @@ fn force_dict_tree_impl<'a>(
                 Ok(Value::Dict {
                     entries: new_map,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 })
             }
             Value::Variant {
                 type_decl_id,
                 ctor,
                 payload,
+                ..
             } => {
                 if let Some(payload_thunk) = payload {
                     let thunk_ptr = Arc::as_ptr(payload_thunk) as usize;
@@ -5050,6 +5168,7 @@ fn force_dict_tree_impl<'a>(
                         type_decl_id: *type_decl_id,
                         ctor: ctor.clone(),
                         payload: Some(deep_thunk),
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                     })
                 } else {
                     Ok(val.clone())

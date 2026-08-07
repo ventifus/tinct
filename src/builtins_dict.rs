@@ -108,9 +108,17 @@ fn value_to_hashable_key(
 /// Convert a `HashableValue` key back to a runtime `Value`.
 fn hashable_value_to_value(hv: &HashableValue) -> Value {
     match hv {
-        HashableValue::Int(n) => Value::Int { n: *n },
+        HashableValue::Int(n) => Value::Int {
+            n: *n,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_INT,
+            )),
+        },
         HashableValue::Float(bits) => Value::Float {
             n: f64::from_bits(*bits),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_FLOAT,
+            )),
         },
         HashableValue::Str(s) => string_val(s),
         HashableValue::Dict(pairs) => {
@@ -122,6 +130,9 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
             Value::Dict {
                 entries: map,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }
         }
         HashableValue::Variant { tag, payload } => {
@@ -134,6 +145,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
                 type_decl_id: 0,
                 ctor: tag.clone(),
                 payload: payload_thunk,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(0)),
             }
         }
     }
@@ -186,6 +198,9 @@ pub(crate) fn builtin_keys(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -225,7 +240,15 @@ pub(crate) fn builtin_length(
                         call_span.clone(),
                     )
                 })?;
-                ok_val(Value::Int { n: len_i64 }, call_span)
+                ok_val(
+                    Value::Int {
+                        n: len_i64,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
+                    },
+                    call_span,
+                )
             }
             Value::Bytes { start, end, .. } => {
                 let len = end - start;
@@ -235,7 +258,15 @@ pub(crate) fn builtin_length(
                         call_span.clone(),
                     )
                 })?;
-                ok_val(Value::Int { n: len_i64 }, call_span)
+                ok_val(
+                    Value::Int {
+                        n: len_i64,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
+                    },
+                    call_span,
+                )
             }
             _ => {
                 let map = crate::builtins::require_dict(
@@ -249,6 +280,9 @@ pub(crate) fn builtin_length(
                 ok_val(
                     Value::Int {
                         n: map.len() as i64,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
                     },
                     call_span,
                 )
@@ -358,7 +392,15 @@ pub(crate) fn builtin_has_key(
         .await?;
 
         let exists = if map.contains_key(&key) { 1i64 } else { 0i64 };
-        ok_val(Value::Int { n: exists }, call_span)
+        ok_val(
+            Value::Int {
+                n: exists,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -414,11 +456,27 @@ pub(crate) fn builtin_dict_has_nth(
             Ok(i) => i,
             Err(_overflow) => {
                 // idx > usize::MAX on this platform; no dict can have this many entries.
-                return ok_val(Value::Int { n: 0 }, call_span);
+                return ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
+                    },
+                    call_span,
+                );
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
-        ok_val(Value::Int { n: exists }, call_span)
+        ok_val(
+            Value::Int {
+                n: exists,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -538,11 +596,27 @@ pub(crate) fn builtin_dict_has_key_nth(
             Ok(i) => i,
             Err(_overflow) => {
                 // idx > usize::MAX on this platform; no dict can have this many entries.
-                return ok_val(Value::Int { n: 0 }, call_span);
+                return ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
+                    },
+                    call_span,
+                );
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
-        ok_val(Value::Int { n: exists }, call_span)
+        ok_val(
+            Value::Int {
+                n: exists,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -664,11 +738,27 @@ pub(crate) fn builtin_dict_has_kv_nth(
             Ok(i) => i,
             Err(_overflow) => {
                 // idx > usize::MAX on this platform; no dict can have this many entries.
-                return ok_val(Value::Int { n: 0 }, call_span);
+                return ok_val(
+                    Value::Int {
+                        n: 0,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT,
+                        )),
+                    },
+                    call_span,
+                );
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
-        ok_val(Value::Int { n: exists }, call_span)
+        ok_val(
+            Value::Int {
+                n: exists,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -730,6 +820,9 @@ pub(crate) fn builtin_dict_kv_nth(
                     Value::Dict {
                         entries: kv,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -913,6 +1006,9 @@ pub(crate) fn builtin_build_dict(
                     Value::Dict {
                         entries: result,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -1185,6 +1281,9 @@ pub(crate) fn builtin_builder_finish(
             Value::Dict {
                 entries: dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -1235,6 +1334,9 @@ pub(crate) fn builtin_builder_snapshot(
             Value::Dict {
                 entries: dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -1313,6 +1415,9 @@ pub(crate) fn builtin_builder_has(
         ok_val(
             Value::Int {
                 n: if has { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )
@@ -1526,11 +1631,12 @@ pub(crate) fn builtin_get_by_field(
 
         // Bridge type name → u64 id via TypeContextData.type_name_to_id,
         // then look up the TyConDef by id in the u64-keyed tycon_env.
-        let type_id = ctx.type_context.lock().ok().and_then(|guard| {
-            guard
-                .as_ref()
-                .and_then(|tc| tc.type_name_to_id.get(type_name.as_str()).copied())
-        });
+        let type_id = ctx
+            .type_context
+            .lock()
+            .expect("type_context lock poisoned")
+            .as_ref()
+            .and_then(|tc| tc.type_name_to_id.get(type_name.as_str()).copied());
         let def = match type_id.and_then(|id| tycon_env.get(&id)) {
             Some(d) => d,
             None => {
@@ -1639,6 +1745,9 @@ pub(crate) fn builtin_dict_merge(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -1691,6 +1800,9 @@ pub(crate) fn builtin_take(
                 Value::Dict {
                     entries: IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span,
             );
@@ -1709,6 +1821,9 @@ pub(crate) fn builtin_take(
                     Value::Dict {
                         entries: taken,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -1779,6 +1894,9 @@ pub(crate) fn builtin_drop(
                     Value::Dict {
                         entries: dropped,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -1863,6 +1981,9 @@ pub(crate) fn builtin_concat(
                             Value::Dict {
                                 entries: result,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )

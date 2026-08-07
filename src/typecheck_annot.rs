@@ -3910,6 +3910,7 @@ pub(crate) async fn as_type_dispatch(
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
                 caller_evidence: crate::value::empty_scope(),
+                type_instantiation: std::collections::HashMap::new(),
             };
             crate::eval_call::invoke_function(&call_ctx).await?
         }
@@ -4014,6 +4015,7 @@ pub(crate) async fn eval_type_stage_expr(
             closure_env: crate::value::empty_scope(),
             params: std::sync::Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
+            type_inst: std::collections::HashMap::new(),
         })
     };
     let core_thunk = Arc::new(Thunk::core_expr(

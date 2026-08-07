@@ -1286,6 +1286,21 @@ async fn apply_cont(
                 if let Some(id) = crate::type_infer::typevalue_nominal_id(&resolved) {
                     call_node.inferred_type_decl_id.set(id);
                 }
+                // Capture type instantiation from scheme renaming.
+                // The renaming maps original type param names (e.g. "a") to fresh TypeVar
+                // names (e.g. "a⦀42"). We compose with the substitution to get
+                // {original_name → concrete_type}.
+                if let Some(renaming) = ctx.state.last_scheme_renaming.take() {
+                    let mut type_inst = std::collections::HashMap::new();
+                    for (original_name, fresh_name) in &renaming {
+                        let fresh_tv = crate::type_infer::make_typevar_value(fresh_name);
+                        let resolved_var = ctx.state.apply(&fresh_tv);
+                        if crate::type_infer::typevalue_ctor(&resolved_var) != Some(TV_VAR) {
+                            type_inst.insert(original_name.clone(), resolved_var);
+                        }
+                    }
+                    call_node.type_instantiation.set(type_inst);
+                }
             }
             result
         }
@@ -1851,6 +1866,7 @@ async fn infer_var_ref(
                             let empty_dict = Value::Dict {
                                 entries: IndexMap::new(),
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: None,
                             };
                             vars_entries.insert(
                                 var_key,
@@ -1863,6 +1879,7 @@ async fn infer_var_ref(
                         let vars_dict = Value::Dict {
                             entries: vars_entries,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: None,
                         };
                         let vars_thunk =
                             Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!()));
@@ -1871,6 +1888,7 @@ async fn infer_var_ref(
                         let constraints_dict = Value::Dict {
                             entries: IndexMap::new(),
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: None,
                         };
                         let constraints_thunk = Arc::new(crate::value::Thunk::value(
                             constraints_dict,
@@ -1896,6 +1914,7 @@ async fn infer_var_ref(
                         let scheme_payload = Value::Dict {
                             entries: scheme_payload_entries,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: None,
                         };
                         let scheme_payload_thunk = Arc::new(crate::value::Thunk::value(
                             scheme_payload,
@@ -1907,6 +1926,7 @@ async fn infer_var_ref(
                             type_decl_id: TYPE_ID_DICT,
                             ctor: Arc::from(TV_SCHEME),
                             payload: Some(scheme_payload_thunk),
+                            type_val: None,
                         });
 
                         // Instantiate the scheme at the current level.
@@ -2021,8 +2041,17 @@ async fn infer_var_ref(
         // Otherwise return the TypeValue directly (monomorphic).
         let result_type = if typevalue_ctor(&scheme) == Some(TV_SCHEME) {
             let current_level = state.ctx.current_level;
-            match instantiate_scheme_tv(&scheme, &mut state.ctx, current_level) {
-                Some(instantiated) => instantiated,
+            match crate::types::instantiate_scheme_tv_with_renaming(
+                &scheme,
+                &mut state.ctx,
+                current_level,
+            ) {
+                Some((instantiated, renaming)) => {
+                    if !renaming.is_empty() {
+                        state.last_scheme_renaming = Some(renaming);
+                    }
+                    instantiated
+                }
                 None => {
                     // instantiate_scheme_tv returning None on a TypeValue.Scheme-tagged value
                     // is an invariant violation: the scheme payload is malformed.
@@ -2259,6 +2288,22 @@ async fn apply_cont_call_func(
                     ctx,
                 )
                 .await;
+                // Wire inferred_type_decl_id and type instantiation on call_node.
+                let resolved = ctx.state.apply(&result);
+                if let Some(id) = crate::type_infer::typevalue_nominal_id(&resolved) {
+                    call_node.inferred_type_decl_id.set(id);
+                }
+                if let Some(renaming) = ctx.state.last_scheme_renaming.take() {
+                    let mut type_inst = std::collections::HashMap::new();
+                    for (original_name, fresh_name) in &renaming {
+                        let fresh_tv = crate::type_infer::make_typevar_value(fresh_name);
+                        let resolved_var = ctx.state.apply(&fresh_tv);
+                        if crate::type_infer::typevalue_ctor(&resolved_var) != Some(TV_VAR) {
+                            type_inst.insert(original_name.clone(), resolved_var);
+                        }
+                    }
+                    call_node.type_instantiation.set(type_inst);
+                }
                 return TypeCheckAction::Done(result);
             }
 
@@ -5976,6 +6021,7 @@ mod tests {
             type_guard: TypeAnnotation::new(),
             provenance: crate::ast::Provenance::new(),
             inferred_type_decl_id: crate::ast::InferredTypeId::new(),
+            type_instantiation: crate::ast::TypeInstantiation::new(),
         })
     }
 

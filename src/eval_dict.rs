@@ -163,9 +163,24 @@ async fn eval_annotation_property_dict(
                 };
                 string_val(&processed)
             }
-            SurfaceExpression::Int(n) => Value::Int { n: *n },
-            SurfaceExpression::U64(n) => Value::U64 { n: *n },
-            SurfaceExpression::Float(f) => Value::Float { n: *f },
+            SurfaceExpression::Int(n) => Value::Int {
+                n: *n,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            SurfaceExpression::U64(n) => Value::U64 {
+                n: *n,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_U64,
+                )),
+            },
+            SurfaceExpression::Float(f) => Value::Float {
+                n: *f,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT,
+                )),
+            },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             SurfaceExpression::VarRef {
@@ -176,7 +191,8 @@ async fn eval_annotation_property_dict(
                 // This handles VarRefs (type names like Dict, String), fn expressions, and calls.
                 let mut lower_diags = Vec::new();
                 let display_names = ctx.type_display_names_snapshot();
-                let core_expr = crate::lower::lower_inner(&entry.node.value, &mut lower_diags, &display_names);
+                let core_expr =
+                    crate::lower::lower_inner(&entry.node.value, &mut lower_diags, &display_names);
                 {
                     let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                         .into_iter()
@@ -233,6 +249,9 @@ async fn eval_annotation_property_dict(
     Ok(Value::Dict {
         entries: dict_map,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(
+            crate::value::TYPE_ID_DICT,
+        )),
     })
 }
 
@@ -366,20 +385,39 @@ pub(crate) async fn eval_dict_core(
         let (value_thunk, core_expr_thunk): (Arc<Thunk>, Option<Arc<Thunk>>) =
             match &entry.node.value.node {
                 CoreExpr::Int { value: n, .. } => (
-                    Arc::new(Thunk::value(Value::Int { n: *n }, entry_span)),
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: *n,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_INT,
+                            )),
+                        },
+                        entry_span,
+                    )),
                     None,
                 ),
                 CoreExpr::U64 { value: n, .. } => (
                     Arc::new(Thunk::value(
                         Value::BigInt {
                             n: num_bigint::BigInt::from(*n),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_BIGINT,
+                            )),
                         },
                         entry_span,
                     )),
                     None,
                 ),
                 CoreExpr::Float { value: f, .. } => (
-                    Arc::new(Thunk::value(Value::Float { n: *f }, entry_span)),
+                    Arc::new(Thunk::value(
+                        Value::Float {
+                            n: *f,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_FLOAT,
+                            )),
+                        },
+                        entry_span,
+                    )),
                     None,
                 ),
                 CoreExpr::Str { value: s, .. } => {
@@ -435,6 +473,7 @@ pub(crate) async fn eval_dict_core(
                             Value::Annotated {
                                 inner: Box::new(inner_val),
                                 annotation: Box::new(annotation_value),
+                                type_val: None,
                             },
                             span,
                         ))
@@ -495,6 +534,9 @@ pub(crate) async fn eval_dict_core(
                         Value::Dict {
                             entries: IndexMap::new(),
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
                         },
                         crate::rust_span!(),
                     ))
@@ -552,6 +594,7 @@ pub(crate) async fn eval_dict_core(
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
             caller_evidence: std::sync::Arc::clone(&outer_frame.caller_evidence),
+            type_inst: outer_frame.type_inst.clone(),
         });
 
         for maybe_core_thunk in &core_expr_thunks {
@@ -584,6 +627,9 @@ pub(crate) async fn eval_dict_core(
         Value::Dict {
             entries: dict_map,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
         },
         dict_span.clone(),
     )))
@@ -722,10 +768,24 @@ mod tests {
         let x_val = mat_thunk(x_thunk, &ctx).await.unwrap();
         let y_val = mat_thunk(y_thunk, &ctx).await.unwrap();
 
-        assert_eq!(x_val, Value::Int { n: 42 }, "x must be 42");
+        assert_eq!(
+            x_val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            "x must be 42"
+        );
         assert_eq!(
             y_val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "y must equal x (letrec sibling scope)"
         );
     }
@@ -767,7 +827,12 @@ mod tests {
         // bleed into sibling value scopes.
         assert_eq!(
             v_val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "v must be Int(42), not the value of k"
         );
     }

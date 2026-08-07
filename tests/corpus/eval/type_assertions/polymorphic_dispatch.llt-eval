@@ -1,0 +1,20 @@
+--- description: Polymorphic function dispatch preserves type identity through type closures
+--- expected_output: ["int:42", "str:hello", true]
+[
+  # Multi-clause polymorphic function
+  describe: [fn
+    [fn@String [let x@Integer] [str "int:" [str x]]]
+    [fn@String [let x@String]  [str "str:" x]]]
+
+  # identity function — polymorphic, returns same type as input
+  identity: [fn@a [let x@a] x]
+
+  # Dispatch on concrete types
+  r1: [describe 42]
+  r2: [describe "hello"]
+
+  # Identity preserves type — the result should still dispatch correctly
+  r3: [int? [identity 42]]
+
+  result: [r1 r2 r3]
+]

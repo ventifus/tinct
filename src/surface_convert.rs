@@ -17,7 +17,9 @@ use crate::ast::{
 };
 use crate::error::EvalResult;
 use crate::rust_span;
-use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{
+    string_val, HashableValue, Thunk, Value, TYPE_ID_DICT, TYPE_ID_FLOAT, TYPE_ID_INT, TYPE_ID_U64,
+};
 
 /// Error type for AST dict validation failures during dict-to-AST conversion.
 #[derive(Debug, Clone)]
@@ -76,13 +78,22 @@ fn inject_span_into_expr_variant(
 
     let make_pos = |line: u32, col: u32| -> Arc<Thunk> {
         let mut d: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        let mk = |n: i64| Arc::new(Thunk::value(Value::Int { n }, synth.clone()));
+        let mk = |n: i64| {
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                },
+                synth.clone(),
+            ))
+        };
         d.insert(HashableValue::Str("line".into()), mk(line as i64));
         d.insert(HashableValue::Str("col".into()), mk(col as i64));
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: d,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             synth.clone(),
         ))
@@ -101,6 +112,7 @@ fn inject_span_into_expr_variant(
         Value::Dict {
             entries: d,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         }
     };
 
@@ -109,6 +121,7 @@ fn inject_span_into_expr_variant(
             type_decl_id,
             ctor,
             payload: Some(payload_thunk),
+            ..
         } => {
             // payload_thunk is always Thunk::value(...) during AST conversion — no eval errors.
             if let Value::Dict {
@@ -125,6 +138,7 @@ fn inject_span_into_expr_variant(
                     Value::Dict {
                         entries: payload_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 ));
@@ -132,12 +146,14 @@ fn inject_span_into_expr_variant(
                     type_decl_id,
                     ctor,
                     payload: Some(new_payload),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(type_decl_id)),
                 }
             } else {
                 Value::Variant {
                     type_decl_id: TYPE_ID_DICT,
                     ctor,
                     payload: Some(payload_thunk),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 }
             }
         }
@@ -285,6 +301,7 @@ pub fn core_expr_to_expr_value(
             Value::Dict {
                 entries: dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             synth.clone(),
         ))
@@ -302,6 +319,7 @@ pub fn core_expr_to_expr_value(
                 Value::Dict {
                     entries: map,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 },
                 span,
             ))
@@ -313,6 +331,7 @@ pub fn core_expr_to_expr_value(
         mk(Value::Dict {
             entries: IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         })
     };
 
@@ -321,7 +340,13 @@ pub fn core_expr_to_expr_value(
         CoreExpr::Int { value: n, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("int")));
-            payload.insert(HashableValue::Str("value".into()), mk(Value::Int { n: *n }));
+            payload.insert(
+                HashableValue::Str("value".into()),
+                mk(Value::Int {
+                    n: *n,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                }),
+            );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
         }
@@ -331,7 +356,10 @@ pub fn core_expr_to_expr_value(
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("u64")));
             payload.insert(
                 HashableValue::Str("value".into()),
-                mk(Value::Int { n: *n as i64 }),
+                mk(Value::Int {
+                    n: *n as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                }),
             );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
@@ -342,7 +370,10 @@ pub fn core_expr_to_expr_value(
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("float")));
             payload.insert(
                 HashableValue::Str("value".into()),
-                mk(Value::Float { n: *f }),
+                mk(Value::Float {
+                    n: *f,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_FLOAT)),
+                }),
             );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
             make_variant("Literal", payload)
@@ -401,6 +432,7 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("implied".into()),
                 mk(Value::Int {
                     n: if *implied { 1 } else { 0 },
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                 }),
             );
             make_variant("Call", payload)
@@ -456,6 +488,7 @@ pub fn core_expr_to_expr_value(
                     HashableValue::Str("variadic".into()),
                     mk(Value::Int {
                         n: if param.node.variadic { 1 } else { 0 },
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     }),
                 );
                 params_dict.insert(
@@ -1064,21 +1097,40 @@ pub(crate) fn alloc_bool(b: bool, span: &Span, _ctx: &Arc<crate::eval::EvalConte
     Arc::new(Thunk::value(
         Value::Int {
             n: if b { 1 } else { 0 },
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
         },
         span.clone(),
     ))
 }
 
 pub(crate) fn alloc_int(n: i64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-    Arc::new(Thunk::value(Value::Int { n }, span.clone()))
+    Arc::new(Thunk::value(
+        Value::Int {
+            n,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+        },
+        span.clone(),
+    ))
 }
 
 pub(crate) fn alloc_u64(n: u64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-    Arc::new(Thunk::value(Value::U64 { n }, span.clone()))
+    Arc::new(Thunk::value(
+        Value::U64 {
+            n,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_U64)),
+        },
+        span.clone(),
+    ))
 }
 
 pub(crate) fn alloc_float(f: f64, span: &Span, _ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
-    Arc::new(Thunk::value(Value::Float { n: f }, span.clone()))
+    Arc::new(Thunk::value(
+        Value::Float {
+            n: f,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_FLOAT)),
+        },
+        span.clone(),
+    ))
 }
 
 pub(crate) fn alloc_expr_child(
@@ -1102,6 +1154,7 @@ pub(crate) fn alloc_expr_child_opt(
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             rust_span!(),
         )),
@@ -1124,6 +1177,7 @@ pub(crate) fn alloc_child_list(
         Value::Dict {
             entries: map,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         rust_span!(),
     ))
@@ -1141,6 +1195,7 @@ pub(crate) fn alloc_entry_list(
             None => Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
         };
         let key_thunk = Arc::new(Thunk::value(key_val, entry.span.clone()));
@@ -1155,6 +1210,7 @@ pub(crate) fn alloc_entry_list(
             Value::Dict {
                 entries: payload,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             entry.span.clone(),
         ));
@@ -1163,6 +1219,7 @@ pub(crate) fn alloc_entry_list(
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
@@ -1171,6 +1228,7 @@ pub(crate) fn alloc_entry_list(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         rust_span!(),
     ))
@@ -1198,6 +1256,7 @@ pub(crate) fn alloc_named_arg_list(
             Value::Dict {
                 entries: na_payload,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             na.span.clone(),
         ));
@@ -1206,6 +1265,7 @@ pub(crate) fn alloc_named_arg_list(
                 type_decl_id: TYPE_ID_DICT,
                 ctor: Arc::from("Expr.NamedArg"),
                 payload: Some(payload_thunk),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             na.span.clone(),
         ));
@@ -1215,6 +1275,7 @@ pub(crate) fn alloc_named_arg_list(
         Value::Dict {
             entries: na_map,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         rust_span!(),
     ))
@@ -1236,6 +1297,7 @@ pub(crate) fn alloc_param_list(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: if p.node.variadic { 1 } else { 0 },
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                 },
                 p.span.clone(),
             )),
@@ -1250,6 +1312,7 @@ pub(crate) fn alloc_param_list(
             Value::Dict {
                 entries: p_payload,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             p.span.clone(),
         ));
@@ -1258,6 +1321,7 @@ pub(crate) fn alloc_param_list(
                 type_decl_id: TYPE_ID_DICT,
                 ctor: Arc::from("Expr.Param"),
                 payload: Some(param_payload_thunk),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             p.span.clone(),
         ));
@@ -1267,6 +1331,7 @@ pub(crate) fn alloc_param_list(
         Value::Dict {
             entries: params_map,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         rust_span!(),
     ))
@@ -1305,6 +1370,7 @@ pub(crate) fn alloc_string_opt(
         None => Value::Dict {
             entries: IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
     };
     Arc::new(Thunk::value(val, rust_span!()))
@@ -1336,12 +1402,14 @@ pub(crate) fn make_variant_with_payload(
     let payload_val = Value::Dict {
         entries: payload,
         type_decl_id: TYPE_ID_DICT,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     };
     let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
     Value::Variant {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(tag),
         payload: Some(payload_thunk),
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -1350,6 +1418,7 @@ pub(crate) fn make_unit_variant(tag: &str) -> Value {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(tag),
         payload: None,
+        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
     }
 }
 
@@ -1921,7 +1990,13 @@ pub fn surface_program_to_dict(
 
     root.insert(
         HashableValue::Str("schema-version".into()),
-        Arc::new(Thunk::value(Value::Int { n: 1 }, span.clone())),
+        Arc::new(Thunk::value(
+            Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+            },
+            span.clone(),
+        )),
     );
 
     // documents: list of document dicts
@@ -1945,6 +2020,7 @@ pub fn surface_program_to_dict(
         Value::Dict {
             entries: root,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
     )))
@@ -1971,6 +2047,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_line as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -1980,6 +2057,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_col as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -1992,6 +2070,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_line as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -2001,6 +2080,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_col as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         )),
@@ -2012,6 +2092,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
             Value::Dict {
                 entries: start_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             span.clone(),
         )),
@@ -2022,6 +2103,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
             Value::Dict {
                 entries: end_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             span.clone(),
         )),
@@ -2031,6 +2113,7 @@ fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalRes
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
     )))
@@ -2050,6 +2133,7 @@ pub(crate) fn list_to_thunk_id(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
     )))
@@ -2108,6 +2192,7 @@ fn surface_document_to_thunk_id(
             Value::Dict {
                 entries: header_thunks,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             span.clone(),
         )),
@@ -2141,6 +2226,7 @@ fn surface_document_to_thunk_id(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
     )))
@@ -2213,6 +2299,7 @@ fn surface_decl_to_thunk_id(
                     Value::Dict {
                         entries: params_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 )),
@@ -2239,6 +2326,9 @@ fn surface_decl_to_thunk_id(
                             Value::Dict {
                                 entries: inner,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    TYPE_ID_DICT,
+                                )),
                             },
                             span.clone(),
                         ))
@@ -2281,6 +2371,7 @@ fn surface_decl_to_thunk_id(
                     Value::Dict {
                         entries: methods_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 )),
@@ -2305,6 +2396,7 @@ fn surface_decl_to_thunk_id(
                         Value::Dict {
                             entries: determines_dict,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                         },
                         span.clone(),
                     )),
@@ -2321,7 +2413,13 @@ fn surface_decl_to_thunk_id(
             if *resolver_injective {
                 dict.insert(
                     HashableValue::Str("injective".into()),
-                    Arc::new(Thunk::value(Value::Int { n: 1 }, span.clone())),
+                    Arc::new(Thunk::value(
+                        Value::Int {
+                            n: 1,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                        },
+                        span.clone(),
+                    )),
                 );
             }
         }
@@ -2383,6 +2481,9 @@ fn surface_decl_to_thunk_id(
                                 Value::Dict {
                                     entries: methods_dict,
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        TYPE_ID_DICT,
+                                    )),
                                 },
                                 span.clone(),
                             )),
@@ -2393,6 +2494,9 @@ fn surface_decl_to_thunk_id(
                                 Value::Dict {
                                     entries: arm_dict,
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        TYPE_ID_DICT,
+                                    )),
                                 },
                                 span.clone(),
                             )),
@@ -2408,6 +2512,7 @@ fn surface_decl_to_thunk_id(
                     Value::Dict {
                         entries: arms_dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 )),
@@ -2452,6 +2557,7 @@ fn surface_decl_to_thunk_id(
                             .map(|(i, v)| (HashableValue::Int(i as i64), v))
                             .collect(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 )),
@@ -2467,6 +2573,7 @@ fn surface_decl_to_thunk_id(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span.clone(),
     ));
@@ -2475,6 +2582,7 @@ fn surface_decl_to_thunk_id(
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(variant_tag),
             payload: Some(payload),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
     )))
@@ -2511,7 +2619,7 @@ fn override_bare_in_literal_variant(
                 .clone()
             {
                 let new_bare_thunk = Arc::new(Thunk::value(
-                    Value::Int { n: if bare { 1 } else { 0 } },
+                    Value::Int { n: if bare { 1 } else { 0 }, type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)) },
                     span.clone(),
                 ));
                 dict.insert(HashableValue::Str("bare".into()), new_bare_thunk);
@@ -2519,6 +2627,7 @@ fn override_bare_in_literal_variant(
                     Value::Dict {
                         entries: dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                     },
                     span.clone(),
                 ));
@@ -2526,6 +2635,7 @@ fn override_bare_in_literal_variant(
                     type_decl_id: TYPE_ID_DICT,
                     ctor: ctor.clone(),
                     payload: Some(new_payload),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
                 };
             }
         }
@@ -2573,6 +2683,7 @@ fn alloc_entry_list_with_opts(
             None => Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
         };
         let key_thunk = Arc::new(Thunk::value(key_val, entry.span.clone()));
@@ -2611,6 +2722,7 @@ fn alloc_entry_list_with_opts(
             let blank_thunk = Arc::new(Thunk::value(
                 Value::Int {
                     n: if is_blank { 1 } else { 0 },
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                 },
                 entry.span.clone(),
             ));
@@ -2619,7 +2731,13 @@ fn alloc_entry_list_with_opts(
 
         // When no comment maps, always include blank-before: false as default
         if opts.comments.is_none() {
-            let blank_thunk = Arc::new(Thunk::value(Value::Int { n: 0 }, entry.span.clone()));
+            let blank_thunk = Arc::new(Thunk::value(
+                Value::Int {
+                    n: 0,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                },
+                entry.span.clone(),
+            ));
             payload.insert(HashableValue::Str("blank-before".into()), blank_thunk);
         }
 
@@ -2627,6 +2745,7 @@ fn alloc_entry_list_with_opts(
             Value::Dict {
                 entries: payload,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             entry.span.clone(),
         ));
@@ -2635,6 +2754,7 @@ fn alloc_entry_list_with_opts(
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from("Expr.Entry"),
             payload: Some(payload_thunk),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
@@ -2643,6 +2763,7 @@ fn alloc_entry_list_with_opts(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         rust_span!(),
     )))
@@ -2668,6 +2789,7 @@ fn surface_node_to_thunk_id(
             Value::Dict {
                 entries: payload,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             node.span.clone(),
         ));
@@ -2676,6 +2798,7 @@ fn surface_node_to_thunk_id(
                 type_decl_id: TYPE_ID_DICT,
                 ctor: Arc::from("Expr.Dict"),
                 payload: Some(payload_thunk),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             &node.span,
             ctx,
@@ -2745,7 +2868,13 @@ mod tests {
                     .get(&HashableValue::Str("schema-version".into()))
                     .unwrap()
                     .clone();
-                assert_eq!(peek_value(&version_thunk), Some(Value::Int { n: 1 }));
+                assert_eq!(
+                    peek_value(&version_thunk),
+                    Some(Value::Int {
+                        n: 1,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
+                    })
+                );
             }
             _ => panic!("expected Dict"),
         }
@@ -2834,7 +2963,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&bare_thunk),
-                                                            Some(Value::Int { n: 1 }),
+                                                            Some(Value::Int { n: 1, type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)) }),
                                                             "bare should be true for bare word 'foo'"
                                                         );
                                                     }
@@ -2936,7 +3065,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&bare_thunk),
-                                                            Some(Value::Int { n: 0 }),
+                                                            Some(Value::Int { n: 0, type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)) }),
                                                             "bare should be false for quoted string \"foo\""
                                                         );
                                                     }
@@ -3165,7 +3294,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&blank_thunk),
-                                                            Some(Value::Int { n: 1 }),
+                                                            Some(Value::Int { n: 1, type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)) }),
                                                             "blank-before should be true for second entry"
                                                         );
                                                     }
@@ -3267,7 +3396,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&bare_thunk),
-                                                            Some(Value::Int { n: 0 }),
+                                                            Some(Value::Int { n: 0, type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)) }),
                                                             "bare should be false when source is None"
                                                         );
 
@@ -3280,7 +3409,7 @@ mod tests {
                                                             .clone();
                                                         assert_eq!(
                                                             peek_value(&blank_thunk),
-                                                            Some(Value::Int { n: 0 }),
+                                                            Some(Value::Int { n: 0, type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)) }),
                                                             "blank-before should be false when comments is None"
                                                         );
 

@@ -59,6 +59,7 @@ thread_local! {
         Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_DICT)),
             },
         rust_span!(),
     ));
@@ -83,6 +84,9 @@ pub(crate) async fn eval_document_exprs_with_env(
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             rust_span!(),
         )));
@@ -139,6 +143,7 @@ pub(crate) async fn eval_document_exprs_with_env(
             closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
+            type_inst: std::collections::HashMap::new(),
         });
 
         if i == last_idx {
@@ -238,6 +243,9 @@ pub(crate) async fn eval_core_document_exprs(
                 Value::Dict {
                     entries: IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 rust_span!(),
             )),
@@ -261,6 +269,7 @@ pub(crate) async fn eval_core_document_exprs(
             closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
+            type_inst: std::collections::HashMap::new(),
         });
 
         if i == last_idx {
@@ -708,7 +717,12 @@ impl EvalContext {
             .into_iter()
             .map(|def| {
                 Arc::new(Thunk::value(
-                    crate::value::Value::Builtin { def },
+                    crate::value::Value::Builtin {
+                        def,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_BUILTIN,
+                        )),
+                    },
                     crate::rust_span!(),
                 ))
             })
@@ -760,6 +774,9 @@ impl EvalContext {
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
             repr_registry,
             is_predicates,
@@ -805,6 +822,9 @@ impl EvalContext {
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             }),
             repr_registry,
             is_predicates,
@@ -1188,12 +1208,14 @@ impl EvalContext {
     /// Returns an empty map if the TypeContext has not been initialized.
     /// Used by `format_type_with_names` call sites that need the registry.
     pub fn type_display_names_snapshot(&self) -> std::collections::HashMap<u64, String> {
-        if let Ok(guard) = self.type_context.lock() {
-            if let Some(ref tc) = *guard {
-                return tc.type_display_names.clone();
-            }
+        let guard = self
+            .type_context
+            .lock()
+            .expect("type_context lock poisoned");
+        match guard.as_ref() {
+            Some(tc) => tc.type_display_names.clone(),
+            None => std::collections::HashMap::new(),
         }
-        std::collections::HashMap::new()
     }
 
     /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
@@ -1274,14 +1296,174 @@ fn eval_context_is_send_sync() {
 /// For nominal type checks on thunks, prefer `thunk_matches_nominal_type` which avoids
 /// materializing the thunk when the type_decl_id is sufficient.
 
-/// Check if a thunk's type_decl_id matches the expected TypeValue without materializing.
+/// Resolve a type closure by recursively applying type_inst substitutions.
 ///
-/// Returns `Some(true)` if the thunk's type definitively matches (nominal check sufficient),
+/// TypeValue.Var nodes are resolved by looking up their name in type_inst.
+/// Structural TypeValues (Fn, Record, Union, App, etc.) are recursively walked
+/// so that nested TypeVars are resolved throughout the type structure.
+pub(crate) fn resolve_type_closure(
+    inferred_type: &Arc<Value>,
+    type_inst: &std::collections::HashMap<String, Arc<Value>>,
+) -> Arc<Value> {
+    use crate::type_infer::typevalue_var_name;
+    use crate::value::Value;
+
+    if type_inst.is_empty() {
+        return Arc::clone(inferred_type);
+    }
+
+    let ctor = crate::type_infer::typevalue_ctor(inferred_type);
+
+    // TypeValue.Var(name) → look up in type_inst
+    if ctor == Some(crate::type_tags::TV_VAR) {
+        if let Some(var_name) = typevalue_var_name(inferred_type) {
+            if let Some(resolved) = type_inst.get(&var_name) {
+                return Arc::clone(resolved);
+            }
+        }
+        return Arc::clone(inferred_type);
+    }
+
+    // Ground types: no TypeVars inside, return as-is
+    if matches!(
+        ctor,
+        Some(crate::type_tags::TV_NOMINAL)
+            | Some(crate::type_tags::TV_UNKNOWN)
+            | Some(crate::type_tags::TV_NEVER)
+            | Some(crate::type_tags::TV_TOP)
+            | Some(crate::type_tags::TV_INT_LIT)
+            | Some(crate::type_tags::TV_FLOAT_LIT)
+            | Some(crate::type_tags::TV_STR_LIT)
+            | Some(crate::type_tags::TV_PHANTOM)
+            | None
+    ) {
+        return Arc::clone(inferred_type);
+    }
+
+    // Structural types: recursively resolve payload fields
+    let Value::Variant {
+        ctor: ctor_arc,
+        payload: Some(ref payload_thunk),
+        ..
+    } = inferred_type.as_ref()
+    else {
+        return Arc::clone(inferred_type);
+    };
+
+    let Some(Ok(Value::Dict { entries, .. })) = payload_thunk.peek_result() else {
+        return Arc::clone(inferred_type);
+    };
+
+    let mut new_entries = entries.clone();
+    let mut changed = false;
+
+    for (key, thunk) in entries.iter() {
+        if let Some(Ok(val)) = thunk.peek_result() {
+            let val_arc = Arc::new(val.clone());
+            if crate::type_infer::typevalue_ctor(&val_arc).is_some() {
+                let resolved = resolve_type_closure(&val_arc, type_inst);
+                if !Arc::ptr_eq(&resolved, &val_arc) {
+                    new_entries.insert(
+                        key.clone(),
+                        Arc::new(crate::value::Thunk::value(
+                            resolved.as_ref().clone(),
+                            crate::rust_span!(),
+                        )),
+                    );
+                    changed = true;
+                }
+            } else if let Value::Dict {
+                entries: inner_entries,
+                ..
+            } = val
+            {
+                let resolved_dict = resolve_dict_type_closure(inner_entries, type_inst);
+                if let Some(new_dict) = resolved_dict {
+                    new_entries.insert(
+                        key.clone(),
+                        Arc::new(crate::value::Thunk::value(new_dict, crate::rust_span!())),
+                    );
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if !changed {
+        return Arc::clone(inferred_type);
+    }
+
+    Arc::new(Value::Variant {
+        ctor: Arc::clone(ctor_arc),
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            Value::Dict {
+                entries: new_entries,
+                type_decl_id: crate::value::TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
+            },
+            crate::rust_span!(),
+        ))),
+        type_decl_id: 0,
+        type_val: None,
+    })
+}
+
+fn resolve_dict_type_closure(
+    entries: &indexmap::IndexMap<crate::value::HashableValue, Arc<crate::value::Thunk>>,
+    type_inst: &std::collections::HashMap<String, Arc<Value>>,
+) -> Option<Value> {
+    use crate::value::Value;
+
+    let mut new_entries = entries.clone();
+    let mut changed = false;
+
+    for (key, thunk) in entries.iter() {
+        if let Some(Ok(val)) = thunk.peek_result() {
+            let val_arc = Arc::new(val.clone());
+            if crate::type_infer::typevalue_ctor(&val_arc).is_some() {
+                let resolved = resolve_type_closure(&val_arc, type_inst);
+                if !Arc::ptr_eq(&resolved, &val_arc) {
+                    new_entries.insert(
+                        key.clone(),
+                        Arc::new(crate::value::Thunk::value(
+                            resolved.as_ref().clone(),
+                            crate::rust_span!(),
+                        )),
+                    );
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if changed {
+        Some(Value::Dict {
+            entries: new_entries,
+            type_decl_id: crate::value::TYPE_ID_DICT,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_DICT,
+            )),
+        })
+    } else {
+        None
+    }
+}
+
+/// Check if a thunk's type matches the expected TypeValue without materializing.
+///
+/// Uses the thunk's type closure (inferred_type + type_inst) when available,
+/// falling back to nominal type_decl_id comparison. Delegates to BAS
+/// `is_consistent_subtype` for proper subtype checking.
+///
+/// Returns `Some(true)` if the thunk's type definitively matches,
 /// `Some(false)` if it definitively doesn't match, or `None` if materialization is needed
-/// (structural type checks like Record field presence).
+/// (no type information available on the thunk).
 pub(crate) fn thunk_matches_nominal_type(
     thunk: &crate::value::Thunk,
     expected: &Arc<Value>,
+    ctx: &EvalContext,
 ) -> Option<bool> {
     // Unknown/non-variant TypeValues match everything.
     let Value::Variant { ctor, .. } = expected.as_ref() else {
@@ -1297,15 +1479,28 @@ pub(crate) fn thunk_matches_nominal_type(
         return Some(false);
     }
 
-    // TypeValue.Nominal: compare type_decl_id directly.
-    if ctor.as_ref() == TV_NOMINAL {
-        if let Some(id) = crate::type_infer::typevalue_nominal_id(expected) {
-            return Some(thunk.type_decl_id == id);
-        }
-    }
+    // Resolve the thunk's concrete type from its type closure.
+    let concrete_type = if let Some(ref inferred) = thunk.inferred_type {
+        resolve_type_closure(inferred, &thunk.type_inst)
+    } else if thunk.type_decl_id() != 0 {
+        crate::type_infer::make_typevalue_nominal(thunk.type_decl_id())
+    } else {
+        // No type information — needs materialization.
+        return None;
+    };
 
-    // Record, Union, Fn, App, Inter, etc. — require materialization.
-    None
+    // Use BAS is_consistent_subtype for the check.
+    // Construct a runtime InferenceContext with tycon_env from the EvalContext.
+    let tycon_env = match ctx.tycon_env() {
+        Some(e) => e.clone(),
+        None => std::collections::HashMap::new(),
+    };
+    let inference_ctx = crate::type_infer::InferenceContext::with_tycon_env(tycon_env);
+    Some(crate::bas::is_consistent_subtype(
+        &concrete_type,
+        expected,
+        &inference_ctx,
+    ))
 }
 
 pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &EvalContext) -> bool {
@@ -1450,7 +1645,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     let mut display_names: std::collections::HashMap<u64, String> =
         std::collections::HashMap::new();
     let mut name_to_id: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    if let Some(tc_guard) = ctx.type_context.lock().ok() {
+    {
+        let tc_guard = ctx.type_context.lock().expect("type_context lock poisoned");
         if let Some(ref tc) = *tc_guard {
             for (name, id) in &tc.type_name_to_id {
                 display_names.insert(*id, name.clone());
@@ -2106,6 +2302,7 @@ async fn call_to_match_by_name(
         call_span: span.clone(),
         ctx,
         caller_evidence,
+        type_instantiation: std::collections::HashMap::new(),
     };
     let result_thunk = invoke_function(&call_ctx).await?;
     // Step 8: materialize the call result and check if it is a nonzero Int.
@@ -2511,14 +2708,30 @@ mod tests {
     async fn test_eval_int() {
         let thunk = eval_str("42", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 42 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
     async fn test_eval_float() {
         let thunk = eval_str("2.5", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Float { n: 2.5 });
+        assert_eq!(
+            val,
+            Value::Float {
+                n: 2.5,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -2546,7 +2759,15 @@ mod tests {
             Value::Dict { entries: map, .. } => {
                 assert_eq!(map.len(), 2);
                 let x_id = map.get(&HashableValue::Str("x".into())).unwrap();
-                assert_eq!(mat_id(x_id, &ctx).await.unwrap(), Value::Int { n: 1 });
+                assert_eq!(
+                    mat_id(x_id, &ctx).await.unwrap(),
+                    Value::Int {
+                        n: 1,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
+                );
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
                 assert_eq!(mat_id(y_id, &ctx).await.unwrap(), string_val("hello"));
             }
@@ -2567,19 +2788,34 @@ mod tests {
                     mat_id(map.get(&HashableValue::Int(0)).unwrap(), &ctx)
                         .await
                         .unwrap(),
-                    Value::Int { n: 10 }
+                    Value::Int {
+                        n: 10,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
                 );
                 assert_eq!(
                     mat_id(map.get(&HashableValue::Int(1)).unwrap(), &ctx)
                         .await
                         .unwrap(),
-                    Value::Int { n: 20 }
+                    Value::Int {
+                        n: 20,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
                 );
                 assert_eq!(
                     mat_id(map.get(&HashableValue::Int(2)).unwrap(), &ctx)
                         .await
                         .unwrap(),
-                    Value::Int { n: 30 }
+                    Value::Int {
+                        n: 30,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -2596,7 +2832,15 @@ mod tests {
         match val {
             Value::Dict { entries: map, .. } => {
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).await.unwrap(), Value::Int { n: 5 });
+                assert_eq!(
+                    mat_id(y_id, &ctx).await.unwrap(),
+                    Value::Int {
+                        n: 5,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2612,7 +2856,15 @@ mod tests {
         match val {
             Value::Dict { entries: map, .. } => {
                 let y_id = map.get(&HashableValue::Str("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).await.unwrap(), Value::Int { n: 10 });
+                assert_eq!(
+                    mat_id(y_id, &ctx).await.unwrap(),
+                    Value::Int {
+                        n: 10,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -2698,13 +2950,13 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -2712,7 +2964,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             test_span(1, 1, 1, 15),
         );
@@ -2766,7 +3018,15 @@ mod tests {
                         entries: inner_map, ..
                     } => {
                         let y_id = inner_map.get(&HashableValue::Str("y".into())).unwrap();
-                        assert_eq!(mat_id(y_id, &ctx).await.unwrap(), Value::Int { n: 42 });
+                        assert_eq!(
+                            mat_id(y_id, &ctx).await.unwrap(),
+                            Value::Int {
+                                n: 42,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_INT
+                                ))
+                            }
+                        );
                     }
                     other => panic!("expected inner Dict, got {other:?}"),
                 }
@@ -2909,7 +3169,15 @@ mod tests {
         // [@Integer 42] -> 42
         let thunk = eval_str("[@Integer 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 42 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -2925,7 +3193,15 @@ mod tests {
         // [@Number 42] -> 42 (Number accepts Int)
         let thunk = eval_str("[@Number 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 42 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -2933,7 +3209,15 @@ mod tests {
         // [@Number 2.5] -> 2.5 (Number accepts Float)
         let thunk = eval_str("[@Number 2.5]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Float { n: 2.5 });
+        assert_eq!(
+            val,
+            Value::Float {
+                n: 2.5,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -2949,13 +3233,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -2982,7 +3266,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
@@ -2990,7 +3274,7 @@ mod tests {
                     crate::value::TYPE_ID_STRING,
                 )),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3010,7 +3294,15 @@ mod tests {
         // [@[type: Int] 42] -> 42
         let thunk = eval_str("[@[type: Int] 42]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 42 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -3026,13 +3318,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3064,7 +3356,15 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 42 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -3094,7 +3394,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
@@ -3105,7 +3405,7 @@ mod tests {
                     ),
                 },
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3127,13 +3427,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3176,7 +3476,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Placeholder {
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     error_span,
                 )),
@@ -3187,14 +3487,22 @@ mod tests {
                     ),
                 },
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
         let ctx = test_ctx();
         let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
-        assert_eq!(val, Value::Int { n: 0 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -3208,7 +3516,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
@@ -3217,7 +3525,7 @@ mod tests {
                     None,
                 )),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3248,7 +3556,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
@@ -3257,7 +3565,7 @@ mod tests {
                     None,
                 )),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3299,13 +3607,13 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -3313,7 +3621,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             test_span(1, 1, 1, 15),
         );
@@ -3392,7 +3700,15 @@ mod tests {
                 let key = HashableValue::Float(1.5f64.to_bits());
                 let entry_thunk = map.get(&key).expect("Float(1.5) key must exist");
                 let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
-                assert_eq!(inner, Value::Int { n: 42 });
+                assert_eq!(
+                    inner,
+                    Value::Int {
+                        n: 42,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3423,7 +3739,15 @@ mod tests {
                 let key = HashableValue::Float(2.5f64.to_bits());
                 let entry_thunk = map.get(&key).expect("Float(2.5) key must exist");
                 let inner = materialize(entry_thunk, None, &ctx).await.unwrap();
-                assert_eq!(inner, Value::Int { n: 1 });
+                assert_eq!(
+                    inner,
+                    Value::Int {
+                        n: 1,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3447,7 +3771,7 @@ mod tests {
         let err = eval_core_for_test(
             Spanned::new(
                 CoreExpr::Placeholder {
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 placeholder_span,
             ),
@@ -3473,7 +3797,7 @@ mod tests {
             name: "f".to_string(),
             addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
-            inferred_type_id: 0,
+            inferred_type: None,
         });
         assert_eq!(label.as_deref(), Some("f"));
     }
@@ -3487,7 +3811,7 @@ mod tests {
             name: "builtin-dict-get".to_string(),
             addr: crate::ast::VarAddr::ClosureCapture(0),
             annotation: None,
-            inferred_type_id: 0,
+            inferred_type: None,
         };
         let label = func_label_core(&func_var);
         assert_eq!(label.as_deref(), Some("builtin-dict-get"));
@@ -3500,7 +3824,7 @@ mod tests {
         assert_eq!(
             func_label_core(&CoreExpr::Int {
                 value: 42,
-                inferred_type_id: 0
+                inferred_type: None
             }),
             None
         );
@@ -3517,7 +3841,7 @@ mod tests {
                 name: "missing".to_string(),
                 addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                 annotation: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             test_span(1, 1, 1, 8),
         );
@@ -3584,13 +3908,13 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -3598,7 +3922,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             test_span(1, 1, 1, 15),
         );
@@ -3655,7 +3979,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 error_span.clone(),
             )),
@@ -3701,13 +4025,13 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -3715,7 +4039,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             test_span(1, 1, 1, 15),
         );
@@ -3767,13 +4091,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3781,7 +4105,15 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 42 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -3795,13 +4127,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3826,7 +4158,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
@@ -3834,7 +4166,7 @@ mod tests {
                     crate::value::TYPE_ID_STRING,
                 )),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3855,13 +4187,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "anything".into(),
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_top()),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3882,13 +4214,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 99,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_top()),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -3896,7 +4228,15 @@ mod tests {
             .await
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 99 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -3923,14 +4263,14 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "name".into(),
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "Alice".into(),
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     )),
@@ -3943,14 +4283,14 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "age".into(),
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 30,
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     )),
@@ -3959,13 +4299,13 @@ mod tests {
                                 span.clone(),
                             ),
                         ],
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -4004,14 +4344,14 @@ mod tests {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str {
                                         value: "name".into(),
-                                        inferred_type_id: 0,
+                                        inferred_type: None,
                                     },
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(
                                     CoreExpr::Str {
                                         value: "Alice".into(),
-                                        inferred_type_id: 0,
+                                        inferred_type: None,
                                     },
                                     span.clone(),
                                 )),
@@ -4019,13 +4359,13 @@ mod tests {
                             },
                             span.clone(),
                         )],
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -4063,14 +4403,14 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "x".into(),
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 1,
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     )),
@@ -4083,14 +4423,14 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "extra".into(),
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 2,
-                                            inferred_type_id: 0,
+                                            inferred_type: None,
                                         },
                                         span.clone(),
                                     )),
@@ -4099,13 +4439,13 @@ mod tests {
                                 span.clone(),
                             ),
                         ],
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -4146,14 +4486,14 @@ mod tests {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str {
                                         value: "x".into(),
-                                        inferred_type_id: 0,
+                                        inferred_type: None,
                                     },
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(
                                     CoreExpr::Int {
                                         value: 42,
-                                        inferred_type_id: 0,
+                                        inferred_type: None,
                                     },
                                     span.clone(),
                                 )),
@@ -4161,13 +4501,13 @@ mod tests {
                             },
                             span.clone(),
                         )],
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -4201,13 +4541,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -4229,7 +4569,15 @@ mod tests {
         // When no resolved TypeValue is available the assert falls back to the nominal name check.
         let thunk = eval_str("[@Integer 7]", &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(val, Value::Int { n: 7 });
+        assert_eq!(
+            val,
+            Value::Int {
+                n: 7,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     // ── annotation_has_structural_fields unit tests ────────────────────
@@ -4374,13 +4722,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span,
         );
@@ -4416,9 +4764,27 @@ mod tests {
         use crate::type_infer::make_typevalue_nominal;
         let ctx = test_ctx();
         let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
-        assert!(value_matches_type(&Value::Int { n: 42 }, &int_tv, &ctx));
+        assert!(value_matches_type(
+            &Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &int_tv,
+            &ctx
+        ));
         assert!(!value_matches_type(&string_val("x"), &int_tv, &ctx));
-        assert!(!value_matches_type(&Value::Float { n: 1.0 }, &int_tv, &ctx));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
+            &int_tv,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4427,8 +4793,26 @@ mod tests {
         let ctx = test_ctx();
         let str_tv = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
         assert!(value_matches_type(&string_val("hello"), &str_tv, &ctx));
-        assert!(!value_matches_type(&Value::Int { n: 1 }, &str_tv, &ctx));
-        assert!(!value_matches_type(&Value::Float { n: 0.0 }, &str_tv, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &str_tv,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 0.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
+            &str_tv,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4437,11 +4821,25 @@ mod tests {
         let ctx = test_ctx();
         let float_tv = make_typevalue_nominal(crate::value::TYPE_ID_FLOAT);
         assert!(value_matches_type(
-            &Value::Float { n: 2.5 },
+            &Value::Float {
+                n: 2.5,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
             &float_tv,
             &ctx
         ));
-        assert!(!value_matches_type(&Value::Int { n: 3 }, &float_tv, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 3,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &float_tv,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4450,13 +4848,34 @@ mod tests {
         let ctx = test_ctx();
         let top_tv = make_typevalue_top();
         // TypeValue.Top accepts all value kinds (gradual typing)
-        assert!(value_matches_type(&Value::Int { n: 1 }, &top_tv, &ctx));
-        assert!(value_matches_type(&Value::Float { n: 1.0 }, &top_tv, &ctx));
+        assert!(value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &top_tv,
+            &ctx
+        ));
+        assert!(value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
+            &top_tv,
+            &ctx
+        ));
         assert!(value_matches_type(&string_val("s"), &top_tv, &ctx));
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT
+                )),
             },
             &top_tv,
             &ctx,
@@ -4469,12 +4888,24 @@ mod tests {
         let ctx = test_ctx();
         // TypeValue.Var is treated as Unknown at runtime (residual polymorphic instantiation)
         let var_tv = make_typevar_value("a");
-        assert!(value_matches_type(&Value::Int { n: 1 }, &var_tv, &ctx,));
+        assert!(value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &var_tv,
+            &ctx,
+        ));
         assert!(value_matches_type(&string_val("x"), &var_tv, &ctx));
         assert!(value_matches_type(
             &Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT
+                )),
             },
             &var_tv,
             &ctx,
@@ -4487,8 +4918,21 @@ mod tests {
         // Proxy values have type_decl_id TYPE_ID_PROXY but are treated as Unknown for gradual typing — passes any annotation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let handler = Arc::new(Thunk::value(Value::Int { n: 42 }, span));
-        let proxy_val = Value::Proxy { handler };
+        let handler = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            span,
+        ));
+        let proxy_val = Value::Proxy {
+            handler,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_PROXY,
+            )),
+        };
 
         // Unknown (ground of Proxy) is consistent with anything.
         assert!(value_matches_type(
@@ -4515,8 +4959,26 @@ mod tests {
         let ctx = test_ctx(); // no tycon_env set
         let tycon = make_typevalue_nominal(TEST_ID_MY_TYPE);
         // Int value against unknown TyCon → false (conservative)
-        assert!(!value_matches_type(&Value::Int { n: 42 }, &tycon, &ctx));
-        assert!(!value_matches_type(&Value::Float { n: 1.0 }, &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4544,9 +5006,27 @@ mod tests {
         ctx.set_tycon_env(env);
         let tycon = make_typevalue_nominal(TYPE_ID_INT);
         // Int values match — same type_decl_id
-        assert!(value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx));
+        assert!(value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
         // Different types do not match
-        assert!(!value_matches_type(&Value::Float { n: 1.0 }, &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
         assert!(!value_matches_type(&string_val("x"), &tycon, &ctx));
     }
 
@@ -4579,13 +5059,34 @@ mod tests {
             &Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT
+                )),
             },
             &tycon,
             &ctx
         ));
         // Non-Dict values do not match — different type_decl_id
-        assert!(!value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx));
-        assert!(!value_matches_type(&Value::Float { n: 1.0 }, &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Float {
+                n: 1.0,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4619,6 +5120,7 @@ mod tests {
             type_decl_id: TEST_ID_COLOR,
             ctor: Arc::from("Color.Red"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
         assert!(value_matches_type(&red, &tycon, &ctx));
         // Variant with different type_decl_id does not match
@@ -4626,10 +5128,20 @@ mod tests {
             type_decl_id: TEST_ID_SHAPE,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_SHAPE)),
         };
         assert!(!value_matches_type(&wrong, &tycon, &ctx));
         // Non-Variant values do not match a nominal TyCon
-        assert!(!value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &tycon,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4682,12 +5194,22 @@ mod tests {
                 type_decl_id: TEST_ID_MY_SEQ,
                 ctor: Arc::from("MySeq.Cons"),
                 payload: None,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_MY_SEQ)),
             },
             &app_type,
             &ctx
         ));
         // Int does not match App(MY_SEQ, ...)
-        assert!(!value_matches_type(&Value::Int { n: 1 }, &app_type, &ctx));
+        assert!(!value_matches_type(
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
+            &app_type,
+            &ctx
+        ));
     }
 
     #[tokio::test]
@@ -4726,6 +5248,7 @@ mod tests {
             type_decl_id: TEST_ID_COLOR,
             ctor: Arc::from("Color.Red"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
         assert!(
             value_matches_type(&color_red, &tycon, &ctx),
@@ -4736,6 +5259,7 @@ mod tests {
             type_decl_id: TEST_ID_COLOR,
             ctor: Arc::from("Color.Green"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
         assert!(
             value_matches_type(&color_green, &tycon, &ctx),
@@ -4746,6 +5270,7 @@ mod tests {
             type_decl_id: TEST_ID_SHAPE,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_SHAPE)),
         };
         assert!(
             !value_matches_type(&other, &tycon, &ctx),
@@ -4753,7 +5278,16 @@ mod tests {
         );
 
         assert!(
-            !value_matches_type(&Value::Int { n: 1 }, &tycon, &ctx),
+            !value_matches_type(
+                &Value::Int {
+                    n: 1,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT
+                    ))
+                },
+                &tycon,
+                &ctx
+            ),
             "Int must not match @Color"
         );
     }
@@ -4763,7 +5297,13 @@ mod tests {
         use crate::type_infer::make_typevalue_nominal;
         // Structural values do not have a value_tycon_name.
         assert_eq!(
-            Value::Int { n: 1 }.value_tycon_name(),
+            Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+            .value_tycon_name(),
             None,
             "Int is a primitive type, not an opaque builtin TyCon"
         );
@@ -4776,6 +5316,7 @@ mod tests {
             type_decl_id: TEST_ID_COLOR,
             ctor: Arc::from("Color.Red"),
             payload: None,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
         assert_eq!(
             color_variant.value_tycon_name(),
@@ -4787,7 +5328,12 @@ mod tests {
         let ctx = test_ctx(); // no tycon_env
         let unknown_tycon = make_typevalue_nominal(crate::value::TYPE_ID_PROGRAM);
         assert!(!value_matches_type(
-            &Value::Int { n: 1 },
+            &Value::Int {
+                n: 1,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             &unknown_tycon,
             &ctx
         ));
@@ -4879,11 +5425,27 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             HashableValue::Str("x".into()),
-            Arc::new(Thunk::value(Value::Int { n: 1 }, span.clone())),
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n: 1,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                span.clone(),
+            )),
         );
         entries.insert(
             HashableValue::Str("z".into()),
-            Arc::new(Thunk::value(Value::Int { n: 99 }, span)),
+            Arc::new(Thunk::value(
+                Value::Int {
+                    n: 99,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                span,
+            )),
         );
 
         let mut field_path = vec!["config".to_string()];
@@ -5063,7 +5625,15 @@ mod tests {
         // Previously, the depth check fired BEFORE the Materialized early-return,
         // causing spurious depth errors when accessing cached values at high depth.
         let span = test_span(1, 1, 1, 5);
-        let thunk = Arc::new(Thunk::value(Value::Int { n: 42 }, span));
+        let thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            span,
+        ));
         let ctx = test_ctx();
 
         // Materialize at high depth (CEK continuation stack) should succeed
@@ -5073,7 +5643,15 @@ mod tests {
             "Expected success for cached thunk at high depth, got error: {:?}",
             result.unwrap_err()
         );
-        assert_eq!(result.unwrap(), Value::Int { n: 42 });
+        assert_eq!(
+            result.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
     }
 
     #[tokio::test]
@@ -5087,7 +5665,15 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a materialized Int(42) — passes the Int guard.
-        let inner = Arc::new(Thunk::value(Value::Int { n: 42 }, span.clone()));
+        let inner = Arc::new(Thunk::value(
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            span.clone(),
+        ));
 
         // Wrap it in a Guarded thunk expecting TypeValue.Repr("Value::Int").
         let guarded = Arc::new(Thunk::guarded(
@@ -5107,7 +5693,15 @@ mod tests {
         // First materialization: triggers guard, validates Int(42) against TypeValue.Repr("Value::Int") → pass.
         let result1 = materialize(&guarded, None, &ctx).await;
         assert!(result1.is_ok(), "first materialization should succeed");
-        assert_eq!(result1.unwrap(), Value::Int { n: 42 });
+        assert_eq!(
+            result1.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
 
         // After successful validation, thunk must be in Materialized state (memoized).
         assert_eq!(
@@ -5116,7 +5710,12 @@ mod tests {
                 Some(Err(e)) => panic!("thunk in error state: {e:?}"),
                 None => None,
             },
-            Some(&Value::Int { n: 42 }),
+            Some(&Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }),
             "after first materialization thunk should be Materialized(Int(42))"
         );
 
@@ -5126,7 +5725,15 @@ mod tests {
             result2.is_ok(),
             "second materialization should succeed (cached)"
         );
-        assert_eq!(result2.unwrap(), Value::Int { n: 42 });
+        assert_eq!(
+            result2.unwrap(),
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }
+        );
 
         // State is still Materialized (not changed by second access).
         assert_eq!(
@@ -5135,7 +5742,12 @@ mod tests {
                 Some(Err(e)) => panic!("thunk in error state: {e:?}"),
                 None => None,
             },
-            Some(&Value::Int { n: 42 }),
+            Some(&Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            }),
             "state should still be Materialized after second access"
         );
     }
@@ -5211,7 +5823,7 @@ mod tests {
         // (we expect Int but will get String)
         let inner_expr = Arc::new(sp(CoreExpr::Str {
             value: "hello".into(),
-            inferred_type_id: 0,
+            inferred_type: None,
         }));
         let ctx = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
@@ -5373,7 +5985,15 @@ mod tests {
                 let used_val = mat_id(used_thunk, &ctx)
                     .await
                     .expect("used should materialize");
-                assert_eq!(used_val, Value::Int { n: 1 });
+                assert_eq!(
+                    used_val,
+                    Value::Int {
+                        n: 1,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_INT
+                        ))
+                    }
+                );
 
                 // Verify the "unused" key exists but is NOT materialized
                 let unused_key = HashableValue::Str("unused".into());
@@ -5424,7 +6044,7 @@ mod tests {
         // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict { entries: IndexMap::new(), type_val: crate::type_infer::make_typevalue_unknown() }`.
         let dict_expr = Arc::new(sp(CoreExpr::Dict {
             entries: vec![],
-            inferred_type_id: 0,
+            inferred_type: None,
         }));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
@@ -5518,7 +6138,12 @@ mod tests {
             .expect("Placeholder wildcard must materialize without error");
         assert_eq!(
             val,
-            Value::Int { n: 99 },
+            Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "Placeholder wildcard arm must produce 99; got: {:?}",
             val
         );
@@ -5576,6 +6201,9 @@ mod tests {
                 source: Arc::from("hit"),
                 start: 0,
                 end: 3,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_STRING
+                )),
             },
             "pin pattern $x=42 should match scrutinee 42; got: {r_val:?}"
         );
@@ -5608,6 +6236,9 @@ mod tests {
                 source: Arc::from("miss"),
                 start: 0,
                 end: 4,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_STRING
+                )),
             },
             "pin pattern $x=42 should NOT match scrutinee 99; got: {r_val:?}"
         );
@@ -5646,7 +6277,15 @@ mod tests {
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
 
         // Build a thunk for initial_input: Int(777).
-        let input_thunk = Arc::new(Thunk::value(Value::Int { n: 777 }, rust_span!()));
+        let input_thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 777,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            rust_span!(),
+        ));
 
         let result_thunk = super::eval_surface_file_with_input(&program, &ctx, Some(input_thunk))
             .await
@@ -5665,7 +6304,12 @@ mod tests {
             .expect("result must materialize");
         assert_eq!(
             result_val,
-            Value::Int { n: 777 },
+            Value::Int {
+                n: 777,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "% should resolve to initial_input Int(777); got: {result_val:?}"
         );
     }
@@ -5759,7 +6403,12 @@ mod tests {
             .expect("r must materialize");
         assert_eq!(
             r_val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "B-598: case arm binding v should be 42; got: {r_val:?}"
         );
     }
@@ -5797,7 +6446,12 @@ mod tests {
             .expect("r must materialize");
         assert_eq!(
             r_val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "B-598: v=41, body [builtin-int-add v 1] should be 42; got: {r_val:?}"
         );
     }
@@ -5834,7 +6488,12 @@ mod tests {
             .expect("r must materialize");
         assert_eq!(
             r_val,
-            Value::Int { n: 99 },
+            Value::Int {
+                n: 99,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "B-598: non-matching case arm must fall through to wildcard; got: {r_val:?}"
         );
     }
@@ -5935,7 +6594,12 @@ mod tests {
             .expect("result must materialize");
         assert_eq!(
             result_val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "B-637: dot-access must resolve builtin-dict-get via root_group; got: {result_val:?}"
         );
     }

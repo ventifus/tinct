@@ -118,7 +118,10 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 ///
 /// All cross-phase data (type annotations, field slots, provenance) is read from inline
 /// fields on the AST nodes — no external tables are consulted.
-pub fn lower(arc: &Arc<SurfaceNode>, type_display_names: &std::collections::HashMap<u64, String>) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
+pub fn lower(
+    arc: &Arc<SurfaceNode>,
+    type_display_names: &std::collections::HashMap<u64, String>,
+) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let spanned = lower_inner(arc, &mut diagnostics, type_display_names);
     (spanned, diagnostics)
@@ -156,7 +159,7 @@ pub(crate) fn lower_inner(
             expr: Arc::new(crate::ast::Spanned::new(core_expr, span.clone())),
             check: crate::ast::TypeAssertCheck::Resolved(guard_type.clone()),
             pipeline_blame: None,
-            inferred_type_id: 0,
+            inferred_type: None,
         }
     } else {
         core_expr
@@ -165,7 +168,7 @@ pub(crate) fn lower_inner(
     let mut core_expr = core_expr;
     let inferred_id = arc.inferred_type_decl_id.get();
     if inferred_id != 0 {
-        core_expr.set_inferred_type_id(inferred_id);
+        core_expr.set_inferred_type(Some(crate::type_infer::make_typevalue_nominal(inferred_id)));
     }
     Spanned::new(core_expr, span)
 }
@@ -181,15 +184,15 @@ fn lower_expr(
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int {
             value: *n,
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         SurfaceExpression::U64(n) => CoreExpr::U64 {
             value: *n,
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         SurfaceExpression::Float(n) => CoreExpr::Float {
             value: *n,
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         SurfaceExpression::StringLiteral {
             prefix,
@@ -205,14 +208,14 @@ fn lower_expr(
                 // Single-quoted: process escape sequences
                 CoreExpr::Str {
                     value: process_escapes(content, delimiter),
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 }
             } else {
                 // Triple-quoted (or longer): no escape processing
                 // Content is already raw — pass through as-is
                 CoreExpr::Str {
                     value: content.clone(),
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 }
             }
         }
@@ -248,14 +251,14 @@ fn lower_expr(
                     // for referencing an undefined name.
                     if name == "_" {
                         CoreExpr::Placeholder {
-                            inferred_type_id: 0,
+                            inferred_type: None,
                         }
                     } else {
                         CoreExpr::Var {
                             name: name.clone(),
                             addr: VarAddr::ClosureCapture(u32::MAX),
                             annotation: annotation.clone(),
-                            inferred_type_id: 0,
+                            inferred_type: None,
                         }
                     }
                 }
@@ -263,7 +266,7 @@ fn lower_expr(
                     name: name.clone(),
                     addr: addr.clone(),
                     annotation: annotation.clone(),
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 None => {
                     // Resolver did not run on this VarRef (OnceLock unset = internal error).
@@ -274,7 +277,7 @@ fn lower_expr(
                     let message = format!("undefined variable: {}", name);
                     diagnostics.push(Diagnostic::error("lower-error", message, arc.span.clone()));
                     CoreExpr::Placeholder {
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     }
                 }
             }
@@ -302,7 +305,7 @@ fn lower_expr(
                         arc.span.clone(),
                     ));
                     return CoreExpr::Placeholder {
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     };
                 }
             };
@@ -310,11 +313,11 @@ fn lower_expr(
             let key_core = match field {
                 crate::ast::DotKey::Int(n) => CoreExpr::Int {
                     value: *n,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 crate::ast::DotKey::Ident(s) => CoreExpr::Str {
                     value: s.clone(),
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
             };
 
@@ -323,7 +326,7 @@ fn lower_expr(
                     name: FIELD_GETTER_NAME.to_string(),
                     addr: getter_addr,
                     annotation: None,
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 },
                 arc.span.clone(),
             ));
@@ -335,7 +338,8 @@ fn lower_expr(
                 args: vec![key_node, target_node],
                 named_args: vec![],
                 implied: true,
-                inferred_type_id: 0,
+                inferred_type: None,
+                type_instantiation: None,
             }
         }
 
@@ -352,7 +356,7 @@ fn lower_expr(
                 name: name.clone(),
                 addr: addr.clone(),
                 annotation: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             Some(None) => {
                 diagnostics.push(Diagnostic::error(
@@ -361,7 +365,7 @@ fn lower_expr(
                     arc.span.clone(),
                 ));
                 CoreExpr::Placeholder {
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 }
             }
             None => {
@@ -375,7 +379,7 @@ fn lower_expr(
                     arc.span.clone(),
                 ));
                 CoreExpr::Placeholder {
-                    inferred_type_id: 0,
+                    inferred_type: None,
                 }
             }
         },
@@ -393,7 +397,7 @@ fn lower_expr(
                 arc.span.clone(),
             ));
             CoreExpr::Placeholder {
-                inferred_type_id: 0,
+                inferred_type: None,
             }
         }
 
@@ -404,7 +408,8 @@ fn lower_expr(
             args: vec![Arc::new(lower_inner(lhs, diagnostics, type_display_names))],
             named_args: vec![],
             implied: true,
-            inferred_type_id: 0,
+            inferred_type: None,
+            type_instantiation: None,
         },
 
         SurfaceExpression::Sequential(exprs) => CoreExpr::Sequential {
@@ -412,7 +417,7 @@ fn lower_expr(
                 .iter()
                 .map(|e| Arc::new(lower_inner(e, diagnostics, type_display_names)))
                 .collect(),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::Dict(entries) => {
@@ -428,7 +433,7 @@ fn lower_expr(
                             ..
                         } => CoreExpr::Str {
                             value: name.clone(),
-                            inferred_type_id: 0,
+                            inferred_type: None,
                         },
                         _ => lower_expr(k, &k.expr, diagnostics, type_display_names),
                     };
@@ -495,7 +500,7 @@ fn lower_expr(
             }
             CoreExpr::Dict {
                 entries: core_entries,
-                inferred_type_id: 0,
+                inferred_type: None,
             }
         }
 
@@ -517,14 +522,19 @@ fn lower_expr(
                     Spanned::new(
                         CoreNamedArg {
                             name: na.node.name.clone(),
-                            value: Arc::new(lower_inner(&na.node.value, diagnostics, type_display_names)),
+                            value: Arc::new(lower_inner(
+                                &na.node.value,
+                                diagnostics,
+                                type_display_names,
+                            )),
                         },
                         na.span.clone(),
                     )
                 })
                 .collect(),
             implied: *implied,
-            inferred_type_id: 0,
+            inferred_type: None,
+            type_instantiation: arc.type_instantiation.get().cloned(),
         },
 
         SurfaceExpression::Fn {
@@ -556,13 +566,13 @@ fn lower_expr(
                                 name: p.node.name.clone(),
                                 addr: VarAddr::Parameter(i as u32),
                                 annotation: None,
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             };
                             let assert = CoreExpr::TypeAssert {
                                 expr: Arc::new(crate::ast::Spanned::new(param_ref, p.span.clone())),
                                 check: crate::ast::TypeAssertCheck::Resolved(tv.clone()),
                                 pipeline_blame: None,
-                                inferred_type_id: 0,
+                                inferred_type: None,
                             };
                             param_assert_exprs
                                 .push(Arc::new(crate::ast::Spanned::new(assert, p.span.clone())));
@@ -594,7 +604,7 @@ fn lower_expr(
                 crate::ast::Spanned::new(
                     CoreExpr::Sequential {
                         exprs: param_assert_exprs,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     body_span.clone(),
                 )
@@ -622,7 +632,7 @@ fn lower_expr(
                         expr: Arc::new(body_with_param_checks),
                         check,
                         pipeline_blame: None,
-                        inferred_type_id: 0,
+                        inferred_type: None,
                     },
                     body_span,
                 )
@@ -734,7 +744,7 @@ fn lower_expr(
                 // FnAnnotation.extra at function-definition time.
                 // This enables annotation-driven runtime behavior: trace:, as-type:, etc.
                 return_ann: return_ann.clone(),
-                inferred_type_id: 0,
+                inferred_type: None,
             }
         }
 
@@ -758,21 +768,21 @@ fn lower_expr(
                 expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
                 check,
                 pipeline_blame: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             }
         }
 
         SurfaceExpression::Placeholder(Some(name), _) => CoreExpr::Rest {
             name: Some(name.clone()),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         SurfaceExpression::Placeholder(None, _) => CoreExpr::Placeholder {
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
             scrutinee: Arc::new(lower_inner(scrutinee, diagnostics, type_display_names)),
-            inferred_type_id: 0,
+            inferred_type: None,
             arms: arms
                 .iter()
                 .map(|arm| {
@@ -827,7 +837,11 @@ fn lower_expr(
                     // - Keyed arms (let_bindings.is_none()): lowered_pattern is the key
                     //   expression (e.g. CoreExpr::Int, CoreExpr::Str, CoreExpr::Placeholder)
                     //   used by MatchDispatch for equality matching via eval_structural_pattern_inner.
-                    let lowered_pattern = Some(Arc::new(lower_inner(&arm.pattern, diagnostics, type_display_names)));
+                    let lowered_pattern = Some(Arc::new(lower_inner(
+                        &arm.pattern,
+                        diagnostics,
+                        type_display_names,
+                    )));
                     let captures: Arc<Vec<(String, VarAddr)>> = if arm.let_bindings.is_some() {
                         arm.case_captures
                             .get()
@@ -844,7 +858,11 @@ fn lower_expr(
                             .as_ref()
                             .map(|g| Arc::new(lower_inner(g, diagnostics, type_display_names))),
                         // body is always a single node (parser wraps multi-body in Sequential).
-                        body: Arc::new(lower_inner(arm.body_expr(), diagnostics, type_display_names)),
+                        body: Arc::new(lower_inner(
+                            arm.body_expr(),
+                            diagnostics,
+                            type_display_names,
+                        )),
                         captures,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
                     }
@@ -859,18 +877,18 @@ fn lower_expr(
             let mut quote_diags = Vec::new();
             CoreExpr::Quote {
                 expr: Arc::new(lower_inner(inner, &mut quote_diags, type_display_names)),
-                inferred_type_id: 0,
+                inferred_type: None,
             }
         }
 
         SurfaceExpression::Unquote(inner) => CoreExpr::Unquote {
             expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::UnquoteSplice(inner) => CoreExpr::UnquoteSplice {
             expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::PatternDecl { bindings } => CoreExpr::PatternDecl {
@@ -878,7 +896,7 @@ fn lower_expr(
                 .iter()
                 .map(|b| lower_inner(b, diagnostics, type_display_names))
                 .collect(),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::LetDecl { bindings } => CoreExpr::LetDecl {
@@ -893,11 +911,11 @@ fn lower_expr(
                     }
                 })
                 .collect(),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::Decl(_) => CoreExpr::Placeholder {
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::UnitVariant {
@@ -908,7 +926,7 @@ fn lower_expr(
             tycon: tycon.clone(),
             ctor: ctor.clone(),
             type_decl_id: *type_decl_id,
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::MakeVariant {
@@ -917,9 +935,13 @@ fn lower_expr(
             type_decl_id,
         } => CoreExpr::Variant {
             tag: tag.clone(),
-            payload: Some(Arc::new(lower_inner(payload, diagnostics, type_display_names))),
+            payload: Some(Arc::new(lower_inner(
+                payload,
+                diagnostics,
+                type_display_names,
+            ))),
             type_decl_id: *type_decl_id,
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::TypeDecl {
@@ -931,7 +953,7 @@ fn lower_expr(
             type_name: type_name.clone(),
             type_decl_id: *type_decl_id,
             inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::ReprDecl {
@@ -944,7 +966,7 @@ fn lower_expr(
                 .as_ref()
                 .map(|pred| Arc::new(lower_inner(pred, diagnostics, type_display_names))),
             inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
 
         SurfaceExpression::Error(span) => {
@@ -954,7 +976,7 @@ fn lower_expr(
                 span.clone(),
             ));
             CoreExpr::Placeholder {
-                inferred_type_id: 0,
+                inferred_type: None,
             }
         }
     }
@@ -1222,16 +1244,16 @@ fn lower_let_decl_binding(
         // Annotated VarRef (name@Type) is also lowered to Str — the annotation is stripped.
         SurfaceExpression::VarRef { name, .. } => CoreExpr::Str {
             value: name.clone(),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         SurfaceExpression::Placeholder(Some(name), _) => CoreExpr::Str {
             value: name.clone(),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
         SurfaceExpression::Placeholder(None, _) => CoreExpr::Str {
             value: String::new(),
-            inferred_type_id: 0,
+            inferred_type: None,
         },
         // All other forms: lower normally (will produce Error if unresolvable).
         _ => lower_expr(arc, &arc.expr, diagnostics, type_display_names),
@@ -1255,6 +1277,7 @@ mod tests {
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
             inferred_type_decl_id: crate::ast::InferredTypeId::new(),
+            type_instantiation: crate::ast::TypeInstantiation::new(),
         })
     }
 

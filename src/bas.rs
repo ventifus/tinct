@@ -226,6 +226,7 @@ fn make_payload_thunk(fields: IndexMap<String, Arc<Value>>, span: Span) -> Arc<T
         Value::Dict {
             entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         },
         span,
     ))
@@ -248,8 +249,8 @@ fn make_payload_typevalue(ctor: &str, payload_thunk: Arc<Thunk>) -> Arc<Value> {
     Arc::new(Value::Variant {
         ctor: Arc::from(ctor),
         payload: Some(payload_thunk),
-
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     })
 }
 
@@ -1445,6 +1446,7 @@ pub(crate) fn substitute_recursive_ref(
                             Some(Arc::new(Value::Dict {
                                 entries: new_entries,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: None,
                             }))
                         } else {
                             None // unchanged
@@ -1524,6 +1526,7 @@ pub(crate) fn substitute_recursive_ref(
                             Some(Arc::new(Value::Dict {
                                 entries: new_entries,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: None,
                             }))
                         } else {
                             None
@@ -1691,6 +1694,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
     let inner_dict = Value::Dict {
         entries: inner_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     // Outer dict: { members: inner_dict }
     let mut outer_entries = IndexMap::new();
@@ -1702,6 +1706,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
         Value::Dict {
             entries: outer_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         },
         span,
     ));
@@ -2456,8 +2461,8 @@ mod tests {
         Arc::new(Value::Variant {
             ctor: Arc::from(TV_TOP),
             payload: None,
-
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })
     }
 
@@ -2465,8 +2470,8 @@ mod tests {
         Arc::new(Value::Variant {
             ctor: Arc::from(TV_NEVER),
             payload: None,
-
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })
     }
 
@@ -2474,8 +2479,8 @@ mod tests {
         Arc::new(Value::Variant {
             ctor: Arc::from(TV_UNKNOWN),
             payload: None,
-
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         })
     }
 
@@ -2527,7 +2532,10 @@ mod tests {
     fn make_int_lit(n: i64) -> Arc<Value> {
         let span = bas_span();
         let mut fields = IndexMap::new();
-        fields.insert(FIELD_VALUE.to_string(), Arc::new(Value::Int { n }));
+        fields.insert(
+            FIELD_VALUE.to_string(),
+            Arc::new(Value::Int { n, type_val: None }),
+        );
         let payload_thunk = make_payload_thunk(fields, span);
         make_payload_typevalue(TV_INT_LIT, payload_thunk)
     }
@@ -2541,6 +2549,7 @@ mod tests {
                 source: Arc::from(s),
                 start: 0,
                 end: s.len(),
+                type_val: None,
             }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
@@ -2550,7 +2559,13 @@ mod tests {
     fn make_float_lit(f: f64) -> Arc<Value> {
         let span = bas_span();
         let mut fields = IndexMap::new();
-        fields.insert(FIELD_VALUE.to_string(), Arc::new(Value::Float { n: f }));
+        fields.insert(
+            FIELD_VALUE.to_string(),
+            Arc::new(Value::Float {
+                n: f,
+                type_val: None,
+            }),
+        );
         let payload_thunk = make_payload_thunk(fields, span);
         make_payload_typevalue(TV_FLOAT_LIT, payload_thunk)
     }
@@ -2567,6 +2582,7 @@ mod tests {
         let params_dict = Arc::new(Value::Dict {
             entries: params_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         });
         let mut fields = IndexMap::new();
         fields.insert(FIELD_PARAMS.to_string(), params_dict);
@@ -2587,11 +2603,13 @@ mod tests {
         let fields_dict = Arc::new(Value::Dict {
             entries: field_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         });
         // Closed tail: empty dict []
         let tail_dict = Arc::new(Value::Dict {
             entries: IndexMap::new(),
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         });
         let mut payload_fields = IndexMap::new();
         payload_fields.insert(FIELD_FIELDS.to_string(), fields_dict);
@@ -2625,7 +2643,10 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert(
             FIELD_DEPTH.to_string(),
-            Arc::new(Value::Int { n: depth_val }),
+            Arc::new(Value::Int {
+                n: depth_val,
+                type_val: None,
+            }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
         make_payload_typevalue(TV_RECURSIVE_REF, payload_thunk)
@@ -3055,8 +3076,8 @@ mod tests {
             TYPE_ID_INT,
             TYPE_ID_STRING,
             TYPE_ID_FLOAT,
-            TYPE_ID_ARENA,
             TYPE_ID_BYTES,
+            TYPE_ID_BUILTIN,
         ];
         let members: Vec<Arc<Value>> = type_ids.iter().map(|id| make_nominal(*id)).collect();
         let union_a = to_rdnf(&make_union(members.clone()));

@@ -542,6 +542,10 @@ pub struct SurfaceNode {
     /// The lowerer carries this to `Spanned<CoreExpr>.type_decl_id` so
     /// the evaluator can set it on Thunk construction without materializing.
     pub inferred_type_decl_id: InferredTypeId,
+    /// Per-call-site type instantiation set by the type checker after unification.
+    /// Maps type parameter names (e.g. "a") to their concrete TypeValues at this call site.
+    /// Only set on Call nodes for polymorphic function calls.
+    pub type_instantiation: TypeInstantiation,
 }
 
 impl SurfaceExpression {
@@ -589,6 +593,7 @@ impl SurfaceNode {
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
             inferred_type_decl_id: InferredTypeId::new(),
+            type_instantiation: TypeInstantiation::new(),
         }
     }
 
@@ -603,6 +608,7 @@ impl SurfaceNode {
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
             inferred_type_decl_id: InferredTypeId::new(),
+            type_instantiation: TypeInstantiation::new(),
         }
     }
 }
@@ -619,6 +625,7 @@ macro_rules! surface_node {
             type_guard: $crate::ast::TypeAnnotation::new(),
             provenance: $crate::ast::Provenance::new(),
             inferred_type_decl_id: $crate::ast::InferredTypeId::new(),
+            type_instantiation: $crate::ast::TypeInstantiation::new(),
         }
     };
 }
@@ -1130,6 +1137,52 @@ impl std::fmt::Debug for TypeAnnotation {
     }
 }
 
+/// Per-call-site type instantiation — maps type parameter names to concrete TypeValues.
+/// Set by the type checker after unification at polymorphic call sites.
+/// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
+pub struct TypeInstantiation(
+    std::sync::OnceLock<Option<std::collections::HashMap<String, Arc<crate::value::Value>>>>,
+);
+impl TypeInstantiation {
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<&std::collections::HashMap<String, Arc<crate::value::Value>>> {
+        self.0.get().and_then(|o| o.as_ref())
+    }
+    pub fn set(&self, inst: std::collections::HashMap<String, Arc<crate::value::Value>>) {
+        self.0
+            .get_or_init(|| if inst.is_empty() { None } else { Some(inst) });
+    }
+}
+impl Clone for TypeInstantiation {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for TypeInstantiation {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for TypeInstantiation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl std::fmt::Debug for TypeInstantiation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "TypeInstantiation({})",
+            self.0
+                .get()
+                .map(|o| o.as_ref().map_or(0, |m| m.len()))
+                .unwrap_or(0)
+        )
+    }
+}
+
 /// Inferred type identity — set once by the type checker, read by the lowerer.
 /// OnceLock-based for interior mutability through Arc<SurfaceNode>.
 pub struct InferredTypeId(std::sync::OnceLock<u64>);
@@ -1461,20 +1514,20 @@ pub enum CoreExpr {
     // Literals
     Int {
         value: i64,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     /// Unsigned 64-bit integer (from `42u`, `0xFFu` literals)
     U64 {
         value: u64,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Float {
         value: f64,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Str {
         value: String,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
 
     // VarRef with closure-converted addressing
@@ -1485,7 +1538,7 @@ pub enum CoreExpr {
         /// PropertyDict for user-written @[type: T  ...] forms.
         /// None for plain variable references.
         annotation: Option<Spanned<Annotation>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
 
     /// First-class variant constructor. Produced by lower.rs for type declarations.
@@ -1497,7 +1550,7 @@ pub enum CoreExpr {
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
         /// types in nested scopes from sharing identities (B-714).
         type_decl_id: u64,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
 
     UnitVariant {
@@ -1507,25 +1560,26 @@ pub enum CoreExpr {
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
         /// types in nested scopes from sharing identities (B-714).
         type_decl_id: u64,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
     // No Field variant — dot-access is desugared to Call(builtin-dict-get, [key, target]) by the lowerer.
     Sequential {
         exprs: Vec<Arc<Spanned<CoreExpr>>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Dict {
         entries: Vec<Spanned<CoreEntry>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Call {
         func: Arc<Spanned<CoreExpr>>,
         args: Vec<Arc<Spanned<CoreExpr>>>,
         named_args: Vec<Spanned<CoreNamedArg>>,
         implied: bool,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
+        type_instantiation: Option<std::collections::HashMap<String, Arc<crate::value::Value>>>,
     },
     Fn {
         /// Clauses of this function. For single-clause functions (the common case),
@@ -1550,45 +1604,45 @@ pub enum CoreExpr {
         /// `FnAnnotation.extra` at function-definition time (enabling `trace:` and other
         /// annotation-driven runtime behavior). `None` for unannotated functions.
         return_ann: Option<Spanned<Annotation>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     TypeAssert {
         expr: Arc<Spanned<CoreExpr>>,
         check: TypeAssertCheck,
         pipeline_blame: Option<crate::error::PipelineBlame>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Rest {
         name: Option<String>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Match {
         scrutinee: Arc<Spanned<CoreExpr>>,
         arms: Vec<CoreClause>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Quote {
         expr: Arc<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Unquote {
         expr: Arc<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     UnquoteSplice {
         expr: Arc<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     PatternDecl {
         bindings: Vec<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     LetDecl {
         bindings: Vec<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     Placeholder {
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
     /// A type declaration with `repr:` metadata.
     ///
@@ -1608,7 +1662,7 @@ pub enum CoreExpr {
         is_pred: Option<Arc<Spanned<CoreExpr>>>,
         /// The inner constructor dict produced by `lower_type_alias_to_constructor_dict`.
         inner: Arc<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
 
     /// A named type declaration — wrapper that creates a stable Arc-level identity for the type.
@@ -1638,148 +1692,64 @@ pub enum CoreExpr {
         type_decl_id: u64,
         /// The inner expression: `CoreExpr::Dict` or `CoreExpr::ReprDecl { inner: Dict }`.
         inner: Arc<Spanned<CoreExpr>>,
-        inferred_type_id: u64,
+        inferred_type: Option<Arc<crate::value::Value>>,
     },
 }
 
 impl CoreExpr {
-    /// Returns the inferred type_decl_id for this expression.
-    pub fn inferred_type_id(&self) -> u64 {
+    /// Returns the inferred type for this expression.
+    pub fn inferred_type(&self) -> Option<&Arc<crate::value::Value>> {
         match self {
-            CoreExpr::Int {
-                inferred_type_id, ..
-            }
-            | CoreExpr::U64 {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Float {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Str {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Var {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Variant {
-                inferred_type_id, ..
-            }
-            | CoreExpr::UnitVariant {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Sequential {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Dict {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Call {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Fn {
-                inferred_type_id, ..
-            }
-            | CoreExpr::TypeAssert {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Rest {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Match {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Quote {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Unquote {
-                inferred_type_id, ..
-            }
-            | CoreExpr::UnquoteSplice {
-                inferred_type_id, ..
-            }
-            | CoreExpr::PatternDecl {
-                inferred_type_id, ..
-            }
-            | CoreExpr::LetDecl {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Placeholder { inferred_type_id }
-            | CoreExpr::ReprDecl {
-                inferred_type_id, ..
-            }
-            | CoreExpr::TypeDecl {
-                inferred_type_id, ..
-            } => *inferred_type_id,
+            CoreExpr::Int { inferred_type, .. }
+            | CoreExpr::U64 { inferred_type, .. }
+            | CoreExpr::Float { inferred_type, .. }
+            | CoreExpr::Str { inferred_type, .. }
+            | CoreExpr::Var { inferred_type, .. }
+            | CoreExpr::Variant { inferred_type, .. }
+            | CoreExpr::UnitVariant { inferred_type, .. }
+            | CoreExpr::Sequential { inferred_type, .. }
+            | CoreExpr::Dict { inferred_type, .. }
+            | CoreExpr::Call { inferred_type, .. }
+            | CoreExpr::Fn { inferred_type, .. }
+            | CoreExpr::TypeAssert { inferred_type, .. }
+            | CoreExpr::Rest { inferred_type, .. }
+            | CoreExpr::Match { inferred_type, .. }
+            | CoreExpr::Quote { inferred_type, .. }
+            | CoreExpr::Unquote { inferred_type, .. }
+            | CoreExpr::UnquoteSplice { inferred_type, .. }
+            | CoreExpr::PatternDecl { inferred_type, .. }
+            | CoreExpr::LetDecl { inferred_type, .. }
+            | CoreExpr::Placeholder { inferred_type }
+            | CoreExpr::ReprDecl { inferred_type, .. }
+            | CoreExpr::TypeDecl { inferred_type, .. } => inferred_type.as_ref(),
         }
     }
 
-    /// Set the inferred type_decl_id on this expression.
-    pub fn set_inferred_type_id(&mut self, id: u64) {
+    /// Set the inferred type on this expression.
+    pub fn set_inferred_type(&mut self, tv: Option<Arc<crate::value::Value>>) {
         match self {
-            CoreExpr::Int {
-                inferred_type_id, ..
-            }
-            | CoreExpr::U64 {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Float {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Str {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Var {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Variant {
-                inferred_type_id, ..
-            }
-            | CoreExpr::UnitVariant {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Sequential {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Dict {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Call {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Fn {
-                inferred_type_id, ..
-            }
-            | CoreExpr::TypeAssert {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Rest {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Match {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Quote {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Unquote {
-                inferred_type_id, ..
-            }
-            | CoreExpr::UnquoteSplice {
-                inferred_type_id, ..
-            }
-            | CoreExpr::PatternDecl {
-                inferred_type_id, ..
-            }
-            | CoreExpr::LetDecl {
-                inferred_type_id, ..
-            }
-            | CoreExpr::Placeholder { inferred_type_id }
-            | CoreExpr::ReprDecl {
-                inferred_type_id, ..
-            }
-            | CoreExpr::TypeDecl {
-                inferred_type_id, ..
-            } => *inferred_type_id = id,
+            CoreExpr::Int { inferred_type, .. }
+            | CoreExpr::U64 { inferred_type, .. }
+            | CoreExpr::Float { inferred_type, .. }
+            | CoreExpr::Str { inferred_type, .. }
+            | CoreExpr::Var { inferred_type, .. }
+            | CoreExpr::Variant { inferred_type, .. }
+            | CoreExpr::UnitVariant { inferred_type, .. }
+            | CoreExpr::Sequential { inferred_type, .. }
+            | CoreExpr::Dict { inferred_type, .. }
+            | CoreExpr::Call { inferred_type, .. }
+            | CoreExpr::Fn { inferred_type, .. }
+            | CoreExpr::TypeAssert { inferred_type, .. }
+            | CoreExpr::Rest { inferred_type, .. }
+            | CoreExpr::Match { inferred_type, .. }
+            | CoreExpr::Quote { inferred_type, .. }
+            | CoreExpr::Unquote { inferred_type, .. }
+            | CoreExpr::UnquoteSplice { inferred_type, .. }
+            | CoreExpr::PatternDecl { inferred_type, .. }
+            | CoreExpr::LetDecl { inferred_type, .. }
+            | CoreExpr::Placeholder { inferred_type }
+            | CoreExpr::ReprDecl { inferred_type, .. }
+            | CoreExpr::TypeDecl { inferred_type, .. } => *inferred_type = tv,
         }
     }
 }
@@ -1892,6 +1862,7 @@ mod tests {
                 type_guard: TypeAnnotation::new(),
                 provenance: Provenance::new(),
                 inferred_type_decl_id: InferredTypeId::new(),
+                type_instantiation: TypeInstantiation::new(),
             })
         };
         let ann = Annotation::PropertyDict(vec![

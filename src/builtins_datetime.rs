@@ -53,7 +53,15 @@ pub fn builtin_parse_timestamp(
             )
         })?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp { ts }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMESTAMP,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -114,7 +122,15 @@ pub fn builtin_timestamp_to_unix(
 
         let seconds = ts.as_nanosecond() as i64 / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: seconds }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: seconds,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -148,7 +164,15 @@ pub fn builtin_unix_to_timestamp(
             )
         })?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp { ts }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMESTAMP,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -180,7 +204,15 @@ pub fn builtin_now(
             }
         };
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp { ts }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMESTAMP,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -210,6 +242,9 @@ pub fn builtin_fixed_clock(
         Ok(Arc::new(Thunk::value(
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CLOCKCAP,
+                )),
             },
             call_span,
         )))
@@ -264,7 +299,12 @@ pub fn builtin_timestamp_add(
         })?;
 
         Ok(Arc::new(Thunk::value(
-            Value::Timestamp { ts: result_ts },
+            Value::Timestamp {
+                ts: result_ts,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMESTAMP,
+                )),
+            },
             call_span,
         )))
     })
@@ -311,7 +351,12 @@ pub fn builtin_timestamp_diff(
             .ok_or_else(|| dt_err("timestamp-diff overflow", call_span.clone()))?;
 
         Ok(Arc::new(Thunk::value(
-            Value::Duration { nanos: result },
+            Value::Duration {
+                nanos: result,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DURATION,
+                )),
+            },
             call_span,
         )))
     })
@@ -356,6 +401,9 @@ pub fn builtin_timestamp_lt(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 < t2 { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )))
@@ -401,6 +449,9 @@ pub fn builtin_timestamp_gt(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 > t2 { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )))
@@ -446,6 +497,9 @@ pub fn builtin_timestamp_eq(
         Ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 == t2 { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             call_span,
         )))
@@ -479,7 +533,15 @@ pub fn builtin_timestamp_year(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let year = dt.year() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: year }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: year,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -510,7 +572,15 @@ pub fn builtin_timestamp_month(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let month = dt.month() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: month }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: month,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -541,7 +611,15 @@ pub fn builtin_timestamp_day(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let day = dt.day() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: day }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: day,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -572,7 +650,15 @@ pub fn builtin_timestamp_hour(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let hour = dt.hour() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: hour }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: hour,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -603,7 +689,15 @@ pub fn builtin_timestamp_minute(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let minute = dt.minute() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: minute }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: minute,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -634,7 +728,15 @@ pub fn builtin_timestamp_second(
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let second = dt.second() as i64;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: second }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: second,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -670,6 +772,9 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.year() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -679,6 +784,9 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.month() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -686,7 +794,12 @@ pub fn builtin_timestamp_parts(
         map.insert(
             HashableValue::Str("day".into()),
             Arc::new(Thunk::value(
-                Value::Int { n: dt.day() as i64 },
+                Value::Int {
+                    n: dt.day() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
                 call_span.clone(),
             )),
         );
@@ -695,6 +808,9 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.hour() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -704,6 +820,9 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.minute() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -713,6 +832,9 @@ pub fn builtin_timestamp_parts(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.second() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -722,6 +844,9 @@ pub fn builtin_timestamp_parts(
             Value::Dict {
                 entries: map,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )))
@@ -747,7 +872,15 @@ pub fn builtin_duration_nanos(
             _ => return Err(dt_err("duration-nanos requires an Int", call_span.clone())),
         };
 
-        Ok(Arc::new(Thunk::value(Value::Duration { nanos }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DURATION,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -781,7 +914,15 @@ pub fn builtin_timestamp_nanos(
             )
         })?;
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp { ts }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMESTAMP,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -813,7 +954,15 @@ pub fn builtin_duration_seconds(
             .checked_mul(1_000_000_000)
             .ok_or_else(|| dt_err("duration-seconds overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration { nanos }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DURATION,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -846,7 +995,15 @@ pub fn builtin_duration_minutes(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-minutes overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration { nanos }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DURATION,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -874,7 +1031,15 @@ pub fn builtin_duration_hours(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-hours overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration { nanos }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DURATION,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -902,7 +1067,15 @@ pub fn builtin_duration_days(
             .and_then(|s| s.checked_mul(1_000_000_000))
             .ok_or_else(|| dt_err("duration-days overflow", call_span.clone()))?;
 
-        Ok(Arc::new(Thunk::value(Value::Duration { nanos }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Duration {
+                nanos,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DURATION,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -932,7 +1105,15 @@ pub fn builtin_duration_to_seconds(
 
         let seconds = nanos / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: seconds }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: seconds,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -960,7 +1141,15 @@ pub fn builtin_duration_to_nanos(
             }
         };
 
-        Ok(Arc::new(Thunk::value(Value::Int { n: nanos }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Int {
+                n: nanos,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 
@@ -1022,7 +1211,12 @@ pub fn builtin_load_tz(
         })?;
 
         Ok(Arc::new(Thunk::value(
-            Value::Timezone { tz: Arc::new(tz) },
+            Value::Timezone {
+                tz: Arc::new(tz),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMEZONE,
+                )),
+            },
             call_span,
         )))
     })
@@ -1072,6 +1266,9 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.year() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -1081,6 +1278,9 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.month() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -1088,7 +1288,12 @@ pub fn builtin_timestamp_in_tz(
         map.insert(
             HashableValue::Str("day".into()),
             Arc::new(Thunk::value(
-                Value::Int { n: dt.day() as i64 },
+                Value::Int {
+                    n: dt.day() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
                 call_span.clone(),
             )),
         );
@@ -1097,6 +1302,9 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.hour() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -1106,6 +1314,9 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.minute() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -1115,6 +1326,9 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.second() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -1124,6 +1338,9 @@ pub fn builtin_timestamp_in_tz(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: dt.offset().seconds() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span.clone(),
             )),
@@ -1140,6 +1357,9 @@ pub fn builtin_timestamp_in_tz(
             Value::Dict {
                 entries: map,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )))
@@ -1249,7 +1469,15 @@ pub fn builtin_local_to_timestamp(
 
         let ts = zoned.timestamp();
 
-        Ok(Arc::new(Thunk::value(Value::Timestamp { ts }, call_span)))
+        Ok(Arc::new(Thunk::value(
+            Value::Timestamp {
+                ts,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TIMESTAMP,
+                )),
+            },
+            call_span,
+        )))
     })
 }
 

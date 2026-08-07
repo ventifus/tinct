@@ -14,7 +14,8 @@ use indexmap::IndexMap;
 
 use crate::eval::EvalContext;
 use crate::rust_span;
-use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::type_infer::make_typevalue_nominal;
+use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT, TYPE_ID_INT};
 
 /// Format a string as a tinct string literal with proper escaping.
 ///
@@ -137,6 +138,7 @@ impl SpanRecord {
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
             }
         }
 
@@ -144,14 +146,20 @@ impl SpanRecord {
 
         entries.insert(
             HashableValue::Str("id".into()),
-            alloc(Value::Int { n: self.id as i64 }),
+            alloc(Value::Int {
+                n: self.id as i64,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
+            }),
         );
 
         entries.insert(
             HashableValue::Str("materialize-parent".into()),
             alloc(
                 self.materialize_parent
-                    .map(|id| Value::Int { n: id as i64 })
+                    .map(|id| Value::Int {
+                        n: id as i64,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
+                    })
                     .unwrap_or_else(empty),
             ),
         );
@@ -160,7 +168,10 @@ impl SpanRecord {
             HashableValue::Str("create-parent".into()),
             alloc(
                 self.create_parent
-                    .map(|id| Value::Int { n: id as i64 })
+                    .map(|id| Value::Int {
+                        n: id as i64,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
+                    })
                     .unwrap_or_else(empty),
             ),
         );
@@ -169,6 +180,7 @@ impl SpanRecord {
             HashableValue::Str("create-time-us".into()),
             alloc(Value::Int {
                 n: self.create_time_us as i64,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
             }),
         );
 
@@ -188,8 +200,12 @@ impl SpanRecord {
                 self.source_start
                     .map(|(line, col)| Value::Int {
                         n: (line as i64) * 1000000 + col as i64,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
                     })
-                    .unwrap_or(Value::Int { n: 0 }),
+                    .unwrap_or(Value::Int {
+                        n: 0,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
+                    }),
             ),
         );
 
@@ -199,8 +215,12 @@ impl SpanRecord {
                 self.source_end
                     .map(|(line, col)| Value::Int {
                         n: (line as i64) * 1000000 + col as i64,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
                     })
-                    .unwrap_or(Value::Int { n: 0 }),
+                    .unwrap_or(Value::Int {
+                        n: 0,
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
+                    }),
             ),
         );
 
@@ -238,18 +258,21 @@ impl SpanRecord {
             HashableValue::Str("start-us".into()),
             alloc(Value::Int {
                 n: self.start_us as i64,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
             }),
         );
         entries.insert(
             HashableValue::Str("end-us".into()),
             alloc(Value::Int {
                 n: self.end_us as i64,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
             }),
         );
         entries.insert(
             HashableValue::Str("stall-us".into()),
             alloc(Value::Int {
                 n: self.stall_us as i64,
+                type_val: Some(make_typevalue_nominal(TYPE_ID_INT)),
             }),
         );
 
@@ -266,6 +289,7 @@ impl SpanRecord {
         Value::Dict {
             entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         }
     }
 }
@@ -490,6 +514,7 @@ impl ProfilingCollector {
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
+            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
         }
     }
 }

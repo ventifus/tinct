@@ -1403,6 +1403,7 @@ mod tests {
         let fields_dict = Value::Dict {
             entries: field_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         let mut payload_entries = indexmap::IndexMap::new();
         payload_entries.insert(
@@ -1415,6 +1416,7 @@ mod tests {
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: None,
                 },
                 crate::rust_span!(),
             )),
@@ -1422,6 +1424,7 @@ mod tests {
         let payload = Value::Dict {
             entries: payload_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
@@ -1430,6 +1433,7 @@ mod tests {
                 payload,
                 crate::rust_span!(),
             ))),
+            type_val: None,
         })
     }
 
@@ -1499,6 +1503,7 @@ mod tests {
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(TV_FN),
             payload: None,
+            type_val: None,
         });
         let union_members = vec![make_typevalue_nominal(crate::value::TYPE_ID_INT), fn_tv];
         let no_names = std::collections::HashMap::new();

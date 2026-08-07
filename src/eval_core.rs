@@ -620,8 +620,18 @@ pub(crate) async fn extract_fn_annotation_extra(
         let val = match &e.node.value.expr {
             // Literals extract directly without evaluation
             crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
-            crate::ast::SurfaceExpression::Int(n) => Value::Int { n: *n },
-            crate::ast::SurfaceExpression::Float(f) => Value::Float { n: *f },
+            crate::ast::SurfaceExpression::Int(n) => Value::Int {
+                n: *n,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            crate::ast::SurfaceExpression::Float(f) => Value::Float {
+                n: *f,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_FLOAT,
+                )),
+            },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             crate::ast::SurfaceExpression::VarRef {
@@ -666,15 +676,33 @@ pub(crate) fn eval_core_expr<'a>(
         let span = expr.span.clone();
         match &expr.node {
             // Literals produce values directly — no thunk wrapping needed
-            CoreExpr::Int { value: n, .. } => {
-                Ok(Arc::new(Thunk::value(Value::Int { n: *n }, span.clone())))
-            }
-            CoreExpr::U64 { value: n, .. } => {
-                Ok(Arc::new(Thunk::value(Value::U64 { n: *n }, span.clone())))
-            }
-            CoreExpr::Float { value: f, .. } => {
-                Ok(Arc::new(Thunk::value(Value::Float { n: *f }, span.clone())))
-            }
+            CoreExpr::Int { value: n, .. } => Ok(Arc::new(Thunk::value(
+                Value::Int {
+                    n: *n,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                span.clone(),
+            ))),
+            CoreExpr::U64 { value: n, .. } => Ok(Arc::new(Thunk::value(
+                Value::U64 {
+                    n: *n,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_U64,
+                    )),
+                },
+                span.clone(),
+            ))),
+            CoreExpr::Float { value: f, .. } => Ok(Arc::new(Thunk::value(
+                Value::Float {
+                    n: *f,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_FLOAT,
+                    )),
+                },
+                span.clone(),
+            ))),
             CoreExpr::Str { value: s, .. } => {
                 Ok(Arc::new(Thunk::value(string_val(s), span.clone())))
             }
@@ -743,6 +771,7 @@ pub(crate) fn eval_core_expr<'a>(
                         type_decl_id: *type_decl_id,
                         ctor: Arc::from(tag.as_str()),
                         payload: None,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                     },
                     span.clone(),
                 ))),
@@ -754,6 +783,9 @@ pub(crate) fn eval_core_expr<'a>(
                             type_decl_id: *type_decl_id,
                             ctor: Arc::from(tag.as_str()),
                             payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                *type_decl_id,
+                            )),
                         },
                         span.clone(),
                     )))
@@ -774,6 +806,7 @@ pub(crate) fn eval_core_expr<'a>(
                     type_decl_id: *type_decl_id,
                     ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
                     payload: None,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                 },
                 span.clone(),
             ))),
@@ -925,6 +958,9 @@ pub(crate) fn eval_core_expr<'a>(
                         clauses: Arc::new(clauses.clone()),
                         closure_env: Arc::new(closure_env_vec),
                         annotation,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_FUNCTION,
+                        )),
                     },
                     span.clone(),
                 ));
@@ -1033,6 +1069,9 @@ pub(crate) fn eval_core_expr<'a>(
                     Value::Dict {
                         entries: dict,
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     span.clone(),
                 )))
@@ -1076,6 +1115,7 @@ pub(crate) fn eval_core_expr<'a>(
                     type_decl_id: 0, // Identity sentinel — not a user-constructed variant.
                     ctor: Arc::from(type_name.as_str()),
                     payload: None,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(0)),
                 });
 
                 // Register BEFORE evaluating inner so that any constructor thunks created
@@ -1191,7 +1231,7 @@ mod tests {
         let val = eval_and_materialize(
             CoreExpr::Int {
                 value: 42,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             &ctx,
         )
@@ -1199,7 +1239,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             val,
-            Value::Int { n: 42 },
+            Value::Int {
+                n: 42,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "CoreExpr::Int(42) must evaluate to Int(42)"
         );
     }
@@ -1214,7 +1259,7 @@ mod tests {
         let val = eval_and_materialize(
             CoreExpr::Str {
                 value: "hello".to_string(),
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             &ctx,
         )
@@ -1239,12 +1284,21 @@ mod tests {
         let ctx = test_ctx();
 
         // Build an EvalFrame with the known thunk in group[0].
-        let known_thunk = Arc::new(Thunk::value(Value::Int { n: 77 }, span.clone()));
+        let known_thunk = Arc::new(Thunk::value(
+            Value::Int {
+                n: 77,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            span.clone(),
+        ));
         let frame = Arc::new(EvalFrame {
             closure_env: empty_scope(),
             group: scope_from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
             caller_evidence: empty_scope(),
+            type_inst: std::collections::HashMap::new(),
         });
 
         // Build a Var node: addr = Dispatch(0, 0).
@@ -1253,7 +1307,7 @@ mod tests {
                 name: "test-binding".to_string(),
                 addr: VarAddr::Dispatch(0, 0),
                 annotation: None,
-                inferred_type_id: 0,
+                inferred_type: None,
             },
             span.clone(),
         );
@@ -1268,7 +1322,12 @@ mod tests {
 
         assert_eq!(
             val,
-            Value::Int { n: 77 },
+            Value::Int {
+                n: 77,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT
+                ))
+            },
             "CoreExpr::Var with VarAddr::Dispatch(0, 0) must resolve to the injected Int(77)"
         );
     }

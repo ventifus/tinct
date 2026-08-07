@@ -35,6 +35,7 @@ pub fn make_typevar_value(name: &str) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -44,6 +45,7 @@ pub fn make_typevalue_unknown() -> TypeValue {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_UNKNOWN),
         payload: None,
+        type_val: None,
     })
 }
 
@@ -53,6 +55,7 @@ pub fn make_typevalue_never() -> TypeValue {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_NEVER),
         payload: None,
+        type_val: None,
     })
 }
 
@@ -62,6 +65,7 @@ pub fn make_typevalue_top() -> TypeValue {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_TOP),
         payload: None,
+        type_val: None,
     })
 }
 
@@ -70,7 +74,13 @@ pub fn make_typevalue_top() -> TypeValue {
 /// `repr` is the Rust variant discriminant string, e.g. `"Value::Int"`, `"Value::Float"`.
 /// The `is` field is left as an empty dict (no typeclass instance attached at construction time).
 pub fn make_typevalue_nominal(id: u64) -> TypeValue {
-    let payload = make_dict_typevalue(&[(FIELD_ID, crate::value::Value::U64 { n: id })]);
+    let payload = make_dict_typevalue(&[(
+        FIELD_ID,
+        crate::value::Value::U64 {
+            n: id,
+            type_val: None,
+        },
+    )]);
     Arc::new(crate::value::Value::Variant {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_NOMINAL),
@@ -78,6 +88,7 @@ pub fn make_typevalue_nominal(id: u64) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -107,7 +118,8 @@ pub fn typevalue_nominal_id(v: &TypeValue) -> Option<u64> {
 
 /// Create a TypeValue.IntLit Arc<Value> for an integer literal type.
 pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
-    let payload = make_dict_typevalue(&[(FIELD_VALUE, crate::value::Value::Int { n })]);
+    let payload =
+        make_dict_typevalue(&[(FIELD_VALUE, crate::value::Value::Int { n, type_val: None })]);
     Arc::new(crate::value::Value::Variant {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_INT_LIT),
@@ -115,6 +127,7 @@ pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -128,12 +141,19 @@ pub fn make_typevalue_str_lit(s: &str) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
 /// Create a TypeValue.FloatLit Arc<Value> for a float literal type.
 pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
-    let payload = make_dict_typevalue(&[(FIELD_VALUE, crate::value::Value::Float { n: f })]);
+    let payload = make_dict_typevalue(&[(
+        FIELD_VALUE,
+        crate::value::Value::Float {
+            n: f,
+            type_val: None,
+        },
+    )]);
     Arc::new(crate::value::Value::Variant {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(TV_FLOAT_LIT),
@@ -141,6 +161,7 @@ pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -202,10 +223,12 @@ pub fn make_typevalue_fn_with_flags(
     let params_dict = crate::value::Value::Dict {
         entries: params_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let param_names_dict = crate::value::Value::Dict {
         entries: names_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let mut payload_entries = indexmap::IndexMap::new();
     payload_entries.insert(
@@ -238,6 +261,7 @@ pub fn make_typevalue_fn_with_flags(
                 Arc::new(crate::value::Thunk::value(
                     crate::value::Value::Int {
                         n: req_count as i64,
+                        type_val: None,
                     },
                     crate::rust_span!(),
                 )),
@@ -250,6 +274,7 @@ pub fn make_typevalue_fn_with_flags(
             type_decl_id: TYPE_ID_DICT,
             ctor: Arc::from(BOOL_TRUE),
             payload: None,
+            type_val: None,
         };
         payload_entries.insert(
             HashableValue::Str(Arc::from(FIELD_VARIADIC)),
@@ -283,6 +308,7 @@ pub fn make_typevalue_fn_with_flags(
         let tv_dict = crate::value::Value::Dict {
             entries: tv_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
         payload_entries.insert(
             HashableValue::Str(Arc::from(FIELD_TYPED_VARIADICS)),
@@ -292,6 +318,7 @@ pub fn make_typevalue_fn_with_flags(
     let payload_dict = crate::value::Value::Dict {
         entries: payload_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(crate::value::Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -300,6 +327,7 @@ pub fn make_typevalue_fn_with_flags(
             payload_dict,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -309,6 +337,7 @@ pub fn make_rowtail_closed() -> TypeValue {
         type_decl_id: TYPE_ID_DICT,
         ctor: Arc::from(RT_CLOSED),
         payload: None,
+        type_val: None,
     })
 }
 
@@ -329,6 +358,7 @@ pub fn make_rowtail_var(name: &str) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -389,6 +419,7 @@ pub fn make_rowtail_uniform_with_key_type(
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -433,6 +464,7 @@ pub fn make_typevalue_record(
     let fields_dict = crate::value::Value::Dict {
         entries: fields_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     // Build tail: None (closed) → RowTail.Closed variant
     let tail_val = match tail {
@@ -451,6 +483,7 @@ pub fn make_typevalue_record(
     let payload_dict = crate::value::Value::Dict {
         entries: payload_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(crate::value::Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -459,6 +492,7 @@ pub fn make_typevalue_record(
             payload_dict,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -498,6 +532,7 @@ pub fn make_typevalue_union(members: Vec<TypeValue>) -> TypeValue {
     let members_dict = crate::value::Value::Dict {
         entries: members_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
     Arc::new(crate::value::Value::Variant {
@@ -507,6 +542,7 @@ pub fn make_typevalue_union(members: Vec<TypeValue>) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -526,6 +562,7 @@ pub fn make_typevalue_intersection(members: Vec<TypeValue>) -> TypeValue {
     let members_dict = crate::value::Value::Dict {
         entries: members_entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
     Arc::new(crate::value::Value::Variant {
@@ -535,6 +572,7 @@ pub fn make_typevalue_intersection(members: Vec<TypeValue>) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -548,6 +586,7 @@ pub fn make_typevalue_negation(inner: TypeValue) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -564,6 +603,7 @@ pub fn make_typevalue_app(op: TypeValue, arg: TypeValue) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -585,6 +625,7 @@ pub fn make_typevalue_nominal_variant(tycon: &str, ctor: &str, fields: TypeValue
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -614,6 +655,7 @@ pub fn make_typevalue_recursive(body: TypeValue) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -626,13 +668,17 @@ pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
     entries.insert(
         HashableValue::Str(Arc::from(FIELD_DEPTH)),
         Arc::new(crate::value::Thunk::value(
-            crate::value::Value::Int { n: depth },
+            crate::value::Value::Int {
+                n: depth,
+                type_val: None,
+            },
             crate::rust_span!(),
         )),
     );
     let payload = crate::value::Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     };
     Arc::new(crate::value::Value::Variant {
         type_decl_id: TYPE_ID_DICT,
@@ -641,6 +687,7 @@ pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
             payload,
             crate::rust_span!(),
         ))),
+        type_val: None,
     })
 }
 
@@ -1101,6 +1148,7 @@ fn make_dict_typevalue_from_value(fields: &[(&str, crate::value::Value)]) -> cra
     crate::value::Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     }
 }
 
@@ -1110,6 +1158,7 @@ fn make_string_typevalue(s: &str) -> crate::value::Value {
         source: Arc::from(s),
         start: 0,
         end: s.len(),
+        type_val: None,
     }
 }
 
@@ -1130,6 +1179,7 @@ fn make_dict_typevalue(fields: &[(&str, crate::value::Value)]) -> crate::value::
     crate::value::Value::Dict {
         entries,
         type_decl_id: TYPE_ID_DICT,
+        type_val: None,
     }
 }
 
@@ -1928,6 +1978,7 @@ impl InferenceContext {
         let payload_dict = crate::value::Value::Dict {
             entries: payload_entries,
             type_decl_id: TYPE_ID_DICT,
+            type_val: None,
         };
 
         Arc::new(crate::value::Value::Variant {
@@ -1937,6 +1988,7 @@ impl InferenceContext {
                 payload_dict,
                 crate::rust_span!(),
             ))),
+            type_val: None,
         })
     }
 
@@ -2292,6 +2344,11 @@ pub struct InferState {
     /// TypeValue substitution and level tracking (S-1003 TypeValue-native inference context).
     /// Replaces the deleted `Substitution` and `type_vars` fields.
     pub ctx: InferenceContext,
+    /// Temporary: renaming from the most recent scheme instantiation at a call site.
+    /// Maps original type parameter names to fresh TypeVar names (e.g. "a" → "a⦀42").
+    /// Set during VarRef scheme instantiation, consumed by the CallArg handler to build
+    /// the type instantiation on the Call's SurfaceNode. Cleared after consumption.
+    pub last_scheme_renaming: Option<std::collections::HashMap<String, String>>,
 }
 
 impl InferState {
@@ -2331,6 +2388,7 @@ impl InferState {
             narrowing_map: std::collections::HashMap::new(),
             current_parameter_frame: None,
             ctx: InferenceContext::new(),
+            last_scheme_renaming: None,
         }
     }
 

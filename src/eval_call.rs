@@ -139,6 +139,9 @@ pub struct CallContext<'a> {
     pub call_span: Span,
     pub ctx: &'a Arc<EvalContext>,
     pub caller_evidence: crate::value::Scope,
+    /// Type closure: maps type parameter names to concrete TypeValues at this call site.
+    /// Populated from CoreExpr::Call.type_instantiation at dispatch time.
+    pub type_instantiation: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
 }
 
 /// Try to match a single function clause against the provided arguments.
@@ -168,6 +171,7 @@ pub(crate) async fn try_clause(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     caller_evidence: crate::value::Scope,
+    type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
 ) -> EvalResult<Option<Arc<EvalFrame>>> {
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
@@ -220,7 +224,7 @@ pub(crate) async fn try_clause(
     }
 
     // Step 2 — Type guard params: check type for annotated params.
-    // Uses thunk.type_decl_id for nominal type checks (no materialization needed).
+    // Uses thunk.type_decl_id() for nominal type checks (no materialization needed).
     // Falls back to materialization only for structural types (Record, Union, Fn).
     for (i, param) in params.iter().enumerate() {
         let Some(tv) = &param.resolved_type else {
@@ -232,7 +236,7 @@ pub(crate) async fn try_clause(
         let Some(arg) = args.get(i) else {
             continue;
         };
-        match crate::eval::thunk_matches_nominal_type(arg, tv) {
+        match crate::eval::thunk_matches_nominal_type(arg, tv, ctx) {
             Some(true) => continue,
             Some(false) => return Ok(None),
             None => {
@@ -254,7 +258,7 @@ pub(crate) async fn try_clause(
                 continue;
             }
             if let Some(named_thunk) = named_map.get(&param.name) {
-                match crate::eval::thunk_matches_nominal_type(named_thunk, tv) {
+                match crate::eval::thunk_matches_nominal_type(named_thunk, tv, ctx) {
                     Some(true) => continue,
                     Some(false) => return Ok(None),
                     None => {
@@ -381,6 +385,7 @@ pub(crate) async fn try_clause(
             ctx,
             call_span,
             caller_evidence.clone(),
+            type_inst.clone(),
         )
         .await
         .map_err(|mut e| {
@@ -412,6 +417,7 @@ pub(crate) async fn try_clause(
         ctx,
         call_span,
         caller_evidence,
+        type_inst,
     )
     .await
     .map_err(|mut e| {
@@ -459,6 +465,7 @@ pub(crate) async fn invoke_function_tco(
             ctx.ctx,
             &ctx.call_span,
             ctx.caller_evidence.clone(),
+            ctx.type_instantiation.clone(),
         )
         .await?;
         if let Some(frame) = result {
@@ -488,6 +495,7 @@ pub(crate) async fn invoke_function_tco(
             ctx.ctx,
             &ctx.call_span,
             ctx.caller_evidence.clone(),
+            ctx.type_instantiation.clone(),
         )
         .await
         {
@@ -512,7 +520,7 @@ pub(crate) async fn invoke_function_tco(
         .iter()
         .map(|arg| match arg.peek_result() {
             Some(Ok(val)) => ctx.ctx.type_display_name(val.type_decl_id_of()),
-            _ => ctx.ctx.type_display_name(arg.type_decl_id),
+            _ => ctx.ctx.type_display_name(arg.type_decl_id()),
         })
         .collect();
     err.notes
@@ -526,7 +534,7 @@ pub(crate) async fn invoke_function_tco(
                     Some(Ok(val)) => {
                         format!("{k}: {}", ctx.ctx.type_display_name(val.type_decl_id_of()))
                     }
-                    _ => format!("{k}: {}", ctx.ctx.type_display_name(thunk.type_decl_id)),
+                    _ => format!("{k}: {}", ctx.ctx.type_display_name(thunk.type_decl_id())),
                 })
                 .collect();
             err.notes
@@ -543,7 +551,14 @@ pub(crate) async fn invoke_function_tco(
                 let name = &p.node.name;
                 match &p.node.resolved_type {
                     Some(tv) if !is_typevalue_unknown(tv) => {
-                        format!("{}@{}", name, crate::eval::format_type_with_names(tv, &ctx.ctx.type_display_names_snapshot()))
+                        format!(
+                            "{}@{}",
+                            name,
+                            crate::eval::format_type_with_names(
+                                tv,
+                                &ctx.ctx.type_display_names_snapshot()
+                            )
+                        )
                     }
                     _ => name.clone(),
                 }
@@ -586,6 +601,7 @@ pub(crate) async fn bind_args_thunks(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     caller_evidence: crate::value::Scope,
+    type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
 ) -> EvalResult<Arc<EvalFrame>> {
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
@@ -712,7 +728,8 @@ pub(crate) async fn bind_args_thunks(
             } else if let Some(default_node) = get_default(param) {
                 // Default param: lower and wrap as a CoreExpr thunk with empty frame.
                 let display_names = ctx.type_display_names_snapshot();
-                let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
+                let (lowered_default, lower_diags) =
+                    crate::lower::lower(&default_node, &display_names);
                 {
                     let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
                         .into_iter()
@@ -889,6 +906,9 @@ pub(crate) async fn bind_args_thunks(
                 Value::Dict {
                     entries: dict,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span.clone(),
             )));
@@ -902,6 +922,9 @@ pub(crate) async fn bind_args_thunks(
                 Value::Dict {
                     entries: rest_dict,
                     type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 call_span.clone(),
             ));
@@ -917,10 +940,11 @@ pub(crate) async fn bind_args_thunks(
         .map(|opt| opt.expect("param slot invariant violated: unfilled slot after arity check"))
         .collect();
 
-    Ok(EvalFrame::for_function_call(
+    Ok(EvalFrame::for_function_call_with_type_inst(
         closure_env,
         params_vec,
         caller_evidence,
+        type_inst,
     ))
 }
 
@@ -953,7 +977,7 @@ mod tests {
             name: "my_func".to_string(),
             addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
-            inferred_type_id: 0,
+            inferred_type: None,
         };
         let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("my_func"));
@@ -976,14 +1000,14 @@ mod tests {
         let expr = CoreExpr::Fn {
             clauses: vec![make_test_clause(sp(CoreExpr::Int {
                 value: 42,
-                inferred_type_id: 0,
+                inferred_type: None,
             }))],
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
 
             resolved_fn_type: None,
             return_ann: None,
-            inferred_type_id: 0,
+            inferred_type: None,
         };
         let label = func_label_core(&expr);
         assert!(label
@@ -998,14 +1022,14 @@ mod tests {
         let expr = CoreExpr::Fn {
             clauses: vec![make_test_clause(sp(CoreExpr::Int {
                 value: 42,
-                inferred_type_id: 0,
+                inferred_type: None,
             }))],
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
 
             resolved_fn_type: None,
             return_ann: None,
-            inferred_type_id: 0,
+            inferred_type: None,
         };
         let label = func_label_core(&expr);
         assert_eq!(label, None);

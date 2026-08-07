@@ -220,6 +220,9 @@ pub(crate) fn builtin_task(
                 state: Arc::new(tokio::sync::Mutex::new(crate::value::TaskState::Pending(
                     handle,
                 ))),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_TASK,
+                )),
             },
             call_span,
         )
@@ -269,6 +272,9 @@ pub(crate) fn builtin_await(
                     crate::value::TaskState::Done(Ok(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
@@ -354,6 +360,9 @@ pub(crate) fn builtin_channel(
                 ok_val(
                     Value::Channel {
                         inner: Arc::new(channel_inner),
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_CHANNEL,
+                        )),
                     },
                     call_span,
                 )
@@ -423,6 +432,9 @@ pub(crate) fn builtin_send(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -442,6 +454,9 @@ pub(crate) fn builtin_send(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -468,6 +483,9 @@ pub(crate) fn builtin_send(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -531,6 +549,9 @@ pub(crate) fn builtin_recv(
                                 type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -560,13 +581,23 @@ pub(crate) fn builtin_recv(
                     Ok(value) => ok_val(value, call_span),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Subscriber too slow, missed n messages
-                        let count_thunk =
-                            Arc::new(Thunk::value(Value::Int { n: n as i64 }, call_span.clone()));
+                        let count_thunk = Arc::new(Thunk::value(
+                            Value::Int {
+                                n: n as i64,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_INT,
+                                )),
+                            },
+                            call_span.clone(),
+                        ));
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Lagged.Lagged"),
                                 payload: Some(count_thunk),
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -578,6 +609,9 @@ pub(crate) fn builtin_recv(
                                 type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -622,6 +656,9 @@ pub(crate) fn builtin_recv(
                                 type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -689,6 +726,9 @@ pub(crate) fn builtin_broadcast_channel(
                 ok_val(
                     Value::BroadcastChannel {
                         inner: Arc::new(channel_inner),
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_BROADCAST_CHANNEL,
+                        )),
                     },
                     call_span,
                 )
@@ -754,12 +794,18 @@ pub(crate) fn builtin_oneshot_channel(
         let sender_thunk = Arc::new(Thunk::value(
             Value::OneshotSender {
                 inner: Arc::new(sender_inner),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_ONESHOT_SENDER,
+                )),
             },
             call_span.clone(),
         ));
         let receiver_thunk = Arc::new(Thunk::value(
             Value::OneshotReceiver {
                 inner: Arc::new(receiver_inner),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_ONESHOT_RECEIVER,
+                )),
             },
             call_span.clone(),
         ));
@@ -770,6 +816,9 @@ pub(crate) fn builtin_oneshot_channel(
             Value::Dict {
                 entries: dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -813,6 +862,9 @@ pub(crate) fn builtin_try_send(
                             Value::Dict {
                                 entries: IndexMap::new(),
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -824,6 +876,9 @@ pub(crate) fn builtin_try_send(
                                 type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Full.Full"),
                                 payload: None,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -835,6 +890,9 @@ pub(crate) fn builtin_try_send(
                                 type_decl_id: TYPE_ID_DICT,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -886,6 +944,9 @@ pub(crate) fn builtin_try_recv(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -894,6 +955,9 @@ pub(crate) fn builtin_try_recv(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         );
@@ -911,6 +975,9 @@ pub(crate) fn builtin_try_recv(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -923,6 +990,9 @@ pub(crate) fn builtin_try_recv(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -931,6 +1001,9 @@ pub(crate) fn builtin_try_recv(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -943,6 +1016,9 @@ pub(crate) fn builtin_try_recv(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -951,6 +1027,9 @@ pub(crate) fn builtin_try_recv(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1009,6 +1088,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1021,6 +1103,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -1029,6 +1114,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1041,6 +1129,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -1049,6 +1140,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1061,6 +1155,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -1069,6 +1166,9 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1126,6 +1226,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -1134,6 +1237,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         );
@@ -1148,6 +1254,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Value::Dict {
                                 entries: IndexMap::new(),
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span.clone(),
                         )),
@@ -1156,6 +1265,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                         Value::Dict {
                             entries: map,
                             type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
                         },
                         call_span,
                     );
@@ -1173,6 +1285,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1186,6 +1301,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -1194,6 +1312,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1206,6 +1327,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 Value::Dict {
                                     entries: IndexMap::new(),
                                     type_decl_id: TYPE_ID_DICT,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                        crate::value::TYPE_ID_DICT,
+                                    )),
                                 },
                                 call_span.clone(),
                             )),
@@ -1214,6 +1338,9 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Value::Dict {
                                 entries: map,
                                 type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
                             },
                             call_span,
                         )
@@ -1266,6 +1393,9 @@ pub(crate) fn builtin_yield(
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -1406,6 +1536,7 @@ pub(crate) fn builtin_signal_channel(
                                     type_decl_id: TYPE_ID_DICT,
                                     ctor: Arc::from(sig_name.as_str()),
                                     payload: None,
+                                    type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_DICT)),
                                 }) {
                                     Ok(_) => {}
                                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -1432,6 +1563,9 @@ pub(crate) fn builtin_signal_channel(
             ok_val(
                 Value::Channel {
                     inner: Arc::new(channel_inner),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_CHANNEL,
+                    )),
                 },
                 call_span,
             )
@@ -1551,7 +1685,7 @@ pub(crate) fn builtin_timer_channel(
                         // Full is expected (last-tick-wins, capacity=1); Closed means consumer dropped.
                         match tx_clone.try_send(Value::Timestamp {
                             ts: now_ts,
-
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_TIMESTAMP)),
                         }) {
                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -1575,6 +1709,9 @@ pub(crate) fn builtin_timer_channel(
         ok_val(
             Value::Channel {
                 inner: Arc::new(channel_inner),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CHANNEL,
+                )),
             },
             call_span,
         )
@@ -1730,6 +1867,7 @@ pub(crate) fn builtin_watch_channel(
                                             match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
                                                 type_decl_id: TYPE_ID_DICT,
+                                                type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_DICT)),
                                             }) {
                                                 Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1740,6 +1878,7 @@ pub(crate) fn builtin_watch_channel(
                                         match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
                                                 type_decl_id: TYPE_ID_DICT,
+                                                type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_DICT)),
                                             }) {
                                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1753,6 +1892,7 @@ pub(crate) fn builtin_watch_channel(
                                     match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
                                                 type_decl_id: TYPE_ID_DICT,
+                                                type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_DICT)),
                                             }) {
                                         Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1787,6 +1927,9 @@ pub(crate) fn builtin_watch_channel(
         ok_val(
             Value::Channel {
                 inner: Arc::new(channel_inner),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CHANNEL,
+                )),
             },
             call_span,
         )
@@ -1833,7 +1976,15 @@ pub(crate) fn builtin_context(
             .into());
         }
         let token = tokio_util::sync::CancellationToken::new();
-        ok_val(Value::Context { token }, call_span)
+        ok_val(
+            Value::Context {
+                token,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CONTEXT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -1888,9 +2039,17 @@ pub(crate) fn builtin_with_cancel(
 
         // cancel is a Context clone of child_token; caller fires it with [cancel-task pair.cancel].
         // See doc/08-evaluation.md §Cancellation Primitives for the spec deviation rationale.
-        let child_ctx_val = Value::Context { token: child_token };
+        let child_ctx_val = Value::Context {
+            token: child_token,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_CONTEXT,
+            )),
+        };
         let cancel_val = Value::Context {
             token: cancel_token,
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_CONTEXT,
+            )),
         };
 
         // Build the payload dict with the same structure as before
@@ -1909,6 +2068,9 @@ pub(crate) fn builtin_with_cancel(
             Value::Dict {
                 entries: payload_dict,
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span.clone(),
         ));
@@ -1918,6 +2080,9 @@ pub(crate) fn builtin_with_cancel(
                 type_decl_id: TYPE_ID_DICT,
                 ctor: Arc::from("CancelHandle.CancelHandle"),
                 payload: Some(payload_thunk),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -2015,7 +2180,15 @@ pub(crate) fn builtin_with_timeout(
         // Register background task for drain tracking
         ctx.task_registry.lock().unwrap().push(handle);
 
-        ok_val(Value::Context { token: child_token }, call_span)
+        ok_val(
+            Value::Context {
+                token: child_token,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CONTEXT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2118,7 +2291,15 @@ pub(crate) fn builtin_with_deadline(
         // Register background task for drain tracking
         ctx.task_registry.lock().unwrap().push(handle);
 
-        ok_val(Value::Context { token: child_token }, call_span)
+        ok_val(
+            Value::Context {
+                token: child_token,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CONTEXT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2149,6 +2330,9 @@ pub(crate) fn builtin_cancelled_q(
             Value::Context { token, .. } => ok_val(
                 Value::Int {
                     n: if token.is_cancelled() { 1 } else { 0 },
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 call_span,
             ),
@@ -2197,6 +2381,9 @@ pub(crate) fn builtin_cancel_task(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
@@ -2254,6 +2441,9 @@ pub(crate) fn builtin_cancel_root(
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -2339,6 +2529,9 @@ pub(crate) fn builtin_drain(
             Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
         )
@@ -2437,7 +2630,15 @@ pub(crate) fn builtin_non_cancellable(
             .into());
         }
         let token = tokio_util::sync::CancellationToken::new();
-        ok_val(Value::Context { token }, call_span)
+        ok_val(
+            Value::Context {
+                token,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_CONTEXT,
+                )),
+            },
+            call_span,
+        )
     })
 }
 
@@ -2552,6 +2753,9 @@ pub(crate) fn builtin_reactive_cell(
         ok_val(
             Value::ReactiveCell {
                 inner: Arc::new(cell_inner),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_REACTIVE_CELL,
+                )),
             },
             call_span,
         )
@@ -2644,6 +2848,9 @@ pub(crate) fn builtin_cell_set(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
+                        type_val: Some(crate::type_infer::make_typevalue_nominal(
+                            crate::value::TYPE_ID_DICT,
+                        )),
                     },
                     call_span,
                 )
