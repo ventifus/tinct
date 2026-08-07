@@ -163,9 +163,41 @@ InferenceContext: [type [
 
 `InferenceContext` is the shared mutable state across incremental static passes. TypeVar binding is monotonic: each variable is bound at most once in `subst`. A second binding attempt raises an error. Cascade prevention: failed TypeVars are tracked so errors don't multiply.
 
-**Read-only at runtime.** Static type-checking passes write to `InferenceContext`. Evaluation reads it (frozen). This is mandatory for thunk referential transparency — a thunk must produce the same value on every force, which requires that the context it reads does not change after it is first forced. Unbound TypeVars encountered at runtime evaluate to `TypeValue.Unknown`.
+**Read-only at runtime.** Static type-checking passes write to `InferenceContext`. Evaluation reads it (frozen). This is mandatory for thunk referential transparency — a thunk must produce the same value on every force, which requires that the context it reads does not change after it is first forced.
 
 `TypeValue.Var` carries identity only (`name: String`). The `levels` field in `InferenceContext` is the mutable side — TypeVar level lowering mutates the context, not the TypeValue. Since `Arc<Value>` is immutable, level must not live in TypeValue.
+
+### Type Closures — Per-Call-Site Type Instantiation
+
+**S-1013 design update (2026-08-07):** The frozen InferenceContext gives definition-time TypeVar bindings, but polymorphic functions need per-call-site instantiation. A single frozen context cannot hold the bindings for `[double 5]` ({a → Int}) AND `[double "hello"]` ({a → String}) simultaneously.
+
+TypeVars are NOT erased to Unknown at runtime. Instead, each call to a polymorphic function captures a **type closure** — a mapping from the function's type parameters to the concrete types at the call site. This parallels the three closures already captured at every function call:
+
+| Closure | What it captures | Where it lives |
+|---|---|---|
+| **Value closure** | Variable bindings (`{x → 5}`) | `EvalFrame.params` + `closure_env` |
+| **Evidence closure** | Typeclass instances (`{Addable → Int+Int}`) | `EvalFrame.caller_evidence` (scope chain) |
+| **Type closure** | Type instantiation (`{a → Int}`) | `EvalFrame.type_inst` (**new**) |
+
+The type closure flows through the same pipeline as value and evidence closures:
+
+1. **Type checker** — at each polymorphic call site, produces an instantiation mapping type parameters to concrete TypeValues. This is stored on the Call's SurfaceNode (alongside the existing `type_guard` and `inferred_type_decl_id`).
+
+2. **Lowerer** — reads the instantiation from SurfaceNode, carries it on `CoreExpr::Call`.
+
+3. **Evaluator** — when dispatching a function call, captures the instantiation in the new `EvalFrame.type_inst` field. When creating thunks for body expressions, the thunk inherits the frame's type instantiation.
+
+4. **Thunk** — carries a type closure: `(inferred_type: TypeValue, type_inst: HashMap<String, TypeValue>)`. The `inferred_type` is the definition-time type (may contain TypeVars). The `type_inst` resolves those TypeVars to concrete types.
+
+5. **Dispatch** — `try_clause` resolves the thunk's type closure by applying `type_inst` to `inferred_type`, producing a concrete TypeValue. BAS subtype checking determines clause matching.
+
+6. **Value** — when a thunk settles, the Value carries its concrete type (`type_val: Arc<Value>`). The type closure is resolved once at settlement; the Value's type is the authoritative ground truth.
+
+This ensures:
+- **Monomorphic code**: type closure has empty instantiation; `inferred_type` is already concrete. Degenerate case.
+- **Polymorphic code**: type closure resolves TypeVars via the call-site instantiation. General case.
+- **Nested polymorphism**: instantiations compose through the closure chain, just as value environments compose through `closure_env`.
+- **Lazy thunks**: the type closure is captured at thunk creation time and remains valid when the thunk is forced later — the instantiation was fixed at the call site.
 
 ---
 
