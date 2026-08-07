@@ -1,0 +1,11 @@
+--- description: Multi-clause function dispatch on nominal types (@Integer vs @String)
+--- expected_output: ["int:42", "str:hello"]
+[
+  describe: [fn
+    [fn@String [let x@Integer] [str "int:" [str x]]]
+    [fn@String [let x@String]  [str "str:" x]]]
+
+  r1: [describe 42]
+  r2: [describe "hello"]
+  result: [r1 r2]
+]

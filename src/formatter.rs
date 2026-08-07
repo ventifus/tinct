@@ -91,14 +91,16 @@ pub async fn format_source_tinct(
 
     // Typecheck the desugared formatter (writes inline type annotations).
     let ts_data = crate::imports::get_builtin_core_type_stage_scope().await;
-    let (tc_diags, _formatter_env, _tycon_env) = typecheck::typecheck_program_bootstrap(
-        &formatter_program,
-        std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-        None,
-        std::collections::HashMap::new(),
-        ts_data,
-    )
-    .await;
+    let (tc_diags, _formatter_env, _tycon_env, _type_name_to_id) =
+        typecheck::typecheck_program_bootstrap(
+            &formatter_program,
+            std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+            None,
+            std::collections::HashMap::new(),
+            ts_data,
+            std::collections::HashMap::new(),
+        )
+        .await;
     // Emit all diagnostics and only abort on type-assertion failures.
     // The formatter script is type-checked with a minimal env (builtins resolve by slot
     // but have no type scheme — the env is empty), so "resolver-slot-miss" diagnostics

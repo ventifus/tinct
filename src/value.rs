@@ -813,7 +813,6 @@ pub enum Value {
         source: Arc<str>,
         start: usize,
         end: usize,
-
     },
     /// Ordered key-value map with lazy (thunked) values.
     /// `type_decl_id` is 0 for anonymous dicts; non-zero for typed dicts created by TypeDecl.
@@ -846,41 +845,28 @@ pub enum Value {
         clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
         closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
         annotation: Option<Box<FnAnnotation>>,
-
     },
     /// Rust-native built-in function
-    Builtin {
-        def: BuiltinDef,
-
-    },
+    Builtin { def: BuiltinDef },
     /// Proxy object — field access calls the handler function with the field name
-    Proxy {
-        handler: std::sync::Arc<Thunk>,
-
-    },
+    Proxy { handler: std::sync::Arc<Thunk> },
     /// Capability-bound directory handle (object capability model)
     DirCap {
         dir: cap_std::fs::Dir,
         perms: DirPerms,
-
     },
     /// Network capability — authority to connect to specified hosts/subnets
-    NetCap {
-        entries: Arc<Vec<NetCapEntry>>,
-
-    },
+    NetCap { entries: Arc<Vec<NetCapEntry>> },
     /// Raw OS file handle (thin wrapper over cap_std::fs::File, no buffering).
     /// Opened via `builtin-file-open`; read/written/sought via `builtin-file-*` builtins.
     File {
         inner: Arc<Mutex<cap_std::fs::File>>,
-
     },
     /// Revocable directory capability
     RevocableDirCap {
         inner: cap_std::fs::Dir,
         perms: DirPerms,
         revoked: Arc<AtomicBool>,
-
     },
     /// Nominal variant (enum-like value)
     Variant {
@@ -897,67 +883,39 @@ pub enum Value {
         payload: Option<std::sync::Arc<Thunk>>,
     },
     /// Exact base-10 decimal (rust_decimal::Decimal, 96-bit software decimal).
-    Decimal {
-        n: rust_decimal::Decimal,
-
-    },
+    Decimal { n: rust_decimal::Decimal },
     /// Arbitrary-precision integer (num_bigint::BigInt).
-    BigInt {
-        n: num_bigint::BigInt,
-
-    },
+    BigInt { n: num_bigint::BigInt },
     /// Byte sequence (opaque binary data).
     Bytes {
         source: Arc<[u8]>,
         start: usize,
         end: usize,
-
     },
     /// URI — a uniform resource identifier with scheme and URI string.
-    Uri {
-        scheme: String,
-        uri: String,
-
-    },
+    Uri { scheme: String, uri: String },
     /// UTC timestamp — pre-validated jiff::Timestamp. Construction must succeed at creation
     /// sites (all i64-nanosecond values are within jiff's representable range).
-    Timestamp {
-        ts: jiff::Timestamp,
-
-    },
+    Timestamp { ts: jiff::Timestamp },
     /// Signed duration (nanoseconds).
     Duration { nanos: i64 },
     /// Clock capability for reading current time (object capability model).
-    ClockCap {
-        inner: Arc<ClockCapInner>,
-
-    },
+    ClockCap { inner: Arc<ClockCapInner> },
     /// Timezone (parsed IANA TZ rules from zoneinfo file).
-    Timezone {
-        tz: Arc<jiff::tz::TimeZone>,
-
-    },
+    Timezone { tz: Arc<jiff::tz::TimeZone> },
     /// QUIC session — multiplexed connection over UDP (RFC 9000).
-    QuicSession {
-        conn: Arc<quinn::Connection>,
-
-    },
+    QuicSession { conn: Arc<quinn::Connection> },
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
     Http2Session {
         client: Arc<reqwest::Client>,
         base_url: String,
-
     },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).
     Http3Session {
         session: Arc<Mutex<Http3SessionState>>,
-
     },
     /// QUIC datagram handle — unreliable message delivery over QUIC (RFC 9221).
-    QuicDatagramHandle {
-        conn: Arc<quinn::Connection>,
-
-    },
+    QuicDatagramHandle { conn: Arc<quinn::Connection> },
 
     // =========================================================================
     // runtime-v2 native AST value types
@@ -970,7 +928,6 @@ pub enum Value {
     Program {
         program: std::sync::Arc<crate::ast::SurfaceProgram>,
         resolutions: Arc<crate::ast::ResolutionTable>,
-
     },
 
     /// A single document within a program — accessible via `program.documents`.
@@ -985,14 +942,10 @@ pub enum Value {
         ///
         /// Set by builtin-resolve. Empty if the document was not resolved.
         resolver_frames: Arc<Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>>,
-
     },
 
     /// A single AST expression node — the type returned by `ast-of` and `[quote ...]`.
-    Expression {
-        node: Arc<SurfaceNode>,
-
-    },
+    Expression { node: Arc<SurfaceNode> },
 
     // =========================================================================
     // runtime-v2 async primitives
@@ -1000,54 +953,33 @@ pub enum Value {
     /// Async task handle — returned by `task` builtin, consumed by `await`.
     Task {
         state: Arc<tokio::sync::Mutex<TaskState>>,
-
     },
 
     /// Channel for inter-task communication — created by `channel` builtin.
-    Channel {
-        inner: Arc<ChannelInner>,
-
-    },
+    Channel { inner: Arc<ChannelInner> },
 
     /// Broadcast channel — created by `broadcast-channel` builtin.
-    BroadcastChannel {
-        inner: Arc<BroadcastChannelInner>,
-
-    },
+    BroadcastChannel { inner: Arc<BroadcastChannelInner> },
 
     /// Oneshot sender half — created by `oneshot-channel` builtin.
-    OneshotSender {
-        inner: Arc<OneshotSenderInner>,
-
-    },
+    OneshotSender { inner: Arc<OneshotSenderInner> },
 
     /// Oneshot receiver half — created by `oneshot-channel` builtin.
-    OneshotReceiver {
-        inner: Arc<OneshotReceiverInner>,
-
-    },
+    OneshotReceiver { inner: Arc<OneshotReceiverInner> },
 
     /// Cancellation context — created by `context` builtin.
     Context {
         token: tokio_util::sync::CancellationToken,
-
     },
 
     /// Reactive cell — created by `reactive-cell` builtin.
-    ReactiveCell {
-        inner: Arc<ReactiveCellInner>,
-
-    },
+    ReactiveCell { inner: Arc<ReactiveCellInner> },
 
     /// Arena view handle — wraps a named scope managed by this arena.
     /// `start_env_id` is the root scope allocated by `arena-new`.
     /// The actual end of the arena is always computed dynamically from `envs.len()` at
     /// drop/migrate time; there is no stored end field (it would be stale immediately).
-    Arena {
-        name: Arc<str>,
-        start_env_id: u32,
-
-    },
+    Arena { name: Arc<str>, start_env_id: u32 },
     /// Type identity delegates to inner.type_val() — no own type_val field.
     ///
     /// Value annotated with runtime metadata (e.g. constructor annotation dict).
@@ -1061,7 +993,6 @@ pub enum Value {
     /// Created by `builtin-get-type-context`; consumed by `builtin-typecheck-doc`, `builtin-resolve`, etc.
     TypeContext {
         ctx: std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>,
-
     },
     /// A fully-lowered document — produced by `builtin-lower` after lowering all SurfaceNodes to
     /// CoreExpr. This is the discrete lowering step that separates surface-to-core lowering from
@@ -1077,7 +1008,6 @@ pub enum Value {
             )>,
         >,
         span: crate::ast::Span,
-
     },
     /// Opaque scope value for pipeline env passing between stages.
     /// Contains slots (thunks) and a name-to-slot mapping. Not inspectable
@@ -1085,65 +1015,39 @@ pub enum Value {
     Scope {
         slots: Arc<Vec<Arc<Thunk>>>,
         names: Arc<IndexMap<String, u32>>,
-
     },
 }
 
 impl Clone for Value {
     fn clone(&self) -> Self {
         match self {
-            Value::Int { n } => Value::Int {
-                n: *n,
-
-            },
-            Value::U64 { n } => Value::U64 {
-                n: *n,
-
-            },
-            Value::Float { n } => Value::Float {
-                n: *n,
-
-            },
-            Value::String {
-                source,
-                start,
-                end,
-
-            } => Value::String {
+            Value::Int { n } => Value::Int { n: *n },
+            Value::U64 { n } => Value::U64 { n: *n },
+            Value::Float { n } => Value::Float { n: *n },
+            Value::String { source, start, end } => Value::String {
                 source: Arc::clone(source),
                 start: *start,
                 end: *end,
-
             },
-            Value::Dict { entries } => Value::Dict {
+            Value::Dict { entries, .. } => Value::Dict {
                 entries: entries.clone(),
-
+                type_decl_id: 0,
             },
             Value::Builder(b) => Value::Builder(Arc::clone(b)),
             Value::Function {
                 clauses,
                 closure_env,
                 annotation,
-
             } => Value::Function {
                 clauses: std::sync::Arc::clone(clauses),
                 closure_env: std::sync::Arc::clone(closure_env),
                 annotation: annotation.clone(),
-
             },
-            Value::Builtin { def } => Value::Builtin {
-                def: *def,
-
-            },
+            Value::Builtin { def } => Value::Builtin { def: *def },
             Value::Proxy { handler } => Value::Proxy {
                 handler: std::sync::Arc::clone(handler),
-
             },
-            Value::DirCap {
-                dir,
-                perms,
-
-            } => Value::DirCap {
+            Value::DirCap { dir, perms } => Value::DirCap {
                 // SAFETY: DirCap values are always created from valid OS file descriptors
                 // (main.rs and builtins_io.rs construction sites). try_clone() can fail with
                 // EMFILE (too many open files) or EBADF (invalid descriptor) only if the
@@ -1152,161 +1056,102 @@ impl Clone for Value {
                 // closed while a DirCap holding it is alive.
                 dir: dir.try_clone().expect("DirCap try_clone"),
                 perms: perms.clone(),
-
             },
             Value::NetCap { entries } => Value::NetCap {
                 entries: Arc::clone(entries),
-
             },
             Value::File { inner } => Value::File {
                 inner: Arc::clone(inner),
-
             },
             Value::RevocableDirCap {
                 inner,
                 perms,
                 revoked,
-
             } => Value::RevocableDirCap {
                 inner: inner.try_clone().expect("RevocableDirCap try_clone"),
                 perms: perms.clone(),
                 revoked: Arc::clone(revoked),
-
             },
             Value::Variant {
-
                 type_decl_id,
                 ctor,
                 payload,
             } => Value::Variant {
-
                 type_decl_id: *type_decl_id,
                 ctor: Arc::clone(ctor),
                 payload: payload.as_ref().map(std::sync::Arc::clone),
             },
-            Value::Decimal { n } => Value::Decimal {
-                n: *n,
-
-            },
-            Value::BigInt { n } => Value::BigInt {
-                n: n.clone(),
-
-            },
-            Value::Bytes {
-                source,
-                start,
-                end,
-
-            } => Value::Bytes {
+            Value::Decimal { n } => Value::Decimal { n: *n },
+            Value::BigInt { n } => Value::BigInt { n: n.clone() },
+            Value::Bytes { source, start, end } => Value::Bytes {
                 source: Arc::clone(source),
                 start: *start,
                 end: *end,
-
             },
-            Value::Uri {
-                scheme,
-                uri,
-
-            } => Value::Uri {
+            Value::Uri { scheme, uri } => Value::Uri {
                 scheme: scheme.clone(),
                 uri: uri.clone(),
-
             },
-            Value::Timestamp { ts } => Value::Timestamp {
-                ts: ts.clone(),
-
-            },
-            Value::Duration { nanos } => Value::Duration {
-                nanos: *nanos,
-
-            },
+            Value::Timestamp { ts } => Value::Timestamp { ts: ts.clone() },
+            Value::Duration { nanos } => Value::Duration { nanos: *nanos },
             Value::ClockCap { inner } => Value::ClockCap {
                 inner: Arc::clone(inner),
-
             },
-            Value::Timezone { tz } => Value::Timezone {
-                tz: Arc::clone(tz),
-
-            },
+            Value::Timezone { tz } => Value::Timezone { tz: Arc::clone(tz) },
             Value::QuicSession { conn } => Value::QuicSession {
                 conn: Arc::clone(conn),
-
             },
-            Value::Http2Session {
-                client,
-                base_url,
-
-            } => Value::Http2Session {
+            Value::Http2Session { client, base_url } => Value::Http2Session {
                 client: Arc::clone(client),
                 base_url: base_url.clone(),
-
             },
             Value::Http3Session { session } => Value::Http3Session {
                 session: Arc::clone(session),
-
             },
             Value::QuicDatagramHandle { conn } => Value::QuicDatagramHandle {
                 conn: Arc::clone(conn),
-
             },
             Value::Program {
                 program,
                 resolutions,
-
             } => Value::Program {
                 program: std::sync::Arc::clone(program),
                 resolutions: Arc::clone(resolutions),
-
             },
             Value::Document {
                 doc,
                 resolver_frames,
-
             } => Value::Document {
                 doc: Arc::clone(doc),
                 resolver_frames: Arc::clone(resolver_frames),
-
             },
             Value::Expression { node } => Value::Expression {
                 node: Arc::clone(node),
-
             },
             Value::Task { state } => Value::Task {
                 state: Arc::clone(state),
-
             },
             Value::Channel { inner } => Value::Channel {
                 inner: Arc::clone(inner),
-
             },
             Value::BroadcastChannel { inner } => Value::BroadcastChannel {
                 inner: Arc::clone(inner),
-
             },
             Value::OneshotSender { inner } => Value::OneshotSender {
                 inner: Arc::clone(inner),
-
             },
             Value::OneshotReceiver { inner } => Value::OneshotReceiver {
                 inner: Arc::clone(inner),
-
             },
             Value::Context { token } => Value::Context {
                 token: token.clone(),
-
             },
             Value::ReactiveCell { inner } => Value::ReactiveCell {
                 inner: Arc::clone(inner),
-
             },
-            Value::Arena {
-                name,
-                start_env_id,
-
-            } => Value::Arena {
+            Value::Arena { name, start_env_id } => Value::Arena {
                 name: Arc::clone(name),
                 start_env_id: *start_env_id,
-
             },
             Value::Annotated { inner, annotation } => Value::Annotated {
                 inner: inner.clone(),
@@ -1314,25 +1159,14 @@ impl Clone for Value {
             },
             Value::TypeContext { ctx } => Value::TypeContext {
                 ctx: Arc::clone(ctx),
-
             },
-            Value::CoreDocument {
-                entries,
-                span,
-
-            } => Value::CoreDocument {
+            Value::CoreDocument { entries, span } => Value::CoreDocument {
                 entries: std::sync::Arc::clone(entries),
                 span: span.clone(),
-
             },
-            Value::Scope {
-                slots,
-                names,
-
-            } => Value::Scope {
+            Value::Scope { slots, names } => Value::Scope {
                 slots: Arc::clone(slots),
                 names: Arc::clone(names),
-
             },
         }
     }
@@ -1379,21 +1213,12 @@ pub struct Http3SessionState {
     pub _driver: tokio::task::JoinHandle<()>,
 }
 
-/// Helper: construct an anonymous `Value::Dict` (type_decl_id = 0).
-pub fn dict_val(entries: IndexMap<HashableValue, Arc<Thunk>>) -> Value {
-    Value::Dict {
-        entries,
-        type_decl_id: 0,
-    }
-}
-
 /// Helper function to construct a `Value::String` from a string slice.
 pub fn string_val(s: &str) -> Value {
     Value::String {
         source: Arc::from(s),
         start: 0,
         end: s.len(),
-
     }
 }
 
@@ -1403,7 +1228,6 @@ pub fn bytes_val(data: &[u8]) -> Value {
         source: Arc::from(data),
         start: 0,
         end: data.len(),
-
     }
 }
 
@@ -1513,8 +1337,6 @@ impl Value {
             _ => None,
         }
     }
-
-    /// Uniform accessor for a value's runtime type identity.
 }
 
 impl fmt::Debug for Value {
@@ -1912,6 +1734,7 @@ pub struct ThunkInner {
 pub struct Thunk {
     pub(crate) inner: ThunkInner,
     pub(crate) span: Span,
+    pub type_decl_id: u64,
 }
 
 pub(crate) struct ThunkPanicGuard(pub(crate) Option<Arc<Thunk>>);
@@ -1944,6 +1767,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
+            type_decl_id: 0,
         }
     }
 
@@ -1964,6 +1788,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
+            type_decl_id: 0,
         }
     }
 
@@ -1975,12 +1800,52 @@ impl Thunk {
         };
         // OnceCell::set returns Err(value) if already set — impossible here because
         // ThunkInner was just created above with a fresh OnceCell.
+        let type_decl_id = match &value {
+            Value::Int { .. } => TYPE_ID_INT,
+            Value::U64 { .. } => TYPE_ID_U64,
+            Value::Float { .. } => TYPE_ID_FLOAT,
+            Value::String { .. } => TYPE_ID_STRING,
+            Value::Bytes { .. } => TYPE_ID_BYTES,
+            Value::Dict { type_decl_id, .. } => *type_decl_id,
+            Value::Function { .. } => TYPE_ID_FUNCTION,
+            Value::Builtin { .. } => TYPE_ID_BUILTIN,
+            Value::Variant { type_decl_id, .. } => *type_decl_id,
+            Value::DirCap { .. } => TYPE_ID_DIRCAP,
+            Value::RevocableDirCap { .. } => TYPE_ID_REVOCABLE_DIRCAP,
+            Value::NetCap { .. } => TYPE_ID_NETCAP,
+            Value::File { .. } => TYPE_ID_FILE,
+            Value::ClockCap { .. } => TYPE_ID_CLOCKCAP,
+            Value::Task { .. } => TYPE_ID_TASK,
+            Value::Channel { .. } => TYPE_ID_CHANNEL,
+            Value::BroadcastChannel { .. } => TYPE_ID_BROADCAST_CHANNEL,
+            Value::OneshotSender { .. } => TYPE_ID_ONESHOT_SENDER,
+            Value::OneshotReceiver { .. } => TYPE_ID_ONESHOT_RECEIVER,
+            Value::Context { .. } => TYPE_ID_CONTEXT,
+            Value::ReactiveCell { .. } => TYPE_ID_REACTIVE_CELL,
+            Value::QuicSession { .. } => TYPE_ID_QUIC_SESSION,
+            Value::Http2Session { .. } => TYPE_ID_HTTP2_SESSION,
+            Value::Http3Session { .. } => TYPE_ID_HTTP3_SESSION,
+            Value::QuicDatagramHandle { .. } => TYPE_ID_QUIC_DATAGRAM_HANDLE,
+            Value::Uri { .. } => TYPE_ID_URI,
+            Value::Timestamp { .. } => TYPE_ID_TIMESTAMP,
+            Value::Duration { .. } => TYPE_ID_DURATION,
+            Value::Timezone { .. } => TYPE_ID_TIMEZONE,
+            Value::Program { .. } => TYPE_ID_PROGRAM,
+            Value::Document { .. } => TYPE_ID_DOCUMENT,
+            Value::Expression { .. } => TYPE_ID_EXPRESSION,
+            Value::CoreDocument { .. } => TYPE_ID_CORE_DOCUMENT,
+            Value::TypeContext { .. } => TYPE_ID_TYPE_CONTEXT,
+            Value::Scope { .. } => TYPE_ID_SCOPE,
+            _ => 0,
+        };
         if inner.result.set(Ok(value)).is_err() {
-            // This branch is statically unreachable: the OnceCell was just constructed
-            // and no other thread can hold a reference to `inner` yet.
             panic!("value thunk cell freshly created: set cannot fail");
         }
-        Self { inner, span }
+        Self {
+            inner,
+            span,
+            type_decl_id,
+        }
     }
 
     /// Create a lazy AstField thunk.
@@ -2000,6 +1865,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
+            type_decl_id: 0,
         }
     }
 
@@ -2027,6 +1893,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
+            type_decl_id: 0,
         }
     }
 
@@ -2057,6 +1924,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
+            type_decl_id: 0,
         }
     }
 
@@ -2091,6 +1959,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span,
+            type_decl_id: 0,
         }
     }
 
@@ -2119,6 +1988,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span: guard_span.with_name(Arc::from("type guard")),
+            type_decl_id: 0,
         }
     }
 
@@ -2297,6 +2167,7 @@ impl Thunk {
                 notify: std::sync::OnceLock::new(),
             },
             span: self.span.clone(),
+            type_decl_id: self.type_decl_id,
         }))
     }
 
@@ -2444,13 +2315,7 @@ mod tests {
     #[test]
     fn test_state_of_materialized() {
         let span = test_span(1, 1, 1, 10);
-        let thunk = Thunk::value(
-            Value::Int {
-                n: 42,
-    
-            },
-            span,
-        );
+        let thunk = Thunk::value(Value::Int { n: 42 }, span);
 
         assert_eq!(
             match thunk.peek_result() {
@@ -2458,10 +2323,7 @@ mod tests {
                 Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
                 None => None,
             },
-            Some(&Value::Int {
-                n: 42,
-
-            }),
+            Some(&Value::Int { n: 42 }),
             "Expected materialized Int(42)"
         );
     }
@@ -2471,10 +2333,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span);
 
-        thunk.settle(Ok(Value::Int {
-            n: 1,
-
-        }));
+        thunk.settle(Ok(Value::Int { n: 1 }));
 
         assert_eq!(
             match thunk.peek_result() {
@@ -2482,10 +2341,7 @@ mod tests {
                 Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
                 None => None,
             },
-            Some(&Value::Int {
-                n: 1,
-
-            }),
+            Some(&Value::Int { n: 1 }),
             "Expected materialized Int(1)"
         );
     }
@@ -2510,15 +2366,9 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span);
 
-        thunk.settle(Ok(Value::Int {
-            n: 1,
-
-        }));
+        thunk.settle(Ok(Value::Int { n: 1 }));
         // Second settle should be no-op (OnceCell ignores duplicate set)
-        thunk.settle(Ok(Value::Int {
-            n: 999,
-
-        }));
+        thunk.settle(Ok(Value::Int { n: 999 }));
 
         assert_eq!(
             match thunk.peek_result() {
@@ -2526,10 +2376,7 @@ mod tests {
                 Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
                 None => None,
             },
-            Some(&Value::Int {
-                n: 1,
-
-            }),
+            Some(&Value::Int { n: 1 }),
             "Expected materialized Int(1)"
         );
     }
@@ -2569,10 +2416,7 @@ mod tests {
         let thunk = Thunk::placeholder(span.clone());
 
         // Settle with success first.
-        thunk.settle(Ok(Value::Int {
-            n: 42,
-
-        }));
+        thunk.settle(Ok(Value::Int { n: 42 }));
 
         // Attempt to settle with error — must be a no-op.
         let error = Arc::new(crate::error::EvalError::internal(
@@ -2588,10 +2432,7 @@ mod tests {
                 Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
                 None => None,
             },
-            Some(&Value::Int {
-                n: 42,
-
-            }),
+            Some(&Value::Int { n: 42 }),
             "Materialized thunk must not transition to Failed — OnceCell write-once"
         );
         assert!(
@@ -2669,13 +2510,7 @@ mod tests {
     #[test]
     fn test_peek_result_materialized() {
         let span = test_span(1, 1, 1, 10);
-        let thunk = Thunk::value(
-            Value::Int {
-                n: 42,
-    
-            },
-            span,
-        );
+        let thunk = Thunk::value(Value::Int { n: 42 }, span);
 
         assert_eq!(
             match thunk.peek_result() {
@@ -2683,10 +2518,7 @@ mod tests {
                 Some(Err(e)) => panic!("unexpected error in test thunk: {e}"),
                 None => None,
             },
-            Some(&Value::Int {
-                n: 42,
-
-            }),
+            Some(&Value::Int { n: 42 }),
             "Expected Some(Ok(&Int(42)))"
         );
     }
@@ -2979,13 +2811,7 @@ mod groupspine_tests {
     use super::*;
 
     fn make_thunk(n: i64) -> Arc<Thunk> {
-        Arc::new(Thunk::value(
-            Value::Int {
-                n,
-    
-            },
-            crate::rust_span!(),
-        ))
+        Arc::new(Thunk::value(Value::Int { n }, crate::rust_span!()))
     }
 
     #[test]

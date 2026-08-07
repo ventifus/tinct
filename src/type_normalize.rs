@@ -136,10 +136,9 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
     );
     let payload = Value::Dict {
         entries,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_APP),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -154,8 +153,7 @@ pub(crate) fn make_typevalue_app(op: Arc<Value>, arg: Arc<Value>) -> Arc<Value> 
 /// Parallel to `typenode_leaf_to_type` but returns TypeValue instead of Type.
 pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
     use crate::type_infer::{
-        make_typevalue_never, make_typevalue_nominal, make_typevalue_top,
-        make_typevalue_unknown,
+        make_typevalue_never, make_typevalue_nominal, make_typevalue_top, make_typevalue_unknown,
     };
     let tag = match val {
         Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
@@ -194,7 +192,9 @@ pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
         TN_DECIMAL => Some(make_typevalue_nominal(crate::value::TYPE_ID_DECIMAL)),
         TN_BIG_INT => Some(make_typevalue_nominal(crate::value::TYPE_ID_BIGINT)),
         TN_QUIC_SESSION => Some(make_typevalue_nominal(crate::value::TYPE_ID_QUIC_SESSION)),
-        TN_QUIC_DATAGRAM_HANDLE => Some(make_typevalue_nominal(crate::value::TYPE_ID_QUIC_DATAGRAM_HANDLE)),
+        TN_QUIC_DATAGRAM_HANDLE => Some(make_typevalue_nominal(
+            crate::value::TYPE_ID_QUIC_DATAGRAM_HANDLE,
+        )),
         TN_HTTP2_SESSION => Some(make_typevalue_nominal(crate::value::TYPE_ID_HTTP2_SESSION)),
         TN_HTTP3_SESSION => Some(make_typevalue_nominal(crate::value::TYPE_ID_HTTP3_SESSION)),
         TN_URI => Some(make_typevalue_nominal(crate::value::TYPE_ID_URI)),

@@ -116,7 +116,7 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let members_dict = Value::Dict {
         entries,
-
+        type_decl_id: 0,
     };
     let mut payload_entries = indexmap::IndexMap::new();
     payload_entries.insert(
@@ -125,10 +125,9 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: payload_entries,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -431,10 +430,7 @@ async fn test_union_type_assert_success() {
     let union_tv = make_test_union(vec![int_tv, str_tv]);
     let ctx = crate::eval::EvalContext::new();
     assert!(crate::eval::value_matches_type(
-        &crate::value::Value::Int {
-            n: 42,
-    
-        },
+        &crate::value::Value::Int { n: 42 },
         &union_tv,
         &ctx,
     ));
@@ -448,10 +444,7 @@ async fn test_union_type_assert_failure_float() {
     let union_tv = make_test_union(vec![int_tv, str_tv]);
     let ctx = crate::eval::EvalContext::new();
     assert!(!crate::eval::value_matches_type(
-        &crate::value::Value::Float {
-            n: 1.0,
-    
-        },
+        &crate::value::Value::Float { n: 1.0 },
         &union_tv,
         &ctx,
     ));
@@ -570,7 +563,7 @@ async fn test_normalize_intersection_unknown_is_identity() {
         inter.as_ref()
             != &crate::value::Value::Dict {
                 entries: indexmap::IndexMap::new(),
-        
+                type_decl_id: 0,
             },
         "normalize_intersection must not return empty dict"
     );
@@ -714,7 +707,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         );
         let members = Value::Dict {
             entries,
-
+            type_decl_id: 0,
         };
         let mut pe = indexmap::IndexMap::new();
         pe.insert(
@@ -723,10 +716,9 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         );
         let payload = Value::Dict {
             entries: pe,
-
+            type_decl_id: 0,
         };
         Arc::new(Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_INTER),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
@@ -776,10 +768,9 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
         );
         let payload = Value::Dict {
             entries: pe,
-
+            type_decl_id: 0,
         };
         Arc::new(Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_RECURSIVE),
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
@@ -1297,10 +1288,7 @@ async fn test_typenode_float_literal_arm_conversion() {
     // Construct a TypeNode.FloatLiteral { value: Float(2.718) } variant manually.
     // ctor = "TypeNode.FloatLiteral" (tycon TypeNode, bare ctor FloatLiteral)
     // payload = { "value": Value::Float { n: 2.718 } }
-    let float_val = Value::Float {
-        n: 2.718_f64,
-
-    };
+    let float_val = Value::Float { n: 2.718_f64 };
     let payload_dict = Value::Dict {
         entries: {
             let mut m = indexmap::IndexMap::new();
@@ -1310,7 +1298,7 @@ async fn test_typenode_float_literal_arm_conversion() {
             );
             m
         },
-
+        type_decl_id: 0,
     };
     let typenode_float_literal = Value::Variant {
         ctor: Arc::from("TypeNode.FloatLiteral"),
@@ -1761,7 +1749,9 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     use crate::ast::{Resolution, SurfaceExpression, SurfaceNode, VarAddr};
     use crate::env::Env;
     use crate::type_class::ClassDecl;
-    use crate::type_infer::{make_typevalue_fn, make_typevalue_nominal, make_typevalue_var, InferState};
+    use crate::type_infer::{
+        make_typevalue_fn, make_typevalue_nominal, make_typevalue_var, InferState,
+    };
     use crate::typecheck::typecheck_cek::{run_typecheck, TypeCheckCont};
     use crate::value::Value;
     use indexmap::IndexMap;
@@ -1781,7 +1771,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         "a".to_string(),
         Arc::new(Value::Dict {
             entries: IndexMap::new(),
-
+            type_decl_id: 0,
         }),
     )];
 

@@ -1,0 +1,6 @@
+--- description: B-712 type-constructor dict matches its own Variant
+--- expected_output: {r: "matched"}
+[
+  Color: [type Red Green Blue]
+  r: [match Color.Red  Color: "matched"  ...: "other"]
+]

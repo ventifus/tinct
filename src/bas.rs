@@ -207,7 +207,6 @@ fn payload_members(payload: &Value) -> Vec<Arc<Value>> {
     indexed.into_iter().map(|(_, v)| v).collect()
 }
 
-
 // ---------------------------------------------------------------------------
 // TypeValue construction helpers
 // ---------------------------------------------------------------------------
@@ -226,7 +225,7 @@ fn make_payload_thunk(fields: IndexMap<String, Arc<Value>>, span: Span) -> Arc<T
     Arc::new(Thunk::value(
         Value::Dict {
             entries,
-
+            type_decl_id: 0,
         },
         span,
     ))
@@ -694,7 +693,6 @@ pub fn is_atom_subtype(
         // App: variance-directed
         (Some(TV_APP), Some(TV_APP)) => is_app_subtype(sub, sup, ctx, depth, sigma),
 
-
         // Recursive: coinductive (S-Assum/S-Exp)
         (Some(TV_RECURSIVE), Some(TV_RECURSIVE)) => {
             is_recursive_subtype(sub, sup, ctx, depth, sigma)
@@ -798,7 +796,8 @@ fn typevalue_structurally_equal(
             // Compare string fields only (simple equality for Repr, Op, IntLit, StrLit, Var)
             match (typevalue_ctor(sub), typevalue_ctor(sup)) {
                 (Some(TV_NOMINAL), _) => {
-                    crate::type_infer::typevalue_nominal_id(sub) == crate::type_infer::typevalue_nominal_id(sup)
+                    crate::type_infer::typevalue_nominal_id(sub)
+                        == crate::type_infer::typevalue_nominal_id(sup)
                 }
                 (Some(TV_VAR), _) => {
                     payload_string_field(sp, FIELD_NAME) == payload_string_field(pp, FIELD_NAME)
@@ -1447,7 +1446,7 @@ pub(crate) fn substitute_recursive_ref(
                         if any_changed {
                             Some(Arc::new(Value::Dict {
                                 entries: new_entries,
-                
+                                type_decl_id: 0,
                             }))
                         } else {
                             None // unchanged
@@ -1526,7 +1525,7 @@ pub(crate) fn substitute_recursive_ref(
                         if any_changed {
                             Some(Arc::new(Value::Dict {
                                 entries: new_entries,
-                
+                                type_decl_id: 0,
                             }))
                         } else {
                             None
@@ -1693,7 +1692,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let inner_dict = Value::Dict {
         entries: inner_entries,
-
+        type_decl_id: 0,
     };
     // Outer dict: { members: inner_dict }
     let mut outer_entries = IndexMap::new();
@@ -1704,7 +1703,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
     let payload_thunk = Arc::new(Thunk::value(
         Value::Dict {
             entries: outer_entries,
-
+            type_decl_id: 0,
         },
         span,
     ));
@@ -1822,12 +1821,16 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
                 (Some(ai), Some(bi)) if ai == bi => false,
                 (Some(ai), Some(bi)) => {
                     // Check if one aliases the other via builtin_type.
-                    let a_aliases_b = ctx.type_display_names.get(&bi)
+                    let a_aliases_b = ctx
+                        .type_display_names
+                        .get(&bi)
                         .and_then(|n| ctx.tycon_env.get(n.as_str()))
                         .and_then(|def| def.builtin_type.as_ref())
                         .and_then(|disc| crate::value::type_id_for_name(disc))
                         == Some(ai);
-                    let b_aliases_a = ctx.type_display_names.get(&ai)
+                    let b_aliases_a = ctx
+                        .type_display_names
+                        .get(&ai)
                         .and_then(|n| ctx.tycon_env.get(n.as_str()))
                         .and_then(|def| def.builtin_type.as_ref())
                         .and_then(|disc| crate::value::type_id_for_name(disc))
@@ -2063,11 +2066,8 @@ fn is_record_consistent_subtype(
                                 Some(sub_field_thunk) => {
                                     if let Some(sub_field_val) = peek_value(sub_field_thunk) {
                                         let sub_field_tv = Arc::new(sub_field_val.clone());
-                                        if !is_consistent_subtype(
-                                            &sub_field_tv,
-                                            &sup_field_tv,
-                                            ctx,
-                                        ) {
+                                        if !is_consistent_subtype(&sub_field_tv, &sup_field_tv, ctx)
+                                        {
                                             return false;
                                         }
                                     } else {
@@ -2251,12 +2251,14 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
     //   op:  true; arg: String ~<: Integer → false (correctly caught)
     if matches!(sub_ctor, Some(TV_APP)) && matches!(sup_ctor, Some(TV_APP)) {
         if let (Some(sub_p), Some(sup_p)) = (typevalue_payload(sub), typevalue_payload(sup)) {
-            let sub_op = payload_typevalue_field(sub_p, FIELD_OP).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
-            let sup_op = payload_typevalue_field(sup_p, FIELD_OP).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
-            let sub_arg =
-                payload_typevalue_field(sub_p, FIELD_ARG).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
-            let sup_arg =
-                payload_typevalue_field(sup_p, FIELD_ARG).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+            let sub_op = payload_typevalue_field(sub_p, FIELD_OP)
+                .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+            let sup_op = payload_typevalue_field(sup_p, FIELD_OP)
+                .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+            let sub_arg = payload_typevalue_field(sub_p, FIELD_ARG)
+                .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+            let sup_arg = payload_typevalue_field(sup_p, FIELD_ARG)
+                .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
             return is_consistent_subtype(&sub_op, &sup_op, ctx)
                 && is_consistent_subtype(&sub_arg, &sup_arg, ctx);
         }
@@ -2328,10 +2330,10 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
             return true;
         }
         // Covariant return.
-        let sub_ret =
-            payload_typevalue_field(sub_payload, FIELD_RETURN).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
-        let sup_ret =
-            payload_typevalue_field(sup_payload, FIELD_RETURN).unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+        let sub_ret = payload_typevalue_field(sub_payload, FIELD_RETURN)
+            .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+        let sup_ret = payload_typevalue_field(sup_payload, FIELD_RETURN)
+            .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
         if !is_consistent_subtype(&sub_ret, &sup_ret, ctx) {
             return false;
         }
@@ -2423,8 +2425,7 @@ pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &Inference
     // Atomic same-constructor pairs: no gradual positions inside, structural equality.
     if sub_ctor == sup_ctor {
         match sub_ctor {
-            Some(TV_INT_LIT) | Some(TV_STR_LIT)
-            | Some(TV_FLOAT_LIT) | Some(TV_NOMINAL_VARIANT) => {
+            Some(TV_INT_LIT) | Some(TV_STR_LIT) | Some(TV_FLOAT_LIT) | Some(TV_NOMINAL_VARIANT) => {
                 return is_subtype_bas(sub, sup, ctx);
             }
             _ => {}
@@ -2548,13 +2549,7 @@ mod tests {
     fn make_int_lit(n: i64) -> Arc<Value> {
         let span = bas_span();
         let mut fields = IndexMap::new();
-        fields.insert(
-            FIELD_VALUE.to_string(),
-            Arc::new(Value::Int {
-                n,
-    
-            }),
-        );
+        fields.insert(FIELD_VALUE.to_string(), Arc::new(Value::Int { n }));
         let payload_thunk = make_payload_thunk(fields, span);
         make_payload_typevalue(TV_INT_LIT, payload_thunk)
     }
@@ -2568,7 +2563,6 @@ mod tests {
                 source: Arc::from(s),
                 start: 0,
                 end: s.len(),
-    
             }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
@@ -2578,13 +2572,7 @@ mod tests {
     fn make_float_lit(f: f64) -> Arc<Value> {
         let span = bas_span();
         let mut fields = IndexMap::new();
-        fields.insert(
-            FIELD_VALUE.to_string(),
-            Arc::new(Value::Float {
-                n: f,
-    
-            }),
-        );
+        fields.insert(FIELD_VALUE.to_string(), Arc::new(Value::Float { n: f }));
         let payload_thunk = make_payload_thunk(fields, span);
         make_payload_typevalue(TV_FLOAT_LIT, payload_thunk)
     }
@@ -2600,7 +2588,7 @@ mod tests {
         }
         let params_dict = Arc::new(Value::Dict {
             entries: params_entries,
-
+            type_decl_id: 0,
         });
         let mut fields = IndexMap::new();
         fields.insert(FIELD_PARAMS.to_string(), params_dict);
@@ -2620,12 +2608,12 @@ mod tests {
         }
         let fields_dict = Arc::new(Value::Dict {
             entries: field_entries,
-
+            type_decl_id: 0,
         });
         // Closed tail: empty dict []
         let tail_dict = Arc::new(Value::Dict {
             entries: IndexMap::new(),
-
+            type_decl_id: 0,
         });
         let mut payload_fields = IndexMap::new();
         payload_fields.insert(FIELD_FIELDS.to_string(), fields_dict);
@@ -2659,10 +2647,7 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert(
             FIELD_DEPTH.to_string(),
-            Arc::new(Value::Int {
-                n: depth_val,
-    
-            }),
+            Arc::new(Value::Int { n: depth_val }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
         make_payload_typevalue(TV_RECURSIVE_REF, payload_thunk)
@@ -3061,16 +3046,39 @@ mod tests {
     fn test_b467_distribute_respects_limit() {
         use crate::value::*;
         let type_ids: Vec<u64> = vec![
-            TYPE_ID_INT, TYPE_ID_STRING, TYPE_ID_FLOAT, TYPE_ID_PROXY,
-            TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_FILE,
-            TYPE_ID_DIRCAP, TYPE_ID_NETCAP, TYPE_ID_TASK, TYPE_ID_CHANNEL,
-            TYPE_ID_CONTEXT, TYPE_ID_REACTIVE_CELL, TYPE_ID_CLOCKCAP,
-            TYPE_ID_TIMEZONE, TYPE_ID_TIMESTAMP, TYPE_ID_DURATION,
-            TYPE_ID_DECIMAL, TYPE_ID_BIGINT, TYPE_ID_QUIC_SESSION,
-            TYPE_ID_QUIC_DATAGRAM_HANDLE, TYPE_ID_HTTP2_SESSION,
-            TYPE_ID_HTTP3_SESSION, TYPE_ID_URI, TYPE_ID_PROGRAM,
-            TYPE_ID_DOCUMENT, TYPE_ID_TYPE_CONTEXT,
-            TYPE_ID_INT, TYPE_ID_STRING, TYPE_ID_FLOAT, TYPE_ID_ARENA, TYPE_ID_BYTES,
+            TYPE_ID_INT,
+            TYPE_ID_STRING,
+            TYPE_ID_FLOAT,
+            TYPE_ID_PROXY,
+            TYPE_ID_BYTES,
+            TYPE_ID_DICT,
+            TYPE_ID_FUNCTION,
+            TYPE_ID_FILE,
+            TYPE_ID_DIRCAP,
+            TYPE_ID_NETCAP,
+            TYPE_ID_TASK,
+            TYPE_ID_CHANNEL,
+            TYPE_ID_CONTEXT,
+            TYPE_ID_REACTIVE_CELL,
+            TYPE_ID_CLOCKCAP,
+            TYPE_ID_TIMEZONE,
+            TYPE_ID_TIMESTAMP,
+            TYPE_ID_DURATION,
+            TYPE_ID_DECIMAL,
+            TYPE_ID_BIGINT,
+            TYPE_ID_QUIC_SESSION,
+            TYPE_ID_QUIC_DATAGRAM_HANDLE,
+            TYPE_ID_HTTP2_SESSION,
+            TYPE_ID_HTTP3_SESSION,
+            TYPE_ID_URI,
+            TYPE_ID_PROGRAM,
+            TYPE_ID_DOCUMENT,
+            TYPE_ID_TYPE_CONTEXT,
+            TYPE_ID_INT,
+            TYPE_ID_STRING,
+            TYPE_ID_FLOAT,
+            TYPE_ID_ARENA,
+            TYPE_ID_BYTES,
         ];
         let members: Vec<Arc<Value>> = type_ids.iter().map(|id| make_nominal(*id)).collect();
         let union_a = to_rdnf(&make_union(members.clone()));

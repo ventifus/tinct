@@ -1,0 +1,7 @@
+--- description: B-712 aliased type-constructor dict matches Variant via identity
+--- expected_output: {r: "alias-matched"}
+[
+  Color: [type Red Green Blue]
+  mycolor: Color
+  r: [match Color.Red  mycolor: "alias-matched"  ...: "other"]
+]

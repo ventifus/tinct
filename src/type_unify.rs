@@ -217,7 +217,7 @@ fn extract_indexed_members(tv: &TypeValue, ctor_tag: &str, field: &str) -> Optio
 }
 
 /// Extract the `name` string from a TypeValue.Op { name: String }.
-fn extract_op_name(tv: &TypeValue) -> Option<String> {
+fn extract_op_name(tv: &TypeValue, ctx: &InferenceContext) -> Option<String> {
     match tv.as_ref() {
         crate::value::Value::Variant {
             ctor,
@@ -225,12 +225,26 @@ fn extract_op_name(tv: &TypeValue) -> Option<String> {
             ..
         } if ctor.as_ref() == TV_NOMINAL => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
-                let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
-                let name_thunk = entries.get(&key)?;
-                match name_thunk.peek_result()? {
-                    Ok(crate::value::Value::String {
+                // Try FIELD_NAME first (legacy Op-style TypeValues).
+                let name_key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
+                if let Some(name_thunk) = entries.get(&name_key) {
+                    if let Some(Ok(crate::value::Value::String {
                         source, start, end, ..
-                    }) => Some(source[*start..*end].to_string()),
+                    })) = name_thunk.peek_result()
+                    {
+                        return Some(source[*start..*end].to_string());
+                    }
+                }
+                // Fall back to FIELD_ID: extract the u64 id and look up the display name.
+                let id_key = crate::value::HashableValue::Str(Arc::from(FIELD_ID));
+                let id_thunk = entries.get(&id_key)?;
+                match id_thunk.peek_result()? {
+                    Ok(crate::value::Value::U64 { n, .. }) => {
+                        ctx.type_display_names.get(n).cloned()
+                    }
+                    Ok(crate::value::Value::Int { n, .. }) => {
+                        ctx.type_display_names.get(&(*n as u64)).cloned()
+                    }
                     _ => None,
                 }
             }
@@ -239,7 +253,6 @@ fn extract_op_name(tv: &TypeValue) -> Option<String> {
         _ => None,
     }
 }
-
 
 // ── check_function_arity ──────────────────────────────────────────────────────
 
@@ -962,8 +975,8 @@ pub async fn unify(
 
             // Check whether both ops are TV_NOMINAL with the same name and, if so, whether
             // the op name is associated with a non-injective resolver.
-            let op_name_a = extract_op_name(&op_a);
-            let op_name_b = extract_op_name(&op_b);
+            let op_name_a = extract_op_name(&op_a, ctx);
+            let op_name_b = extract_op_name(&op_b, ctx);
             let same_op_name = op_name_a.is_some() && op_name_a == op_name_b;
 
             if same_op_name {
@@ -1801,14 +1814,8 @@ async fn constrain_record(
                 format!("missing field '{}': record subtype constraint", k),
                 span,
             )
-            .with_note(format!(
-                "actual:   {}",
-                crate::eval::format_type(sub)
-            ))
-            .with_note(format!(
-                "expected: {}",
-                crate::eval::format_type(sup)
-            )));
+            .with_note(format!("actual:   {}", crate::eval::format_type(sub)))
+            .with_note(format!("expected: {}", crate::eval::format_type(sup))));
         }
     }
 

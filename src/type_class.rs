@@ -89,7 +89,6 @@ fn string_value(s: &str) -> Value {
         source,
         start: 0,
         end,
-
     }
 }
 
@@ -99,7 +98,7 @@ fn single_field_dict(key: &str, value: Value) -> Value {
     entries.insert(HashableValue::Str(Arc::from(key)), settled_thunk(value));
     Value::Dict {
         entries,
-
+        type_decl_id: 0,
     }
 }
 
@@ -110,7 +109,7 @@ fn two_field_dict(key1: &str, val1: Value, key2: &str, val2: Value) -> Value {
     entries.insert(HashableValue::Str(Arc::from(key2)), settled_thunk(val2));
     Value::Dict {
         entries,
-
+        type_decl_id: 0,
     }
 }
 
@@ -164,7 +163,7 @@ pub fn make_constraint_decl(class_tv: TypeValue, args: Vec<TypeValue>) -> TypeVa
     }
     let args_dict = Value::Dict {
         entries: args_entries,
-
+        type_decl_id: 0,
     };
 
     let class_val = arc_into_value(class_tv);
@@ -396,7 +395,8 @@ fn has_free_type_vars_inner(
                 }
             }
             // Leaf/opaque variants have no type variable positions.
-            TV_UNKNOWN | TV_NEVER | TV_TOP | TV_NOMINAL | TV_INT_LIT | TV_FLOAT_LIT | TV_STR_LIT => false,
+            TV_UNKNOWN | TV_NEVER | TV_TOP | TV_NOMINAL | TV_INT_LIT | TV_FLOAT_LIT
+            | TV_STR_LIT => false,
             // Structural variants: inspect settled payload dicts.
             _ => {
                 if let Some(thunk) = payload {
@@ -554,17 +554,11 @@ fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
             },
         ) => ca.as_ref() == cb.as_ref(),
         // TypeValue.Nominal: match by id.
-        (
-            Value::Variant {
-                ctor: ca,
-                ..
-            },
-            Value::Variant {
-                ctor: cb,
-                ..
-            },
-        ) if ca.as_ref() == TV_NOMINAL && cb.as_ref() == TV_NOMINAL => {
-            crate::type_infer::typevalue_nominal_id(pattern) == crate::type_infer::typevalue_nominal_id(target)
+        (Value::Variant { ctor: ca, .. }, Value::Variant { ctor: cb, .. })
+            if ca.as_ref() == TV_NOMINAL && cb.as_ref() == TV_NOMINAL =>
+        {
+            crate::type_infer::typevalue_nominal_id(pattern)
+                == crate::type_infer::typevalue_nominal_id(target)
         }
         // Same ctor with payload: match by ctor tag only. This is correct for all
         // builtin TypeValue constructors (Int, Float, Str, Bool, etc.) where the
@@ -836,7 +830,7 @@ pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
             Some(Arc::new(Value::Variant {
                 ctor: Arc::from(tn_ctor),
                 payload: None,
-    
+
                 type_decl_id: 0,
             }))
         }

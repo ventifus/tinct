@@ -395,8 +395,12 @@ fn expand_type_alias(
     // Extract constructors from the body.
     let ctors = extract_constructors_from_body(&body.expr);
 
-    // Generate a unique type_decl_id for this type declaration.
-    let type_decl_id = next_type_decl_id();
+    // Use the repr id directly when present (reserved TYPE_ID_* constants);
+    // otherwise allocate a sequential id for user-defined types.
+    let type_decl_id = match repr_opt {
+        Some(id) => id,
+        None => next_type_decl_id(),
+    };
 
     let mut surface_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
 
@@ -674,13 +678,13 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 /// Extract `repr:` and `is:` metadata from a TypeAlias body.
 ///
 /// Handles two body forms:
-/// 1. **Dict body** — `repr: "Value::Int"` and/or `is: predicate` as named dict entries
-/// 2. **VarRef@[PropertyDict] body** — `Int@[repr: "Value::Int" is: predicate]` as annotation entries
+/// 1. **Dict body** — `repr: 1` and/or `is: predicate` as named dict entries
+/// 2. **VarRef@[PropertyDict] body** — `Int@[repr: 1 is: predicate]` as annotation entries
 ///
-/// Returns `(Option<String>, Option<Arc<SurfaceNode>>)` for repr and is_pred.
+/// Returns `(Option<u64>, Option<Arc<SurfaceNode>>)` for repr and is_pred.
 fn extract_repr_and_is_from_body(
     body: &SurfaceExpression,
-) -> (Option<String>, Option<Arc<SurfaceNode>>) {
+) -> (Option<u64>, Option<Arc<SurfaceNode>>) {
     // VarRef@[PropertyDict] form.
     if let SurfaceExpression::VarRef {
         annotation: Some(ann),
@@ -713,7 +717,7 @@ fn extract_repr_and_is_from_body(
 /// Scan a slice of `SurfaceEntry` for `repr:` and `is:` keys and extract their values.
 fn extract_repr_and_is_from_entries(
     entries: &[Spanned<SurfaceEntry>],
-) -> (Option<String>, Option<Arc<SurfaceNode>>) {
+) -> (Option<u64>, Option<Arc<SurfaceNode>>) {
     let mut repr_opt = None;
     let mut is_pred_opt = None;
 
@@ -723,12 +727,13 @@ fn extract_repr_and_is_from_entries(
         };
         let key_name = match &key_node.expr {
             SurfaceExpression::VarRef { name, .. } => name.as_str(),
+            SurfaceExpression::StringLiteral { content, .. } => content.as_str(),
             _ => continue,
         };
         match key_name {
             "repr" => {
-                if let SurfaceExpression::StringLiteral { content, .. } = &entry.node.value.expr {
-                    repr_opt = Some(content.clone());
+                if let SurfaceExpression::Int(n) = &entry.node.value.expr {
+                    repr_opt = Some(*n as u64);
                 }
             }
             "is" => {

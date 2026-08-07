@@ -41,8 +41,8 @@ use crate::ast::{Span, SurfaceExpression, SurfaceNode};
 use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::{
-    make_typevalue_float_lit, make_typevalue_int_lit, make_typevalue_nominal, make_typevalue_str_lit,
-    make_typevalue_unknown,
+    make_typevalue_float_lit, make_typevalue_int_lit, make_typevalue_nominal,
+    make_typevalue_str_lit, make_typevalue_unknown,
 };
 use crate::type_tags::*;
 use crate::types::InferState;
@@ -251,8 +251,12 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                         {
                             let tv = match type_name.as_str() {
                                 "Int" => Some(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
-                                "Float" => Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT)),
-                                "String" => Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING)),
+                                "Float" => {
+                                    Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))
+                                }
+                                "String" => {
+                                    Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))
+                                }
                                 // Only the three primitive types above produce narrowing from
                                 // type-of. All other type names (including prelude-defined types
                                 // such as Bool and Seq) fall through to None — no narrowing —

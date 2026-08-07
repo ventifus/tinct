@@ -15,11 +15,10 @@ use crate::type_def::TyConDef;
 use crate::type_infer::{
     make_rowtail_uniform, make_rowtail_uniform_with_key_type, make_typevalue_app,
     make_typevalue_float_lit, make_typevalue_fn, make_typevalue_fn_with_flags,
-    make_typevalue_int_lit, make_typevalue_negation, make_typevalue_never,
-    make_typevalue_nominal_variant, make_typevalue_nominal, make_typevalue_record,
-    make_typevalue_recursive, make_typevalue_str_lit, make_typevalue_top,
-    make_typevalue_unknown, make_typevalue_var, typevalue_normalize_intersection,
-    typevalue_normalize_union, typevalue_normalize_union_ctx,
+    make_typevalue_int_lit, make_typevalue_negation, make_typevalue_never, make_typevalue_nominal,
+    make_typevalue_nominal_variant, make_typevalue_record, make_typevalue_recursive,
+    make_typevalue_str_lit, make_typevalue_top, make_typevalue_unknown, make_typevalue_var,
+    typevalue_normalize_intersection, typevalue_normalize_union, typevalue_normalize_union_ctx,
 };
 use crate::type_tags::*;
 use crate::types::InferState;
@@ -1566,7 +1565,9 @@ async fn resolve_type_head(
             // application of this constructor" (Seq of any element type).
             // This enables annotation-based narrowing for parameterized types
             // without requiring a type argument.
-            return Ok(make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)));
+            return Ok(make_typevalue_nominal(
+                *state.type_name_to_id.get(name).unwrap_or(&0),
+            ));
         }
         if let Some(eval_ctx) = &state.eval_ctx {
             match crate::type_normalize::evaluate_resolver_with_thunk(thunk, args, eval_ctx).await {
@@ -1632,7 +1633,10 @@ async fn resolve_type_head(
                     span,
                 ));
             }
-            return Ok(make_typevalue_app(make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)), a_type));
+            return Ok(make_typevalue_app(
+                make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)),
+                a_type,
+            ));
         }
         let level = state.ctx.current_level;
         let (fresh, _fresh_ty) =
@@ -1664,7 +1668,9 @@ async fn resolve_type_head(
     // This handles types declared in the same dict or an enclosing runtime scope.
     if state.tycon_env.contains_key(name) {
         if args.is_empty() {
-            return Ok(make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0)));
+            return Ok(make_typevalue_nominal(
+                *state.type_name_to_id.get(name).unwrap_or(&0),
+            ));
         }
         let mut result = make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
         for arg in args {
@@ -2047,7 +2053,8 @@ pub(crate) async fn resolve_type_expr(
                 if let Some(def) = state.tycon_env.get(name).cloned() {
                     let arity = def.arity();
                     if arity > 0 {
-                        let mut result = make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
+                        let mut result =
+                            make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
                         let arg_count = std::cmp::min(arity, args.len());
                         for arg_node in args.iter().take(arg_count) {
                             let arg = Box::pin(resolve_type_expr(
@@ -2401,7 +2408,10 @@ pub(crate) async fn resolve_type_dict(
                                 );
                             }
                             if !members.is_empty() {
-                                return Ok(typevalue_normalize_union_ctx(members, Some(&state.ctx)));
+                                return Ok(typevalue_normalize_union_ctx(
+                                    members,
+                                    Some(&state.ctx),
+                                ));
                             }
                         }
                         "all" => {
@@ -3178,7 +3188,9 @@ pub(crate) async fn typenode_value_to_type(
                     // "fields" dict of a Dict TypeNode) and as union/intersection members.
                     TN_BARE_INT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_INT))),
                     TN_BARE_FLOAT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))),
-                    TN_BARE_STRING => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))),
+                    TN_BARE_STRING => {
+                        Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING)))
+                    }
                     TN_BARE_BYTES => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES))),
                     TN_BARE_PROXY => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_PROXY))),
                     // Any callable — variadic function with zero required fixed params and unknown
@@ -3411,7 +3423,9 @@ pub(crate) async fn typenode_value_to_type(
                         // Not found in the type-stage scope — treat as an opaque TyCon.
                         // This is correct for types declared in the runtime section (e.g., Color,
                         // BuilderHandle) that are not yet in the type-stage scope chain.
-                        Ok(Some(make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0))))
+                        Ok(Some(make_typevalue_nominal(
+                            crate::value::type_id_for_name(&name).unwrap_or(0),
+                        )))
                     }
 
                     // ── TypeApplication ───────────────────────────────────────────────────
@@ -3657,7 +3671,9 @@ pub(crate) async fn typenode_value_to_type(
                 }
                 if all_match {
                     match prefix {
-                        Some(name) => Ok(Some(make_typevalue_nominal(crate::value::type_id_for_name(&name).unwrap_or(0)))),
+                        Some(name) => Ok(Some(make_typevalue_nominal(
+                            crate::value::type_id_for_name(&name).unwrap_or(0),
+                        ))),
                         None => {
                             // all_match = true but no Variant entries — all entries are
                             // Functions/Builtins (payload constructors). This is an ADT

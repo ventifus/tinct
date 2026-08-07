@@ -129,7 +129,6 @@ pub(crate) fn builtin_eq_int(
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
                 Value::Int {
                     n: if a == b { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -168,7 +167,6 @@ pub(crate) fn builtin_eq_float(
             (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => ok_val(
                 Value::Int {
                     n: if a == b { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -222,7 +220,6 @@ pub(crate) fn builtin_eq_string(
                 ok_val(
                     Value::Int {
                         n: if eq { 1 } else { 0 },
-        
                     },
                     call_span,
                 )
@@ -268,7 +265,6 @@ pub(crate) fn builtin_lt(
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
                 Value::Int {
                     n: if a < b { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -304,7 +300,6 @@ pub(crate) fn builtin_float_lt(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x < y { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -353,7 +348,6 @@ pub(crate) fn builtin_str_lt(
             ) => ok_val(
                 Value::Int {
                     n: if sa[*sta..*ea] < sb[*stb..*eb] { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -409,7 +403,6 @@ pub(crate) fn builtin_lte(
                 } else {
                     1
                 },
-
             },
             call_span,
         )
@@ -525,13 +518,7 @@ pub(crate) fn builtin_sqrt(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(
-            Value::Float {
-                n: val.sqrt(),
-
-            },
-            call_span,
-        )
+        ok_val(Value::Float { n: val.sqrt() }, call_span)
     })
 }
 
@@ -550,13 +537,7 @@ pub(crate) fn builtin_log(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("log", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(
-            Value::Float {
-                n: val.ln(),
-
-            },
-            call_span,
-        )
+        ok_val(Value::Float { n: val.ln() }, call_span)
     })
 }
 
@@ -757,7 +738,6 @@ pub(crate) fn builtin_nan_check(
         ok_val(
             Value::Int {
                 n: if val.is_nan() { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -781,7 +761,6 @@ pub(crate) fn builtin_inf_check(
         ok_val(
             Value::Int {
                 n: if val.is_infinite() { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -805,7 +784,6 @@ pub(crate) fn builtin_finite_check(
         ok_val(
             Value::Int {
                 n: if val.is_finite() { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -872,13 +850,7 @@ pub(crate) fn builtin_band(
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(
-            Value::Int {
-                n: a & b,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: a & b }, call_span)
     })
 }
 
@@ -896,13 +868,7 @@ pub(crate) fn builtin_bor(
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(
-            Value::Int {
-                n: a | b,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: a | b }, call_span)
     })
 }
 
@@ -920,13 +886,7 @@ pub(crate) fn builtin_bxor(
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(
-            Value::Int {
-                n: a ^ b,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: a ^ b }, call_span)
     })
 }
 
@@ -956,22 +916,10 @@ pub(crate) fn builtin_shl(
         }
 
         if bits >= 64 {
-            return ok_val(
-                Value::Int {
-                    n: 0,
-    
-                },
-                call_span,
-            );
+            return ok_val(Value::Int { n: 0 }, call_span);
         }
 
-        ok_val(
-            Value::Int {
-                n: value << bits,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: value << bits }, call_span)
     })
 }
 
@@ -1001,24 +949,12 @@ pub(crate) fn builtin_shr(
         }
 
         if bits >= 64 {
-            return ok_val(
-                Value::Int {
-                    n: 0,
-    
-                },
-                call_span,
-            );
+            return ok_val(Value::Int { n: 0 }, call_span);
         }
 
         // Logical shift: cast to u64, shift, cast back to i64
         let result = ((value as u64) >> bits) as i64;
-        ok_val(
-            Value::Int {
-                n: result,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: result }, call_span)
     })
 }
 
@@ -1046,20 +982,8 @@ pub(crate) fn builtin_float(
         let thunk0 = args[0].clone();
         let val = thunk0.require_value()?.clone();
         match val {
-            Value::Int { n, .. } => ok_val(
-                Value::Float {
-                    n: n as f64,
-    
-                },
-                call_span,
-            ),
-            Value::Float { n: f, .. } => ok_val(
-                Value::Float {
-                    n: f,
-    
-                },
-                call_span,
-            ),
+            Value::Int { n, .. } => ok_val(Value::Float { n: n as f64 }, call_span),
+            Value::Float { n: f, .. } => ok_val(Value::Float { n: f }, call_span),
             _ => Err(EvalError::type_mismatch_ctx(
                 "float".to_string(),
                 "Int or Float",
@@ -1095,15 +1019,7 @@ pub(crate) fn builtin_int_add(
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_add(*y)
-                .map(|r| {
-                    Arc::new(Thunk::value(
-                        Value::Int {
-                            n: r,
-            
-                        },
-                        call_span.clone(),
-                    ))
-                })
+                .map(|r| Arc::new(Thunk::value(Value::Int { n: r }, call_span.clone())))
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-add".to_string(), call_span).into()
                 }),
@@ -1169,13 +1085,7 @@ pub(crate) fn builtin_int_to_float(
             Value::Int { n, .. } => {
                 // Precision guard: integers with |n| > 2^53 lose precision as f64.
                 check_int_to_float_precision(n, thunk0.span.clone())?;
-                ok_val(
-                    Value::Float {
-                        n: n as f64,
-        
-                    },
-                    call_span,
-                )
+                ok_val(Value::Float { n: n as f64 }, call_span)
             }
             _ => Err(EvalError::type_mismatch("Integer", v.type_name(), call_span).into()),
         }
@@ -1225,7 +1135,6 @@ pub(crate) fn builtin_float_to_int(
                 ok_val(
                     Value::Int {
                         n: n.trunc() as i64,
-        
                     },
                     call_span,
                 )
@@ -1255,15 +1164,7 @@ pub(crate) fn builtin_int_sub(
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_sub(*y)
-                .map(|r| {
-                    Arc::new(Thunk::value(
-                        Value::Int {
-                            n: r,
-            
-                        },
-                        call_span.clone(),
-                    ))
-                })
+                .map(|r| Arc::new(Thunk::value(Value::Int { n: r }, call_span.clone())))
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-sub".to_string(), call_span).into()
                 }),
@@ -1328,15 +1229,7 @@ pub(crate) fn builtin_int_mul(
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
                 .checked_mul(*y)
-                .map(|r| {
-                    Arc::new(Thunk::value(
-                        Value::Int {
-                            n: r,
-            
-                        },
-                        call_span.clone(),
-                    ))
-                })
+                .map(|r| Arc::new(Thunk::value(Value::Int { n: r }, call_span.clone())))
                 .ok_or_else(|| {
                     EvalError::integer_overflow("builtin-int-mul".to_string(), call_span).into()
                 }),
@@ -1405,7 +1298,6 @@ pub(crate) fn builtin_int_gt(
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x > y { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -1440,7 +1332,6 @@ pub(crate) fn builtin_float_gt(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x > y { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -1488,7 +1379,6 @@ pub(crate) fn builtin_str_gt(
             ) => ok_val(
                 Value::Int {
                     n: if sa[*sta..*ea] > sb[*stb..*eb] { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -1523,7 +1413,6 @@ pub(crate) fn builtin_int_gte(
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x >= y { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -1558,7 +1447,6 @@ pub(crate) fn builtin_float_gte(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
                     n: if x >= y { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -1606,7 +1494,6 @@ pub(crate) fn builtin_str_gte(
             ) => ok_val(
                 Value::Int {
                     n: if sa[*sta..*ea] >= sb[*stb..*eb] { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -1829,13 +1716,7 @@ mod tests {
     fn test_max_safe_int_boundary_ok() {
         let ctx = test_ctx();
         let result = run(builtin_int_to_float(BuiltinArgs {
-            args: vec![alloc(
-                &ctx,
-                Value::Int {
-                    n: MAX_SAFE_INT,
-    
-                },
-            )],
+            args: vec![alloc(&ctx, Value::Int { n: MAX_SAFE_INT })],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1858,7 +1739,6 @@ mod tests {
                 &ctx,
                 Value::Int {
                     n: MAX_SAFE_INT + 1,
-    
                 },
             )],
             named: no_named(),
@@ -1881,20 +1761,8 @@ mod tests {
         let ctx = test_ctx();
         let result = run(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    &ctx,
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                ),
-                alloc(
-                    &ctx,
-                    Value::Int {
-                        n: 4,
-        
-                    },
-                ),
+                alloc(&ctx, Value::Int { n: 3 }),
+                alloc(&ctx, Value::Int { n: 4 }),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -1903,13 +1771,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }));
         let t = result.expect("expected Int(7)");
-        assert_eq!(
-            peek_value(&t),
-            Some(Value::Int {
-                n: 7,
-        
-            })
-        );
+        assert_eq!(peek_value(&t), Some(Value::Int { n: 7 }));
     }
 
     /// builtin-int-mul: Int * Int returns Int(42).
@@ -1918,20 +1780,8 @@ mod tests {
         let ctx = test_ctx();
         let result = run(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    &ctx,
-                    Value::Int {
-                        n: 6,
-        
-                    },
-                ),
-                alloc(
-                    &ctx,
-                    Value::Int {
-                        n: 7,
-        
-                    },
-                ),
+                alloc(&ctx, Value::Int { n: 6 }),
+                alloc(&ctx, Value::Int { n: 7 }),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -1940,13 +1790,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }));
         let t = result.expect("expected Int(42)");
-        assert_eq!(
-            peek_value(&t),
-            Some(Value::Int {
-                n: 42,
-        
-            })
-        );
+        assert_eq!(peek_value(&t), Some(Value::Int { n: 42 }));
     }
 
     /// builtin-int-add: non-Integer types produce TypeMismatch error.

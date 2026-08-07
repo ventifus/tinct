@@ -28,12 +28,11 @@ use crate::type_tags::*;
 use crate::type_def::TyConDef;
 use crate::type_infer::{
     make_rowtail_uniform, make_typevalue_float_lit, make_typevalue_fn, make_typevalue_int_lit,
-    make_typevalue_negation, make_typevalue_never, make_typevalue_nominal_variant,
-    make_typevalue_nominal, make_typevalue_record, make_typevalue_str_lit,
+    make_typevalue_negation, make_typevalue_never, make_typevalue_nominal,
+    make_typevalue_nominal_variant, make_typevalue_record, make_typevalue_str_lit,
     make_typevalue_top, make_typevalue_unknown, typevalue_ctor, typevalue_extract_members_pub,
     typevalue_fn_params_and_ret, typevalue_nominal_variant_has_fields,
-    typevalue_nominal_variant_tag, typevalue_normalize_intersection,
-    typevalue_normalize_union_ctx,
+    typevalue_nominal_variant_tag, typevalue_normalize_intersection, typevalue_normalize_union_ctx,
     typevalue_record_fields_pub, typevalue_var_name, InferState, TypeValue,
 };
 use crate::types::constrain;
@@ -461,7 +460,9 @@ async fn infer_step(
         SurfaceExpression::StringLiteral { content, .. } => {
             TypeCheckAction::Done(make_typevalue_str_lit(content))
         }
-        SurfaceExpression::U64(_) => TypeCheckAction::Done(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
+        SurfaceExpression::U64(_) => {
+            TypeCheckAction::Done(make_typevalue_nominal(crate::value::TYPE_ID_INT))
+        }
 
         // Placeholder: typed hole — infer as a fresh TypeVar (unifies with context)
         SurfaceExpression::Placeholder(..) => {
@@ -878,7 +879,14 @@ async fn infer_step(
         // an inner expression — recurse into it.
         SurfaceExpression::UnitVariant { tycon, .. } => {
             let tv = if state.tycon_env.contains_key(tycon.as_str()) {
-                crate::type_infer::make_typevalue_nominal(state.type_name_to_id.get(tycon.as_str()).copied().or_else(|| crate::value::type_id_for_name(tycon)).unwrap_or(0))
+                crate::type_infer::make_typevalue_nominal(
+                    state
+                        .type_name_to_id
+                        .get(tycon.as_str())
+                        .copied()
+                        .or_else(|| crate::value::type_id_for_name(tycon))
+                        .unwrap_or(0),
+                )
             } else {
                 make_typevalue_unknown()
             };
@@ -887,7 +895,14 @@ async fn infer_step(
         SurfaceExpression::MakeVariant { tag, .. } => {
             let tycon = tag.split('.').next().unwrap_or("");
             let tv = if state.tycon_env.contains_key(tycon) {
-                crate::type_infer::make_typevalue_nominal(state.type_name_to_id.get(tycon).copied().or_else(|| crate::value::type_id_for_name(tycon)).unwrap_or(0))
+                crate::type_infer::make_typevalue_nominal(
+                    state
+                        .type_name_to_id
+                        .get(tycon)
+                        .copied()
+                        .or_else(|| crate::value::type_id_for_name(tycon))
+                        .unwrap_or(0),
+                )
             } else {
                 make_typevalue_unknown()
             };
@@ -1798,7 +1813,7 @@ async fn infer_var_ref(
                             // VarDecl payload: empty dict (instantiate_scheme_tv only reads var names from keys).
                             let empty_dict = Value::Dict {
                                 entries: IndexMap::new(),
-                
+                                type_decl_id: 0,
                             };
                             vars_entries.insert(
                                 var_key,
@@ -1810,7 +1825,7 @@ async fn infer_var_ref(
                         }
                         let vars_dict = Value::Dict {
                             entries: vars_entries,
-            
+                            type_decl_id: 0,
                         };
                         let vars_thunk =
                             Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!()));
@@ -1818,7 +1833,7 @@ async fn infer_var_ref(
                         // Build constraints dict: empty (no constraints for method signatures).
                         let constraints_dict = Value::Dict {
                             entries: IndexMap::new(),
-            
+                            type_decl_id: 0,
                         };
                         let constraints_thunk = Arc::new(crate::value::Thunk::value(
                             constraints_dict,
@@ -1843,7 +1858,7 @@ async fn infer_var_ref(
                             .insert(HashableValue::Str(Arc::from(FIELD_BODY)), body_thunk);
                         let scheme_payload = Value::Dict {
                             entries: scheme_payload_entries,
-            
+                            type_decl_id: 0,
                         };
                         let scheme_payload_thunk = Arc::new(crate::value::Thunk::value(
                             scheme_payload,
@@ -1852,7 +1867,6 @@ async fn infer_var_ref(
 
                         // Build the TypeValue.Scheme variant.
                         let scheme = Arc::new(Value::Variant {
-            
                             type_decl_id: 0,
                             ctor: Arc::from(TV_SCHEME),
                             payload: Some(scheme_payload_thunk),
@@ -3856,7 +3870,11 @@ fn run_match_exhaustiveness_check(
             // TyCon reference — look up in tycon_env for constructors.
             let id = crate::type_infer::typevalue_nominal_id(scrutinee_ty)
                 .expect("invariant: TV_NOMINAL TypeValue must have an id field");
-            let name = state.type_display_names.get(&id).cloned().unwrap_or_else(|| id.to_string());
+            let name = state
+                .type_display_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string());
             match tycon_env_ref.get(name.as_str()) {
                 Some(def) if !def.constructors.is_empty() => {
                     let constructors = def
@@ -4004,10 +4022,7 @@ fn compute_type_assert_mismatch(
             "type assertion mismatch: actual type is not consistent with expected type",
             span.clone(),
         )
-        .with_note(format!(
-            "expected: {}",
-            crate::eval::format_type(expected)
-        ))
+        .with_note(format!("expected: {}", crate::eval::format_type(expected)))
         .with_note(format!(
             "actual:   {}",
             crate::eval::format_type(actual)
@@ -4553,6 +4568,20 @@ pub(crate) async fn run_typecheck_dict(
     // Pass 0a: Compute SCCs for binding group analysis
     let sccs = compute_sccs(entries, &key_entries);
 
+    // Pass 0b: Pre-register TypeDecl type_decl_ids in type_name_to_id.
+    // Letrec semantics: all TypeDecl entries in this dict must be visible to all other
+    // entries' annotations (e.g. @Scope must resolve Scope even if Scope: [type repr: 39]
+    // appears later in the dict). Without this pre-scan, annotations processed before
+    // the TypeDecl entry would resolve to Nominal(0) instead of the correct id.
+    for ((key_name, _is_alias, _is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
+        if let Some(ref name) = key_name {
+            if let SurfaceExpression::TypeDecl { type_decl_id, .. } = &entry.node.value.expr {
+                state.type_name_to_id.insert(name.clone(), *type_decl_id);
+                state.type_display_names.insert(*type_decl_id, name.clone());
+            }
+        }
+    }
+
     // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL statically-known bindings
     // in SOURCE ORDER (matching resolver slot assignment order from surface_dict_static_keys).
     // IndexMap preserves insertion order for deterministic iteration.
@@ -4859,8 +4888,12 @@ pub(crate) async fn run_typecheck_dict(
                 });
 
                 if let Some(name) = key_name {
-                    state.type_name_to_id.insert(name.clone(), *ast_type_decl_id);
-                    state.type_display_names.insert(*ast_type_decl_id, name.clone());
+                    state
+                        .type_name_to_id
+                        .insert(name.clone(), *ast_type_decl_id);
+                    state
+                        .type_display_names
+                        .insert(*ast_type_decl_id, name.clone());
                     dict_env
                         .write()
                         .unwrap()
@@ -4877,7 +4910,16 @@ pub(crate) async fn run_typecheck_dict(
                     }
                     state.type_stage_scope[0]
                         .entry(name.clone())
-                        .or_insert_with(|| make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0)));
+                        .or_insert_with(|| {
+                            make_typevalue_nominal(
+                                state
+                                    .type_name_to_id
+                                    .get(name.as_str())
+                                    .copied()
+                                    .or_else(|| crate::value::type_id_for_name(name))
+                                    .unwrap_or(0),
+                            )
+                        });
                     // Use params from TypeDecl for constructor scheme registration.
                     let value_scheme_ty = adt_value_type(&body_tv);
                     let ctor_fields = typevalue_record_fields_pub(&value_scheme_ty);

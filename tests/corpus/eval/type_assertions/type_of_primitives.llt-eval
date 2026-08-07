@@ -1,0 +1,13 @@
+--- description: type-of returns TypeValue.Nominal for primitive types
+--- expected_output: [true, true, true]
+[
+  int-tv:    [type-of 42]
+  float-tv:  [type-of 3.14]
+  str-tv:    [type-of "hello"]
+
+  result: [
+    [= [annotation-of int-tv "ctor"] "TypeValue.Nominal"]
+    [= [annotation-of float-tv "ctor"] "TypeValue.Nominal"]
+    [= [annotation-of str-tv "ctor"] "TypeValue.Nominal"]
+  ]
+]

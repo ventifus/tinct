@@ -1,0 +1,10 @@
+--- description: B-712/B-714 same-name types in different scopes have independent identities
+--- expected_output: {r-inner: "no-match", r-outer: "outer-match"}
+[
+  Color: [type Red Green Blue]
+  inner-scope: [Color: [type Red]  val: Color.Red]
+  outer-red: Color.Red
+  inner-red: inner-scope.val
+  r-inner: [match inner-red  Color: "outer-match"  ...: "no-match"]
+  r-outer: [match outer-red  Color: "outer-match"  ...: "no-match"]
+]

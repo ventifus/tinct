@@ -457,7 +457,6 @@ pub(crate) fn builtin_try(
                     mk(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: 0,
-        
                     }),
                 );
                 // call-stack: [{label, span}] from EvalError.stack
@@ -513,7 +512,6 @@ pub(crate) fn builtin_try(
                     Value::Dict {
                         entries: w,
                         type_decl_id: 0,
-        
                     },
                     call_span,
                 )
@@ -682,13 +680,7 @@ pub(crate) fn builtin_decimal(
                 let s = &source[start..end];
                 use std::str::FromStr;
                 match rust_decimal::Decimal::from_str(s) {
-                    Ok(d) => ok_val(
-                        Value::Decimal {
-                            n: d,
-            
-                        },
-                        call_span,
-                    ),
+                    Ok(d) => ok_val(Value::Decimal { n: d }, call_span),
                     Err(e) => Err(EvalError::internal(
                         format!("decimal: cannot parse \"{s}\": {e}"),
                         call_span,
@@ -699,7 +691,6 @@ pub(crate) fn builtin_decimal(
             Value::Int { n, .. } => ok_val(
                 Value::Decimal {
                     n: rust_decimal::Decimal::from(n),
-    
                 },
                 call_span,
             ),
@@ -731,7 +722,6 @@ pub(crate) fn builtin_big_int(
             Value::Int { n, .. } => ok_val(
                 Value::BigInt {
                     n: num_bigint::BigInt::from(n),
-    
                 },
                 call_span,
             ),
@@ -743,13 +733,7 @@ pub(crate) fn builtin_big_int(
             } => {
                 let s = &source[start..end];
                 match s.parse::<num_bigint::BigInt>() {
-                    Ok(n) => ok_val(
-                        Value::BigInt {
-                            n,
-            
-                        },
-                        call_span,
-                    ),
+                    Ok(n) => ok_val(Value::BigInt { n }, call_span),
                     Err(e) => Err(EvalError::internal(
                         format!("big-int: cannot parse \"{s}\": {e}"),
                         call_span,
@@ -762,24 +746,10 @@ pub(crate) fn builtin_big_int(
     })
 }
 
-/// `type-of`: takes 1 arg, materializes it, returns the ground TypeValue for the value.
+/// `type-of`: takes 1 arg, materializes it, returns the TypeValue.Nominal(id) for the value.
 ///
-/// Uses `ground_typevalue_of` to compute the canonical TypeValue from the value's Rust
-/// discriminant. This is the stable, repr-based identity that tinct type predicates
-/// (`int?`, `str?`, `proxy?`, etc.) rely on. Using the ground typevalue ensures that
-/// values constructed with the bootstrap `crate::type_infer::make_typevalue_unknown()` sentinel (all literals and
-/// builtins) still return the correct TypeValue after the prelude is loaded.
-///
-/// Returns:
-/// - `TypeValue.Repr("Value::Int")` for Int / U64
-/// - `TypeValue.Repr("Value::Float")` for Float
-/// - `TypeValue.Repr("Value::String")` for String
-/// - `TypeValue.Repr("Value::Dict")` for Dict
-/// - `TypeValue.Repr("Value::Proxy")` for Proxy
-/// - `TypeValue.Repr("Value::Bytes")` for Bytes
-/// - `TypeValue.Fn(...)` or `TypeValue.Repr("Value::Function")` for Function/Builtin
-/// - `TypeValue.Op(tycon)` for Variant (nominal dispatch)
-/// - `TypeValue.Unknown` (empty dict) for all other runtime-only types
+/// Constructs TypeValue.Nominal from the value's type_decl_id (on Dict/Variant) or
+/// the reserved TYPE_ID_* constant for primitive types.
 pub(crate) fn builtin_type_of(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
@@ -800,11 +770,19 @@ pub(crate) fn builtin_type_of(
         )?;
         let type_id = match &val {
             crate::value::Value::Int { .. } => crate::value::TYPE_ID_INT,
+            crate::value::Value::U64 { .. } => crate::value::TYPE_ID_U64,
             crate::value::Value::Float { .. } => crate::value::TYPE_ID_FLOAT,
             crate::value::Value::String { .. } => crate::value::TYPE_ID_STRING,
             crate::value::Value::Bytes { .. } => crate::value::TYPE_ID_BYTES,
-            crate::value::Value::Dict { type_decl_id, .. } => *type_decl_id,
+            crate::value::Value::Dict { type_decl_id, .. } => {
+                if *type_decl_id > 0 {
+                    *type_decl_id
+                } else {
+                    crate::value::TYPE_ID_DICT
+                }
+            }
             crate::value::Value::Function { .. } => crate::value::TYPE_ID_FUNCTION,
+            crate::value::Value::Builtin { .. } => crate::value::TYPE_ID_BUILTIN,
             crate::value::Value::Variant { type_decl_id, .. } => *type_decl_id,
             _ => 0,
         };
@@ -848,7 +826,6 @@ pub(crate) fn builtin_is_variant(
         ok_val(
             Value::Int {
                 n: if is_variant { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -910,7 +887,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             )));
@@ -929,7 +906,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             )));
@@ -955,7 +932,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             )));
@@ -981,7 +958,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             )));
@@ -1014,7 +991,7 @@ pub(crate) fn builtin_ast_of(
             return Ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             )));
@@ -1390,7 +1367,7 @@ pub(crate) fn builtin_span_of(
                                 } else {
                                     Value::Dict {
                                         entries: IndexMap::new(),
-                        
+                                        type_decl_id: 0,
                                     }
                                 };
 
@@ -1399,31 +1376,19 @@ pub(crate) fn builtin_span_of(
                                 w.insert(HashableValue::Str("file".into()), mk(file_val));
                                 w.insert(
                                     HashableValue::Str("start-line".into()),
-                                    mk(Value::Int {
-                                        n: sl,
-                        
-                                    }),
+                                    mk(Value::Int { n: sl }),
                                 );
                                 w.insert(
                                     HashableValue::Str("start-col".into()),
-                                    mk(Value::Int {
-                                        n: sc,
-                        
-                                    }),
+                                    mk(Value::Int { n: sc }),
                                 );
                                 w.insert(
                                     HashableValue::Str("end-line".into()),
-                                    mk(Value::Int {
-                                        n: el,
-                        
-                                    }),
+                                    mk(Value::Int { n: el }),
                                 );
                                 w.insert(
                                     HashableValue::Str("end-col".into()),
-                                    mk(Value::Int {
-                                        n: ec,
-                        
-                                    }),
+                                    mk(Value::Int { n: ec }),
                                 );
                                 return ok_val(
                                     Value::Dict {
@@ -1625,9 +1590,7 @@ pub(crate) fn builtin_var_resolution(
                     VarAddr::Dispatch(_, slot) => ("letrec", slot as i64),
                     VarAddr::ClosureCapture(i) => ("closure", i as i64),
                     VarAddr::Parameter(i) => ("param", i as i64),
-                    VarAddr::EffectPerform { .. } => {
-                        ("effect-perform", 0)
-                    }
+                    VarAddr::EffectPerform { .. } => ("effect-perform", 0),
                 };
                 result.insert(
                     HashableValue::Str("addr-type".into()),
@@ -1635,9 +1598,7 @@ pub(crate) fn builtin_var_resolution(
                 );
                 result.insert(
                     HashableValue::Str("index".into()),
-                    mk(Value::Int {
-                        n: index_val,
-                    }),
+                    mk(Value::Int { n: index_val }),
                 );
                 ok_val(
                     Value::Dict {
@@ -1725,7 +1686,7 @@ pub(crate) fn builtin_annotation_of(
                 ok_val(
                     Value::Dict {
                         entries,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -2046,7 +2007,6 @@ pub(crate) fn builtin_parse(
             fatal_diagnostics
         };
 
-        // Build the integer-keyed diagnostics dict from Diagnostic.
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
         let mut errors_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, diag) in all_parse_diagnostics.iter().enumerate() {
@@ -2055,7 +2015,7 @@ pub(crate) fn builtin_parse(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-    
+                    type_decl_id: 0,
                 }),
             );
         }
@@ -2070,7 +2030,6 @@ pub(crate) fn builtin_parse(
         let program_value = Value::Program {
             program: std::sync::Arc::new(surface_program),
             resolutions: std::sync::Arc::new(Default::default()),
-
         };
 
         // Return {program: Value::Program, diagnostics: integer-keyed Dict of diagnostic dicts}.
@@ -2233,7 +2192,7 @@ pub(crate) fn builtin_resolve(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-    
+                    type_decl_id: 0,
                 }),
             );
         }
@@ -2244,10 +2203,7 @@ pub(crate) fn builtin_resolve(
         for name in &unreferenced_names {
             unreferenced_dict.insert(
                 HashableValue::Str(name.as_str().into()),
-                mk(Value::Int {
-                    n: 1,
-    
-                }),
+                mk(Value::Int { n: 1 }),
             );
         }
 
@@ -2262,7 +2218,6 @@ pub(crate) fn builtin_resolve(
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
                 resolver_frames: Arc::new(dispatcher_frames),
-
             }),
         );
         result_dict.insert(
@@ -2414,7 +2369,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-    
+                    type_decl_id: 0,
                 }),
             );
         }
@@ -2744,7 +2699,7 @@ pub(crate) fn builtin_typecheck_doc(
                 HashableValue::Int(i as i64),
                 mk(Value::Dict {
                     entries: w,
-    
+                    type_decl_id: 0,
                 }),
             );
         }
@@ -2755,7 +2710,6 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Document {
                 doc: doc_arc,
                 resolver_frames,
-
             }),
         );
         result.insert(
@@ -2816,7 +2770,6 @@ pub(crate) fn builtin_get_type_context(
                 ok_val(
                     Value::TypeContext {
                         ctx: Arc::new(Mutex::new(tc_clone)),
-        
                     },
                     call_span,
                 )
@@ -2894,7 +2847,6 @@ pub(crate) fn builtin_make_type_ctx(
         ok_val(
             Value::TypeContext {
                 ctx: Arc::new(Mutex::new(tc)),
-
             },
             call_span,
         )
@@ -2935,7 +2887,6 @@ pub(crate) fn builtin_fork_type_ctx(
                 ok_val(
                     Value::TypeContext {
                         ctx: Arc::new(Mutex::new(child_data)),
-        
                     },
                     call_span,
                 )
@@ -3086,13 +3037,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         }
 
         // Return same TypeContext Arc (mutations visible through it)
-        ok_val(
-            Value::TypeContext {
-                ctx: tc_arc,
-
-            },
-            call_span,
-        )
+        ok_val(Value::TypeContext { ctx: tc_arc }, call_span)
     })
 }
 
@@ -3178,7 +3123,6 @@ pub(crate) fn builtin_program(
             Value::Program {
                 program: std::sync::Arc::new(surface_program),
                 resolutions: std::sync::Arc::new(Default::default()),
-
             },
             call_span,
         )
@@ -3229,7 +3173,6 @@ pub(crate) fn builtin_desugar(
             Value::Program {
                 program: std::sync::Arc::new(desugared),
                 resolutions,
-
             },
             call_span,
         )
@@ -3280,7 +3223,6 @@ pub(crate) fn builtin_expand(
             Value::Program {
                 program: std::sync::Arc::new(expanded),
                 resolutions,
-
             },
             call_span,
         )
@@ -3334,7 +3276,6 @@ pub(crate) fn builtin_program_docs(
                 Value::Document {
                     doc: doc_arc,
                     resolver_frames: Arc::new(Vec::new()),
-    
                 },
                 call_span.clone(),
             ));
@@ -3515,10 +3456,7 @@ pub(crate) fn builtin_builtin_module(
                 for def in defs {
                     let name_arc: Arc<str> = Arc::from(def.name);
                     let builtin_thunk = Arc::new(Thunk::value(
-                        Value::Builtin {
-                            def,
-            
-                        },
+                        Value::Builtin { def },
                         call_span.clone().with_name(Arc::clone(&name_arc)),
                     ));
                     dict_map.insert(HashableValue::Str(name_arc), builtin_thunk);
@@ -3559,7 +3497,6 @@ pub(crate) fn builtin_empty_scope(
             Value::Scope {
                 slots: Arc::new(Vec::new()),
                 names: Arc::new(IndexMap::new()),
-
             },
             call_span,
         )))
@@ -3646,7 +3583,6 @@ pub(crate) fn builtin_scope_extend(
             Value::Scope {
                 slots: Arc::new(new_slots),
                 names: Arc::new(new_names),
-
             },
             call_span,
         )))
@@ -3818,7 +3754,6 @@ pub(crate) fn builtin_eval(
             Value::Scope {
                 slots: Arc::new(final_slots),
                 names: Arc::new(result_names),
-
             },
             call_span,
         )))
@@ -3899,10 +3834,7 @@ pub(crate) fn builtin_current_env(
             "builtin-current-env: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
         );
         Ok(Arc::new(Thunk::value(
-            Value::Int {
-                n: env_id as i64,
-
-            },
+            Value::Int { n: env_id as i64 },
             call_span,
         )))
     })
@@ -4555,7 +4487,6 @@ pub(crate) fn builtin_is_contractive(
         ok_val(
             Value::Int {
                 n: if result { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -4862,7 +4793,6 @@ pub(crate) fn builtin_ast_to_program(
             Value::Program {
                 program: std::sync::Arc::new(program),
                 resolutions: Arc::new(Default::default()),
-
             },
             call_span,
         )
@@ -4979,7 +4909,6 @@ pub(crate) fn builtin_cap_env_has(
         ok_val(
             Value::Int {
                 n: if found { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -5086,7 +5015,6 @@ pub(crate) fn builtin_lower(
             Value::CoreDocument {
                 entries: std::sync::Arc::new(entries),
                 span,
-
             },
             call_span,
         )
@@ -5337,7 +5265,6 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
@@ -5362,7 +5289,6 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("SimpleType.Leaf"),
             payload: None,
@@ -5395,7 +5321,6 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("Shape.Circle"),
             payload: None,
@@ -5447,10 +5372,7 @@ mod tests {
         let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(
             val,
-            Value::Int {
-                n: 42,
-        
-            },
+            Value::Int { n: 42 },
             "expected caller_env_id as Int(42)"
         );
         Ok(())
@@ -5461,10 +5383,7 @@ mod tests {
     async fn current_env_rejects_positional_args() {
         let ctx = test_ctx();
         let result = run(builtin_current_env(BuiltinArgs {
-            args: vec![thunk_id(Value::Int {
-                n: 1,
-
-            })],
+            args: vec![thunk_id(Value::Int { n: 1 })],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -5488,10 +5407,7 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_non_variant_errors() {
         let annotated = Value::Annotated {
-            inner: Box::new(Value::Int {
-                n: 42,
-
-            }),
+            inner: Box::new(Value::Int { n: 42 }),
             annotation: Box::new(Value::Dict {
                 entries: IndexMap::new(),
                 type_decl_id: 0,

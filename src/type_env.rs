@@ -138,7 +138,10 @@ fn apply_renaming_to_value(
             let changed = !Arc::ptr_eq(&renamed, &tv);
             (renamed.as_ref().clone(), changed)
         }
-        Value::Dict { entries, type_decl_id } => {
+        Value::Dict {
+            entries,
+            type_decl_id,
+        } => {
             let mut new_entries = indexmap::IndexMap::new();
             let mut changed = false;
             for (key, thunk) in entries.iter() {
@@ -179,11 +182,7 @@ pub fn apply_typevalue_renaming(
     use std::sync::Arc;
 
     match ty.as_ref() {
-        Value::Variant {
-            ctor,
-            payload,
-            ..
-        } => {
+        Value::Variant { ctor, payload, .. } => {
             match ctor.as_ref() {
                 TV_VAR => {
                     // If this var is in the renaming, substitute.
@@ -238,7 +237,7 @@ pub fn apply_typevalue_renaming(
                             // Reconstruct the Variant with the new payload dict.
                             let new_payload_dict = Value::Dict {
                                 entries: new_entries,
-                
+                                type_decl_id: 0,
                             };
                             Arc::new(Value::Variant {
                                 type_decl_id: 0,
@@ -331,7 +330,6 @@ pub fn generalize_tv_with_meta(
                             source: Arc::from(var_name.as_str()),
                             start: 0,
                             end: var_name.len(),
-            
                         },
                         crate::rust_span!(),
                     )),
@@ -345,11 +343,10 @@ pub fn generalize_tv_with_meta(
                 );
                 Value::Dict {
                     entries: d,
-    
+                    type_decl_id: 0,
                 }
             };
             let var_decl = Value::Variant {
-
                 type_decl_id: 0,
                 ctor: Arc::from(TV_VAR_DECL),
                 payload: Some(Arc::new(crate::value::Thunk::value(
@@ -364,14 +361,14 @@ pub fn generalize_tv_with_meta(
         }
         Value::Dict {
             entries,
-
+            type_decl_id: 0,
         }
     };
 
     // Build constraints dict: empty (future work: include typeclass constraints).
     let constraints_dict = Value::Dict {
         entries: indexmap::IndexMap::new(),
-,
+        type_decl_id: 0,
     };
 
     // Build narrowings dict: { 0: TypeValue | [], 1: TypeValue | [], ... }
@@ -385,7 +382,7 @@ pub fn generalize_tv_with_meta(
                 Some(tv) => tv.as_ref().clone(),
                 None => Value::Dict {
                     entries: indexmap::IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
             };
             narrowing_entries.insert(
@@ -395,7 +392,7 @@ pub fn generalize_tv_with_meta(
         }
         Some(Value::Dict {
             entries: narrowing_entries,
-
+            type_decl_id: 0,
         })
     };
 
@@ -434,7 +431,6 @@ pub fn generalize_tv_with_meta(
                 source: Arc::from(doc_str),
                 start: 0,
                 end: doc_str.len(),
-
             };
             entries.insert(
                 HashableValue::Str(Arc::from(FIELD_DOC)),
@@ -443,12 +439,11 @@ pub fn generalize_tv_with_meta(
         }
         Value::Dict {
             entries,
-
+            type_decl_id: 0,
         }
     };
 
     Arc::new(Value::Variant {
-,
         type_decl_id: 0,
         ctor: Arc::from(TV_SCHEME),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -562,7 +557,6 @@ mod typevalue_scheme_tests {
                             source: Arc::from("a"),
                             start: 0,
                             end: 1,
-            
                         },
                         crate::rust_span!(),
                     )),
@@ -576,10 +570,9 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-
+            type_decl_id: 0,
         };
         let var_decl = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_VAR_DECL),
             payload: Some(Arc::new(crate::value::Thunk::value(
@@ -597,11 +590,11 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-
+            type_decl_id: 0,
         };
         let constraints_dict = Value::Dict {
             entries: indexmap::IndexMap::new(),
-
+            type_decl_id: 0,
         };
         let body_var = make_typevar_value("a"); // body is TypeValue.Var{name:"a"}
 
@@ -628,11 +621,10 @@ mod typevalue_scheme_tests {
                 );
                 d
             },
-
+            type_decl_id: 0,
         };
 
         let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_SCHEME),
             payload: Some(Arc::new(crate::value::Thunk::value(
@@ -745,8 +737,8 @@ mod typevalue_scheme_tests {
     /// (like Record.fields) were not recursed into.
     #[test]
     fn test_apply_typevalue_renaming_substitutes_into_record_field() {
-        use crate::type_infer::{make_typevalue_record, make_typevalue_nominal};
-        
+        use crate::type_infer::{make_typevalue_nominal, make_typevalue_record};
+
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -797,9 +789,10 @@ mod typevalue_scheme_tests {
     #[test]
     fn test_generalize_instantiate_round_trip_fn() {
         use crate::type_infer::{
-            make_typevalue_fn, make_typevalue_nominal, typevalue_fn_params_and_ret, InferenceContext,
+            make_typevalue_fn, make_typevalue_nominal, typevalue_fn_params_and_ret,
+            InferenceContext,
         };
-        
+
         use std::sync::Arc;
 
         let mut ctx = InferenceContext::new();

@@ -220,7 +220,6 @@ pub(crate) fn builtin_task(
                 state: Arc::new(tokio::sync::Mutex::new(crate::value::TaskState::Pending(
                     handle,
                 ))),
-
             },
             call_span,
         )
@@ -350,7 +349,6 @@ pub(crate) fn builtin_channel(
                 ok_val(
                     Value::Channel {
                         inner: Arc::new(channel_inner),
-        
                     },
                     call_span,
                 )
@@ -520,7 +518,6 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -553,16 +550,10 @@ pub(crate) fn builtin_recv(
                     Ok(value) => ok_val(value, call_span),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Subscriber too slow, missed n messages
-                        let count_thunk = Arc::new(Thunk::value(
-                            Value::Int {
-                                n: n as i64,
-                
-                            },
-                            call_span.clone(),
-                        ));
+                        let count_thunk =
+                            Arc::new(Thunk::value(Value::Int { n: n as i64 }, call_span.clone()));
                         ok_val(
                             Value::Variant {
-                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Lagged.Lagged"),
                                 payload: Some(count_thunk),
@@ -574,7 +565,6 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -619,7 +609,6 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -690,7 +679,6 @@ pub(crate) fn builtin_broadcast_channel(
                 ok_val(
                     Value::BroadcastChannel {
                         inner: Arc::new(channel_inner),
-        
                     },
                     call_span,
                 )
@@ -751,14 +739,12 @@ pub(crate) fn builtin_oneshot_channel(
         let sender_thunk = Arc::new(Thunk::value(
             Value::OneshotSender {
                 inner: Arc::new(sender_inner),
-
             },
             call_span.clone(),
         ));
         let receiver_thunk = Arc::new(Thunk::value(
             Value::OneshotReceiver {
                 inner: Arc::new(receiver_inner),
-
             },
             call_span.clone(),
         ));
@@ -768,7 +754,7 @@ pub(crate) fn builtin_oneshot_channel(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -820,7 +806,6 @@ pub(crate) fn builtin_try_send(
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Full.Full"),
                                 payload: None,
@@ -832,7 +817,6 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                
                                 type_decl_id: 0,
                                 ctor: Arc::from("Closed.Closed"),
                                 payload: None,
@@ -881,7 +865,7 @@ pub(crate) fn builtin_try_recv(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -999,7 +983,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -1011,7 +995,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -1019,20 +1003,19 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                        // Subscriber lagged — treat as empty
                         let mut map = IndexMap::new();
                         map.insert(
                             HashableValue::Str("empty".into()),
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -1040,7 +1023,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -1052,7 +1035,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -1060,7 +1043,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -1115,7 +1098,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -1123,7 +1106,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         return ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         );
@@ -1131,14 +1114,13 @@ pub(crate) fn builtin_try_recv_oneshot(
                 };
 
                 if rx_opt.is_none() {
-                    // Already consumed — closed
                     let mut map = IndexMap::new();
                     map.insert(
                         HashableValue::Str("closed".into()),
                         Arc::new(Thunk::value(
                             Value::Dict {
                                 entries: IndexMap::new(),
-                
+                                type_decl_id: 0,
                             },
                             call_span.clone(),
                         )),
@@ -1146,7 +1128,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                     return ok_val(
                         Value::Dict {
                             entries: map,
-            
+                            type_decl_id: 0,
                         },
                         call_span,
                     );
@@ -1155,7 +1137,6 @@ pub(crate) fn builtin_try_recv_oneshot(
                 let mut rx = rx_opt.take().unwrap();
                 match rx.try_recv() {
                     Ok(value) => {
-                        // Got a value — receiver consumed (already taken)
                         let mut map = IndexMap::new();
                         map.insert(
                             HashableValue::Str("value".into()),
@@ -1164,13 +1145,12 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                        // No value yet — put the receiver back
                         *rx_opt = Some(rx);
                         let mut map = IndexMap::new();
                         map.insert(
@@ -1178,7 +1158,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -1186,20 +1166,19 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        // Sender dropped without sending — closed
                         let mut map = IndexMap::new();
                         map.insert(
                             HashableValue::Str("closed".into()),
                             Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: IndexMap::new(),
-                    
+                                    type_decl_id: 0,
                                 },
                                 call_span.clone(),
                             )),
@@ -1207,7 +1186,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                         ok_val(
                             Value::Dict {
                                 entries: map,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )
@@ -1256,7 +1235,7 @@ pub(crate) fn builtin_yield(
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -1393,7 +1372,7 @@ pub(crate) fn builtin_signal_channel(
                                     break;
                                 }
                                 match tx_clone.try_send(Value::Variant {
-                    
+
                                     type_decl_id: 0,
                                     ctor: Arc::from(sig_name.as_str()),
                                     payload: None,
@@ -1423,7 +1402,6 @@ pub(crate) fn builtin_signal_channel(
             ok_val(
                 Value::Channel {
                     inner: Arc::new(channel_inner),
-    
                 },
                 call_span,
             )
@@ -1543,7 +1521,7 @@ pub(crate) fn builtin_timer_channel(
                         // Full is expected (last-tick-wins, capacity=1); Closed means consumer dropped.
                         match tx_clone.try_send(Value::Timestamp {
                             ts: now_ts,
-            
+
                         }) {
                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -1567,7 +1545,6 @@ pub(crate) fn builtin_timer_channel(
         ok_val(
             Value::Channel {
                 inner: Arc::new(channel_inner),
-
             },
             call_span,
         )
@@ -1716,7 +1693,7 @@ pub(crate) fn builtin_watch_channel(
                                             // Full is expected (last-write-wins, capacity=1); Closed means consumer dropped.
                                             match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                
+                                                type_decl_id: 0,
                                             }) {
                                                 Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1724,10 +1701,9 @@ pub(crate) fn builtin_watch_channel(
                                             last_modified = Some(current_modified);
                                         }
                                     } else {
-                                        // File appeared — treat as a change
                                         match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                
+                                                type_decl_id: 0,
                                             }) {
                                             Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1737,11 +1713,10 @@ pub(crate) fn builtin_watch_channel(
                                 }
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                // File disappeared — treat as a change if we had a baseline
                                 if last_modified.is_some() {
                                     match tx_clone.try_send(Value::Dict {
                                                 entries: IndexMap::new(),
-                                
+                                                type_decl_id: 0,
                                             }) {
                                         Ok(_) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
@@ -1776,7 +1751,6 @@ pub(crate) fn builtin_watch_channel(
         ok_val(
             Value::Channel {
                 inner: Arc::new(channel_inner),
-
             },
             call_span,
         )
@@ -1823,13 +1797,7 @@ pub(crate) fn builtin_context(
             .into());
         }
         let token = tokio_util::sync::CancellationToken::new();
-        ok_val(
-            Value::Context {
-                token,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Context { token }, call_span)
     })
 }
 
@@ -1881,13 +1849,9 @@ pub(crate) fn builtin_with_cancel(
 
         // cancel is a Context clone of child_token; caller fires it with [cancel-task pair.cancel].
         // See doc/08-evaluation.md §Cancellation Primitives for the spec deviation rationale.
-        let child_ctx_val = Value::Context {
-            token: child_token,
-
-        };
+        let child_ctx_val = Value::Context { token: child_token };
         let cancel_val = Value::Context {
             token: cancel_token,
-
         };
 
         // Build the payload dict with the same structure as before
@@ -1905,14 +1869,13 @@ pub(crate) fn builtin_with_cancel(
         let payload_thunk = Arc::new(Thunk::value(
             Value::Dict {
                 entries: payload_dict,
-
+                type_decl_id: 0,
             },
             call_span.clone(),
         ));
 
         ok_val(
             Value::Variant {
-
                 type_decl_id: 0,
                 ctor: Arc::from("CancelHandle.CancelHandle"),
                 payload: Some(payload_thunk),
@@ -2007,13 +1970,7 @@ pub(crate) fn builtin_with_timeout(
         // Register background task for drain tracking
         ctx.task_registry.lock().unwrap().push(handle);
 
-        ok_val(
-            Value::Context {
-                token: child_token,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Context { token: child_token }, call_span)
     })
 }
 
@@ -2113,13 +2070,7 @@ pub(crate) fn builtin_with_deadline(
         // Register background task for drain tracking
         ctx.task_registry.lock().unwrap().push(handle);
 
-        ok_val(
-            Value::Context {
-                token: child_token,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Context { token: child_token }, call_span)
     })
 }
 
@@ -2150,7 +2101,6 @@ pub(crate) fn builtin_cancelled_q(
             Value::Context { token, .. } => ok_val(
                 Value::Int {
                     n: if token.is_cancelled() { 1 } else { 0 },
-    
                 },
                 call_span,
             ),
@@ -2193,7 +2143,7 @@ pub(crate) fn builtin_cancel_task(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -2241,14 +2191,11 @@ pub(crate) fn builtin_cancel_root(
             .into());
         }
 
-        // Cancel the root context
         ctx.cancel.cancel();
-
-        // Return null (empty dict)
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -2330,11 +2277,10 @@ pub(crate) fn builtin_drain(
             }
         }
 
-        // Return null (empty dict)
         ok_val(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -2428,13 +2374,7 @@ pub(crate) fn builtin_non_cancellable(
             .into());
         }
         let token = tokio_util::sync::CancellationToken::new();
-        ok_val(
-            Value::Context {
-                token,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Context { token }, call_span)
     })
 }
 
@@ -2546,7 +2486,6 @@ pub(crate) fn builtin_reactive_cell(
         ok_val(
             Value::ReactiveCell {
                 inner: Arc::new(cell_inner),
-
             },
             call_span,
         )
@@ -2632,11 +2571,10 @@ pub(crate) fn builtin_cell_set(
                     )
                 })?;
 
-                // Return null (empty dict)
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )

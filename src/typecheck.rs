@@ -14,7 +14,7 @@ use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::InferenceContext;
 use crate::types::{generalize_tv, InferState};
-use crate::value::{Value};
+use crate::value::Value;
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]
@@ -101,7 +101,13 @@ pub async fn typecheck_program_bootstrap(
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     seed_tycon_env: crate::type_def::TyConEnv,
     type_stage_data: crate::type_infer::TypeStageData,
-) -> (Vec<Diagnostic>, Arc<RwLock<Env>>, crate::type_def::TyConEnv) {
+    seed_type_name_to_id: std::collections::HashMap<String, u64>,
+) -> (
+    Vec<Diagnostic>,
+    Arc<RwLock<Env>>,
+    crate::type_def::TyConEnv,
+    std::collections::HashMap<String, u64>,
+) {
     let mut errors = Vec::new();
     // Create a child Env scope for this type-checking session: reads walk through
     // to the parent (finding prelude classes/instances), writes stay in the child.
@@ -126,36 +132,30 @@ pub async fn typecheck_program_bootstrap(
     for (name, def) in seed_tycon_env {
         state.tycon_env.entry(name.clone()).or_insert(def);
     }
-    // Seed primitive type name↔id mappings for Nominal type resolution.
-    {
-        use crate::value::*;
-        let primitives = [
-            ("Integer", TYPE_ID_INT), ("Int", TYPE_ID_INT), ("NativeInt", TYPE_ID_INT),
-            ("NativeUInt", TYPE_ID_INT), ("U64", TYPE_ID_U64),
-            ("Float", TYPE_ID_FLOAT), ("Float64", TYPE_ID_FLOAT),
-            ("String", TYPE_ID_STRING), ("Bytes", TYPE_ID_BYTES),
-            ("Dict", TYPE_ID_DICT), ("Function", TYPE_ID_FUNCTION), ("Fn", TYPE_ID_FUNCTION),
-            ("Proxy", TYPE_ID_PROXY), ("DirCap", TYPE_ID_DIRCAP), ("NetCap", TYPE_ID_NETCAP),
-            ("File", TYPE_ID_FILE), ("Handle", TYPE_ID_FILE),
-            ("Scope", TYPE_ID_SCOPE), ("TypeContext", TYPE_ID_TYPE_CONTEXT),
-            ("Task", TYPE_ID_TASK), ("Channel", TYPE_ID_CHANNEL),
-            ("Context", TYPE_ID_CONTEXT), ("ReactiveCell", TYPE_ID_REACTIVE_CELL),
-            ("ClockCap", TYPE_ID_CLOCKCAP), ("Timezone", TYPE_ID_TIMEZONE),
-            ("Timestamp", TYPE_ID_TIMESTAMP), ("Duration", TYPE_ID_DURATION),
-            ("Decimal", TYPE_ID_DECIMAL), ("BigInt", TYPE_ID_BIGINT),
-            ("Program", TYPE_ID_PROGRAM), ("Document", TYPE_ID_DOCUMENT),
-            ("Expression", TYPE_ID_EXPRESSION), ("CoreDocument", TYPE_ID_CORE_DOCUMENT),
-            ("Arena", TYPE_ID_ARENA), ("Builder", TYPE_ID_BUILDER),
-            ("Uri", TYPE_ID_URI), ("QuicSession", TYPE_ID_QUIC_SESSION),
-            ("Http2Session", TYPE_ID_HTTP2_SESSION), ("Http3Session", TYPE_ID_HTTP3_SESSION),
-            ("QuicDatagramHandle", TYPE_ID_QUIC_DATAGRAM_HANDLE),
-            ("BroadcastChannel", TYPE_ID_BROADCAST_CHANNEL),
-            ("OneshotSender", TYPE_ID_ONESHOT_SENDER), ("OneshotReceiver", TYPE_ID_ONESHOT_RECEIVER),
-        ];
-        for (name, id) in &primitives {
-            state.type_name_to_id.insert(name.to_string(), *id);
-            state.type_display_names.insert(*id, name.to_string());
+    // Derive type_name_to_id from the type-stage scope: each entry that resolved to a
+    // Nominal TypeValue carries its type_decl_id. Register the mapping so that @Integer,
+    // @String, etc. in runtime annotations resolve to the correct Nominal id.
+    // No hardcoded seeding — derived from the actual type-stage scope content.
+    for scope_map in &state.type_stage_scope {
+        for (name, tv) in scope_map {
+            if let Some(id) = crate::type_infer::typevalue_nominal_id(tv) {
+                if id > 0 {
+                    state.type_name_to_id.entry(name.clone()).or_insert(id);
+                    state
+                        .type_display_names
+                        .entry(id)
+                        .or_insert_with(|| name.clone());
+                }
+            }
         }
+    }
+    // Seed type_name_to_id from the caller (propagated from builtin_core.llt's typecheck).
+    for (name, id) in &seed_type_name_to_id {
+        state.type_name_to_id.entry(name.clone()).or_insert(*id);
+        state
+            .type_display_names
+            .entry(*id)
+            .or_insert_with(|| name.clone());
     }
     // Seed the resolver from the full root_group when an eval context is available,
     // so all builtin slots match the runtime. Falls back to core_builtins() only when
@@ -213,7 +213,14 @@ pub async fn typecheck_program_bootstrap(
             }
         }
         for (name, _thunk) in &state.type_stage_fns {
-            let tv = make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0));
+            let tv = make_typevalue_nominal(
+                state
+                    .type_name_to_id
+                    .get(name.as_str())
+                    .copied()
+                    .or_else(|| crate::value::type_id_for_name(name))
+                    .unwrap_or(0),
+            );
             let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                 state
                     .resolver_frames
@@ -231,7 +238,14 @@ pub async fn typecheck_program_bootstrap(
             }
         }
         for (name, _kind) in &state.type_stage_type_vars {
-            let tv = make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0));
+            let tv = make_typevalue_nominal(
+                state
+                    .type_name_to_id
+                    .get(name.as_str())
+                    .copied()
+                    .or_else(|| crate::value::type_id_for_name(name))
+                    .unwrap_or(0),
+            );
             let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
                 state
                     .resolver_frames
@@ -326,7 +340,7 @@ pub async fn typecheck_program_bootstrap(
     merge_env_schemes_into_env(&env, &child_env, &mut state);
     state.invalidate_env_caches();
 
-    (errors, child_env, state.tycon_env)
+    (errors, child_env, state.tycon_env, state.type_name_to_id)
 }
 
 /// Merge ALL scheme bindings from an `Arc<RwLock<Env>>` chain into a target `Arc<RwLock<Env>>`.
@@ -399,7 +413,16 @@ fn merge_env_schemes_into_env(
         for (name, _) in &frame.tycon_defs {
             state.type_stage_scope[0]
                 .entry(name.clone())
-                .or_insert_with(|| crate::type_infer::make_typevalue_nominal(state.type_name_to_id.get(name.as_str()).copied().or_else(|| crate::value::type_id_for_name(name)).unwrap_or(0)));
+                .or_insert_with(|| {
+                    crate::type_infer::make_typevalue_nominal(
+                        state
+                            .type_name_to_id
+                            .get(name.as_str())
+                            .copied()
+                            .or_else(|| crate::value::type_id_for_name(name))
+                            .unwrap_or(0),
+                    )
+                });
         }
     }
 }
@@ -493,7 +516,7 @@ fn make_typevalue_record(
     }
     let fields_dict_val = Value::Dict {
         entries: fields_entries,
-
+        type_decl_id: 0,
     };
     // tail: None → closed record → RowTail.Closed variant
     let tail_val = tail
@@ -512,10 +535,9 @@ fn make_typevalue_record(
     );
     let payload_dict = Value::Dict {
         entries: payload_entries,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(Thunk::value(payload_dict, crate::rust_span!()))),
@@ -717,7 +739,9 @@ pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
             TV_NOMINAL => {
                 let id = crate::type_infer::typevalue_nominal_id(tv)?;
                 match id {
-                    crate::value::TYPE_ID_INT | crate::value::TYPE_ID_U64 => Some(DISPATCH_INTEGER.to_string()),
+                    crate::value::TYPE_ID_INT | crate::value::TYPE_ID_U64 => {
+                        Some(DISPATCH_INTEGER.to_string())
+                    }
                     crate::value::TYPE_ID_FLOAT => Some(DISPATCH_FLOAT.to_string()),
                     crate::value::TYPE_ID_STRING => Some(DISPATCH_STRING.to_string()),
                     crate::value::TYPE_ID_BYTES => Some(DISPATCH_BYTES.to_string()),
@@ -736,7 +760,6 @@ pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
         _ => None,
     }
 }
-
 
 /// Extract the `name` string from a TypeValue.Op variant payload (synchronously).
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.

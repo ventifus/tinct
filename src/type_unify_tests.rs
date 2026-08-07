@@ -6,15 +6,13 @@ use super::{constrain, process_deferred_equalities, unify};
 use crate::type_tags::*;
 
 use crate::rust_span;
-use std::sync::Arc;
 use crate::type_def::{TyConDef, Variance};
-use crate::type_infer::{
-    make_typevalue_nominal, make_typevalue_unknown, make_typevar_value,
-};
+use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown, make_typevar_value};
 use crate::types::InferState;
+use std::sync::Arc;
 // Constraint deleted in S-1003 — constraints are Vec<Arc<Value>> ConstraintDecls.
 // Kind deleted in S-1003 — kind is now Arc<Value> (TypeValue.Op{name}).
-use crate::value::{Value};
+use crate::value::Value;
 
 const TEST_ID_BOOL: u64 = 1000;
 const TEST_ID_SEQ: u64 = 1001;
@@ -71,7 +69,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     }
     let params_dict = Value::Dict {
         entries: params_entries,
-
+        type_decl_id: 0,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -87,10 +85,9 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: pe,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_FN),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -112,7 +109,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     }
     let fields_dict = Value::Dict {
         entries: field_entries,
-
+        type_decl_id: 0,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -124,17 +121,16 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: IndexMap::new(),
-    
+                type_decl_id: 0,
             },
             crate::rust_span!(),
         )),
     );
     let payload = Value::Dict {
         entries: pe,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -156,7 +152,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     }
     let fields_dict = Value::Dict {
         entries: field_entries,
-
+        type_decl_id: 0,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -172,10 +168,9 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     );
     let payload = Value::Dict {
         entries: pe,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_RECORD),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -197,7 +192,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     }
     let members_dict = Value::Dict {
         entries,
-
+        type_decl_id: 0,
     };
     let mut pe = IndexMap::new();
     pe.insert(
@@ -206,10 +201,9 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     );
     let payload = Value::Dict {
         entries: pe,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(TV_UNION),
         payload: Some(Arc::new(crate::value::Thunk::value(
@@ -343,7 +337,10 @@ async fn test_union_vs_union_with_typevars_defers() {
     state.set_level("b".to_string(), 0);
 
     // Union([Repr(Int), Var(a)]) ~ Union([Repr(String), Var(b)])
-    let lhs = make_union_tv(vec![make_typevalue_nominal(crate::value::TYPE_ID_INT), make_typevar_value("a")]);
+    let lhs = make_union_tv(vec![
+        make_typevalue_nominal(crate::value::TYPE_ID_INT),
+        make_typevar_value("a"),
+    ]);
     let rhs = make_union_tv(vec![
         make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         make_typevar_value("b"),
@@ -407,8 +404,10 @@ async fn test_unify_type_var_occurs_in_type_stage_app() {
     // After migration: TypeVar and TypeValue.App instead of Type::Var and Type::StageApp.
     let type_var_a = make_typevar_value("a");
     // TypeValue.App { op: TypeValue.Op{name:"F"}, arg: TypeVar("a") }
-    let type_stage_app_f_a =
-        crate::type_normalize::make_typevalue_app(make_typevalue_nominal(TEST_ID_F), make_typevar_value("a"));
+    let type_stage_app_f_a = crate::type_normalize::make_typevalue_app(
+        make_typevalue_nominal(TEST_ID_F),
+        make_typevar_value("a"),
+    );
 
     let result = unify_sync(
         &type_var_a,
@@ -802,7 +801,10 @@ async fn test_types_are_disjoint_function_vs_literals() {
 #[tokio::test]
 async fn test_types_are_disjoint_function_vs_record() {
     // A Fn type is disjoint from a Record type.
-    let record_tv = make_record_tv(vec![("x", make_typevalue_nominal(crate::value::TYPE_ID_INT))]);
+    let record_tv = make_record_tv(vec![(
+        "x",
+        make_typevalue_nominal(crate::value::TYPE_ID_INT),
+    )]);
     assert!(
         matches!(record_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
         "record_tv must be TypeValue.Record"
@@ -2171,10 +2173,14 @@ async fn test_constrain_app_covariant_arg() {
     state.set_level("x".to_string(), 1);
 
     // TypeValue.App instead of Type::App
-    let sub =
-        crate::type_normalize::make_typevalue_app(make_typevalue_nominal(TEST_ID_COVF), Arc::clone(&int_tv));
-    let sup =
-        crate::type_normalize::make_typevalue_app(make_typevalue_nominal(TEST_ID_COVF), Arc::clone(&tv_x));
+    let sub = crate::type_normalize::make_typevalue_app(
+        make_typevalue_nominal(TEST_ID_COVF),
+        Arc::clone(&int_tv),
+    );
+    let sup = crate::type_normalize::make_typevalue_app(
+        make_typevalue_nominal(TEST_ID_COVF),
+        Arc::clone(&tv_x),
+    );
 
     let result = constrain(&sub, &sup, &mut state.ctx, &mut Vec::new(), span).await;
     // constrain(App(CovF,Int), App(CovF,x)) calls unify (App-to-App path in type_unify.rs:737).
@@ -2812,7 +2818,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     // AliasA body = TypeVar("a") -- expands to its argument.
     let body_a = make_typevar_value("a");
     let def_a = Arc::new(TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TEST_ID_ALIAS_A,
         params: vec!["a".to_string()],
         body: Arc::new(body_a.as_ref().clone()),
         constraints: vec![],
@@ -2828,7 +2834,7 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     // AliasB body = TypeVar("a") -- same structure.
     let body_b = make_typevar_value("a");
     let def_b = Arc::new(TyConDef {
-        type_decl_id: 0,
+        type_decl_id: TEST_ID_ALIAS_B,
         params: vec!["a".to_string()],
         body: Arc::new(body_b.as_ref().clone()),
         constraints: vec![],
@@ -2844,6 +2850,15 @@ async fn test_unify_tycon_expand_different_ops_expand_to_same_body() {
     // Register in ctx.tycon_env (not state.tycon_env -- that's a separate field).
     state.ctx.tycon_env.insert("AliasA".to_string(), def_a);
     state.ctx.tycon_env.insert("AliasB".to_string(), def_b);
+    // Register display names so extract_op_name can resolve Nominal ids to names.
+    state
+        .ctx
+        .type_display_names
+        .insert(TEST_ID_ALIAS_A, "AliasA".to_string());
+    state
+        .ctx
+        .type_display_names
+        .insert(TEST_ID_ALIAS_B, "AliasB".to_string());
 
     let op_a = make_typevalue_nominal(TEST_ID_ALIAS_A);
     let op_b = make_typevalue_nominal(TEST_ID_ALIAS_B);
@@ -3180,7 +3195,7 @@ async fn test_rowvar_occurs_check() {
         );
         let fields_dict = Value::Dict {
             entries: fields,
-
+            type_decl_id: 0,
         };
         let mut payload_entries = IndexMap::new();
         payload_entries.insert(
@@ -3193,10 +3208,9 @@ async fn test_rowvar_occurs_check() {
         );
         let payload = Value::Dict {
             entries: payload_entries,
-
+            type_decl_id: 0,
         };
         Arc::new(Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),
@@ -3448,10 +3462,9 @@ fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Ar
     }
     let payload = Value::Dict {
         entries,
-
+        type_decl_id: 0,
     };
     Arc::new(Value::Variant {
-
         type_decl_id: 0,
         ctor: Arc::from(RT_UNIFORM),
         payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),

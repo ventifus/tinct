@@ -651,7 +651,6 @@ pub(crate) fn builtin_quic_session(
         ok_val(
             Value::QuicSession {
                 conn: Arc::new(connection),
-
             },
             call_span,
         )
@@ -726,13 +725,7 @@ pub(crate) fn builtin_quic_open_datagram(
             }
         };
 
-        ok_val(
-            Value::QuicDatagramHandle {
-                conn,
-
-            },
-            call_span,
-        )
+        ok_val(Value::QuicDatagramHandle { conn }, call_span)
     })
 }
 
@@ -828,7 +821,6 @@ pub(crate) fn builtin_http2_session(
             Value::Http2Session {
                 client: Arc::new(client),
                 base_url,
-
             },
             call_span,
         )
@@ -973,7 +965,6 @@ pub(crate) fn builtin_http3_session(
                     send_request,
                     _driver: driver_handle,
                 })),
-
             },
             call_span,
         )
@@ -1200,20 +1191,14 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ok_val(
-            Value::Int {
-                n: status,
-
-            },
-            span.clone(),
-        )?,
+        ok_val(Value::Int { n: status }, span.clone())?,
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
         ok_val(
             Value::Dict {
                 entries: headers_map,
-
+                type_decl_id: 0,
             },
             span.clone(),
         )?,
@@ -1228,7 +1213,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     ok_val(
         Value::Dict {
             entries: inner,
-
+            type_decl_id: 0,
         },
         span,
     )
@@ -1366,20 +1351,14 @@ fn http_request_h3(
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ok_val(
-            Value::Int {
-                n: status,
-
-            },
-            span.clone(),
-        )?,
+        ok_val(Value::Int { n: status }, span.clone())?,
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
         ok_val(
             Value::Dict {
                 entries: headers_map,
-
+                type_decl_id: 0,
             },
             span.clone(),
         )?,
@@ -1394,7 +1373,7 @@ fn http_request_h3(
     ok_val(
         Value::Dict {
             entries: inner,
-
+            type_decl_id: 0,
         },
         span,
     )
@@ -1704,18 +1683,12 @@ fn icmp_ping_impl(
     let mut result = IndexMap::new();
     result.insert(
         HashableValue::Str("latency-ms".into()),
-        ok_val(
-            Value::Int {
-                n: latency_ms,
-
-            },
-            span.clone(),
-        )?,
+        ok_val(Value::Int { n: latency_ms }, span.clone())?,
     );
     ok_val(
         Value::Dict {
             entries: result,
-
+            type_decl_id: 0,
         },
         span,
     )
@@ -1815,7 +1788,7 @@ pub(crate) fn builtin_send_datagram(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -1866,7 +1839,6 @@ pub(crate) fn builtin_recv_datagram(
                 source: Arc::from(buf.as_slice()),
                 start: 0,
                 end: data_len,
-
             };
             let mut dict = IndexMap::new();
             dict.insert(
@@ -1876,7 +1848,7 @@ pub(crate) fn builtin_recv_datagram(
             ok_val(
                 Value::Dict {
                     entries: dict,
-    
+                    type_decl_id: 0,
                 },
                 call_span.clone(),
             )
@@ -1953,7 +1925,7 @@ pub(crate) fn builtin_uri(
             let username = if parsed.username().is_empty() {
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 }
             } else {
                 string_val(parsed.username())
@@ -1968,7 +1940,7 @@ pub(crate) fn builtin_uri(
                 Some(pw) => string_val(pw),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
             };
             dict.insert(
@@ -1981,7 +1953,7 @@ pub(crate) fn builtin_uri(
                 Some(h) => string_val(h),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
             };
             dict.insert(
@@ -1991,13 +1963,10 @@ pub(crate) fn builtin_uri(
 
             // port (null if not specified)
             let port = match parsed.port() {
-                Some(p) => Value::Int {
-                    n: i64::from(p),
-    
-                },
+                Some(p) => Value::Int { n: i64::from(p) },
                 None => Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
             };
             dict.insert(
@@ -2016,7 +1985,7 @@ pub(crate) fn builtin_uri(
                 Some(q) => string_val(q),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
             };
             dict.insert(
@@ -2029,7 +1998,7 @@ pub(crate) fn builtin_uri(
                 Some(f) => string_val(f),
                 None => Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
             };
             dict.insert(
@@ -2040,7 +2009,7 @@ pub(crate) fn builtin_uri(
             return ok_val(
                 Value::Dict {
                     entries: dict,
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             );
@@ -2073,7 +2042,7 @@ pub(crate) fn builtin_uri(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span.clone(),
                 )?,
@@ -2095,7 +2064,7 @@ pub(crate) fn builtin_uri(
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     call_span.clone(),
                 )?,
@@ -2105,7 +2074,7 @@ pub(crate) fn builtin_uri(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -2165,7 +2134,7 @@ pub(crate) fn builtin_url(
         let username = if parsed.username().is_empty() {
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             }
         } else {
             string_val(parsed.username())
@@ -2180,7 +2149,7 @@ pub(crate) fn builtin_url(
             Some(pw) => string_val(pw),
             None => Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         };
         dict.insert(
@@ -2202,13 +2171,7 @@ pub(crate) fn builtin_url(
         });
         dict.insert(
             HashableValue::Str("port".into()),
-            ok_val(
-                Value::Int {
-                    n: i64::from(port),
-    
-                },
-                call_span.clone(),
-            )?,
+            ok_val(Value::Int { n: i64::from(port) }, call_span.clone())?,
         );
 
         // path (always present per RFC 3986; default to "/" if empty)
@@ -2227,7 +2190,7 @@ pub(crate) fn builtin_url(
             Some(q) => string_val(q),
             None => Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         };
         dict.insert(
@@ -2240,7 +2203,7 @@ pub(crate) fn builtin_url(
             Some(f) => string_val(f),
             None => Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         };
         dict.insert(
@@ -2251,7 +2214,7 @@ pub(crate) fn builtin_url(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -2353,7 +2316,7 @@ pub(crate) fn builtin_urn(
             Some(r) => string_val(r),
             None => Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         };
         dict.insert(
@@ -2366,7 +2329,7 @@ pub(crate) fn builtin_urn(
             Some(q) => string_val(q),
             None => Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         };
         dict.insert(
@@ -2379,7 +2342,7 @@ pub(crate) fn builtin_urn(
             Some(f) => string_val(f),
             None => Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
         };
         dict.insert(
@@ -2390,7 +2353,7 @@ pub(crate) fn builtin_urn(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )

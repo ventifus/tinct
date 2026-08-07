@@ -62,7 +62,6 @@ pub const RT_FIELD_VALUE_TYPE: &str = "value-type";
 /// Field key for RowTail payload (reserved for typed-key maps): `{ key-type: TypeValue }`
 pub const RT_FIELD_KEY_TYPE: &str = "key-type";
 
-
 // ── TypeValue payload field name constants ───────────────────────────────────
 //
 // Canonical field names used in TypeValue payload dicts. Each must match the

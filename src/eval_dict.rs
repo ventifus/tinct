@@ -163,18 +163,9 @@ async fn eval_annotation_property_dict(
                 };
                 string_val(&processed)
             }
-            SurfaceExpression::Int(n) => Value::Int {
-                n: *n,
-
-            },
-            SurfaceExpression::U64(n) => Value::U64 {
-                n: *n,
-
-            },
-            SurfaceExpression::Float(f) => Value::Float {
-                n: *f,
-
-            },
+            SurfaceExpression::Int(n) => Value::Int { n: *n },
+            SurfaceExpression::U64(n) => Value::U64 { n: *n },
+            SurfaceExpression::Float(f) => Value::Float { n: *f },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             SurfaceExpression::VarRef {
@@ -374,33 +365,20 @@ pub(crate) async fn eval_dict_core(
         let (value_thunk, core_expr_thunk): (Arc<Thunk>, Option<Arc<Thunk>>) =
             match &entry.node.value.node {
                 CoreExpr::Int(n) => (
-                    Arc::new(Thunk::value(
-                        Value::Int {
-                            n: *n,
-            
-                        },
-                        entry_span,
-                    )),
+                    Arc::new(Thunk::value(Value::Int { n: *n }, entry_span)),
                     None,
                 ),
                 CoreExpr::U64(n) => (
                     Arc::new(Thunk::value(
                         Value::BigInt {
                             n: num_bigint::BigInt::from(*n),
-            
                         },
                         entry_span,
                     )),
                     None,
                 ),
                 CoreExpr::Float(f) => (
-                    Arc::new(Thunk::value(
-                        Value::Float {
-                            n: *f,
-            
-                        },
-                        entry_span,
-                    )),
+                    Arc::new(Thunk::value(Value::Float { n: *f }, entry_span)),
                     None,
                 ),
                 CoreExpr::Str(s) => (Arc::new(Thunk::value(string_val(s), entry_span)), None),
@@ -513,7 +491,7 @@ pub(crate) async fn eval_dict_core(
                     Arc::new(Thunk::value(
                         Value::Dict {
                             entries: IndexMap::new(),
-            
+                            type_decl_id: 0,
                         },
                         crate::rust_span!(),
                     ))
@@ -602,7 +580,7 @@ pub(crate) async fn eval_dict_core(
     Ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict_map,
-
+            type_decl_id: 0,
         },
         dict_span.clone(),
     )))
@@ -741,20 +719,10 @@ mod tests {
         let x_val = mat_thunk(x_thunk, &ctx).await.unwrap();
         let y_val = mat_thunk(y_thunk, &ctx).await.unwrap();
 
-        assert_eq!(
-            x_val,
-            Value::Int {
-                n: 42,
-        
-            },
-            "x must be 42"
-        );
+        assert_eq!(x_val, Value::Int { n: 42 }, "x must be 42");
         assert_eq!(
             y_val,
-            Value::Int {
-                n: 42,
-        
-            },
+            Value::Int { n: 42 },
             "y must equal x (letrec sibling scope)"
         );
     }
@@ -796,10 +764,7 @@ mod tests {
         // bleed into sibling value scopes.
         assert_eq!(
             v_val,
-            Value::Int {
-                n: 42,
-        
-            },
+            Value::Int { n: 42 },
             "v must be Int(42), not the value of k"
         );
     }

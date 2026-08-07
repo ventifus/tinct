@@ -14,9 +14,9 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, VarAddr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    as_record_typevalue_merged, format_field_path, format_type, materialize,
-    primitive_eq, validate_and_wrap_record, value_matches_type, EvalContext,
-    DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
+    as_record_typevalue_merged, format_field_path, format_type, materialize, primitive_eq,
+    validate_and_wrap_record, value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY,
+    IS_ANNOTATION_KEY,
 };
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
@@ -538,7 +538,7 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
             } else {
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-    
+                    type_decl_id: 0,
                 }
             }
         }),
@@ -547,34 +547,30 @@ pub(crate) fn make_span_dict(span: &crate::ast::Span, call_span: &crate::ast::Sp
         HashableValue::Str("start-line".into()),
         mk(Value::Int {
             n: span.start_line as i64,
-
         }),
     );
     w.insert(
         HashableValue::Str("start-col".into()),
         mk(Value::Int {
             n: span.start_col as i64,
-
         }),
     );
     w.insert(
         HashableValue::Str("end-line".into()),
         mk(Value::Int {
             n: span.end_line as i64,
-
         }),
     );
     w.insert(
         HashableValue::Str("end-col".into()),
         mk(Value::Int {
             n: span.end_col as i64,
-
         }),
     );
     Arc::new(Thunk::value(
         Value::Dict {
             entries: w,
-
+            type_decl_id: 0,
         },
         call_span.clone(),
     ))
@@ -1109,11 +1105,11 @@ async fn dispatch_state(
                     // Empty sequential: return empty dict
                     thunk.settle(Ok(Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     }));
                     return Action::Continue(Ok(Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     }));
                 }
 
@@ -1446,7 +1442,6 @@ pub(crate) async fn apply_cont(
                                         Arc::new(Thunk::value(
                                             Value::Int {
                                                 n: caller_env_id as i64,
-                                
                                             },
                                             call_span.clone(),
                                         )),
@@ -1818,7 +1813,7 @@ pub(crate) async fn apply_cont(
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict {
                                         entries: new_entries,
-                        
+                                        type_decl_id: 0,
                                     };
                                     thunk.settle(Ok(guarded_value.clone()));
                                     Action::Continue(Ok(guarded_value))
@@ -2286,7 +2281,7 @@ pub(crate) async fn apply_cont(
                                 Ok(new_entries) => {
                                     let wrapped = Value::Dict {
                                         entries: new_entries,
-                        
+                                        type_decl_id: 0,
                                     };
                                     return Action::Continue(Ok(wrapped));
                                 }
@@ -3776,29 +3771,27 @@ async fn bind_or_pin_name(
         };
         let pinned_val = materialize(&pinned_thunk, Some(match_span), ctx).await?;
 
-        // B-712: Arc::ptr_eq type dispatch for type-constructor dicts.
+        // B-712: Identity-based type dispatch for type-constructor dicts.
         // When a VarRef pin resolves to a type-constructor Dict (from a [type ...] declaration),
-        // the Dict carries `type_val` = the same Arc as every Variant of that type (both
-        // are stamped by CoreExpr::TypeDecl via ctx.type_identity_registry). Arc::ptr_eq on
-        // the two type_val fields therefore correctly identifies "scrutinee is a member of
-        // this type" — match if true, fall through to primitive_eq otherwise.
+        // the Dict carries `type_decl_id` matching every Variant of that type (both are stamped
+        // by CoreExpr::TypeDecl with the same expand-stage type_decl_id). Comparing the two
+        // type_decl_id fields identifies "scrutinee is a member of this type" — match if
+        // equal, fall through to primitive_eq otherwise.
         //
-        // Plain dicts (no TypeDecl) carry crate::type_infer::make_typevalue_unknown() — a different Arc from any
-        // Variant's type_val — so ptr_eq correctly returns false and they do not false-match.
+        // Plain dicts (no TypeDecl) have type_decl_id = 0, so they never match a Variant
+        // (which always has a non-zero type_decl_id from its TypeDecl).
         if let (
-            Value::Dict { .. },
+            Value::Dict {
+                type_decl_id: dict_decl_id,
+                ..
+            },
             Value::Variant {
                 type_decl_id: scrutinee_decl_id,
-                ctor: scrutinee_ctor,
                 ..
             },
         ) = (&pinned_val, scrutinee_value)
         {
-            // Check if the scrutinee Variant's type matches the pinned type constructor dict.
-            // The pinned dict is the constructor dict from a TypeDecl. The scrutinee Variant's
-            // ctor prefix (before the '.') should match the type name.
-            let tycon_prefix = scrutinee_ctor.split('.').next().unwrap_or("");
-            if !tycon_prefix.is_empty() && *scrutinee_decl_id != 0 {
+            if *dict_decl_id != 0 && *dict_decl_id == *scrutinee_decl_id {
                 return Ok(true);
             }
         }
@@ -4071,13 +4064,7 @@ mod tests {
 
         // Verify the result is correct
         assert!(result.is_ok(), "Expected successful materialization");
-        assert_eq!(
-            result.unwrap(),
-            Value::Int {
-                n: 42,
-        
-            }
-        );
+        assert_eq!(result.unwrap(), Value::Int { n: 42 });
 
         // Verify the thunk transitioned to Materialized state
         let peeked = thunk
@@ -4086,10 +4073,7 @@ mod tests {
             .expect("thunk must not have errored after successful materialization");
         assert_eq!(
             peeked,
-            &Value::Int {
-                n: 42,
-        
-            },
+            &Value::Int { n: 42 },
             "Cached value should be Int(42)"
         );
 
@@ -4103,13 +4087,7 @@ mod tests {
             &ctx,
         )
         .await;
-        assert_eq!(
-            result2.unwrap(),
-            Value::Int {
-                n: 42,
-        
-            }
-        );
+        assert_eq!(result2.unwrap(), Value::Int { n: 42 });
     }
 
     #[tokio::test]
@@ -4255,13 +4233,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: an Int value that satisfies the Int guard.
-        let inner = Arc::new(Thunk::value(
-            Value::Int {
-                n: 42,
-
-            },
-            span.clone(),
-        ));
+        let inner = Arc::new(Thunk::value(Value::Int { n: 42 }, span.clone()));
 
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4279,13 +4251,7 @@ mod tests {
             "Int value should pass Int guard, got: {:?}",
             result.unwrap_err()
         );
-        assert_eq!(
-            result.unwrap(),
-            Value::Int {
-                n: 42,
-        
-            }
-        );
+        assert_eq!(result.unwrap(), Value::Int { n: 42 });
 
         // After success, thunk must be in Materialized state (memoized).
         let peeked = guarded
@@ -4294,10 +4260,7 @@ mod tests {
             .expect("thunk must not have errored after successful validation");
         assert_eq!(
             peeked,
-            &Value::Int {
-                n: 42,
-        
-            },
+            &Value::Int { n: 42 },
             "after successful validation, thunk should be Materialized(Int(42))"
         );
     }
@@ -4340,10 +4303,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Int {
-                n: 99,
-        
-            },
+            Value::Int { n: 99 },
             "default expression should yield 99 (from caller's env)"
         );
 
@@ -4354,10 +4314,7 @@ mod tests {
             .expect("thunk must not have errored after default fallback");
         assert_eq!(
             peeked,
-            &Value::Int {
-                n: 99,
-        
-            },
+            &Value::Int { n: 99 },
             "after default fallback, thunk should be Materialized(Int(99))"
         );
     }
@@ -4374,13 +4331,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: a Float value — fails the Int guard.
-        let inner = Arc::new(Thunk::value(
-            Value::Float {
-                n: 1.0,
-
-            },
-            span.clone(),
-        ));
+        let inner = Arc::new(Thunk::value(Value::Float { n: 1.0 }, span.clone()));
 
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4565,15 +4516,7 @@ mod tests {
                 "arg1 must be settled Ok by force_count=2"
             );
             let span = args.call_span;
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::value(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    span,
-                )))
-            })
+            Box::pin(async move { Ok(Arc::new(Thunk::value(Value::Int { n: 1 }, span))) })
         };
 
         const DUMMY_STRICTNESS: &[Strictness] = &[];
@@ -4612,10 +4555,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Int {
-                n: 1,
-        
-            },
+            Value::Int { n: 1 },
             "dummy builtin must succeed with both args pre-materialized"
         );
     }
@@ -4699,13 +4639,7 @@ mod cek_lifecycle_tests {
     #[tokio::test]
     async fn test_cont_memoize_construction() {
         let span = test_span(1, 1, 1, 10);
-        let thunk = Arc::new(Thunk::value(
-            Value::Int {
-                n: 7,
-
-            },
-            span.clone(),
-        ));
+        let thunk = Arc::new(Thunk::value(Value::Int { n: 7 }, span.clone()));
         let origin: Option<Arc<str>> = Some(Arc::from("test-origin"));
 
         let data = MemoizeData {
@@ -4744,13 +4678,7 @@ mod cek_lifecycle_tests {
         let ctx = test_ctx();
 
         // A pre-materialized thunk: created with Thunk::value → already in Materialized state.
-        let thunk = Arc::new(Thunk::value(
-            Value::Int {
-                n: 99,
-
-            },
-            span.clone(),
-        ));
+        let thunk = Arc::new(Thunk::value(Value::Int { n: 99 }, span.clone()));
 
         let peeked = thunk
             .peek_result()
@@ -4758,10 +4686,7 @@ mod cek_lifecycle_tests {
             .expect("Thunk::value must not have errored — invariant violation");
         assert_eq!(
             peeked,
-            &Value::Int {
-                n: 99,
-        
-            },
+            &Value::Int { n: 99 },
             "Thunk::value must start Materialized"
         );
 
@@ -4773,10 +4698,7 @@ mod cek_lifecycle_tests {
             Action::Continue(Ok(v)) => {
                 assert_eq!(
                     v,
-                    Value::Int {
-                        n: 99,
-                
-                    },
+                    Value::Int { n: 99 },
                     "expected the materialized value Int(99)"
                 );
             }
@@ -5011,7 +4933,7 @@ fn force_dict_tree_impl<'a>(
                 }
                 Ok(Value::Dict {
                     entries: new_map,
-    
+                    type_decl_id: 0,
                 })
             }
             Value::Variant {

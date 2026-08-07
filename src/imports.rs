@@ -20,11 +20,15 @@ use crate::typecheck::typecheck_program_bootstrap;
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
-pub async fn build_builtin_core_envs() -> (Arc<RwLock<Env>>, crate::type_def::TyConEnv) {
-    let (env, tycon_env, _) = build_builtin_core_envs_inner()
+pub async fn build_builtin_core_envs() -> (
+    Arc<RwLock<Env>>,
+    crate::type_def::TyConEnv,
+    std::collections::HashMap<String, u64>,
+) {
+    let (env, tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner()
         .await
         .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
-    (env, tycon_env)
+    (env, tycon_env, type_name_to_id)
 }
 
 /// Evaluate the type-stage section of `stdlib/builtin_core.llt` and return the resulting
@@ -34,7 +38,7 @@ pub async fn build_builtin_core_envs() -> (Arc<RwLock<Env>>, crate::type_def::Ty
 /// This is the authoritative source of the type-stage scope; no Rust code should manually
 /// construct this mapping by hardcoding tinct-side type names.
 pub async fn get_builtin_core_type_stage_scope() -> crate::type_infer::TypeStageData {
-    let (_, _, data) = build_builtin_core_envs_inner()
+    let (_, _, data, _) = build_builtin_core_envs_inner()
         .await
         .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
     data
@@ -47,7 +51,7 @@ pub async fn get_builtin_core_type_stage_scope() -> crate::type_infer::TypeStage
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
 pub async fn get_builtin_core_type_env() -> Arc<RwLock<Env>> {
-    let (env, _, _) = build_builtin_core_envs_inner()
+    let (env, _, _, _) = build_builtin_core_envs_inner()
         .await
         .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
     env
@@ -56,7 +60,7 @@ pub async fn get_builtin_core_type_env() -> Arc<RwLock<Env>> {
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TyConEnv` containing
 /// opaque type definitions (e.g. `BuilderHandle`, `DirCap`).
 pub async fn get_builtin_core_tycon_env() -> crate::type_def::TyConEnv {
-    let (_, tycon_env, _) = build_builtin_core_envs_inner()
+    let (_, tycon_env, _, _) = build_builtin_core_envs_inner()
         .await
         .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
     tycon_env
@@ -112,11 +116,15 @@ pub(crate) async fn classify_type_stage_entry(
     if let Some(kind) =
         crate::type_normalize::typenode_typevar_kind(val).map_err(|e| Box::new((*e).clone()))?
     {
-        let tv = crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0));
+        let tv = crate::type_infer::make_typevalue_nominal(
+            crate::value::type_id_for_name(name).unwrap_or(0),
+        );
         return Ok(Some((tv, None, Some(kind))));
     }
     if matches!(val, crate::value::Value::Function { .. }) {
-        let tv = crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0));
+        let tv = crate::type_infer::make_typevalue_nominal(
+            crate::value::type_id_for_name(name).unwrap_or(0),
+        );
         return Ok(Some((tv, Some(std::sync::Arc::clone(thunk)), None)));
     }
     // Not a recognized Variant, TypeVar sentinel, or Function — not a type-stage entry.
@@ -134,6 +142,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     Arc<RwLock<Env>>,
     crate::type_def::TyConEnv,
     crate::type_infer::TypeStageData,
+    std::collections::HashMap<String, u64>,
 )> {
     // Embedded source — no libdir access needed at runtime.
     let source = include_str!("../stdlib/builtin_core.llt");
@@ -311,7 +320,9 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             env_write.insert_at_slot(
                 slot,
                 name.clone(),
-                crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0)),
+                crate::type_infer::make_typevalue_nominal(
+                    crate::value::type_id_for_name(name).unwrap_or(0),
+                ),
                 None,
             );
         }
@@ -321,7 +332,9 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             env_write.insert_at_slot(
                 slot,
                 name.clone(),
-                crate::type_infer::make_typevalue_nominal(crate::value::type_id_for_name(name).unwrap_or(0)),
+                crate::type_infer::make_typevalue_nominal(
+                    crate::value::type_id_for_name(name).unwrap_or(0),
+                ),
                 None,
             );
         }
@@ -367,12 +380,13 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     // (e.g. get_builtin_core_type_stage_scope, which seeds type-checker entry points
     // that do not have their own type-stage scope available).
     let type_stage_data_for_return = type_stage_data.clone();
-    let (_tc_errors, final_env, mut tycon_env) = typecheck_program_bootstrap(
+    let (_tc_errors, final_env, mut tycon_env, type_name_to_id) = typecheck_program_bootstrap(
         &program,
         parent_env,
         None,                             // eval_ctx: no EvalContext at bootstrap
         std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
         type_stage_data,
+        std::collections::HashMap::new(),
     )
     .await;
 
@@ -401,7 +415,12 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     }
 
     // `final_env` is the child Env containing parent bindings plus new type declarations.
-    Ok((final_env, tycon_env, type_stage_data_for_return))
+    Ok((
+        final_env,
+        tycon_env,
+        type_stage_data_for_return,
+        type_name_to_id,
+    ))
 }
 
 #[cfg(test)]

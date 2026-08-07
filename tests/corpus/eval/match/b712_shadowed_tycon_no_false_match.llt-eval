@@ -1,0 +1,10 @@
+--- description: B-712 shadowed plain dict must not match a Variant from the outer type
+--- expected_output: {r: "correct"}
+[
+  Color: [type Red Green Blue]
+  v: Color.Red
+  test: [fn [let x]
+    [Color: [r: 255  g: 0  b: 0]]
+    [match x  Color: "wrong"  ...: "correct"]]
+  r: [test v]
+]

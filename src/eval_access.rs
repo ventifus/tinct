@@ -82,10 +82,7 @@ mod tests {
         let result_val = crate::eval::materialize(&result_thunk, None, &ctx).await?;
         assert_eq!(
             result_val,
-            Value::Int {
-                n: 1,
-        
-            },
+            Value::Int { n: 1 },
             "d.a must return Int(1) when d = {{a: 1}}"
         );
         Ok(())

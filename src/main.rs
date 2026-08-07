@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    build_core_env, format_diagnostic, literate, parse, string_val, EvalContext,
-    HashableValue, Thunk, Value,
+    build_core_env, format_diagnostic, literate, parse, string_val, EvalContext, HashableValue,
+    Thunk, Value,
 };
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
@@ -1442,7 +1442,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let cwd_value = Value::DirCap {
             dir: cwd_dir,
             perms: tinct::DirPerms::full(),
-
         };
         let cwd_thunk = Arc::new(tinct::Thunk::value(cwd_value, tinct::rust_span!()));
         env.write()
@@ -1472,7 +1471,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_file = cap_std::fs::File::from_std(stdin_dup);
             let stdin_value = Value::File {
                 inner: Arc::new(Mutex::new(cap_file)),
-    
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
             env.write()
@@ -1487,7 +1485,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             // at resolve time with "undefined variable: %stdin".
             let stdin_value = Value::Dict {
                 entries: indexmap::IndexMap::new(),
-    
+                type_decl_id: 0,
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
             env.write()
@@ -1537,7 +1535,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                 let libdir_value = Value::DirCap {
                     dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
-        
                 };
                 let libdir_thunk = Arc::new(tinct::Thunk::value(libdir_value, tinct::rust_span!()));
                 env.write()
@@ -1564,7 +1561,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_value = Value::DirCap {
                 dir: dir_for_cap,
                 perms,
-    
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             // Inject as `%NAME` (auto-prefix %).
@@ -1620,7 +1616,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap {
                 entries: Arc::new(entries),
-    
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             env.write().unwrap().insert_slot_name_only(name.clone());
@@ -1651,13 +1646,11 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             })?;
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
-    
             }
         } else {
             // Default: real system clock
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Real),
-    
             }
         };
 
@@ -1805,7 +1798,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_value = Value::DirCap {
                 dir: cap_dir,
                 perms,
-    
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
             // Inject as `%NAME` (auto-prefix %).
@@ -1928,7 +1920,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // (B-663: without this, Dict → Op("Dict") from TyConDef wiring, causing incorrect
         // record-subtype errors when @Dict annotations are used).
         // Accumulated further by builtin-typecheck-doc calls during loading.
-        let (core_type_env, core_tycon_env) = tinct::build_builtin_core_envs().await;
+        let (core_type_env, core_tycon_env, _) = tinct::build_builtin_core_envs().await;
         let core_ts_data = tinct::get_builtin_core_type_stage_scope().await;
         ctx.init_type_context(tinct::TypeContextData {
             inference_env: core_type_env,
@@ -1993,10 +1985,9 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             .insert(HashableValue::Str("path".into()), mk_thunk(string_val("-")));
                         let payload_id = alloc_val(Value::Dict {
                             entries: payload_dict,
-                
+                            type_decl_id: 0,
                         });
                         Value::Variant {
-                
                             type_decl_id: 0,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
@@ -2016,7 +2007,6 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         let cap_file = cap_std::fs::File::from_std(raw_handle);
                         let handle_value = Value::File {
                             inner: Arc::new(Mutex::new(cap_file)),
-                
                         };
 
                         // Build payload dict: { path: String, handle: Handle }
@@ -2029,10 +2019,9 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             .insert(HashableValue::Str("handle".into()), mk_thunk(handle_value));
                         let payload_id = alloc_val(Value::Dict {
                             entries: payload_dict,
-                
+                            type_decl_id: 0,
                         });
                         Value::Variant {
-                
                             type_decl_id: 0,
                             ctor: Arc::from("ProgramItem.File"),
                             payload: Some(payload_id),
@@ -2048,10 +2037,9 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     );
                     let payload_id = alloc_val(Value::Dict {
                         entries: payload_dict,
-            
+                        type_decl_id: 0,
                     });
                     Value::Variant {
-            
                         type_decl_id: 0,
                         ctor: Arc::from("ProgramItem.Expr"),
                         payload: Some(payload_id),
@@ -2062,7 +2050,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         }
         Value::Dict {
             entries: dict,
-
+            type_decl_id: 0,
         }
     };
 
@@ -2095,13 +2083,12 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             HashableValue::Str("strict".into()),
             mk_thunk(Value::Int {
                 n: if strict { 1 } else { 0 },
-    
             }),
         );
 
         Value::Dict {
             entries: dict,
-
+            type_decl_id: 0,
         }
     };
 
@@ -2325,14 +2312,16 @@ async fn run_fmt(
         let program = tinct::expand::expand_program(&program);
         let env_arc = tinct::get_builtin_core_type_env().await;
         let ts_data = tinct::get_builtin_core_type_stage_scope().await;
-        let (diagnostics, _env, _tycon_env) = tinct::typecheck::typecheck_program_bootstrap(
-            &program,
-            env_arc,
-            None,
-            std::collections::HashMap::new(),
-            ts_data,
-        )
-        .await;
+        let (diagnostics, _env, _tycon_env, _type_name_to_id) =
+            tinct::typecheck::typecheck_program_bootstrap(
+                &program,
+                env_arc,
+                None,
+                std::collections::HashMap::new(),
+                ts_data,
+                std::collections::HashMap::new(),
+            )
+            .await;
 
         // Filter error-level diagnostics
         let type_errors: Vec<_> = diagnostics

@@ -416,7 +416,9 @@ impl fmt::Display for SurfaceExpression {
             }
             SurfaceExpression::UnitVariant { tycon, ctor, .. } => write!(f, "{tycon}.{ctor}"),
             SurfaceExpression::MakeVariant { tag, .. } => write!(f, "MakeVariant({tag})"),
-            SurfaceExpression::TypeDecl { type_name, params, .. } => {
+            SurfaceExpression::TypeDecl {
+                type_name, params, ..
+            } => {
                 if params.is_empty() {
                     write!(f, "TypeDecl({type_name})")
                 } else {
@@ -848,7 +850,7 @@ pub enum SurfaceExpression {
     /// Lowered 1:1 to CoreExpr::ReprDecl.
     #[expr(skip)]
     ReprDecl {
-        repr: String,
+        repr: u64,
         is_pred: Option<Arc<SurfaceNode>>,
         inner: Arc<SurfaceNode>,
     },
@@ -1523,10 +1525,10 @@ pub enum CoreExpr {
     ///   4. If `is_pred` is Some, evaluates it and registers in `ctx.is_predicates` under `repr`.
     ///   5. Returns the constructor dict thunk (transparent to callers — the value IS the dict).
     ///
-    /// The `repr` string is the exact `Value::X` variant name (e.g., `"Value::Int"`).
+    /// The `repr` is the numeric TYPE_ID constant (e.g., 1 for Int, 3 for Float).
     ReprDecl {
-        /// The repr string (e.g., `"Value::Int"`).
-        repr: String,
+        /// The numeric TYPE_ID (e.g., TYPE_ID_INT = 1).
+        repr: u64,
         /// Optional `is:` predicate expression (a tinct function `[fn [let x] ...]`).
         is_pred: Option<Arc<Spanned<CoreExpr>>>,
         /// The inner constructor dict produced by `lower_type_alias_to_constructor_dict`.

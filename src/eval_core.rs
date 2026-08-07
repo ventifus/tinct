@@ -617,14 +617,8 @@ pub(crate) async fn extract_fn_annotation_extra(
         let val = match &e.node.value.expr {
             // Literals extract directly without evaluation
             crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
-            crate::ast::SurfaceExpression::Int(n) => Value::Int {
-                n: *n,
-
-            },
-            crate::ast::SurfaceExpression::Float(f) => Value::Float {
-                n: *f,
-
-            },
+            crate::ast::SurfaceExpression::Int(n) => Value::Int { n: *n },
+            crate::ast::SurfaceExpression::Float(f) => Value::Float { n: *f },
             // Type-level VarRef with resolution Some(None) → produce string identity.
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             crate::ast::SurfaceExpression::VarRef {
@@ -667,27 +661,9 @@ pub(crate) fn eval_core_expr<'a>(
         let span = expr.span.clone();
         match &expr.node {
             // Literals produce values directly — no thunk wrapping needed
-            CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(
-                Value::Int {
-                    n: *n,
-    
-                },
-                span.clone(),
-            ))),
-            CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(
-                Value::U64 {
-                    n: *n,
-    
-                },
-                span.clone(),
-            ))),
-            CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(
-                Value::Float {
-                    n: *f,
-    
-                },
-                span.clone(),
-            ))),
+            CoreExpr::Int(n) => Ok(Arc::new(Thunk::value(Value::Int { n: *n }, span.clone()))),
+            CoreExpr::U64(n) => Ok(Arc::new(Thunk::value(Value::U64 { n: *n }, span.clone()))),
+            CoreExpr::Float(f) => Ok(Arc::new(Thunk::value(Value::Float { n: *f }, span.clone()))),
             CoreExpr::Str(s) => Ok(Arc::new(Thunk::value(string_val(s), span.clone()))),
 
             // Variable lookup via EvalFrame closure-conversion.
@@ -747,30 +723,28 @@ pub(crate) fn eval_core_expr<'a>(
                 tag,
                 payload,
                 type_decl_id,
-            } => {
-                match payload {
-                    None => Ok(Arc::new(Thunk::value(
+            } => match payload {
+                None => Ok(Arc::new(Thunk::value(
+                    Value::Variant {
+                        type_decl_id: *type_decl_id,
+                        ctor: Arc::from(tag.as_str()),
+                        payload: None,
+                    },
+                    span.clone(),
+                ))),
+                Some(inner_expr) => {
+                    let payload_thunk = eval_core_expr(inner_expr, frame, ctx).await?;
+                    let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                    Ok(Arc::new(Thunk::value(
                         Value::Variant {
                             type_decl_id: *type_decl_id,
                             ctor: Arc::from(tag.as_str()),
-                            payload: None,
+                            payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
                         },
                         span.clone(),
-                    ))),
-                    Some(inner_expr) => {
-                        let payload_thunk = eval_core_expr(inner_expr, frame, ctx).await?;
-                        let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                        Ok(Arc::new(Thunk::value(
-                            Value::Variant {
-                                type_decl_id: *type_decl_id,
-                                ctor: Arc::from(tag.as_str()),
-                                payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
-                            },
-                            span.clone(),
-                        )))
-                    }
+                    )))
                 }
-            }
+            },
 
             // Unit variant: look up type identity by type_decl_id (B-714).
             // If CoreExpr::TypeDecl was evaluated first (which it always is, because forcing
@@ -780,16 +754,14 @@ pub(crate) fn eval_core_expr<'a>(
                 tycon,
                 ctor,
                 type_decl_id,
-            } => {
-                Ok(Arc::new(Thunk::value(
-                    Value::Variant {
-                        type_decl_id: *type_decl_id,
-                        ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
-                        payload: None,
-                    },
-                    span.clone(),
-                )))
-            }
+            } => Ok(Arc::new(Thunk::value(
+                Value::Variant {
+                    type_decl_id: *type_decl_id,
+                    ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
+                    payload: None,
+                },
+                span.clone(),
+            ))),
 
             // Sequential: evaluate each expression in order, extending the environment
             // with dict bindings from each intermediate dict expression.
@@ -835,7 +807,7 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Fn {
                 clauses,
                 captures,
-                resolved_fn_type,
+                resolved_fn_type: _,
                 return_ann,
                 ..
             } => {
@@ -1045,7 +1017,7 @@ pub(crate) fn eval_core_expr<'a>(
                 Ok(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: dict,
-        
+                        type_decl_id: 0,
                     },
                     span.clone(),
                 )))
@@ -1085,7 +1057,6 @@ pub(crate) fn eval_core_expr<'a>(
                 // self-describing in debug output. Its own type_val is crate::type_infer::make_typevalue_unknown() —
                 // the identity is not itself typed (it is the identity, not a user value).
                 let type_id: Arc<Value> = Arc::new(Value::Variant {
-    
                     type_decl_id: 0, // Identity sentinel — not a user-constructed variant.
                     ctor: Arc::from(type_name.as_str()),
                     payload: None,
@@ -1134,7 +1105,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // still see a lazy thunk (already-settled at this point).
                 let inner_val = materialize(&inner_thunk, Some(&span), ctx).await?;
 
-                // Register in repr_registry: repr_string → Arc<Value> (the constructor dict).
+                // Register in repr_registry: type_decl_id → Arc<Value> (the constructor dict).
                 ctx.repr_registry
                     .lock()
                     .map_err(|e| {
@@ -1143,7 +1114,7 @@ pub(crate) fn eval_core_expr<'a>(
                             span.clone(),
                         )
                     })?
-                    .insert(repr.clone(), Arc::new(inner_val));
+                    .insert(*repr, Arc::new(inner_val));
 
                 // If an is: predicate is present, evaluate and register it.
                 if let Some(is_expr) = is_pred {
@@ -1157,7 +1128,7 @@ pub(crate) fn eval_core_expr<'a>(
                                 span.clone(),
                             )
                         })?
-                        .insert(repr.clone(), Arc::new(is_val));
+                        .insert(*repr, Arc::new(is_val));
                 }
 
                 // Return the inner dict thunk — ReprDecl is transparent.
@@ -1168,7 +1139,6 @@ pub(crate) fn eval_core_expr<'a>(
         // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.
     }) // end Box::pin(async move {
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1204,10 +1174,7 @@ mod tests {
         let val = eval_and_materialize(CoreExpr::Int(42), &ctx).await.unwrap();
         assert_eq!(
             val,
-            Value::Int {
-                n: 42,
-        
-            },
+            Value::Int { n: 42 },
             "CoreExpr::Int(42) must evaluate to Int(42)"
         );
     }
@@ -1241,13 +1208,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Build an EvalFrame with the known thunk in group[0].
-        let known_thunk = Arc::new(Thunk::value(
-            Value::Int {
-                n: 77,
-
-            },
-            span.clone(),
-        ));
+        let known_thunk = Arc::new(Thunk::value(Value::Int { n: 77 }, span.clone()));
         let frame = Arc::new(EvalFrame {
             closure_env: empty_scope(),
             group: scope_from_flat(vec![Arc::clone(&known_thunk)]),
@@ -1275,12 +1236,8 @@ mod tests {
 
         assert_eq!(
             val,
-            Value::Int {
-                n: 77,
-        
-            },
+            Value::Int { n: 77 },
             "CoreExpr::Var with VarAddr::Dispatch(0, 0) must resolve to the injected Int(77)"
         );
     }
-
 }

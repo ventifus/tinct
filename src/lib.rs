@@ -127,9 +127,7 @@ pub use type_class::TypeValue;
 /// TypeValue construction helpers exposed for use in crate embedders (e.g., main.rs CLI
 /// injected type env). These are the canonical single-path constructors — callers must
 /// not duplicate construction logic locally (Axiom 2).
-pub use type_infer::{
-    make_typevalue_nominal, make_typevalue_open_dict, make_typevalue_unknown,
-};
+pub use type_infer::{make_typevalue_nominal, make_typevalue_open_dict, make_typevalue_unknown};
 pub use value::{TYPE_ID_DIRCAP, TYPE_ID_NETCAP};
 
 /// Formatter: canonical source reformatter.
@@ -139,8 +137,8 @@ pub use formatter::format_source_tinct;
 pub use env::Env;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue,
-    NetCapEntry, Thunk, Value,
+    string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue, NetCapEntry,
+    Thunk, Value,
 };
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
@@ -314,7 +312,8 @@ pub async fn run_loader_pipeline(
     // builtin-* names are in scope. Populates the TypeContext with type signatures.
     // Only "type-assertion" diagnostics are fatal; other type errors are expected
     // during bootstrap because prelude names are not yet in scope (see below).
-    let (builtin_env_base, seed_tycon_env) = crate::imports::build_builtin_core_envs().await;
+    let (builtin_env_base, seed_tycon_env, builtin_core_type_name_to_id) =
+        crate::imports::build_builtin_core_envs().await;
     // Prepend builtin_core.llt's type-stage scope to the loader's type-stage scope
     // so that opaque types (BuilderHandle, TypeContext, DirCap, etc.) declared in
     // builtin_core.llt's type-stage section are resolvable when typechecking the loader.
@@ -377,13 +376,14 @@ pub async fn run_loader_pipeline(
         }
         Arc::new(std::sync::RwLock::new(wrapper))
     };
-    let (loader_diagnostics, _loader_env, loader_tycon_env) =
+    let (loader_diagnostics, _loader_env, loader_tycon_env, _) =
         typecheck::typecheck_program_bootstrap(
             &loader_program,
             builtin_env,
             Some(Arc::clone(&eval_ctx_with_frames)),
             seed_tycon_env,
             combined_type_stage_data,
+            builtin_core_type_name_to_id,
         )
         .await;
     // Wire the TyConEnv from the typecheck pass into the eval context so that
@@ -421,9 +421,9 @@ pub async fn run_loader_pipeline(
         type_diagnostics: Vec::new(),
     });
 
-    // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
-    // %cwd, %libdir, and any other caps injected by the caller.
-    // %stdout and %stderr are nominal type values (Stdout.Stdout, Stderr.Stderr) in loader.llt Dict 2.
+    // Evaluate the full init program. The resolver assigned slots based on the full
+    // program (including type-stage documents), so the evaluator must see the same
+    // document structure to keep slot indices aligned.
     let loader_thunk = eval::eval_surface_file(&loader_program, &eval_ctx_with_frames)
         .await
         .map_err(|e| format!("{e}"))?;
@@ -472,12 +472,13 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let program = expand::expand_program(&program);
     let env_arc = imports::get_builtin_core_type_env().await;
     let ts_data = imports::get_builtin_core_type_stage_scope().await;
-    let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
+    let (diagnostics, _env, _tycon_env, _type_name_to_id) = typecheck::typecheck_program_bootstrap(
         &program,
         env_arc,
         None,
         std::collections::HashMap::new(),
         ts_data,
+        std::collections::HashMap::new(),
     )
     .await;
     if diagnostics.is_empty() {
@@ -506,12 +507,13 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // Type check the surface program.
     let env_arc = imports::get_builtin_core_type_env().await;
     let ts_data = imports::get_builtin_core_type_stage_scope().await;
-    let (diagnostics, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
+    let (diagnostics, _env, _tycon_env, _type_name_to_id) = typecheck::typecheck_program_bootstrap(
         &program,
         env_arc,
         None,
         std::collections::HashMap::new(),
         ts_data,
+        std::collections::HashMap::new(),
     )
     .await;
     if !crate::error::has_type_errors(&diagnostics) {
@@ -1240,7 +1242,6 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
@@ -1259,13 +1260,11 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("Color.Red"),
             payload: None,
         };
         let green_val = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("Color.Green"),
             payload: None,
@@ -1290,7 +1289,6 @@ mod tests {
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from("MyBool.Yes"),
             payload: None,
@@ -1307,16 +1305,9 @@ mod tests {
     #[tokio::test]
     async fn test_display_proxy() {
         let ctx = test_ctx().await;
-        let handler_thunk = Arc::new(Thunk::value(
-            Value::Int {
-                n: 42,
-
-            },
-            test_span(1, 1, 1, 1),
-        ));
+        let handler_thunk = Arc::new(Thunk::value(Value::Int { n: 42 }, test_span(1, 1, 1, 1)));
         let proxy = Value::Proxy {
             handler: handler_thunk,
-
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await
@@ -1350,14 +1341,16 @@ mod tests {
         let program = expand::expand_program(&program);
         // T-1576: test path uses bootstrap mode (no arena yet).
         let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
-        let (_type_errors, _env, _tycon_env) = typecheck::typecheck_program_bootstrap(
-            &program,
-            std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-            None,
-            std::collections::HashMap::new(),
-            crate::type_infer::TypeStageData::new(),
-        )
-        .await;
+        let (_type_errors, _env, _tycon_env, _type_name_to_id) =
+            typecheck::typecheck_program_bootstrap(
+                &program,
+                std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
+                None,
+                std::collections::HashMap::new(),
+                crate::type_infer::TypeStageData::new(),
+                std::collections::HashMap::new(),
+            )
+            .await;
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.

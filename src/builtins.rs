@@ -179,13 +179,7 @@ pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<A
     if !val.is_finite() {
         Err(EvalError::float_not_finite(op.to_string(), val, span).into())
     } else {
-        ok_val(
-            Value::Float {
-                n: val,
-
-            },
-            span,
-        )
+        ok_val(Value::Float { n: val }, span)
     }
 }
 
@@ -223,7 +217,6 @@ pub(crate) async fn require_dict(
         other => {
             let err =
                 EvalError::type_mismatch_ctx(name.to_string(), "Dict", other.type_name(), def_span);
-            // Secondary span would be redundant: def_span already points to where argument was produced.
             Err(err.into())
         }
     }
@@ -308,7 +301,6 @@ fn float_to_int_builtin(
             ok_val(
                 Value::Int {
                     n: checked_f64_to_i64(name, op(f), call_span.clone())?,
-    
                 },
                 call_span,
             )
@@ -392,13 +384,7 @@ pub(crate) fn builtin_to_int(
         let arg0_span = args[0].span.clone();
         let s = require_string("to-int", val, arg0_span)?;
         match s.parse::<i64>() {
-            Ok(n) => ok_val(
-                Value::Int {
-                    n,
-    
-                },
-                call_span,
-            ),
+            Ok(n) => ok_val(Value::Int { n }, call_span),
             Err(_) => {
                 Err(
                     EvalError::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
@@ -432,13 +418,7 @@ pub(crate) fn builtin_to_float(
         let arg0_span = args[0].span.clone();
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
-            Ok(f) if f.is_finite() => ok_val(
-                Value::Float {
-                    n: f,
-    
-                },
-                call_span,
-            ),
+            Ok(f) if f.is_finite() => ok_val(Value::Float { n: f }, call_span),
             Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
             Err(_) => Err(EvalError::parse_conversion(
                 "to-float".to_string(),
@@ -469,7 +449,6 @@ pub(crate) fn builtin_proxy(
         Ok(Arc::new(Thunk::value(
             Value::Proxy {
                 handler: Arc::clone(&args[0]),
-
             },
             call_span,
         )))
@@ -544,6 +523,9 @@ mod tests {
     use crate::rust_span;
     use crate::test_util::test_span;
     use crate::value::{string_val, Strictness};
+
+    /// Test type_decl_id for a synthetic Color type in builtin tests.
+    const TEST_ID_COLOR: u64 = 3000;
 
     /// Helper: wrap a Value in a materialized Thunk (Arc).
     fn thunk(val: Value) -> Arc<Thunk> {
@@ -654,7 +636,7 @@ mod tests {
         Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
-
+                type_decl_id: 0,
             },
             test_span(1, 1, 1, 5),
         ))
@@ -669,13 +651,7 @@ mod tests {
     async fn floor_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -683,26 +659,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 42,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 42 });
     }
 
     #[tokio::test]
     async fn floor_negative_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: -7,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: -7 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -710,26 +674,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -7,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -7 });
     }
 
     #[tokio::test]
     async fn floor_zero_int() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 0,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 0 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -737,26 +689,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 0 });
     }
 
     #[tokio::test]
     async fn floor_positive_float() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 3.7,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 3.7 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -764,13 +704,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 3,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 3 });
     }
 
     #[tokio::test]
@@ -778,13 +712,7 @@ mod tests {
         // floor(-3.2) = -4, not -3
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -3.2,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -3.2 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -792,26 +720,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -4,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -4 });
     }
 
     #[tokio::test]
     async fn floor_float_exact_integer() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 5.0,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 5.0 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -819,26 +735,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 5,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 5 });
     }
 
     #[tokio::test]
     async fn floor_float_just_below_integer() {
         let ctx = test_ctx();
         let result = mat(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.9999999,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.9999999 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -846,26 +750,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 2 });
     }
 
     #[tokio::test]
     async fn floor_nan_errors() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: f64::NAN,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: f64::NAN }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -881,13 +773,7 @@ mod tests {
     async fn floor_positive_infinity_errors() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: f64::INFINITY,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: f64::INFINITY }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -910,7 +796,6 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::NEG_INFINITY,
-    
                 },
                 &ctx,
             )],
@@ -976,7 +861,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 &ctx,
             )],
@@ -1020,20 +905,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -1054,24 +927,9 @@ mod tests {
     async fn floor_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "x".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("x".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 3.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 3.5 }, &ctx)],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -1091,13 +949,7 @@ mod tests {
     async fn floor_large_positive_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 1e19,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 1e19 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1117,13 +969,7 @@ mod tests {
     async fn floor_large_negative_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -1e19,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -1e19 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1143,13 +989,7 @@ mod tests {
     async fn round_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1157,26 +997,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 42,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 42 });
     }
 
     #[tokio::test]
     async fn round_negative_int_passthrough() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: -7,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: -7 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1184,13 +1012,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -7,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -7 });
     }
 
     #[tokio::test]
@@ -1198,13 +1020,7 @@ mod tests {
         // 0.5 rounds to 1 (half-away-from-zero)
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 0.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 0.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1212,13 +1028,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -1226,13 +1036,7 @@ mod tests {
         // -0.5 rounds to -1 (half-away-from-zero)
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -0.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -0.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1240,26 +1044,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -1,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -1 });
     }
 
     #[tokio::test]
     async fn round_positive_below_half() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.4,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.4 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1267,26 +1059,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 2 });
     }
 
     #[tokio::test]
     async fn round_positive_above_half() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.6,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.6 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1294,13 +1074,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 3,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 3 });
     }
 
     #[tokio::test]
@@ -1308,13 +1082,7 @@ mod tests {
         // -2.4 rounds to -2
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -2.4,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -2.4 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1322,13 +1090,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -2 });
     }
 
     #[tokio::test]
@@ -1336,13 +1098,7 @@ mod tests {
         // -2.6 rounds to -3
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -2.6,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -2.6 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1350,26 +1106,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -3,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -3 });
     }
 
     #[tokio::test]
     async fn round_1_5_rounds_to_2() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 1.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 1.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1377,26 +1121,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 2 });
     }
 
     #[tokio::test]
     async fn round_negative_1_5_rounds_to_negative_2() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -1.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -1.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1404,26 +1136,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -2 });
     }
 
     #[tokio::test]
     async fn round_float_exact_integer() {
         let ctx = test_ctx();
         let result = mat(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 5.0,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 5.0 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1431,26 +1151,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 5,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 5 });
     }
 
     #[tokio::test]
     async fn round_nan_errors() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: f64::NAN,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: f64::NAN }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1466,13 +1174,7 @@ mod tests {
     async fn round_positive_infinity_errors() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: f64::INFINITY,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: f64::INFINITY }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1495,7 +1197,6 @@ mod tests {
             args: vec![alloc(
                 Value::Float {
                     n: f64::NEG_INFINITY,
-    
                 },
                 &ctx,
             )],
@@ -1579,20 +1280,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -1613,13 +1302,7 @@ mod tests {
     async fn round_large_positive_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 1e19,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 1e19 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1639,13 +1322,7 @@ mod tests {
     async fn round_large_negative_float_out_of_range() {
         let ctx = test_ctx();
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: -1e19,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: -1e19 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1673,13 +1350,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 42,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 42 });
     }
 
     #[tokio::test]
@@ -1694,13 +1365,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: -7,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: -7 });
     }
 
     #[tokio::test]
@@ -1715,13 +1380,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -1736,13 +1395,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: i64::MAX,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: i64::MAX });
     }
 
     #[tokio::test]
@@ -1829,13 +1482,7 @@ mod tests {
     async fn to_int_rejects_int_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1860,13 +1507,7 @@ mod tests {
     async fn to_int_rejects_float_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1886,13 +1527,7 @@ mod tests {
     async fn to_int_rejects_float_whole_number() {
         let ctx = test_ctx();
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 1.0,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 1.0 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -1915,7 +1550,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 &ctx,
             )],
@@ -1986,13 +1621,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: 2.5,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: 2.5 });
     }
 
     #[tokio::test]
@@ -2008,13 +1637,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: 42.0,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: 42.0 });
     }
 
     #[tokio::test]
@@ -2029,13 +1652,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: -2.5,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: -2.5 });
     }
 
     #[tokio::test]
@@ -2050,13 +1667,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: 1.5e10,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: 1.5e10 });
     }
 
     #[tokio::test]
@@ -2071,13 +1682,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: 2.5e-3,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: 2.5e-3 });
     }
 
     #[tokio::test]
@@ -2092,13 +1697,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: 0.0,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: 0.0 });
     }
 
     #[tokio::test]
@@ -2114,13 +1713,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Float {
-                n: 0.5,
-
-            }
-        );
+        assert_eq!(result, Value::Float { n: 0.5 });
     }
 
     #[tokio::test]
@@ -2247,13 +1840,7 @@ mod tests {
     async fn to_float_rejects_int_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2273,13 +1860,7 @@ mod tests {
     async fn to_float_rejects_float_input() {
         let ctx = test_ctx();
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2302,7 +1883,7 @@ mod tests {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 &ctx,
             )],
@@ -2454,13 +2035,7 @@ mod tests {
         // raise now requires a Diagnostic dict; passing a non-dict is a type mismatch.
         let ctx = test_ctx();
         let err = run(builtin_raise(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2514,7 +2089,7 @@ mod tests {
             HashableValue::Str("notes".into()),
             thunk(Value::Dict {
                 entries: notes,
-
+                type_decl_id: 0,
             }),
         );
         let err = run(builtin_raise(BuiltinArgs {
@@ -2558,13 +2133,7 @@ mod tests {
         // Any thunk forced by builtin-try wraps its value in {ok: ...}.
         let ctx = test_ctx();
         let result = mat(builtin_try(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -2579,13 +2148,7 @@ mod tests {
                     .cloned()
                     .expect("success dict must have 'ok' key");
                 let ok_val_result = mat_id(ok_thunk, &ctx).await;
-                assert_eq!(
-                    ok_val_result,
-                    Value::Int {
-                        n: 42,
-        
-                    }
-                );
+                assert_eq!(ok_val_result, Value::Int { n: 42 });
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
@@ -2666,15 +2229,7 @@ mod tests {
         fn ok_builtin(
             _ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-            Box::pin(async move {
-                ok_val(
-                    Value::Int {
-                        n: 99,
-        
-                    },
-                    rust_span!(),
-                )
-            })
+            Box::pin(async move { ok_val(Value::Int { n: 99 }, rust_span!()) })
         }
         let ctx = test_ctx();
         let ok_def = builtin!("ok", ok_builtin, [], 0);
@@ -2703,13 +2258,7 @@ mod tests {
                     .cloned()
                     .expect("success dict must have 'ok' key");
                 let ok_val_result = mat_id(ok_thunk, &ctx).await;
-                assert_eq!(
-                    ok_val_result,
-                    Value::Int {
-                        n: 99,
-        
-                    }
-                );
+                assert_eq!(ok_val_result, Value::Int { n: 99 });
             }
             _ => panic!("expected Dict {{ok: ...}}, got: {:?}", result),
         }
@@ -2813,13 +2362,7 @@ mod tests {
         // when all Values carry crate::type_infer::make_typevalue_unknown().
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2848,13 +2391,7 @@ mod tests {
         // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::Float").
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -2907,13 +2444,13 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_dict() {
-        // builtin_type_of now uses ground_typevalue_of — returns TypeValue.Repr("Value::Dict").
+        // builtin_type_of returns TypeValue.Nominal(TYPE_ID_DICT) for anonymous dicts.
         let ctx = test_ctx();
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![alloc(
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 &ctx,
             )],
@@ -2929,11 +2466,11 @@ mod tests {
                 assert_eq!(
                     ctor.as_ref(),
                     crate::type_tags::TV_NOMINAL,
-                    "type_of_dict: ctor must be TypeValue.Repr"
+                    "type_of_dict: ctor must be TypeValue.Nominal"
                 );
             }
             other => panic!(
-                "type_of_dict: expected TypeValue.Repr Variant, got {:?}",
+                "type_of_dict: expected TypeValue.Nominal Variant, got {:?}",
                 other.type_name()
             ),
         }
@@ -2967,21 +2504,11 @@ mod tests {
 
     #[tokio::test]
     async fn type_of_builtin_returns_fn_typevalue() {
-        // builtin_type_of now uses ground_typevalue_of.
-        // ground_typevalue_of(Builtin) → TypeValue.Repr("Value::Function") — a Variant.
-        // The old test name "returns_unknown_sentinel" is stale; builtins now return Repr.
+        // builtin_type_of returns TypeValue.Nominal(TYPE_ID_BUILTIN) for Builtin values.
         fn dummy(
             _ctx: BuiltinArgs,
         ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
-            Box::pin(async move {
-                ok_val(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    rust_span!(),
-                )
-            })
+            Box::pin(async move { ok_val(Value::Int { n: 0 }, rust_span!()) })
         }
         let builtin = Value::Builtin {
             def: crate::value::BuiltinDef {
@@ -3002,17 +2529,17 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        // ground_typevalue_of(Builtin) → TypeValue.Repr("Value::Function").
+        // builtin_type_of(Builtin) → TypeValue.Nominal(TYPE_ID_BUILTIN).
         match &result {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
                     crate::type_tags::TV_NOMINAL,
-                    "type_of_builtin: ctor must be TypeValue.Repr"
+                    "type_of_builtin: ctor must be TypeValue.Nominal"
                 );
             }
             other => panic!(
-                "type_of_builtin: expected TypeValue.Repr Variant, got {:?}",
+                "type_of_builtin: expected TypeValue.Nominal Variant, got {:?}",
                 other.type_name()
             ),
         }
@@ -3020,13 +2547,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_of_variant() {
-        // builtin_type_of now uses ground_typevalue_of.
-        // ground_typevalue_of(Variant { ctor: "Color.Red" }) → TypeValue.Op("Color") — a Variant.
+        // builtin_type_of returns TypeValue.Nominal(type_decl_id) for Variant values.
         let ctx = test_ctx();
         let variant = alloc(
             Value::Variant {
-
-                type_decl_id: 0,
+                type_decl_id: TEST_ID_COLOR,
                 ctor: Arc::from("Color.Red"),
                 payload: None,
             },
@@ -3041,17 +2566,17 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        // ground_typevalue_of(Variant) → TypeValue.Op(tycon) — a Variant with ctor=TV_NOMINAL.
+        // builtin_type_of(Variant) → TypeValue.Nominal(type_decl_id) — a Variant with ctor=TV_NOMINAL.
         match &result {
             Value::Variant { ctor, .. } => {
                 assert_eq!(
                     ctor.as_ref(),
                     crate::type_tags::TV_NOMINAL,
-                    "test_type_of_variant: ctor must be TypeValue.Op"
+                    "test_type_of_variant: ctor must be TypeValue.Nominal"
                 );
             }
             other => panic!(
-                "test_type_of_variant: expected TypeValue.Op Variant, got {:?}",
+                "test_type_of_variant: expected TypeValue.Nominal Variant, got {:?}",
                 other.type_name()
             ),
         }
@@ -3121,13 +2646,7 @@ mod tests {
                 assert_eq!(keys_map.len(), 3);
                 for i in 0..3 {
                     let val = mat_id(Arc::clone(&keys_map[&HashableValue::Int(i)]), &ctx).await;
-                    assert_eq!(
-                        val,
-                        Value::Int {
-                            n: i,
-            
-                        }
-                    );
+                    assert_eq!(val, Value::Int { n: i });
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -3144,10 +2663,7 @@ mod tests {
         );
         map.insert(
             HashableValue::Str("age".into()),
-            thunk(Value::Int {
-                n: 30,
-
-            }),
+            thunk(Value::Int { n: 30 }),
         );
         let dict = thunk_dict(map, &ctx);
 
@@ -3201,23 +2717,11 @@ mod tests {
             } => {
                 assert_eq!(keys_map.len(), 3);
                 let k0 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(0)]), &ctx).await;
-                assert_eq!(
-                    k0,
-                    Value::Int {
-                        n: 0,
-        
-                    }
-                );
+                assert_eq!(k0, Value::Int { n: 0 });
                 let k1 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(1)]), &ctx).await;
                 assert_eq!(k1, string_val("label"));
                 let k2 = mat_id(Arc::clone(&keys_map[&HashableValue::Int(2)]), &ctx).await;
-                assert_eq!(
-                    k2,
-                    Value::Int {
-                        n: 5,
-        
-                    }
-                );
+                assert_eq!(k2, Value::Int { n: 5 });
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3227,27 +2731,9 @@ mod tests {
     async fn keys_preserves_insertion_order() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("z".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("m".into()),
-            thunk(Value::Int {
-                n: 3,
-
-            }),
-        );
+        map.insert(HashableValue::Str("z".into()), thunk(Value::Int { n: 1 }));
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 2 }));
+        map.insert(HashableValue::Str("m".into()), thunk(Value::Int { n: 3 }));
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
@@ -3287,40 +2773,16 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 0 });
     }
 
     #[tokio::test]
     async fn length_non_empty_dict() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("b".into()),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("c".into()),
-            thunk(Value::Int {
-                n: 3,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
+        map.insert(HashableValue::Str("b".into()), thunk(Value::Int { n: 2 }));
+        map.insert(HashableValue::Str("c".into()), thunk(Value::Int { n: 3 }));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
             args: vec![dict],
@@ -3331,13 +2793,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 3,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 3 });
     }
 
     #[tokio::test]
@@ -3356,13 +2812,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 2 });
     }
 
     #[tokio::test]
@@ -3483,13 +2933,7 @@ mod tests {
     async fn keys_non_dict_int() {
         let ctx = test_ctx();
         let err = run(builtin_keys(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -3545,13 +2989,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 5,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 5 });
     }
 
     #[tokio::test]
@@ -3566,13 +3004,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -3588,13 +3020,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 2,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 2 });
     }
 
     #[tokio::test]
@@ -3894,13 +3320,7 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
                 alloc(string_val("b"), &ctx),
                 alloc(string_val("abc"), &ctx),
             ],
@@ -3933,7 +3353,7 @@ mod tests {
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     &ctx,
                 ),
@@ -3961,13 +3381,7 @@ mod tests {
             args: vec![
                 alloc(string_val("a"), &ctx),
                 alloc(string_val("b"), &ctx),
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 2.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -3993,13 +3407,7 @@ mod tests {
     async fn trim_wrong_type() {
         let ctx = test_ctx();
         let err = run(builtin_trim(BuiltinArgs {
-            args: vec![alloc(
-                Value::Float {
-                    n: 2.5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Float { n: 2.5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4051,16 +3459,7 @@ mod tests {
     async fn error_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "x".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("x".into(), alloc(Value::Int { n: 1 }, &ctx));
         let mut diag = IndexMap::new();
         diag.insert(
             HashableValue::Str("message".into()),
@@ -4087,24 +3486,9 @@ mod tests {
     async fn type_of_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "x".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("x".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_type_of(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 42 }, &ctx)],
             named: Some(named),
             call_span: call_span(),
             ctx,
@@ -4124,16 +3508,7 @@ mod tests {
     async fn to_int_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "x".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("x".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_to_int(BuiltinArgs {
             args: vec![alloc(string_val("42"), &ctx)],
             named: Some(named),
@@ -4155,16 +3530,7 @@ mod tests {
     async fn replace_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "x".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("x".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
                 alloc(string_val("a"), &ctx),
@@ -4190,32 +3556,11 @@ mod tests {
     async fn add_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 99,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 99 }, &ctx));
         let err = run(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
@@ -4236,32 +3581,11 @@ mod tests {
     async fn sub_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 3 }, &ctx),
+                alloc(Value::Int { n: 1 }, &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
@@ -4282,32 +3606,11 @@ mod tests {
     async fn int_mul_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 2 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
@@ -4328,32 +3631,11 @@ mod tests {
     async fn div_float_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
@@ -4374,32 +3656,11 @@ mod tests {
     async fn eq_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_eq_int(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
@@ -4420,32 +3681,11 @@ mod tests {
     async fn lt_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let err = run(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: Some(named),
             call_span: call_span(),
@@ -4466,26 +3706,11 @@ mod tests {
     async fn keys_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let dict = thunk_dict(
             {
                 let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Str("a".into()),
-                    thunk(Value::Int {
-                        n: 1,
-        
-                    }),
-                );
+                m.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
                 m
             },
             &ctx,
@@ -4511,22 +3736,13 @@ mod tests {
     async fn length_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let map = IndexMap::new();
         let err = run(builtin_length(BuiltinArgs {
             args: vec![alloc(
                 Value::Dict {
                     entries: map,
-    
+                    type_decl_id: 0,
                 },
                 &ctx,
             )],
@@ -4549,16 +3765,7 @@ mod tests {
     async fn try_rejects_named_args() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "extra".into(),
-            alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("extra".into(), alloc(Value::Int { n: 1 }, &ctx));
         let func = parse_eval("[fn [let] 42]", &ctx).await;
         let err = run(builtin_try(BuiltinArgs {
             args: vec![alloc(func, &ctx)],
@@ -4609,20 +3816,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 3 }, &ctx),
+                alloc(Value::Int { n: 5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4631,13 +3826,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 8,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 8 });
     }
 
     #[tokio::test]
@@ -4647,20 +3836,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 3.0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 3.0 }, &ctx),
+                alloc(Value::Float { n: 2.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4669,13 +3846,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 5.5,
-
-            }
-        );
+        assert_eq!(r, Value::Float { n: 5.5 });
     }
 
     #[tokio::test]
@@ -4683,20 +3854,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 1.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 1.5 }, &ctx),
+                alloc(Value::Float { n: 2.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4705,13 +3864,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 4.0,
-
-            }
-        );
+        assert_eq!(r, Value::Float { n: 4.0 });
     }
 
     #[tokio::test]
@@ -4719,20 +3872,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: -10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: -10 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4741,13 +3882,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: -7,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: -7 });
     }
 
     #[tokio::test]
@@ -4755,20 +3890,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 0 }, &ctx),
+                alloc(Value::Int { n: 0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4777,13 +3900,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -4791,13 +3908,7 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
                 alloc(string_val("hello"), &ctx),
             ],
             named: no_named(),
@@ -4820,13 +3931,7 @@ mod tests {
     async fn add_arity_one_arg() {
         let ctx = test_ctx();
         let e = run(builtin_int_add(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 1 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -4847,20 +3952,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_int_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: i64::MAX,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: i64::MAX }, &ctx),
+                alloc(Value::Int { n: 1 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4882,20 +3975,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: i64::MIN,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: i64::MIN }, &ctx),
+                alloc(Value::Int { n: 1 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4917,20 +3998,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4939,13 +4008,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 7,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 7 });
     }
 
     #[tokio::test]
@@ -4953,20 +4016,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 10.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 3.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 10.5 }, &ctx),
+                alloc(Value::Float { n: 3.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -4975,13 +4026,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 7.0,
-
-            }
-        );
+        assert_eq!(r, Value::Float { n: 7.0 });
     }
 
     #[tokio::test]
@@ -4989,20 +4034,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 3 }, &ctx),
+                alloc(Value::Int { n: 10 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5011,13 +4044,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: -7,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: -7 });
     }
 
     #[tokio::test]
@@ -5025,20 +4052,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 5 }, &ctx),
+                alloc(Value::Int { n: 5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5047,13 +4062,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -5080,13 +4089,7 @@ mod tests {
     async fn sub_arity_one_arg() {
         let ctx = test_ctx();
         let e = run(builtin_int_sub(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 1 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -5107,13 +4110,7 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_int_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
                 alloc(string_val("hello"), &ctx),
             ],
             named: no_named(),
@@ -5137,20 +4134,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 4,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 4 }, &ctx),
+                alloc(Value::Int { n: 5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5159,13 +4144,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 20,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 20 });
     }
 
     #[tokio::test]
@@ -5173,20 +4152,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 3.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 2.5 }, &ctx),
+                alloc(Value::Float { n: 3.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5195,13 +4162,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 7.5,
-
-            }
-        );
+        assert_eq!(r, Value::Float { n: 7.5 });
     }
 
     #[tokio::test]
@@ -5209,20 +4170,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 42,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 42 }, &ctx),
+                alloc(Value::Int { n: 0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5231,13 +4180,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -5245,20 +4188,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: -3,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 4,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: -3 }, &ctx),
+                alloc(Value::Int { n: 4 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5267,13 +4198,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: -12,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: -12 });
     }
 
     #[tokio::test]
@@ -5281,20 +4206,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 42,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: -1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 42 }, &ctx),
+                alloc(Value::Int { n: -1 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5303,13 +4216,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: -42,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: -42 });
     }
 
     #[tokio::test]
@@ -5317,20 +4224,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_int_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: i64::MAX,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: i64::MAX }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5352,20 +4247,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_float_add(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 1e308,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 1e308,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 1e308 }, &ctx),
+                alloc(Value::Float { n: 1e308 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5388,20 +4271,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_float_sub(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: f64::INFINITY,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: f64::INFINITY,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: f64::INFINITY }, &ctx),
+                alloc(Value::Float { n: f64::INFINITY }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5423,20 +4294,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_float_mul(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 1e308,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 10.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 1e308 }, &ctx),
+                alloc(Value::Float { n: 10.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5462,20 +4321,8 @@ mod tests {
         let ctx = test_ctx();
         let err = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: f64::INFINITY,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: f64::INFINITY,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: f64::INFINITY }, &ctx),
+                alloc(Value::Float { n: f64::INFINITY }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5497,20 +4344,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5532,20 +4367,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5565,20 +4388,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 3.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Float { n: 3.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5600,20 +4411,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 7.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 7.5 }, &ctx),
+                alloc(Value::Float { n: 2.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5622,13 +4421,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 3.0,
-
-            }
-        );
+        assert_eq!(r, Value::Float { n: 3.0 });
     }
 
     #[tokio::test]
@@ -5636,20 +4429,8 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Int { n: 0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5677,20 +4458,8 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 10.0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 0.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 10.0 }, &ctx),
+                alloc(Value::Float { n: 0.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5713,20 +4482,8 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 0.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 10 }, &ctx),
+                alloc(Value::Float { n: 0.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5748,20 +4505,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_div_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: -0.0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 1.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: -0.0 }, &ctx),
+                alloc(Value::Float { n: 1.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5770,13 +4515,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Float {
-                n: 0.0,
-
-            }
-        );
+        assert_eq!(r, Value::Float { n: 0.0 });
     }
 
     #[tokio::test]
@@ -5784,20 +4523,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_int(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 5 }, &ctx),
+                alloc(Value::Int { n: 5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5806,13 +4533,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -5820,20 +4541,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_int(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 6,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 5 }, &ctx),
+                alloc(Value::Int { n: 6 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5842,13 +4551,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     // ── builtin-eq-float tests ──────────────────────────────────────────────────────────
@@ -5857,20 +4560,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 2.5 }, &ctx),
+                alloc(Value::Float { n: 2.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5879,13 +4570,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -5893,20 +4578,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 2.71,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 2.5 }, &ctx),
+                alloc(Value::Float { n: 2.71 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5915,13 +4588,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -5929,20 +4596,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: f64::NAN,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: f64::NAN,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: f64::NAN }, &ctx),
+                alloc(Value::Float { n: f64::NAN }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5951,13 +4606,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -5965,20 +4614,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: -0.0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 0.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: -0.0 }, &ctx),
+                alloc(Value::Float { n: 0.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -5987,13 +4624,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     // ── builtin-eq-string tests ─────────────────────────────────────────────────────────
@@ -6012,13 +4643,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -6036,26 +4661,14 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
     async fn eq_arity_error() {
         let ctx = test_ctx();
         let e = run(builtin_eq_int(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 1 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -6076,20 +4689,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 3 }, &ctx),
+                alloc(Value::Int { n: 5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6098,13 +4699,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -6112,20 +4707,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 5 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6134,13 +4717,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6148,20 +4725,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 5 }, &ctx),
+                alloc(Value::Int { n: 5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6170,13 +4735,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6184,20 +4743,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 3.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 2.5 }, &ctx),
+                alloc(Value::Float { n: 3.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6206,13 +4753,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -6230,13 +4771,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -6254,13 +4789,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6278,13 +4807,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6302,13 +4825,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     /// builtin-lt with Int and Float is now a type error — cross-type comparison
@@ -6318,20 +4835,8 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 3.5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 3 }, &ctx),
+                alloc(Value::Float { n: 3.5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6354,20 +4859,8 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: 2.5,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: 2.5 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6389,13 +4882,7 @@ mod tests {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
                 alloc(string_val("hello"), &ctx),
             ],
             named: no_named(),
@@ -6419,20 +4906,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 0 }, &ctx),
+                alloc(Value::Int { n: 1 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6441,13 +4916,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -6456,20 +4925,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6478,13 +4935,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6493,20 +4944,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 0 }, &ctx),
+                alloc(Value::Int { n: 0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6515,13 +4954,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6530,20 +4963,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 1 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6552,13 +4973,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     #[tokio::test]
@@ -6569,14 +4984,14 @@ mod tests {
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     &ctx,
                 ),
                 alloc(
                     Value::Dict {
                         entries: IndexMap::new(),
-        
+                        type_decl_id: 0,
                     },
                     &ctx,
                 ),
@@ -6596,13 +5011,7 @@ mod tests {
     async fn lt_arity_error() {
         let ctx = test_ctx();
         let e = run(builtin_lt(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 1,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 1 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -6623,20 +5032,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: -10,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: -5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: -10 }, &ctx),
+                alloc(Value::Int { n: -5 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6645,13 +5042,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 1,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 1 });
     }
 
     #[tokio::test]
@@ -6659,20 +5050,8 @@ mod tests {
         let ctx = test_ctx();
         let r = mat(builtin_float_lt(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Float {
-                        n: f64::NAN,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Float {
-                        n: 1.0,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Float { n: f64::NAN }, &ctx),
+                alloc(Value::Float { n: 1.0 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6681,13 +5060,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            r,
-            Value::Int {
-                n: 0,
-
-            }
-        );
+        assert_eq!(r, Value::Int { n: 0 });
     }
 
     /// Parse-only smoke test for the prelude. Evaluating the full prelude requires a
@@ -6714,40 +5087,13 @@ mod tests {
         // take(2, [a: 1, b: 2, c: 3]) → [a: 1, b: 2]
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("b".into()),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("c".into()),
-            thunk(Value::Int {
-                n: 3,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
+        map.insert(HashableValue::Str("b".into()), thunk(Value::Int { n: 2 }));
+        map.insert(HashableValue::Str("c".into()), thunk(Value::Int { n: 3 }));
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
-                dict_val,
-            ],
+            args: vec![alloc(Value::Int { n: 2 }, &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -6764,10 +5110,7 @@ mod tests {
                         &ctx
                     )
                     .await,
-                    Value::Int {
-                        n: 1,
-        
-                    }
+                    Value::Int { n: 1 }
                 );
                 assert_eq!(
                     mat_id(
@@ -6775,10 +5118,7 @@ mod tests {
                         &ctx
                     )
                     .await,
-                    Value::Int {
-                        n: 2,
-        
-                    }
+                    Value::Int { n: 2 }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -6790,26 +5130,11 @@ mod tests {
         // take(0, dict) → []
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
-                dict_val,
-            ],
+            args: vec![alloc(Value::Int { n: 0 }, &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -6828,26 +5153,11 @@ mod tests {
         // take(-5, dict) → []
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: -5,
-        
-                    },
-                    &ctx,
-                ),
-                dict_val,
-            ],
+            args: vec![alloc(Value::Int { n: -5 }, &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -6866,33 +5176,12 @@ mod tests {
         // take(10, [a: 1, b: 2]) → [a: 1, b: 2]
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("b".into()),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
+        map.insert(HashableValue::Str("b".into()), thunk(Value::Int { n: 2 }));
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 10,
-        
-                    },
-                    &ctx,
-                ),
-                dict_val,
-            ],
+            args: vec![alloc(Value::Int { n: 10 }, &ctx), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -6914,13 +5203,7 @@ mod tests {
         let result = run(builtin_take(BuiltinArgs {
             args: vec![
                 alloc(string_val("not int"), &ctx),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -6937,13 +5220,7 @@ mod tests {
         let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 5 }, &ctx),
                 alloc(string_val("not dict or seq"), &ctx),
             ],
             named: no_named(),
@@ -6960,13 +5237,7 @@ mod tests {
     async fn take_arity_one() {
         let ctx = test_ctx();
         let result = run(builtin_take(BuiltinArgs {
-            args: vec![alloc(
-                Value::Int {
-                    n: 5,
-    
-                },
-                &ctx,
-            )],
+            args: vec![alloc(Value::Int { n: 5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx,
@@ -6984,18 +5255,12 @@ mod tests {
         let xs = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             &ctx,
         );
         let mut ys_map = IndexMap::new();
-        ys_map.insert(
-            HashableValue::Int(0),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
+        ys_map.insert(HashableValue::Int(0), thunk(Value::Int { n: 1 }));
         let ys = thunk_dict(ys_map, &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
@@ -7015,10 +5280,7 @@ mod tests {
                 assert_eq!(map.len(), 1);
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 1,
-        
-                    }
+                    Value::Int { n: 1 }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -7030,25 +5292,13 @@ mod tests {
         // concat({0:1, 1:2}, {}) → {0:1, 1:2} (empty ys is a no-op via reindexing)
         let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
-        xs_map.insert(
-            HashableValue::Int(0),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        xs_map.insert(
-            HashableValue::Int(1),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
+        xs_map.insert(HashableValue::Int(0), thunk(Value::Int { n: 1 }));
+        xs_map.insert(HashableValue::Int(1), thunk(Value::Int { n: 2 }));
         let xs = thunk_dict(xs_map, &ctx);
         let ys = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             &ctx,
         );
@@ -7070,17 +5320,11 @@ mod tests {
                 assert_eq!(map.len(), 2);
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 1,
-        
-                    }
+                    Value::Int { n: 1 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 2,
-        
-                    }
+                    Value::Int { n: 2 }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -7092,37 +5336,13 @@ mod tests {
         // concat([1, 2], [3, 4]) -> [1, 2, 3, 4] with integer reindexing
         let ctx = test_ctx();
         let mut xs_map = IndexMap::new();
-        xs_map.insert(
-            HashableValue::Int(0),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        xs_map.insert(
-            HashableValue::Int(1),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
+        xs_map.insert(HashableValue::Int(0), thunk(Value::Int { n: 1 }));
+        xs_map.insert(HashableValue::Int(1), thunk(Value::Int { n: 2 }));
         let xs = thunk_dict(xs_map, &ctx);
 
         let mut ys_map = IndexMap::new();
-        ys_map.insert(
-            HashableValue::Int(0),
-            thunk(Value::Int {
-                n: 3,
-
-            }),
-        );
-        ys_map.insert(
-            HashableValue::Int(1),
-            thunk(Value::Int {
-                n: 4,
-
-            }),
-        );
+        ys_map.insert(HashableValue::Int(0), thunk(Value::Int { n: 3 }));
+        ys_map.insert(HashableValue::Int(1), thunk(Value::Int { n: 4 }));
         let ys = thunk_dict(ys_map, &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
@@ -7142,31 +5362,19 @@ mod tests {
                 assert_eq!(map.len(), 4);
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 1,
-        
-                    }
+                    Value::Int { n: 1 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 2,
-        
-                    }
+                    Value::Int { n: 2 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 3,
-        
-                    }
+                    Value::Int { n: 3 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 4,
-        
-                    }
+                    Value::Int { n: 4 }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -7179,7 +5387,6 @@ mod tests {
         let ctx = test_ctx();
         let xs = alloc(
             Value::Variant {
-
                 type_decl_id: 0,
                 ctor: Arc::from("Color.Red"),
                 payload: None,
@@ -7189,7 +5396,7 @@ mod tests {
         let ys = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             &ctx,
         );
@@ -7218,36 +5425,12 @@ mod tests {
         // This exercises the checked_add call site that prevents integer overflow
         let ctx = test_ctx();
         let mut dict1 = IndexMap::new();
-        dict1.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        dict1.insert(
-            HashableValue::Str("b".into()),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
+        dict1.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 1 }));
+        dict1.insert(HashableValue::Str("b".into()), thunk(Value::Int { n: 2 }));
 
         let mut dict2 = IndexMap::new();
-        dict2.insert(
-            HashableValue::Str("c".into()),
-            thunk(Value::Int {
-                n: 3,
-
-            }),
-        );
-        dict2.insert(
-            HashableValue::Str("d".into()),
-            thunk(Value::Int {
-                n: 4,
-
-            }),
-        );
+        dict2.insert(HashableValue::Str("c".into()), thunk(Value::Int { n: 3 }));
+        dict2.insert(HashableValue::Str("d".into()), thunk(Value::Int { n: 4 }));
 
         let result = mat(builtin_concat(BuiltinArgs {
             args: vec![thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
@@ -7265,31 +5448,19 @@ mod tests {
                 // All values should be reindexed with integer keys 0, 1, 2, 3
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(0)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 1,
-        
-                    }
+                    Value::Int { n: 1 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(1)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 2,
-        
-                    }
+                    Value::Int { n: 2 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(2)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 3,
-        
-                    }
+                    Value::Int { n: 3 }
                 );
                 assert_eq!(
                     mat_id(Arc::clone(map.get(&HashableValue::Int(3)).unwrap()), &ctx).await,
-                    Value::Int {
-                        n: 4,
-        
-                    }
+                    Value::Int { n: 4 }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -7303,18 +5474,12 @@ mod tests {
         let xs = alloc(
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             },
             &ctx,
         ); // empty dict
         let mut ys_map = IndexMap::new();
-        ys_map.insert(
-            HashableValue::Int(0),
-            thunk(Value::Int {
-                n: 99,
-
-            }),
-        );
+        ys_map.insert(HashableValue::Int(0), thunk(Value::Int { n: 99 }));
         let ys = thunk_dict(ys_map, &ctx);
 
         // Should succeed and return ys (the same thunk or an equivalent materialized form)
@@ -7335,10 +5500,7 @@ mod tests {
                 assert_eq!(m.len(), 1);
                 assert_eq!(
                     mat_id(m.get(&HashableValue::Int(0)).unwrap().clone(), &ctx).await,
-                    Value::Int {
-                        n: 99,
-        
-                    }
+                    Value::Int { n: 99 }
                 );
             }
             other => panic!("expected Dict, got {:?}", other),
@@ -7348,13 +5510,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_returns_proxy_value() {
         let ctx = test_ctx();
-        let handler = alloc(
-            Value::Int {
-                n: 42,
-
-            },
-            &ctx,
-        );
+        let handler = alloc(Value::Int { n: 42 }, &ctx);
         let result = run(builtin_proxy(BuiltinArgs {
             args: vec![handler],
             named: no_named(),
@@ -7371,13 +5527,7 @@ mod tests {
             Value::Proxy { handler: h, .. } => {
                 // Verify the handler thunk contains the expected value.
                 let handler_val = mat_id(h, &ctx).await;
-                assert_eq!(
-                    handler_val,
-                    Value::Int {
-                        n: 42,
-        
-                    }
-                );
+                assert_eq!(handler_val, Value::Int { n: 42 });
             }
             other => panic!("expected Proxy, got {:?}", other),
         }
@@ -7406,20 +5556,8 @@ mod tests {
         // Two args
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -7438,27 +5576,9 @@ mod tests {
         // Three args
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 2,
-        
-                    },
-                    &ctx,
-                ),
-                alloc(
-                    Value::Int {
-                        n: 3,
-        
-                    },
-                    &ctx,
-                ),
+                alloc(Value::Int { n: 1 }, &ctx),
+                alloc(Value::Int { n: 2 }, &ctx),
+                alloc(Value::Int { n: 3 }, &ctx),
             ],
             named: no_named(),
             call_span: call_span(),
@@ -7479,16 +5599,7 @@ mod tests {
     async fn test_proxy_named_arg_error() {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
-        named.insert(
-            "handler".to_string(),
-            alloc(
-                Value::Int {
-                    n: 42,
-    
-                },
-                &ctx,
-            ),
-        );
+        named.insert("handler".to_string(), alloc(Value::Int { n: 42 }, &ctx));
 
         let err = run(builtin_proxy(BuiltinArgs {
             args: vec![],
@@ -7549,38 +5660,11 @@ mod tests {
     async fn dict_nth_in_bounds() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 10,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("b".into()),
-            thunk(Value::Int {
-                n: 20,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("c".into()),
-            thunk(Value::Int {
-                n: 30,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 10 }));
+        map.insert(HashableValue::Str("b".into()), thunk(Value::Int { n: 20 }));
+        map.insert(HashableValue::Str("c".into()), thunk(Value::Int { n: 30 }));
         let result = mat(builtin_dict_nth(BuiltinArgs {
-            args: vec![
-                thunk_dict(map, &ctx),
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-            ],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int { n: 1 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -7588,13 +5672,7 @@ mod tests {
             caller_evidence: empty_evidence(),
         }))
         .await;
-        assert_eq!(
-            result,
-            Value::Int {
-                n: 20,
-
-            }
-        );
+        assert_eq!(result, Value::Int { n: 20 });
     }
 
     #[tokio::test]
@@ -7603,24 +5681,9 @@ mod tests {
         // Prelude step functions guard with builtin-dict-has-nth? before calling this.
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 10,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 10 }));
         let result = run(builtin_dict_nth(BuiltinArgs {
-            args: vec![
-                thunk_dict(map, &ctx),
-                alloc(
-                    Value::Int {
-                        n: 5,
-        
-                    },
-                    &ctx,
-                ),
-            ],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int { n: 5 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -7638,31 +5701,10 @@ mod tests {
     async fn dict_key_nth_string_key() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("foo".into()),
-            thunk(Value::Int {
-                n: 1,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("bar".into()),
-            thunk(Value::Int {
-                n: 2,
-
-            }),
-        );
+        map.insert(HashableValue::Str("foo".into()), thunk(Value::Int { n: 1 }));
+        map.insert(HashableValue::Str("bar".into()), thunk(Value::Int { n: 2 }));
         let result = mat(builtin_dict_key_nth(BuiltinArgs {
-            args: vec![
-                thunk_dict(map, &ctx),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
-            ],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int { n: 0 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -7677,24 +5719,9 @@ mod tests {
     async fn dict_kv_nth_returns_kv_pair() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("x".into()),
-            thunk(Value::Int {
-                n: 42,
-
-            }),
-        );
+        map.insert(HashableValue::Str("x".into()), thunk(Value::Int { n: 42 }));
         let result = mat(builtin_dict_kv_nth(BuiltinArgs {
-            args: vec![
-                thunk_dict(map, &ctx),
-                alloc(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    &ctx,
-                ),
-            ],
+            args: vec![thunk_dict(map, &ctx), alloc(Value::Int { n: 0 }, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -7719,16 +5746,7 @@ mod tests {
         map.insert(HashableValue::Int(1), thunk(string_val("second")));
         map.insert(HashableValue::Int(2), thunk(string_val("third")));
         let result = mat(builtin_get(BuiltinArgs {
-            args: vec![
-                alloc(
-                    Value::Int {
-                        n: 1,
-        
-                    },
-                    &ctx,
-                ),
-                thunk_dict(map, &ctx),
-            ],
+            args: vec![alloc(Value::Int { n: 1 }, &ctx), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -7743,20 +5761,8 @@ mod tests {
     async fn builtin_get_key_not_found_error() {
         let ctx = test_ctx();
         let mut map = IndexMap::new();
-        map.insert(
-            HashableValue::Str("a".into()),
-            thunk(Value::Int {
-                n: 10,
-
-            }),
-        );
-        map.insert(
-            HashableValue::Str("b".into()),
-            thunk(Value::Int {
-                n: 20,
-
-            }),
-        );
+        map.insert(HashableValue::Str("a".into()), thunk(Value::Int { n: 10 }));
+        map.insert(HashableValue::Str("b".into()), thunk(Value::Int { n: 20 }));
         let result = run(builtin_get(BuiltinArgs {
             args: vec![alloc(string_val("z"), &ctx), thunk_dict(map, &ctx)],
             named: no_named(),
@@ -7858,14 +5864,6 @@ mod tests {
             )
         });
         let val = mat_val(result_thunk).await;
-        assert_eq!(
-            val,
-            Value::Int {
-                n: 4,
-
-            },
-            "expected length 4, got {:?}",
-            val
-        );
+        assert_eq!(val, Value::Int { n: 4 }, "expected length 4, got {:?}", val);
     }
 }

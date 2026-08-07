@@ -136,7 +136,7 @@ impl SpanRecord {
         fn empty() -> Value {
             Value::Dict {
                 entries: IndexMap::new(),
-
+                type_decl_id: 0,
             }
         }
 
@@ -144,20 +144,14 @@ impl SpanRecord {
 
         entries.insert(
             HashableValue::Str("id".into()),
-            alloc(Value::Int {
-                n: self.id as i64,
-
-            }),
+            alloc(Value::Int { n: self.id as i64 }),
         );
 
         entries.insert(
             HashableValue::Str("materialize-parent".into()),
             alloc(
                 self.materialize_parent
-                    .map(|id| Value::Int {
-                        n: id as i64,
-        
-                    })
+                    .map(|id| Value::Int { n: id as i64 })
                     .unwrap_or_else(empty),
             ),
         );
@@ -166,10 +160,7 @@ impl SpanRecord {
             HashableValue::Str("create-parent".into()),
             alloc(
                 self.create_parent
-                    .map(|id| Value::Int {
-                        n: id as i64,
-        
-                    })
+                    .map(|id| Value::Int { n: id as i64 })
                     .unwrap_or_else(empty),
             ),
         );
@@ -178,7 +169,6 @@ impl SpanRecord {
             HashableValue::Str("create-time-us".into()),
             alloc(Value::Int {
                 n: self.create_time_us as i64,
-
             }),
         );
 
@@ -198,12 +188,8 @@ impl SpanRecord {
                 self.source_start
                     .map(|(line, col)| Value::Int {
                         n: (line as i64) * 1000000 + col as i64,
-        
                     })
-                    .unwrap_or(Value::Int {
-                        n: 0,
-        
-                    }),
+                    .unwrap_or(Value::Int { n: 0 }),
             ),
         );
 
@@ -213,12 +199,8 @@ impl SpanRecord {
                 self.source_end
                     .map(|(line, col)| Value::Int {
                         n: (line as i64) * 1000000 + col as i64,
-        
                     })
-                    .unwrap_or(Value::Int {
-                        n: 0,
-        
-                    }),
+                    .unwrap_or(Value::Int { n: 0 }),
             ),
         );
 
@@ -256,21 +238,18 @@ impl SpanRecord {
             HashableValue::Str("start-us".into()),
             alloc(Value::Int {
                 n: self.start_us as i64,
-
             }),
         );
         entries.insert(
             HashableValue::Str("end-us".into()),
             alloc(Value::Int {
                 n: self.end_us as i64,
-
             }),
         );
         entries.insert(
             HashableValue::Str("stall-us".into()),
             alloc(Value::Int {
                 n: self.stall_us as i64,
-
             }),
         );
 
@@ -286,7 +265,7 @@ impl SpanRecord {
 
         Value::Dict {
             entries,
-
+            type_decl_id: 0,
         }
     }
 }
@@ -510,7 +489,7 @@ impl ProfilingCollector {
         }
         Value::Dict {
             entries: dict,
-
+            type_decl_id: 0,
         }
     }
 }

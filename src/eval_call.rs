@@ -219,30 +219,32 @@ pub(crate) async fn try_clause(
         return Ok(None);
     }
 
-    // Step 2 — Type guard params: materialize and check type for annotated params.
-    // Materialization here is a necessary strictness point: type dispatch requires
-    // knowing the runtime type, analogous to the typed-variadic bucket routing in
-    // bind_args_thunks. Only params with a concrete resolved_type (not Unknown/None) are checked.
-    // Every type annotation on a parameter is a runtime dispatch guard.
+    // Step 2 — Type guard params: check type for annotated params.
+    // Uses thunk.type_decl_id for nominal type checks (no materialization needed).
+    // Falls back to materialization only for structural types (Record, Union, Fn).
     for (i, param) in params.iter().enumerate() {
         let Some(tv) = &param.resolved_type else {
-            continue; // No annotation → wildcard, always matches.
+            continue;
         };
         if is_typevalue_unknown(tv) {
-            continue; // TypeValue.Unknown → wildcard, always matches.
+            continue;
         }
         let Some(arg) = args.get(i) else {
-            continue; // Arg absent — arity check above handles this case.
+            continue;
         };
-        let value = materialize(arg, Some(call_span), ctx).await?;
-        if !value_matches_type(&value, tv, ctx) {
-            return Ok(None); // Type mismatch — this clause does not apply.
+        match crate::eval::thunk_matches_nominal_type(arg, tv) {
+            Some(true) => continue,
+            Some(false) => return Ok(None),
+            None => {
+                let value = materialize(arg, Some(call_span), ctx).await?;
+                if !value_matches_type(&value, tv, ctx) {
+                    return Ok(None);
+                }
+            }
         }
     }
 
-    // Step 2b — Named arg type guard: same check as Step 2 but for named arguments.
-    // A named arg may supply a value for an annotated param that was not covered positionally.
-    // Without this check, named args bypass type dispatch entirely.
+    // Step 2b — Named arg type guard: same check for named arguments.
     if let Some(named_map) = named {
         for param in params.iter() {
             let Some(tv) = &param.resolved_type else {
@@ -252,9 +254,15 @@ pub(crate) async fn try_clause(
                 continue;
             }
             if let Some(named_thunk) = named_map.get(&param.name) {
-                let value = materialize(named_thunk, Some(call_span), ctx).await?;
-                if !value_matches_type(&value, tv, ctx) {
-                    return Ok(None);
+                match crate::eval::thunk_matches_nominal_type(named_thunk, tv) {
+                    Some(true) => continue,
+                    Some(false) => return Ok(None),
+                    None => {
+                        let value = materialize(named_thunk, Some(call_span), ctx).await?;
+                        if !value_matches_type(&value, tv, ctx) {
+                            return Ok(None);
+                        }
+                    }
                 }
             }
         }
@@ -876,7 +884,7 @@ pub(crate) async fn bind_args_thunks(
             param_slots[slot] = Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: dict,
-    
+                    type_decl_id: 0,
                 },
                 call_span.clone(),
             )));
@@ -889,7 +897,7 @@ pub(crate) async fn bind_args_thunks(
             let rest_thunk = Arc::new(Thunk::value(
                 Value::Dict {
                     entries: rest_dict,
-    
+                    type_decl_id: 0,
                 },
                 call_span.clone(),
             ));

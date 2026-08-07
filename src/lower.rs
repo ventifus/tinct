@@ -858,7 +858,7 @@ fn lower_expr(
             is_pred,
             inner,
         } => CoreExpr::ReprDecl {
-            repr: repr.clone(),
+            repr: *repr,
             is_pred: is_pred
                 .as_ref()
                 .map(|pred| Arc::new(lower_inner(pred, diagnostics))),

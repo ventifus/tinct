@@ -1,0 +1,11 @@
+--- description: Record type guard checks field presence at runtime
+--- expected_output: ["has-name", "no-name"]
+[
+  check: [fn
+    [fn@String [let p@[name: String]] [str "has-name"]]
+    [fn@String [let p]                [str "no-name"]]]
+
+  r1: [check [name: "Alice"  age: 30]]
+  r2: [check [age: 30]]
+  result: [r1 r2]
+]

@@ -309,11 +309,6 @@
 ]
 
 ---
-# Runtime type declarations — the type system's runtime representation.
-# These types are accessible to user code at runtime for type introspection,
-# reflection, and metaprogramming.
-# Note: The Rust `Type`, `RowTail`, and `Kind` enums were deleted in S-1003.
-# TypeValue (Arc<Value>) is now the canonical type representation throughout.
 [
   # ── Type system representation types ─────────────────────────────────────
 
@@ -370,44 +365,44 @@
   # ── Native runtime types (repr: declarations) ─────────────────────────────
   # These shadow the type-stage aliases above. The repr: key triggers the
   # CoreExpr::ReprDecl mechanism — these are nominal types that match specific
-  # Value enum variants by their Rust discriminant string.
+  # Value enum variants by their numeric TYPE_ID constant.
 
-  NativeInt:         [type repr: "Value::Int"]
-  NativeUInt:        [type repr: "Value::U64"]
-  Float64:           [type repr: "Value::Float"]
-  String:            [type repr: "Value::String"]
-  Bytes:             [type repr: "Value::Bytes"]
-  Decimal:           [type repr: "Value::Decimal"]
-  BigInt:            [type repr: "Value::BigInt"]
-  Fn:                [type repr: "Value::Function"]
-  Builtin:           [type repr: "Value::Builtin"]
-  Dict:              [type repr: "Value::Dict"]
-  DirCap:            [type repr: "Value::DirCap"]
-  RevocableDirCap:   [type repr: "Value::RevocableDirCap"]
-  NetCap:            [type repr: "Value::NetCap"]
-  File:              [type repr: "Value::File"]
-  ClockCap:          [type repr: "Value::ClockCap"]
-  Task:              [type repr: "Value::Task"]
-  Channel:           [type repr: "Value::Channel"]
-  BroadcastChannel:  [type repr: "Value::BroadcastChannel"]
-  OneshotSender:     [type repr: "Value::OneshotSender"]
-  OneshotReceiver:   [type repr: "Value::OneshotReceiver"]
-  Context:           [type repr: "Value::Context"]
-  ReactiveCell:      [type repr: "Value::ReactiveCell"]
-  QuicSession:       [type repr: "Value::QuicSession"]
-  Http2Session:      [type repr: "Value::Http2Session"]
-  Http3Session:      [type repr: "Value::Http3Session"]
-  QuicDatagramHandle: [type repr: "Value::QuicDatagramHandle"]
-  Uri:               [type repr: "Value::Uri"]
-  Timestamp:         [type repr: "Value::Timestamp"]
-  Duration:          [type repr: "Value::Duration"]
-  Timezone:          [type repr: "Value::Timezone"]
-  Program:           [type repr: "Value::Program"]
-  Document:          [type repr: "Value::Document"]
-  Expression:        [type repr: "Value::Expression"]
-  CoreDocument:      [type repr: "Value::CoreDocument"]
-  TypeContext:       [type repr: "Value::TypeContext"]
-  Scope:             [type repr: "Value::Scope"]
+  NativeInt:         [type repr: 1]
+  NativeUInt:        [type repr: 2]
+  Float64:           [type repr: 3]
+  String:            [type repr: 4]
+  Bytes:             [type repr: 16]
+  Decimal:           [type repr: 14]
+  BigInt:            [type repr: 15]
+  Fn:                [type repr: 7]
+  Builtin:           [type repr: 8]
+  Dict:              [type repr: 5]
+  DirCap:            [type repr: 10]
+  RevocableDirCap:   [type repr: 13]
+  NetCap:            [type repr: 11]
+  File:              [type repr: 12]
+  ClockCap:          [type repr: 20]
+  Task:              [type repr: 29]
+  Channel:           [type repr: 30]
+  BroadcastChannel:  [type repr: 31]
+  OneshotSender:     [type repr: 32]
+  OneshotReceiver:   [type repr: 33]
+  Context:           [type repr: 34]
+  ReactiveCell:      [type repr: 35]
+  QuicSession:       [type repr: 22]
+  Http2Session:      [type repr: 23]
+  Http3Session:      [type repr: 24]
+  QuicDatagramHandle: [type repr: 25]
+  Uri:               [type repr: 17]
+  Timestamp:         [type repr: 18]
+  Duration:          [type repr: 19]
+  Timezone:          [type repr: 21]
+  Program:           [type repr: 26]
+  Document:          [type repr: 27]
+  Expression:        [type repr: 28]
+  CoreDocument:      [type repr: 38]
+  TypeContext:       [type repr: 37]
+  Scope:             [type repr: 39]
 
   # ── Callable typeclass ────────────────────────────────────────────────────
   # Abstracts over function-like values (Fn and Builtin).

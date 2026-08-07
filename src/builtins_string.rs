@@ -138,13 +138,7 @@ pub(crate) fn builtin_str_length(
                 call_span.clone(),
             )
         })?;
-        ok_val(
-            Value::Int {
-                n: len_i64,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: len_i64 }, call_span)
     })
 }
 
@@ -170,13 +164,7 @@ pub(crate) fn builtin_str_byte_count(
             call_span.clone(),
         )?;
         let s = require_string("str-byte-count", val, Arc::clone(&args[0]).span.clone())?;
-        ok_val(
-            Value::Int {
-                n: s.len() as i64,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: s.len() as i64 }, call_span)
     })
 }
 
@@ -221,7 +209,6 @@ pub(crate) fn builtin_str_has_nth_byte(
         ok_val(
             Value::Int {
                 n: if idx >= 0 && idx < len { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -271,13 +258,7 @@ pub(crate) fn builtin_str_nth_byte(
             .into());
         }
         let byte = source.as_bytes()[str_start + idx as usize] as i64;
-        ok_val(
-            Value::Int {
-                n: byte,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: byte }, call_span)
     })
 }
 
@@ -407,7 +388,6 @@ pub(crate) fn builtin_str_slice(
                 source: input_source,
                 start: byte_start,
                 end: byte_end,
-
             },
             call_span,
         )
@@ -456,13 +436,7 @@ pub(crate) fn builtin_str_has_nth(
         };
 
         if idx < 0 {
-            return ok_val(
-                Value::Int {
-                    n: 0,
-    
-                },
-                call_span,
-            );
+            return ok_val(Value::Int { n: 0 }, call_span);
         }
 
         let s = &source[str_start..str_end];
@@ -471,13 +445,7 @@ pub(crate) fn builtin_str_has_nth(
         } else {
             0i64
         };
-        ok_val(
-            Value::Int {
-                n: exists,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: exists }, call_span)
     })
 }
 
@@ -540,7 +508,6 @@ pub(crate) fn builtin_str_nth_char(
                         source,
                         start: str_start + byte_start,
                         end: str_start + byte_end,
-        
                     },
                     call_span,
                 )
@@ -597,7 +564,6 @@ pub(crate) fn builtin_char_code(
             ok_val(
                 Value::Int {
                     n: ch as u32 as i64,
-    
                 },
                 call_span,
             )
@@ -744,13 +710,7 @@ pub(crate) fn builtin_str_index_of(
             None => -1,
         };
 
-        ok_val(
-            Value::Int {
-                n: index,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: index }, call_span)
     })
 }
 
@@ -997,7 +957,6 @@ pub(crate) fn builtin_regex_match(
             Ok(re) => ok_val(
                 Value::Int {
                     n: if re.is_match(&haystack) { 1 } else { 0 },
-    
                 },
                 call_span,
             ),

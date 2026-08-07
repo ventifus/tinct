@@ -46,7 +46,7 @@ pub fn surface_node_get_field(
     // null sentinel — returned for absent optional fields and unrecognized fields
     let null = || Value::Dict {
         entries: indexmap::IndexMap::new(),
-
+        type_decl_id: 0,
     };
     let expr_variant =
         |n: &Arc<SurfaceNode>| crate::surface_convert::surface_node_to_expr_variant(n, ctx);
@@ -56,22 +56,13 @@ pub fn surface_node_get_field(
         (_, "span") => span_to_value(&node.span, ctx),
 
         // --- IntLiteral ---
-        (SurfaceExpression::Int(n), "value") => Value::Int {
-            n: *n,
-
-        },
+        (SurfaceExpression::Int(n), "value") => Value::Int { n: *n },
 
         // --- U64Literal ---
-        (SurfaceExpression::U64(n), "value") => Value::U64 {
-            n: *n,
-
-        },
+        (SurfaceExpression::U64(n), "value") => Value::U64 { n: *n },
 
         // --- FloatLiteral ---
-        (SurfaceExpression::Float(n), "value") => Value::Float {
-            n: *n,
-
-        },
+        (SurfaceExpression::Float(n), "value") => Value::Float { n: *n },
 
         // --- StringLiteral ---
         (SurfaceExpression::StringLiteral { content: s, .. }, "value") => string_val(s),
@@ -80,7 +71,6 @@ pub fn surface_node_get_field(
         (SurfaceExpression::VarRef { name, .. }, "name") => string_val(name),
         (SurfaceExpression::VarRef { escaped, .. }, "escaped") => Value::Int {
             n: if *escaped { 1 } else { 0 },
-
         },
 
         // --- DotAccess ---
@@ -114,7 +104,6 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::Call { implied, .. }, "implied") => Value::Int {
             n: if *implied { 1 } else { 0 },
-
         },
 
         // --- Fn ---
@@ -125,7 +114,6 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::Int {
             n: if *desugared { 1 } else { 0 },
-
         },
 
         // --- TypeAssert ---
@@ -170,7 +158,6 @@ pub fn surface_node_get_field(
             if let SurfaceDeclaration::TypeAlias { params, .. } = decl.as_ref() {
                 Value::Int {
                     n: params.len() as i64,
-    
                 }
             } else {
                 null()
@@ -199,7 +186,7 @@ fn nodes_to_list_dict(
     }
     Value::Dict {
         entries: map,
-
+        type_decl_id: 0,
     }
 }
 
@@ -223,7 +210,7 @@ fn surface_entries_to_list_dict(
         let key_val = entry.node.key.as_ref().map_or_else(
             || Value::Dict {
                 entries: indexmap::IndexMap::new(),
-
+                type_decl_id: 0,
             },
             |k| crate::surface_convert::surface_node_to_expr_variant(k, ctx),
         );
@@ -239,13 +226,12 @@ fn surface_entries_to_list_dict(
             Arc::new(Thunk::value(val_val, entry.span.clone())),
         );
         let entry_variant = Value::Variant {
-
             type_decl_id: 0,
             ctor: "Expr.Entry".into(),
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
-    
+                    type_decl_id: 0,
                 },
                 entry.span.clone(),
             ))),
@@ -255,7 +241,7 @@ fn surface_entries_to_list_dict(
     }
     Value::Dict {
         entries: map,
-
+        type_decl_id: 0,
     }
 }
 
@@ -281,13 +267,12 @@ fn named_args_to_list_dict(
             )),
         );
         let na_variant = Value::Variant {
-
             type_decl_id: 0,
             ctor: "Expr.NamedArg".into(),
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
-    
+                    type_decl_id: 0,
                 },
                 na.span.clone(),
             ))),
@@ -297,7 +282,7 @@ fn named_args_to_list_dict(
     }
     Value::Dict {
         entries: map,
-
+        type_decl_id: 0,
     }
 }
 
@@ -320,7 +305,6 @@ fn params_to_list_dict(
             Arc::new(Thunk::value(
                 Value::Int {
                     n: if p.node.variadic { 1 } else { 0 },
-    
                 },
                 p.span.clone(),
             )),
@@ -333,13 +317,12 @@ fn params_to_list_dict(
             Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
         let p_variant = Value::Variant {
-
             type_decl_id: 0,
             ctor: "Expr.Parameter".into(),
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
-    
+                    type_decl_id: 0,
                 },
                 p.span.clone(),
             ))),
@@ -349,7 +332,7 @@ fn params_to_list_dict(
     }
     Value::Dict {
         entries: map,
-
+        type_decl_id: 0,
     }
 }
 
@@ -371,7 +354,7 @@ fn match_arms_to_list_dict(
         let guard_val = arm.guard.as_ref().map_or_else(
             || Value::Dict {
                 entries: indexmap::IndexMap::new(),
-
+                type_decl_id: 0,
             },
             |g| crate::surface_convert::surface_node_to_expr_variant(g, ctx),
         );
@@ -393,7 +376,7 @@ fn match_arms_to_list_dict(
         let thunk = Arc::new(Thunk::value(
             Value::Dict {
                 entries: arm_dict,
-
+                type_decl_id: 0,
             },
             span.clone(),
         ));
@@ -401,7 +384,7 @@ fn match_arms_to_list_dict(
     }
     Value::Dict {
         entries: map,
-
+        type_decl_id: 0,
     }
 }
 
@@ -421,13 +404,12 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                 Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             Value::Variant {
-
                 type_decl_id: 0,
                 ctor: "DotKey.Ident".into(),
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: payload_dict,
-        
+                        type_decl_id: 0,
                     },
                     span,
                 ))),
@@ -437,22 +419,15 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
             let mut payload_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload_dict.insert(
                 HashableValue::Str("index".into()),
-                Arc::new(Thunk::value(
-                    Value::Int {
-                        n: *index,
-        
-                    },
-                    span.clone(),
-                )),
+                Arc::new(Thunk::value(Value::Int { n: *index }, span.clone())),
             );
             Value::Variant {
-
                 type_decl_id: 0,
                 ctor: "DotKey.Index".into(),
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: payload_dict,
-        
+                        type_decl_id: 0,
                     },
                     span,
                 ))),
@@ -546,13 +521,12 @@ fn annotation_inner_to_value(
                             )),
                         );
                         Value::Variant {
-            
                             type_decl_id: 0,
                             ctor: "Annotation.Annotated".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
-                    
+                                    type_decl_id: 0,
                                 },
                                 pos_entry.span.clone(),
                             ))),
@@ -575,13 +549,12 @@ fn annotation_inner_to_value(
                             Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
                         );
                         Value::Variant {
-            
                             type_decl_id: 0,
                             ctor: "Annotation.Simple".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
-                    
+                                    type_decl_id: 0,
                                 },
                                 pos_entry.span.clone(),
                             ))),
@@ -598,13 +571,12 @@ fn annotation_inner_to_value(
                             Arc::new(Thunk::value(string_val(&text), pos_entry.span.clone())),
                         );
                         Value::Variant {
-            
                             type_decl_id: 0,
                             ctor: "Annotation.Unknown".into(),
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
-                    
+                                    type_decl_id: 0,
                                 },
                                 pos_entry.span.clone(),
                             ))),
@@ -621,7 +593,7 @@ fn annotation_inner_to_value(
                 Arc::new(Thunk::value(
                     Value::Dict {
                         entries: parts_map,
-        
+                        type_decl_id: 0,
                     },
                     span.clone(),
                 )),
@@ -690,13 +662,12 @@ fn annotation_inner_to_value(
     };
 
     Value::Variant {
-
         type_decl_id: 0,
         ctor: format!("{}.{}", tycon, ctor).into(),
         payload: Some(Arc::new(Thunk::value(
             Value::Dict {
                 entries: payload_map,
-
+                type_decl_id: 0,
             },
             span,
         ))),
@@ -711,7 +682,7 @@ pub fn annotation_opt_to_value(
         Some(a) => annotation_to_value(a, ctx),
         None => Value::Dict {
             entries: indexmap::IndexMap::new(),
-
+            type_decl_id: 0,
         },
     }
 }
@@ -737,7 +708,6 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_line as i64,
-
             },
             span.clone(),
         )),
@@ -747,7 +717,6 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.start_col as i64,
-
             },
             span.clone(),
         )),
@@ -757,7 +726,6 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_line as i64,
-
             },
             span.clone(),
         )),
@@ -767,7 +735,6 @@ pub fn span_to_value(
         Arc::new(Thunk::value(
             Value::Int {
                 n: span.end_col as i64,
-
             },
             span.clone(),
         )),
@@ -775,7 +742,7 @@ pub fn span_to_value(
 
     Value::Dict {
         entries: map,
-
+        type_decl_id: 0,
     }
 }
 

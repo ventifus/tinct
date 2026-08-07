@@ -1,0 +1,8 @@
+--- description: B-712 plain dict must not match Variant; type-ctor dict must match
+--- expected_output: {r1: "wildcard", r2: "type-matched"}
+[
+  coords: [x: 1  y: 2]
+  Color: [type Red Green Blue]
+  r1: [match Color.Red  coords: "plain-matched"  ...: "wildcard"]
+  r2: [match Color.Red  Color: "type-matched"   ...: "wildcard"]
+]

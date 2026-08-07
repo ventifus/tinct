@@ -106,13 +106,9 @@ fn value_to_hashable_key(
 /// Convert a `HashableValue` key back to a runtime `Value`.
 fn hashable_value_to_value(hv: &HashableValue) -> Value {
     match hv {
-        HashableValue::Int(n) => Value::Int {
-            n: *n,
-
-        },
+        HashableValue::Int(n) => Value::Int { n: *n },
         HashableValue::Float(bits) => Value::Float {
             n: f64::from_bits(*bits),
-
         },
         HashableValue::Str(s) => string_val(s),
         HashableValue::Dict(pairs) => {
@@ -123,7 +119,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
             }
             Value::Dict {
                 entries: map,
-
+                type_decl_id: 0,
             }
         }
         HashableValue::Variant { tag, payload } => {
@@ -133,7 +129,6 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
                 Arc::new(Thunk::value(val, rust_span!()))
             });
             Value::Variant {
-
                 type_decl_id: 0,
                 ctor: tag.clone(),
                 payload: payload_thunk,
@@ -188,7 +183,7 @@ pub(crate) fn builtin_keys(
         ok_val(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -228,13 +223,7 @@ pub(crate) fn builtin_length(
                         call_span.clone(),
                     )
                 })?;
-                ok_val(
-                    Value::Int {
-                        n: len_i64,
-        
-                    },
-                    call_span,
-                )
+                ok_val(Value::Int { n: len_i64 }, call_span)
             }
             Value::Bytes { start, end, .. } => {
                 let len = end - start;
@@ -244,18 +233,12 @@ pub(crate) fn builtin_length(
                         call_span.clone(),
                     )
                 })?;
-                ok_val(
-                    Value::Int {
-                        n: len_i64,
-        
-                    },
-                    call_span,
-                )
+                ok_val(Value::Int { n: len_i64 }, call_span)
             }
             _ => {
                 let map = crate::builtins::require_dict(
                     "length",
-                    val,
+                    val.clone(),
                     thunk0.span.clone(),
                     &ctx,
                     call_span.clone(),
@@ -264,7 +247,6 @@ pub(crate) fn builtin_length(
                 ok_val(
                     Value::Int {
                         n: map.len() as i64,
-        
                     },
                     call_span,
                 )
@@ -308,9 +290,7 @@ pub(crate) fn builtin_get(
         let target_span = thunk1.span.clone();
 
         match target_val {
-            Value::Dict {
-                entries: map, ..
-            } => {
+            Value::Dict { entries: map, .. } => {
                 let key_str = key.to_string();
                 match map.get(&key) {
                     Some(thunk) => Ok(Arc::clone(thunk)),
@@ -320,10 +300,7 @@ pub(crate) fn builtin_get(
                         let mut err =
                             EvalError::key_not_found(&key_str, available_keys, target_span);
                         err.spans.push((call_span, "accessed here".to_string()));
-                        err.notes.push(format!(
-                            "dict has {} entries",
-                            map.len(),
-                        ));
+                        err.notes.push(format!("dict has {} entries", map.len(),));
                         Err(err.into())
                     }
                 }
@@ -373,13 +350,7 @@ pub(crate) fn builtin_has_key(
         .await?;
 
         let exists = if map.contains_key(&key) { 1i64 } else { 0i64 };
-        ok_val(
-            Value::Int {
-                n: exists,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: exists }, call_span)
     })
 }
 
@@ -430,23 +401,11 @@ pub(crate) fn builtin_dict_has_nth(
             Ok(i) => i,
             Err(_overflow) => {
                 // idx > usize::MAX on this platform; no dict can have this many entries.
-                return ok_val(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    call_span,
-                );
+                return ok_val(Value::Int { n: 0 }, call_span);
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
-        ok_val(
-            Value::Int {
-                n: exists,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: exists }, call_span)
     })
 }
 
@@ -556,23 +515,11 @@ pub(crate) fn builtin_dict_has_key_nth(
             Ok(i) => i,
             Err(_overflow) => {
                 // idx > usize::MAX on this platform; no dict can have this many entries.
-                return ok_val(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    call_span,
-                );
+                return ok_val(Value::Int { n: 0 }, call_span);
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
-        ok_val(
-            Value::Int {
-                n: exists,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: exists }, call_span)
     })
 }
 
@@ -684,23 +631,11 @@ pub(crate) fn builtin_dict_has_kv_nth(
             Ok(i) => i,
             Err(_overflow) => {
                 // idx > usize::MAX on this platform; no dict can have this many entries.
-                return ok_val(
-                    Value::Int {
-                        n: 0,
-        
-                    },
-                    call_span,
-                );
+                return ok_val(Value::Int { n: 0 }, call_span);
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
-        ok_val(
-            Value::Int {
-                n: exists,
-
-            },
-            call_span,
-        )
+        ok_val(Value::Int { n: exists }, call_span)
     })
 }
 
@@ -756,7 +691,7 @@ pub(crate) fn builtin_dict_kv_nth(
                 ok_val(
                     Value::Dict {
                         entries: kv,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -939,7 +874,7 @@ pub(crate) fn builtin_build_dict(
                 ok_val(
                     Value::Dict {
                         entries: result,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -1211,7 +1146,7 @@ pub(crate) fn builtin_builder_finish(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -1261,7 +1196,7 @@ pub(crate) fn builtin_builder_snapshot(
         ok_val(
             Value::Dict {
                 entries: dict,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -1340,7 +1275,6 @@ pub(crate) fn builtin_builder_has(
         ok_val(
             Value::Int {
                 n: if has { 1 } else { 0 },
-
             },
             call_span,
         )
@@ -1659,7 +1593,7 @@ pub(crate) fn builtin_dict_merge(
         ok_val(
             Value::Dict {
                 entries: result,
-
+                type_decl_id: 0,
             },
             call_span,
         )
@@ -1711,7 +1645,7 @@ pub(crate) fn builtin_take(
             return ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 call_span,
             );
@@ -1729,7 +1663,7 @@ pub(crate) fn builtin_take(
                 ok_val(
                     Value::Dict {
                         entries: taken,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -1799,7 +1733,7 @@ pub(crate) fn builtin_drop(
                 ok_val(
                     Value::Dict {
                         entries: dropped,
-        
+                        type_decl_id: 0,
                     },
                     call_span,
                 )
@@ -1883,7 +1817,7 @@ pub(crate) fn builtin_concat(
                         ok_val(
                             Value::Dict {
                                 entries: result,
-                
+                                type_decl_id: 0,
                             },
                             call_span,
                         )

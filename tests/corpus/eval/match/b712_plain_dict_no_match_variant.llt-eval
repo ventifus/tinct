@@ -1,0 +1,7 @@
+--- description: B-712 plain dict arm does not match a Variant; type-ctor dict arm does
+--- expected_output: {r1: "is-color"}
+[
+  Color: [type Red Green Blue]
+  shape: [r: 255  g: 0  b: 0]
+  r1: [match Color.Red  shape: "false-positive"  Color: "is-color"  ...: "other"]
+]

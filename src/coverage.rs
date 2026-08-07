@@ -37,10 +37,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ast::{SurfaceExpression, SurfaceNode};
-#[allow(unused_imports)]
-use std::sync::Arc;
 use crate::type_tags::*;
 use crate::value::Value;
+#[allow(unused_imports)]
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Coverage pattern representation
@@ -489,22 +489,30 @@ pub fn ast_pattern_to_coverage(
                         // Check for primitive types by id first.
                         let nominal_id = crate::type_infer::typevalue_nominal_id(&resolved_tv);
                         match nominal_id {
-                            Some(crate::value::TYPE_ID_INT) => return CoveragePattern::Constructor {
-                                tag: ConstructorTag::Variant("Int".into()),
-                                sub_patterns: inner_sub.clone(),
-                            },
-                            Some(crate::value::TYPE_ID_FLOAT) => return CoveragePattern::Constructor {
-                                tag: ConstructorTag::Variant("Float".into()),
-                                sub_patterns: inner_sub.clone(),
-                            },
-                            Some(crate::value::TYPE_ID_STRING) => return CoveragePattern::Constructor {
-                                tag: ConstructorTag::Variant("String".into()),
-                                sub_patterns: inner_sub.clone(),
-                            },
-                            Some(crate::value::TYPE_ID_BYTES) => return CoveragePattern::Constructor {
-                                tag: ConstructorTag::Variant("Bytes".into()),
-                                sub_patterns: inner_sub.clone(),
-                            },
+                            Some(crate::value::TYPE_ID_INT) => {
+                                return CoveragePattern::Constructor {
+                                    tag: ConstructorTag::Variant("Int".into()),
+                                    sub_patterns: inner_sub.clone(),
+                                }
+                            }
+                            Some(crate::value::TYPE_ID_FLOAT) => {
+                                return CoveragePattern::Constructor {
+                                    tag: ConstructorTag::Variant("Float".into()),
+                                    sub_patterns: inner_sub.clone(),
+                                }
+                            }
+                            Some(crate::value::TYPE_ID_STRING) => {
+                                return CoveragePattern::Constructor {
+                                    tag: ConstructorTag::Variant("String".into()),
+                                    sub_patterns: inner_sub.clone(),
+                                }
+                            }
+                            Some(crate::value::TYPE_ID_BYTES) => {
+                                return CoveragePattern::Constructor {
+                                    tag: ConstructorTag::Variant("Bytes".into()),
+                                    sub_patterns: inner_sub.clone(),
+                                }
+                            }
                             _ => {}
                         }
                         if let (Some(id), Some(env)) = (nominal_id, tycon_env) {
@@ -1387,7 +1395,7 @@ mod tests {
         }
         let fields_dict = Value::Dict {
             entries: field_entries,
-
+            type_decl_id: 0,
         };
         let mut payload_entries = indexmap::IndexMap::new();
         payload_entries.insert(
@@ -1399,17 +1407,16 @@ mod tests {
             Arc::new(Thunk::value(
                 Value::Dict {
                     entries: indexmap::IndexMap::new(),
-    
+                    type_decl_id: 0,
                 },
                 crate::rust_span!(),
             )),
         );
         let payload = Value::Dict {
             entries: payload_entries,
-
+            type_decl_id: 0,
         };
         Arc::new(Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_RECORD),
             payload: Some(Arc::new(crate::value::Thunk::value(
@@ -1465,7 +1472,6 @@ mod tests {
         // TypeValue.Fn types cannot be expressed as a finite constructor set.
         // from_union must return None rather than a partial (unsound) signature.
         let fn_tv = Arc::new(Value::Variant {
-
             type_decl_id: 0,
             ctor: Arc::from(TV_FN),
             payload: None,
