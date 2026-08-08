@@ -1978,11 +1978,16 @@ async fn infer_var_ref(
                     }
                     slot_scheme
                 } else {
+                    let env_read = env.read().unwrap();
+                    let env_slots_len = env_read.slots.len();
+                    let parent_slots_len = env_read.parent.as_ref().map(|p| p.read().unwrap().slots.len()).unwrap_or(0);
+                    let grandparent_slots_len = env_read.parent.as_ref().and_then(|p| p.read().unwrap().parent.as_ref().map(|gp| gp.read().unwrap().slots.len())).unwrap_or(0);
+                    drop(env_read);
                     errors.push(Diagnostic::error(
                         "resolver-slot-miss",
                         format!(
-                            "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address",
-                            resolver_level, slot, name
+                            "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address (env slots: {}, parent slots: {}, grandparent slots: {})",
+                            resolver_level, slot, name, env_slots_len, parent_slots_len, grandparent_slots_len
                         ),
                         node.span.clone(),
                     ));

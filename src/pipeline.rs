@@ -80,14 +80,9 @@ pub async fn process_pipeline_document(
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current environment.
-    let env_names: Vec<String> = {
-        let env_guard = state.env.read().unwrap();
-        env_guard
-            .slot_index
-            .keys()
-            .cloned()
-            .collect()
-    };
+    // env_names are exports from PREVIOUS documents (not builtins — those are in resolver_frames).
+    // For the first document, this is empty.
+    let env_names: Vec<String> = Vec::new(); // TODO: populate from previous document exports
     let root_group_len = state
         .resolver_frames
         .iter()
@@ -123,9 +118,16 @@ pub async fn process_pipeline_document(
         state.infer_state.ctx.tycon_env.insert(*id, Arc::clone(def));
     }
 
+    // Create a DocSequential env frame between state.env and the dict env.
+    // This matches the resolver's scope structure: seed_frame → DocSequential → dict.
+    // The DocSequential frame is empty for the first document (no previous exports).
+    let doc_sequential_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+        &state.env,
+    ))));
+
     let (new_env, _result_ty, tc_errors) = crate::typecheck::process_document(
         doc,
-        &state.env,
+        &doc_sequential_env,
         &mut state.infer_state,
         &mut None,
     )
