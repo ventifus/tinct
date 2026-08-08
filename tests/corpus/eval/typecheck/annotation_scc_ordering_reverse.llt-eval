@@ -1,0 +1,19 @@
+# Annotation SCC ordering — NEGATIVE test
+# Use @MyType before declaring MyType, with @MyType in a SEPARATE dict (not the same letrec group).
+# Should fail with "undefined type: MyType".
+#
+# This is the negative complement to annotation_scc_ordering.llt-eval — verifies that
+# the SCC dependency tracking actually prevents forward references across dict boundaries.
+
+[
+  # First dict: references @MyType before it's declared
+  f: [fn@MyType [let x@Integer] x]
+]
+
+# Second dict: declares MyType
+[
+  MyType: [type Foo: [n: Integer]]
+]
+
+=== error
+undefined type: MyType

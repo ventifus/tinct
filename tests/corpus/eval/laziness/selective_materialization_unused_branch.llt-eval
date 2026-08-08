@@ -1,0 +1,3 @@
+[used: 1  unused: [call $builtin-raise "should not materialize"]]
+=== out
+{"unused": Thunk, "used": 1}

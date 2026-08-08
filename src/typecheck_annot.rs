@@ -1691,11 +1691,13 @@ async fn resolve_type_head(
     }
 
     // Not found in any scope — undefined type name.
-    Err(Diagnostic::error(
+    let mut diag = Diagnostic::error(
         "undefined-type",
-        format!("undefined type: {}", name),
-        span,
-    ))
+        format!("undefined type: {name}"),
+        span.clone(),
+    );
+    diag.spans = vec![(span, format!("type `{name}` not found in scope"))];
+    Err(diag)
 }
 
 pub(crate) async fn resolve_type_name(

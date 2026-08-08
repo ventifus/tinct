@@ -645,6 +645,22 @@ mod tests {
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
+
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         let thunk = crate::eval::eval_surface_file(&program, ctx)
             .await
             .unwrap_or_else(|e| {

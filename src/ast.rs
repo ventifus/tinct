@@ -415,7 +415,9 @@ impl fmt::Display for SurfaceExpression {
                 write!(f, "{}", decl)
             }
             SurfaceExpression::UnitVariant { tycon, ctor, .. } => write!(f, "{tycon}.{ctor}"),
-            SurfaceExpression::MakeVariant { tag, .. } => write!(f, "MakeVariant({tag})"),
+            SurfaceExpression::MakeVariant {
+                tycon, ctor_name, ..
+            } => write!(f, "MakeVariant({tycon}.{ctor_name})"),
             SurfaceExpression::TypeDecl {
                 type_name, params, ..
             } => {
@@ -828,7 +830,7 @@ pub enum SurfaceExpression {
 
     // Declaration embedded inside an expression context (e.g., as a dict entry value).
     // Preserves the full SurfaceDeclaration so the type checker can register class/instance/type
-    // declarations found inside dicts (Pass 0c). Evaluates to Placeholder at runtime.
+    // declarations found inside dicts (class/instance pre-registration step). Evaluates to Placeholder at runtime.
     #[expr(skip)]
     Decl(Box<SurfaceDeclaration>),
 
@@ -845,7 +847,8 @@ pub enum SurfaceExpression {
     /// Lowered 1:1 to CoreExpr::Variant.
     #[expr(skip)]
     MakeVariant {
-        tag: String,
+        tycon: String,
+        ctor_name: String,
         payload: Arc<SurfaceNode>,
         type_decl_id: u64,
     },
@@ -1545,7 +1548,8 @@ pub enum CoreExpr {
     /// First-class variant constructor. Produced by lower.rs for type declarations.
     /// Encoded directly in CoreExpr — no runtime function call needed.
     Variant {
-        tag: String,
+        tycon: String,
+        ctor_name: String,
         payload: Option<Arc<Spanned<CoreExpr>>>,
         /// Unique ID of the parent TypeDecl. Used to look up the type's identity Arc
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name

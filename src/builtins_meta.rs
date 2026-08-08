@@ -2826,7 +2826,7 @@ pub(crate) fn builtin_typecheck_doc(
             // guard.inference_env stays unchanged — it is the single flat root
 
             // Merge classes and instances from state.env into inference_env.
-            // Pass 0c registers ClassDecl records (with populated method_signatures)
+            // Class/instance pre-registration step registers ClassDecl records (with populated method_signatures)
             // into state.env, which is child_env — a sibling of doc_env, not an
             // ancestor. merge_env_chain_into above only traverses doc_env's chain,
             // so classes written to child_env are lost without this merge.

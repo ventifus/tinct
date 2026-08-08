@@ -287,16 +287,24 @@ pub async fn process_pipeline_document(
     )
     .await;
 
-    // Propagate type checker errors.
+    // Propagate type checker errors with full span information.
     for err in &tc_errors {
         if err.level == crate::error::DiagnosticLevel::Err {
-            return Err(Box::new(EvalError::internal(
-                format!("typecheck error: {}", err.message),
-                err.spans
-                    .first()
-                    .map(|s| s.0.clone())
-                    .unwrap_or_else(|| crate::rust_span!()),
-            )));
+            return Err(Box::new(EvalError {
+                kind: crate::error::ErrorKind::Internal {
+                    message: format!("typecheck error: {}", err.message),
+                },
+                spans: if err.spans.is_empty() {
+                    vec![(crate::rust_span!(), String::new())]
+                } else {
+                    err.spans.clone()
+                },
+                stack: smallvec::SmallVec::new(),
+                macro_expansion: None,
+                blame: None,
+                pipeline_stage: None,
+                notes: err.notes.clone(),
+            }));
         }
     }
 

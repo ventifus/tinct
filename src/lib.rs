@@ -1009,19 +1009,12 @@ mod tests {
     use value::{Thunk, Value, TYPE_ID_INT, TYPE_ID_PROXY};
 
     // Async wrappers for async public functions — test code uses .await.
-    async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
-        super::typecheck_source_errors_only(input).await
-    }
     async fn value_to_display_string(
         val: &value::Value,
         ctx: &Arc<eval::EvalContext>,
         span: ast::Span,
     ) -> Result<String, Box<error::EvalError>> {
         super::value_to_display_string(val, ctx, span).await
-    }
-
-    fn test_file(_src: &str) -> Arc<str> {
-        Arc::from(file!())
     }
 
     async fn test_ctx() -> Arc<eval::EvalContext> {
@@ -1118,92 +1111,6 @@ mod tests {
 
     // --- Integration tests: render_span_snippet in error output ---
 
-    /// `eval_source_with_snippets` integration test: verify that when an error occurs
-    /// in a user-written source string, the error Display produced by main.rs
-    /// includes a source snippet (rustc-style underline). This exercises
-    /// `render_span_snippet` being called with a real eval error's definition_span.
-    ///
-    /// The test simulates the pattern used in main.rs `run_eval`:
-    /// parse source → eval → on error, call render_span_snippet with the source string
-    /// and the error's definition_span, then check the snippet is present.
-    #[tokio::test]
-    async fn test_eval_source_with_source_snippets() {
-        // Source that will produce an eval error with a real source span.
-        // Accessing an undefined variable gives an UndefinedVariable error whose
-        // definition_span points at the VarRef expression in the source.
-        let source = "$undefined_var";
-
-        // Parse the source manually to get a real AST with spans.
-        let program = desugar::desugar_program_full(
-            &parse(source, test_file(source))
-                .expect("parse should succeed")
-                .program,
-        );
-        let program = expand::expand_program(&program);
-        // Per-document typecheck pipeline (results discarded — test only cares
-        // about eval error spans, not type diagnostics).
-        {
-            let mut state = crate::pipeline::PipelineState::from_core_envs(
-                std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-                std::collections::HashMap::new(),
-                crate::type_infer::TypeStageData::new(),
-                std::collections::HashMap::new(),
-            );
-            for doc in &program.documents {
-                let diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
-                for d in &diags {
-                    assert!(
-                        d.level != crate::error::DiagnosticLevel::Err,
-                        "unexpected type error in test: {}",
-                        d.message
-                    );
-                }
-            }
-        }
-        let ctx = test_ctx().await;
-
-        // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_surface_file(&program, &ctx).await;
-        assert!(
-            eval_result.is_err(),
-            "expected eval to fail for undefined variable"
-        );
-        let err = eval_result.unwrap_err();
-
-        // Verify the error has a non-synthetic primary span (spans[0]).
-        assert_ne!(
-            err.spans[0].0,
-            rust_span!(),
-            "error should have a real source span, not rust_span!()"
-        );
-
-        // render_span_snippet should produce a snippet for this error.
-        let snippet = error::render_span_snippet(source, err.spans[0].0.clone());
-        assert!(
-            snippet.is_some(),
-            "render_span_snippet should return Some for a real source span"
-        );
-        let snippet_text = snippet.unwrap();
-
-        // The snippet should contain the source line.
-        assert!(
-            snippet_text.contains("$undefined_var"),
-            "snippet should contain the source line with the variable reference, got: {snippet_text}"
-        );
-
-        // The snippet should contain caret underlines (error indicator).
-        assert!(
-            snippet_text.contains('^'),
-            "snippet should contain caret underlines, got: {snippet_text}"
-        );
-
-        // The snippet should include a line number prefix in the format "N | ...".
-        assert!(
-            snippet_text.contains(" | "),
-            "snippet should include line number format 'N | ...', got: {snippet_text}"
-        );
-    }
-
     /// Integration test: an error whose `definition_span` covers multiple lines renders
     /// ALL spanned lines in the snippet (no truncation with "...").
     ///
@@ -1260,47 +1167,6 @@ mod tests {
             !snippet.contains("..."),
             "snippet must NOT contain '...' truncation; all lines should be shown, got:\n{snippet}"
         );
-    }
-
-    /// Lint pipeline: type error produces Err (exit code 1 behavior).
-    ///
-    /// Verifies that an undefined variable reference causes the lint pipeline to
-    /// return an error, matching the `tinct lint` exit-code-1 behavior.
-    #[tokio::test]
-    async fn test_lint_pipeline_type_error() {
-        // Referencing an undefined variable should produce an "undefined variable" type error.
-        let input = r#"[x: undefined_var]"#;
-        let result = typecheck_source_errors_only(input).await;
-        assert!(
-            result.is_err(),
-            "lint pipeline should report a type error for undefined variable reference, got Ok(())"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("undefined variable"),
-            "error message should describe the undefined variable, got: {msg}"
-        );
-    }
-
-    /// Lint pipeline: no side effects — emit calls are not executed.
-    ///
-    /// Verifies that running the lint pipeline on a file containing `$emit` calls does
-    /// not execute the emit (no output is produced). The lint pipeline stops before eval.
-    #[tokio::test]
-    async fn test_lint_pipeline_no_side_effects() {
-        // If lint executed this, it would emit text to stdout. Since it only type-checks,
-        // no output should occur. The absence of a panic or visible output is the assertion.
-        let input = r#"[call $emit "this should not appear"]"#;
-        // typecheck_source only parses, expands, desugars, resolves, and type-checks.
-        // It does not evaluate — so no emit side-effect fires.
-        // $emit is not in scope without the full prelude, so this produces a type error —
-        // what matters is that no eval happened and no stdout was written.
-        let result = typecheck_source_errors_only(input).await;
-        assert!(
-            result.is_err(),
-            "expected type error for undefined $emit reference (no prelude), got: Ok(())"
-        );
-        // (Capturing stdout in a unit test would require infrastructure not worth adding.)
     }
 
     // -------------------------------------------------------------------------

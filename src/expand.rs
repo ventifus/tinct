@@ -409,11 +409,6 @@ fn expand_type_alias(
             Some(tn) => (tn.clone(), ctor.name.clone()),
             None => (String::new(), ctor.name.clone()),
         };
-        let qualified_tag = if tycon.is_empty() {
-            ctor_name.clone()
-        } else {
-            format!("{}.{}", tycon, ctor_name)
-        };
 
         // Create the key for this constructor entry.
         let key = Some(Arc::new(SurfaceNode::new(
@@ -512,7 +507,8 @@ fn expand_type_alias(
             // Build the MakeVariant body.
             let variant_body = Arc::new(SurfaceNode::new(
                 SurfaceExpression::MakeVariant {
-                    tag: qualified_tag.clone(),
+                    tycon: tycon.clone(),
+                    ctor_name: ctor_name.clone(),
                     payload: payload_dict,
                     type_decl_id,
                 },
@@ -521,10 +517,7 @@ fn expand_type_alias(
 
             let fn_expr = Arc::new(SurfaceNode::new(
                 SurfaceExpression::Fn {
-                    return_ann: Some(Spanned::new(
-                        Annotation::Simple(qualified_tag.clone()),
-                        span.clone(),
-                    )),
+                    return_ann: None,
                     params: fn_params,
                     body: variant_body,
                     desugared: false,
@@ -1495,8 +1488,11 @@ mod tests {
 
                 // The body should be a MakeVariant.
                 match &body.expr {
-                    SurfaceExpression::MakeVariant { tag, .. } => {
-                        assert_eq!(tag, "Shape.Circle");
+                    SurfaceExpression::MakeVariant {
+                        tycon, ctor_name, ..
+                    } => {
+                        assert_eq!(tycon, "Shape");
+                        assert_eq!(ctor_name, "Circle");
                     }
                     other => panic!(
                         "expected MakeVariant body, got {:?}",

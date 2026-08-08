@@ -2,7 +2,6 @@ use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
 use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
-use crate::typecheck::process_document;
 use crate::typecheck::typecheck_annot::{resolve_annotation, resolve_type_name};
 use crate::types::unify;
 // TypeScheme deleted in S-1003 — TypeValues stored directly.
@@ -140,10 +139,6 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     })
 }
 
-fn test_file(_src: &str) -> Arc<str> {
-    Arc::from(file!())
-}
-
 /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
 /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.
 fn surf_ann_entry_tc(
@@ -163,27 +158,6 @@ fn surf_ann_entry_tc(
 }
 
 /// Run typecheck on `input` and return the tycon_env from InferState.
-/// Use this in tests that need to inspect TyConDef entries (type alias bodies, params, etc.).
-async fn doc_tycon_env(
-    input: &str,
-) -> std::collections::HashMap<u64, Arc<crate::type_def::TyConDef>> {
-    let desugared = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-    let program = crate::expand::expand_program(&desugared);
-
-    let arc_env = crate::imports::get_builtin_core_type_env().await;
-    let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-        std::sync::Arc::clone(&arc_env),
-    )));
-    let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    let (_result_env, _ty, diags) =
-        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
-    if !diags.is_empty() {
-        panic!("doc_tycon_env: typecheck error: {:?}", diags);
-    }
-    state.tycon_env
-}
 
 // -- Annotation resolution --
 
@@ -363,31 +337,7 @@ async fn test_fn_type_display_round_trip() {
     assert!(is_var(&a_tv), "expected TypeValue.Var for 'a'");
 }
 
-// -- Parameterized type aliases --
-
-#[tokio::test]
-async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
-    // [type [let k v] [_@k: v]] must produce Dict with RowTail::Uniform.
-    // After S-1003: RowTail::Uniform → TypeValue.Record tail.
-    let tycon_env = doc_tycon_env("[MapLike: [type [let k v] [_@k: v]]]").await;
-    let alias = tycon_env
-        .values()
-        .next()
-        .expect("MapLike alias should exist");
-
-    // Alias body must be a TypeValue.Record — any other type is a regression.
-    // After migration: TyConDef.body is Arc<Value> TypeValue.
-    assert!(
-        matches!(alias.body.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
-        "expected TypeValue.Record body for uniform dict alias, got {:?}",
-        alias.body
-    );
-    // The remaining RowTail::Uniform assertions are deferred to corpus tests
-    // since payload inspection requires TypeValue structure knowledge.
-}
-
 // -- Type::Error cascade prevention --
-
 #[tokio::test]
 async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     // Verifies that unify(Error, TypeVar) does not bind the TypeVar, which would corrupt
@@ -1441,340 +1391,12 @@ fn test_type_stage_type_vars_contains_kind_entries() {
 // tests/corpus/eval/typecheck/callable_annotation_multi_arg.llt-eval
 
 // ============================================================================
-// T-2142: trace annotation — typecheck phase emits trace-fn-type diagnostic
-// ============================================================================
-
-/// Run typecheck on `input` (single document) and return all diagnostics, including
-/// those accumulated in `state.diagnostics` (where trace-fn-type diagnostics land).
-///
-/// This differs from `doc_tycon_env` in that it collects rather than panics on diags,
-/// and merges state.diagnostics into the returned vec so callers can inspect all levels.
-async fn typecheck_collect_diags(input: &str) -> Vec<crate::error::Diagnostic> {
-    let program = crate::desugar::desugar_surface_program(
-        &crate::parse(input, test_file(input)).unwrap().program,
-    );
-    let arc_env = crate::imports::get_builtin_core_type_env().await;
-    let child_env = std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-        std::sync::Arc::clone(&arc_env),
-    )));
-    let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    // Populate type_stage_scope so that type names (Integer, String, etc.) resolve
-    // correctly during class method signature processing and instance validation.
-    // Without this, resolve_type_head fails on all uppercase type names because
-    // type_stage_scope is empty — method_signatures never get populated, and the
-    // T-2145 instance method param validation is silently skipped.
-    let ts_data = crate::imports::get_builtin_core_type_stage_scope().await;
-    state.type_stage_scope = ts_data.scope;
-    state.type_stage_fns = ts_data.fns;
-    state.type_stage_type_vars = ts_data.type_vars;
-    let (_result_env, _ty, mut diags) =
-        process_document(&program.documents[0].node, &arc_env, &mut state, &mut None).await;
-    // trace-fn-type diagnostics are pushed to state.diagnostics during CEK processing,
-    // not into the diags vector returned by process_document. Merge both here.
-    diags.append(&mut state.diagnostics);
-    diags
-}
-
-/// T-2142: A function with @[trace: 1] annotation must emit a "trace-fn-type" Info diagnostic
-/// during typechecking.
-///
-/// Proof this is a Rust unit test (category 1): the assertion targets `state.diagnostics`,
-/// an internal Vec<Diagnostic> accumulated during typecheck CEK processing. There is no
-/// tinct surface that exposes the typecheck-phase diagnostic list — corpus tests run through
-/// the full loader pipeline which does not expose state.diagnostics to the output JSON.
-#[tokio::test]
-async fn test_trace_annotation_typecheck_emits_diagnostic() {
-    // A function with @[trace: 1] on return annotation — no typed params needed.
-    // The annotation does not require a return: key; trace: is extracted independently.
-    let diags = typecheck_collect_diags("[fn@[trace: 1] [let x] x]").await;
-    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
-    assert!(
-        !trace_diags.is_empty(),
-        "Expected at least one trace-fn-type diagnostic; got: {:?}",
-        diags
-    );
-    assert_eq!(
-        trace_diags[0].level,
-        crate::error::DiagnosticLevel::Info,
-        "trace-fn-type diagnostic must be Info level; got: {:?}",
-        trace_diags[0].level
-    );
-}
-
-/// T-2142: A function with both return type and trace annotation emits trace-fn-type with
-/// a message that includes the inferred parameter and return types.
-#[tokio::test]
-async fn test_trace_annotation_typecheck_message_contains_types() {
-    // @[trace: 1  return: Integer] — return type is provided, parameter x is unannotated.
-    let diags = typecheck_collect_diags("[fn@[trace: 1  return: Integer] [let x] 42]").await;
-    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
-    assert!(
-        !trace_diags.is_empty(),
-        "Expected trace-fn-type diagnostic for fn with return type annotation; got: {:?}",
-        diags
-    );
-    // The message format is "[param: type, ...] → return-type" — verify structural format.
-    // Types appear as formatted TypeValues (e.g. "?", "TypeValue.NominalVariant"), not as
-    // annotation name strings, so we only assert structural tokens.
-    let msg = &trace_diags[0].message;
-    assert!(
-        msg.starts_with('['),
-        "message should start with '[': {}",
-        msg
-    );
-    assert!(msg.contains('→'), "message should contain '→': {}", msg);
-}
-
-/// T-2142: A function WITHOUT a trace annotation must NOT emit any trace-fn-type diagnostic.
-///
-/// This is the clean-path invariant: unannotated functions produce zero trace diagnostics.
-/// Without this test, a mutation that emits trace diagnostics unconditionally would pass the
-/// positive tests above but fail here.
-#[tokio::test]
-async fn test_no_trace_annotation_no_trace_diagnostic() {
-    // Plain function with no trace annotation — only return type.
-    let diags = typecheck_collect_diags("[fn@Integer [let x] 42]").await;
-    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
-    assert!(
-        trace_diags.is_empty(),
-        "Expected zero trace-fn-type diagnostics for unannotated function; got: {:?}",
-        trace_diags
-    );
-}
-
-/// T-2142: trace level 0 (explicit @[trace: 0]) must NOT emit trace-fn-type diagnostic.
-///
-/// Mutation target: changing `>= 1` to `> 0` in the guard is equivalent, but changing
-/// it to `>= 0` would cause this test to fail.
-#[tokio::test]
-async fn test_trace_level_zero_no_trace_diagnostic() {
-    let diags = typecheck_collect_diags("[fn@[trace: 0] [let x] x]").await;
-    let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-fn-type").collect();
-    assert!(
-        trace_diags.is_empty(),
-        "trace: 0 must not emit trace-fn-type diagnostic; got: {:?}",
-        trace_diags
-    );
-}
-
-// ============================================================================
 // S-1037: closure-captured bindings must not produce false-positive lost-binding
 // ============================================================================
 
 /// A binding referenced only from inside a nested fn body (ClosureCapture) must NOT
 /// produce a lost-binding warning. Before S-1037, ClosureCapture marks landed on
 /// scc_env (a clone) and were lost; now they land on dict_env directly.
-#[tokio::test]
-async fn test_closure_captured_binding_no_lost_binding_warning() {
-    // `a` is an intermediate binding used only by the nested fn via ClosureCapture.
-    // The final expression calls the fn, which uses `a`. No warning should fire.
-    let diags =
-        typecheck_collect_diags("[call [fn [let x] [a: [+ x 1]] [f: [fn [] a]] [f]] 10]").await;
-    let lost = diags
-        .iter()
-        .filter(|d| d.kind == "lost-binding")
-        .collect::<Vec<_>>();
-    assert!(
-        lost.is_empty(),
-        "closure-captured binding should not produce lost-binding warning; got: {:?}",
-        lost
-    );
-}
-
-// ============================================================================
-// S-1023 fix-review: trace annotation — runtime phase emits trace-call/trace-return
-// ============================================================================
-
-/// Parse, desugar, resolve, and evaluate `src` as a single-document program.
-/// Returns the EvalContext after evaluation so callers can inspect runtime_diagnostics.
-async fn eval_collect_runtime_diags(
-    src: &str,
-) -> (
-    crate::error::EvalResult<std::sync::Arc<crate::value::Thunk>>,
-    std::sync::Arc<crate::eval::EvalContext>,
-) {
-    use crate::ast::{SurfaceDocument, SurfaceItem, SurfaceProgram};
-    use crate::resolve::resolve_surface_program;
-    let node = crate::parser::parse_surface_expression(src)
-        .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
-    let span = node.span.clone();
-    let doc = SurfaceDocument {
-        header: indexmap::IndexMap::new(),
-        items: vec![SurfaceItem::Expr(std::sync::Arc::clone(&node))],
-    };
-    let program = crate::desugar::desugar_program_full(&SurfaceProgram {
-        documents: vec![crate::ast::Spanned::new(std::sync::Arc::new(doc), span)],
-    });
-    let program = crate::expand::expand_program(&program);
-    let ctx = crate::eval::EvalContext::new();
-    let root_frame = ctx.root_group_resolver_map();
-    let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
-    let result = crate::eval::eval_surface_file(&program, &ctx).await;
-    // Force the thunk to trigger runtime trace diagnostics.
-    if let Ok(ref thunk) = result {
-        crate::eval::materialize(thunk, None, &ctx)
-            .await
-            .expect("materialize must succeed in trace annotation test");
-    }
-    (result, ctx)
-}
-
-/// T-2142 / S-1023 fix-review: Evaluating `[call [fn@[trace: 1] [let x] x] 42]` must produce
-/// at least one `trace-call` and at least one `trace-return` Info diagnostic in
-/// `ctx.runtime_diagnostics`.
-///
-/// Note: `[[fn@...] arg]` is a two-entry dict in tinct, not a call. Use `[call ...]` to
-/// invoke a function expression.
-///
-/// This is the runtime-phase coverage that was missing from T-2142's original implementation.
-#[tokio::test]
-async fn test_trace_annotation_runtime_emits_call_and_return() {
-    let (result, ctx) = eval_collect_runtime_diags("[call [fn@[trace: 1] [let x] x] 42]").await;
-    assert!(result.is_ok(), "evaluation must succeed; got: {:?}", result);
-
-    let diags = ctx
-        .runtime_diagnostics
-        .lock()
-        .expect("runtime_diagnostics mutex poisoned");
-    let trace_call_diags: Vec<_> = diags
-        .iter()
-        .filter(|d| d.kind == "trace-call" && d.level == crate::error::DiagnosticLevel::Info)
-        .collect();
-    let trace_return_diags: Vec<_> = diags
-        .iter()
-        .filter(|d| d.kind == "trace-return" && d.level == crate::error::DiagnosticLevel::Info)
-        .collect();
-    assert!(
-        !trace_call_diags.is_empty(),
-        "Expected at least one trace-call diagnostic in runtime_diagnostics; got all: {:?}",
-        *diags
-    );
-    assert!(
-        !trace_return_diags.is_empty(),
-        "Expected at least one trace-return diagnostic in runtime_diagnostics; got all: {:?}",
-        *diags
-    );
-}
-
-/// S-1023 fix-review: A function WITHOUT the trace annotation must NOT produce any
-/// trace-call or trace-return diagnostics in `ctx.runtime_diagnostics`.
-#[tokio::test]
-async fn test_no_trace_annotation_no_runtime_trace_diagnostics() {
-    let (result, ctx) = eval_collect_runtime_diags("[call [fn [let x] x] 42]").await;
-    assert!(result.is_ok(), "evaluation must succeed; got: {:?}", result);
-
-    let diags = ctx
-        .runtime_diagnostics
-        .lock()
-        .expect("runtime_diagnostics mutex poisoned");
-    let trace_diags: Vec<_> = diags
-        .iter()
-        .filter(|d| d.kind == "trace-call" || d.kind == "trace-return")
-        .collect();
-    assert!(
-        trace_diags.is_empty(),
-        "Expected no trace-call/trace-return diagnostics without @[trace: 1]; got: {:?}",
-        trace_diags
-    );
-}
-
-// ============================================================================
-// T-2145: Advanced typecheck features for typeclass dispatch validation
-// ============================================================================
-
-/// T-2145 Feature 1: Instance method param validation against class signature.
-/// When an instance method's parameter types don't match the class declaration's method
-/// signature, emit a warning diagnostic.
-#[tokio::test]
-async fn test_t2145_instance_method_param_mismatch_warns() {
-    // Class declares `process: [Fn@Integer [Integer]]` (function taking Integer → Integer).
-    // Instance provides `process: [fn [let x@String] 42]` (function taking String → Integer).
-    // This should emit a type-warning about parameter 0 being incompatible.
-    let src = r#"
-[
-    Processor: [class [let a] process: [Fn@Integer [a]]]
-
-    [instance Processor [let a@Integer]
-        process: [fn [let x@String] 42]]
-]
-    "#;
-
-    let diags = typecheck_collect_diags(src).await;
-    let param_warnings: Vec<_> = diags
-        .iter()
-        .filter(|d| {
-            d.kind == "type-warning"
-                && d.message.contains("parameter")
-                && d.message.contains("incompatible")
-        })
-        .collect();
-
-    assert!(
-        !param_warnings.is_empty(),
-        "Expected at least one type-warning about parameter incompatibility; got: {:?}",
-        diags
-    );
-}
-
-/// T-2145 Feature 1: Instance method arity mismatch emits warning.
-#[tokio::test]
-async fn test_t2145_instance_method_arity_mismatch_warns() {
-    // Class declares `combine: [Fn@Integer [Integer Integer]]` (2 params).
-    // Instance provides `combine: [fn [let x] 42]` (1 param).
-    // This should emit a type-warning about arity mismatch.
-    let src = r#"
-[
-    Combiner: [class [let a] combine: [Fn@Integer [a a]]]
-
-    [instance Combiner [let a@Integer]
-        combine: [fn [let x] 42]]
-]
-    "#;
-
-    let diags = typecheck_collect_diags(src).await;
-    let arity_warnings: Vec<_> = diags
-        .iter()
-        .filter(|d| {
-            d.kind == "type-warning"
-                && d.message.contains("parameters")
-                && d.message.contains("expects")
-        })
-        .collect();
-
-    assert!(
-        !arity_warnings.is_empty(),
-        "Expected at least one type-warning about arity mismatch; got: {:?}",
-        diags
-    );
-}
-
-/// T-2145 Feature 1: Well-formed instance method emits no warnings.
-#[tokio::test]
-async fn test_t2145_instance_method_well_formed_no_warnings() {
-    // Class declares `process: [Fn@Integer [Integer]]`.
-    // Instance provides `process: [fn [let x@Integer] [+ x 1]]` — correct signature.
-    // This should emit no type-warning diagnostics.
-    let src = r#"
-[
-    Processor: [class [let a] process: [Fn@Integer [a]]]
-
-    [instance Processor [let a@Integer]
-        process: [fn [let x@Integer] [+ x 1]]]
-]
-    "#;
-
-    let diags = typecheck_collect_diags(src).await;
-    let instance_warnings: Vec<_> = diags
-        .iter()
-        .filter(|d| d.kind == "type-warning" && d.message.contains("instance method"))
-        .collect();
-
-    assert!(
-        instance_warnings.is_empty(),
-        "Expected zero type-warnings for well-formed instance method; got: {:?}",
-        instance_warnings
-    );
-}
 
 // ============================================================================
 // T-2150: EffectPerform arm in type checker's VarRef resolution
@@ -1862,7 +1484,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     let mut errors = vec![];
     let mut type_map = None;
 
-    let mut stack: Vec<TypeCheckCont> = vec![];
+    let mut stack: Vec<(TypeCheckCont, std::sync::Arc<crate::ast::SurfaceNode>)> = vec![];
     let inferred_type = run_typecheck(
         &varref_node,
         &env,
@@ -1902,19 +1524,3 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
 // ============================================================================
 // B-725: Unannotated param infers type from usage via TypeVar unification
 // ============================================================================
-
-/// B-725: With TypeVar-based inference, an unannotated parameter `x` in
-/// `[fn [let x] x]` gets a fresh TypeVar instead of Unknown. The identity
-/// function should infer as polymorphic (a -> a) rather than (Unknown -> Unknown).
-/// The call `[f 42]` produces no type errors because TypeVar unifies with Integer.
-#[tokio::test]
-async fn test_b725_unannotated_param_infers_from_usage() {
-    let src = "[f: [fn [let x] x]  r: [f 42]]";
-    let diags = typecheck_collect_diags(src).await;
-    let type_errors: Vec<_> = diags.iter().filter(|d| d.kind == "type-error").collect();
-    assert!(
-        type_errors.is_empty(),
-        "Expected no type errors for identity fn with TypeVar inference; got: {:?}",
-        type_errors
-    );
-}

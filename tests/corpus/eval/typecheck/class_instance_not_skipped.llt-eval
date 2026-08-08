@@ -1,0 +1,26 @@
+# Class and instance declarations are type-checked, not skipped.
+# Before S-1041, ClassDecl/InstanceDecl entries were skipped during type inference.
+# After the fix, they are processed like other dict entries — type-checked and
+# evaluated to their runtime representation (class metadata dict, instance method dict).
+[
+  Printable: [class [let a]
+    print: [Fn@String [a]]]
+
+  PrintableInt: [instance Printable [pattern [a@Integer]]:
+    print: [fn [let x] [str "int:" [str x]]]]
+
+  PrintableStr: [instance Printable [pattern [a@String]]:
+    print: [fn [let x] [str "str:" x]]]
+
+  show-int: [fn [let x@Integer] [PrintableInt.print x]]
+  show-str: [fn [let x@String] [PrintableStr.print x]]
+
+  r1: [show-int 42]
+  r2: [show-str "hello"]
+]
+
+---
+
+[r1: %.r1  r2: %.r2]
+=== out
+["r1": "int:42"  "r2": "str:hello"]

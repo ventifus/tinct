@@ -1,0 +1,3 @@
+[match [a: 1  b: 2]  [a: x  b: x]: "body"]
+=== error
+[E025] match exhaustion

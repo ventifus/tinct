@@ -1,0 +1,8 @@
+# Dot access on an existing key returns the field's value.
+# [d: [a: 1]  result: d.a] — result accesses key a from sibling d
+# via letrec scope. After evaluation, result must be Int(1).
+# Exercises the builtin-dict-get path for all dot-access expressions.
+# Migrated from eval_access.rs::test_dot_access_existing_key
+[d: [a: 1]  result: d.a]
+=== out
+Dict({"d": Dict({"a": 1}), "result": 1})

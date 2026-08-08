@@ -192,7 +192,7 @@ pub(crate) async fn process_document(
 Type-checks a single `SurfaceDocument`. Processes all items (Decls and Exprs) in source order, extending the env incrementally.
 
 **Intermediates** (all but the last item): For each intermediate item:
-- If `SurfaceExpression::Dict`: calls `run_typecheck_dict` directly to get schemes with let-generalization, extends env with those schemes
+- If `SurfaceExpression::Dict`: calls `typecheck_letrec_group` directly to get schemes with let-generalization, extends env with those schemes
 - Otherwise: calls `run_typecheck` at `level + 1`, then generalizes the result TypeValue if it is a `TypeValue.Record` and extends env
 
 **Last item**: Treated identically to intermediates except the resulting schemes are placed in the `result_env` (not discarded).
@@ -205,22 +205,22 @@ Returns `(result_env, result_type, errors)`. The `result_env` is always parented
 
 ## Dict Type Inference — Multi-Pass Algorithm
 
-Dict entries form a letrec-scoped mutual recursion group. `run_typecheck_dict` in `src/typecheck_cek.rs` is the canonical implementation, called from:
-- `DictPassZero` handler in `apply_cont`
+Dict entries form a letrec-scoped mutual recursion group. `typecheck_letrec_group` in `src/typecheck_cek.rs` is the canonical implementation, called from:
+- `LetrecGroupPassZero` handler in `apply_cont`
 - `process_document` (top-level dict expressions)
 - `infer_step::Sequential` (intermediate dict bodies)
 
 The algorithm uses Tarjan's SCC decomposition to find groups of mutually dependent entries, then infers each SCC together:
 
-**Pass 0 — Key resolution:** `entry_key_name` resolves the key for each entry (auto-index, string literal, or VarRef). Runs synchronously in the `Dict` arm of `infer_step` before pushing `DictPassZero`.
+**Step 1 — Key resolution:** `entry_key_name` resolves the key for each entry (auto-index, string literal, or VarRef). Runs synchronously in the `Dict` arm of `infer_step` before pushing `LetrecGroupPassZero`.
 
-**Pass 1 — SCC decomposition + fresh TypeVar allocation:** `compute_sccs()` runs Tarjan's algorithm (iterative, not recursive, to avoid Rust stack overflow on large prelude dicts). `collect_dependencies` does a worklist walk of each entry's value AST to identify references to sibling bindings. Fresh TypeVars are allocated for all entries at `level + 1`.
+**Step 2 — SCC decomposition + fresh TypeVar allocation:** `compute_sccs()` runs Tarjan's algorithm (iterative, not recursive, to avoid Rust stack overflow on large prelude dicts). `collect_dependencies` does a worklist walk of each entry's value AST to identify references to sibling bindings. Fresh TypeVars are allocated for all entries at `level + 1`.
 
-**Pass 2 — Type alias registration:** `[type ...]` declarations in the dict are registered in `dict_env` as `TypeAlias` stubs with `body: make_typevalue_unknown()`, so forward references within the same dict resolve correctly. Real bodies are filled in during inference.
+**Step 3 — Type declaration registration:** `[type ...]` declarations in the dict are registered in `dict_env` as `TypeAlias` stubs with `body: make_typevalue_unknown()`, so forward references within the same dict resolve correctly. Real bodies are filled in during inference.
 
-**Pass 3 — Letrec inference per SCC:** Each SCC is inferred together. Mutually recursive entries get fresh type variables; their types are unified as uses are encountered. `local_subst` carries per-SCC constraints; bindings propagate into `state.subst` after each entry so sibling entries can see resolved types.
+**Step 4 — Letrec inference per SCC:** Each SCC is inferred together. Mutually recursive entries get fresh type variables; their types are unified as uses are encountered. `local_subst` carries per-SCC constraints; bindings propagate into `state.subst` after each entry so sibling entries can see resolved types.
 
-**Pass 4 — Generalization:** After all SCCs are processed, entries are generalized (let-generalization; generalized entries are stored as TypeValues). Entries that are part of a recursive SCC are not generalized (value restriction — recursive bindings may not be polymorphic).
+**Step 5 — Generalization:** After all SCCs are processed, entries are generalized (let-generalization; generalized entries are stored as TypeValues). Entries that are part of a recursive SCC are not generalized (value restriction — recursive bindings may not be polymorphic).
 
 Returns `(dict_type, schemes, referenced, errors)`:
 - `dict_type`: the inferred `TypeValue.Record` for the whole dict
@@ -382,15 +382,15 @@ This is the single canonical call-checking path — the old `check_call`/`check_
 
 Note: guard inference for each arm still calls `run_typecheck` internally (via `setup_match_arm_env`). Only arm body inference is fully iterative via the `MatchArm` chain.
 
-### DictPassZero
+### LetrecGroupPassZero
 
-**Pushed by:** the `Dict { entries }` arm of `infer_step`. The Dict arm pushes `DictPassZero` and returns `Done(Unknown TypeValue)` to immediately trigger `apply_cont`.
+**Pushed by:** the `Dict { entries }` arm of `infer_step`. The Dict arm pushes `LetrecGroupPassZero` and returns `Done(Unknown TypeValue)` to immediately trigger `apply_cont`.
 
 **Carries:** `entries`, `env`.
 
-**What `apply_cont` does:** calls `Box::pin(run_typecheck_dict(&entries, &env, state, type_map)).await` directly, which runs the full multi-pass SCC-based dict inference. Returns `Done(record_type)`.
+**What `apply_cont` does:** calls `Box::pin(typecheck_letrec_group(&entries, &env, state, type_map)).await` directly, which runs the full multi-pass SCC-based dict inference. Returns `Done(record_type)`.
 
-Note: `Done(Unknown TypeValue)` is returned by the `Dict` arm of `infer_step` as a sentinel to immediately trigger `apply_cont`. This Unknown TypeValue is never propagated as an inference result — it is immediately consumed by the `DictPassZero` handler which replaces it with the actual dict type from `run_typecheck_dict`.
+Note: `Done(Unknown TypeValue)` is returned by the `Dict` arm of `infer_step` as a sentinel to immediately trigger `apply_cont`. This Unknown TypeValue is never propagated as an inference result — it is immediately consumed by the `LetrecGroupPassZero` handler which replaces it with the actual dict type from `typecheck_letrec_group`.
 
 ### SequentialNonDictIntermediate
 
@@ -402,7 +402,7 @@ Note: `Done(Unknown TypeValue)` is returned by the `Dict` arm of `infer_step` as
 - `saved_use_def: HashMap<BindingId, HashSet<BindingId>>` — snapshot of `state.use_def` taken at Sequential entry. Restored after `AfterSequentialFinal` fires so nested Sequentials do not corrupt the outer Sequential's BFS liveness graph.
 - `saved_current_binding: Option<BindingId>` — snapshot of `state.current_binding` taken at Sequential entry. Restored alongside `saved_use_def`.
 
-**What `apply_cont` does:** receives the TypeValue of the just-evaluated non-Dict intermediate. Dispatches on its TypeValue ctor tag: `TV_RECORD` → extracts record fields and extends `env` with their generalized TypeValues; `TV_UNKNOWN` / `TV_TOP` → no extension (gradual typing boundary); otherwise → records a `not_a_record` error. Processes remaining intermediates: if the next intermediate is a Dict, calls `run_typecheck_dict` synchronously and loops; if it is non-Dict, pushes another `SequentialNonDictIntermediate` and returns `Eval`. When all intermediates are done, pushes `AfterSequentialFinal` and returns `Eval(last, env)`.
+**What `apply_cont` does:** receives the TypeValue of the just-evaluated non-Dict intermediate. Dispatches on its TypeValue ctor tag: `TV_RECORD` → extracts record fields and extends `env` with their generalized TypeValues; `TV_UNKNOWN` / `TV_TOP` → no extension (gradual typing boundary); otherwise → records a `not_a_record` error. Processes remaining intermediates: if the next intermediate is a Dict, calls `typecheck_letrec_group` synchronously and loops; if it is non-Dict, pushes another `SequentialNonDictIntermediate` and returns `Eval`. When all intermediates are done, pushes `AfterSequentialFinal` and returns `Eval(last, env)`.
 
 Note: Dict intermediates inside a `Sequential` are handled synchronously within both `infer_step` and `SequentialNonDictIntermediate` to avoid the overhead of an additional continuation level for the common case.
 
@@ -474,23 +474,23 @@ Dict type inference is multi-pass. The CEK machine encodes this as:
 
 ```
 infer_step(Dict)
-    → resolve key names synchronously (Pass 0)
-    → push DictPassZero
+    → resolve key names synchronously (step 1: key resolution)
+    → push LetrecGroupPassZero
     → Done(Unknown)   ← sentinel to trigger apply_cont immediately
 
-apply_cont(DictPassZero)
-    → run_typecheck_dict(entries, env, state, type_map, span)
+apply_cont(LetrecGroupPassZero)
+    → typecheck_letrec_group(entries, env, state, type_map, span)
         → compute_sccs() [Tarjan — iterative, synchronous]
-        → allocate fresh TypeVars for all entries (Pass 1)
-        → register type aliases in dict_env (Pass 2)
+        → allocate fresh TypeVars for all entries (step 2: SCC computation + pre-allocation)
+        → register type declarations in dict_env (step 3: type declaration registration)
         → for each SCC (in reverse topological order):
-            → infer all members together (Pass 3)
-            → generalize non-recursive entries (Pass 4)
+            → infer all members together (step 4: per-SCC inference)
+            → generalize non-recursive entries (step 5: per-SCC generalization)
         → return (dict_type, schemes, errors)
     → Done(dict_type)
 ```
 
-The `Done(Unknown)` returned by `infer_step(Dict)` is a sentinel to immediately trigger `apply_cont`. It is consumed entirely by `DictPassZero` and never propagates as an inference result.
+The `Done(Unknown)` returned by `infer_step(Dict)` is a sentinel to immediately trigger `apply_cont`. It is consumed entirely by `LetrecGroupPassZero` and never propagates as an inference result.
 
 Both `compute_sccs` and `collect_dependencies` have their canonical implementations in `src/typecheck_cek.rs`. `src/typecheck_dict.rs` now contains only unit tests for `compute_sccs`.
 
@@ -626,11 +626,11 @@ Instance resolution recursion depth is tracked in `state.instance_resolution_dep
 
 The type checker interacts with other subsystems through well-defined channels. However, there are some layering issues worth noting:
 
-1. **`infer_step::Sequential` calls `run_typecheck_dict` synchronously** for Dict intermediates to avoid an extra continuation level. This is correct but means Dict inference is not fully lazy within a Sequential — it runs before the non-Dict intermediates in the continuation queue are processed.
+1. **`infer_step::Sequential` calls `typecheck_letrec_group` synchronously** for Dict intermediates to avoid an extra continuation level. This is correct but means Dict inference is not fully lazy within a Sequential — it runs before the non-Dict intermediates in the continuation queue are processed.
 
 2. **`infer_step` no longer special-cases `if`, `get`, or `get-in`.** The `infer_if_expr`, `infer_get_call`, and `infer_get_in_call` special-case functions were deleted in sprints S-985 and S-992. All three call forms now route through the general `Call → CallFunc → CallArg` CEK path. No recursive `Box::pin(run_typecheck(...))` calls remain in `infer_step`.
 
-3. **Two parallel type-checking paths.** `typecheck_surface_program_annotation_table_with_env` (eval pipeline) and `typecheck_surface_program_with_env` (LSP + loader pipeline) share `process_document` and `run_typecheck_dict` but have different entry-point signatures and seed different parts of `InferState`.
+3. **Two parallel type-checking paths.** `typecheck_surface_program_annotation_table_with_env` (eval pipeline) and `typecheck_surface_program_with_env` (LSP + loader pipeline) share `process_document` and `typecheck_letrec_group` but have different entry-point signatures and seed different parts of `InferState`.
 
 ---
 
@@ -638,9 +638,9 @@ The type checker interacts with other subsystems through well-defined channels. 
 
 | File | Role |
 |---|---|
-| `src/typecheck_cek.rs` | `TypeCheckCont`, `TypeCheckAction`, `run_typecheck`, `infer_step`, `apply_cont`, `run_typecheck_dict`, `compute_sccs`, `collect_dependencies`, `entry_key_name`, `infer_fn_push_cont`, `infer_var_ref` |
+| `src/typecheck_cek.rs` | `TypeCheckCont`, `TypeCheckAction`, `run_typecheck`, `infer_step`, `apply_cont`, `typecheck_letrec_group`, `compute_sccs`, `collect_dependencies`, `entry_key_name`, `infer_fn_push_cont`, `infer_var_ref` |
 | `src/typecheck.rs` | Top-level entry points (`typecheck_surface_program_annotation_table`, `typecheck_surface_program_annotation_table_with_env`, `typecheck_surface_program_with_env`, `typecheck_surface_program`); `process_document`; `merge_env_schemes_into_env`; `register_type_aliases_env`; module declarations for all typecheck submodules |
-| `src/typecheck_dict.rs` | Unit tests for `compute_sccs`. Dict inference is fully in `typecheck_cek::run_typecheck_dict`. |
+| `src/typecheck_dict.rs` | Unit tests for `compute_sccs`. Dict inference is fully in `typecheck_cek::typecheck_letrec_group`. |
 | `src/typecheck_call.rs` | `widen_literal_types`, `is_concrete_type` — two small helpers retained after CEK machine migration absorbed all call-checking logic |
 | `src/typecheck_annot.rs` | Annotation resolution: `resolve_annotation`, `resolve_type_head`, `resolve_type_name`, `resolve_fn_type`, `resolve_fn_metadata`, `resolve_annotated`, `resolve_type_assert`, `infer_variance`, `annotation_to_variance` |
 | `src/typecheck_narrow.rs` | Path-sensitive narrowing: `extract_param_indices`, `extract_pattern_types`, `patterns_overlap`, `types_can_unify` |

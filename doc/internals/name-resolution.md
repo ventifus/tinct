@@ -288,7 +288,7 @@ Every frame in `unified_frames` carries a `FrameKind` tag indicating its origin:
 - **`DocSequential`** — document-level sequential injection frames, produced by `walk_surface_document_with_offset` when it processes top-level dict bodies. These frames have absolute slot numbers >= `initial_offset` (i.e., >= `root_group_len + env_dict_len`).
 - **`DictLetrec`** — dict letrec scopes and fn-body sequential injection frames, produced when the resolver enters a nested dict scope or walks fn-body intermediate dicts. These frames may have small absolute slot numbers starting from 0, relative to the fn-body's own eval_dict_core frame.
 
-The distinction matters for the type-checker's `body_slot_base` disambiguation: when multiple frames in `resolver_frames` contain the same key name (e.g., both a document-level dict and a fn-body intermediate dict define `Boolean`), `DocSequential` frames must be preferred over `DictLetrec` frames to avoid fn-body slot numbers contaminating document-level slot base computation. The Sequential handler's Phase 2 and the `run_typecheck_dict` fallback both apply this `DocSequential`-first filter.
+The distinction matters for the type-checker's `body_slot_base` disambiguation: when multiple frames in `resolver_frames` contain the same key name (e.g., both a document-level dict and a fn-body intermediate dict define `Boolean`), `DocSequential` frames must be preferred over `DictLetrec` frames to avoid fn-body slot numbers contaminating document-level slot base computation. The Sequential handler's Phase 2 and the `typecheck_letrec_group` fallback both apply this `DocSequential`-first filter.
 
 ---
 

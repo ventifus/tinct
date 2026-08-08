@@ -1,0 +1,21 @@
+# Instance references class declared later in same dict.
+# The Decl arm in collect_dependencies recursively collects dependencies from
+# the instance's class reference, creating an edge Instance -> Class even when
+# the class appears later in source order. SCC analysis ensures the class is
+# processed before the instance.
+[
+  MyInstanceInt: [instance MyClass [pattern [a@Integer]]:
+    my-method: [fn [let x] [+ x 100]]]
+
+  MyClass: [class [let a]
+    my-method: [Fn@Integer [a]]]
+
+  use-instance: [fn [let x@Integer] [MyInstanceInt.my-method x]]
+  result: [use-instance 42]
+]
+
+---
+
+%.result
+=== out
+Int(142)

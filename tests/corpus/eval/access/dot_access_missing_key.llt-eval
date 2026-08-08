@@ -1,0 +1,9 @@
+# Dot access on a missing key produces an error when the access is forced.
+# [d: [a: 1]  result: d.b] — key "b" does not exist in d. Forcing result
+# must produce an error, not a silent absent/empty value.
+# Migrated from eval_access.rs::test_dot_access_missing_key
+[d: [a: 1]  result: d.b]
+---
+[try [fn [] %.result]]
+=== error
+key not found

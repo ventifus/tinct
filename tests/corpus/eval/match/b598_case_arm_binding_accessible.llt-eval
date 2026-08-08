@@ -1,0 +1,3 @@
+[r: [match 42 [case [let v] v v] ...: 0]]
+=== out
+{"r": 42}

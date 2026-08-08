@@ -929,11 +929,13 @@ fn lower_expr(
         },
 
         SurfaceExpression::MakeVariant {
-            tag,
+            tycon,
+            ctor_name,
             payload,
             type_decl_id,
         } => CoreExpr::Variant {
-            tag: tag.clone(),
+            tycon: tycon.clone(),
+            ctor_name: ctor_name.clone(),
             payload: Some(Arc::new(lower_inner(
                 payload,
                 diagnostics,
@@ -1201,8 +1203,14 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::Placeholder { .. } => SurfaceExpression::Placeholder(None, None),
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.
-        CoreExpr::Variant { tag, .. } => SurfaceExpression::VarRef {
-            name: tag.clone(),
+        CoreExpr::Variant {
+            tycon, ctor_name, ..
+        } => SurfaceExpression::VarRef {
+            name: if tycon.is_empty() {
+                ctor_name.clone()
+            } else {
+                format!("{}.{}", tycon, ctor_name)
+            },
             escaped: false,
             resolution: crate::ast::Resolution::new(),
 

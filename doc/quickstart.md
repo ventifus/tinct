@@ -43,6 +43,8 @@ Tinct has one syntactic form: `[...]`. Whether it's a dict, a function call, or 
 
 `[]` is null. `[null? []]` → `true`.
 
+**Mutual recursion:** All entries in a dict form a letrec group — they can reference each other regardless of source order. Type declarations, class declarations, and annotations create dependency edges; the type checker processes strongly-connected components in topological order.
+
 ---
 
 ## Strings

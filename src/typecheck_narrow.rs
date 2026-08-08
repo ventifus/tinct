@@ -18,7 +18,7 @@
 //!    that variable is narrowed to `TypeName`.
 //!
 //! Both mechanisms produce a `Vec<Option<TypeValue>>` derived locally in `typecheck_cek.rs`
-//! from `@[narrows: T]` / `@[is: T]` annotations during Pass 4 of `run_typecheck_dict`.
+//! from `@[narrows: T]` / `@[is: T]` annotations during the generalization step of `typecheck_letrec_group`.
 //! `extract_narrowings` looks up the called function in the type environment and reads
 //! the narrowings from the callee's TypeValue.Scheme `narrowings` payload field. Any
 //! function — not just prelude predicates — can participate in narrowing by using these

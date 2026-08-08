@@ -1,0 +1,11 @@
+# TypeDecl entries must be type-checked and not skipped.
+# Before S-1041, TypeDecl entries were skipped during inference, causing a panic
+# when inferred_type was accessed. After the fix, TypeDecl entries get
+# inferred_type_decl_id set during type checking and evaluate to the type dict.
+[
+  Color: [type Red Green Blue]
+  Status: [type Ok Error]
+  value: Color.Red
+]
+=== out
+["Color": ["Red": []  "Green": []  "Blue": []]  "Status": ["Ok": []  "Error": []]  "value": []]

@@ -1,0 +1,3 @@
+[r: [match 41 [case [let v] v [builtin-int-add v 1]] ...: 0]]
+=== out
+{"r": 42}

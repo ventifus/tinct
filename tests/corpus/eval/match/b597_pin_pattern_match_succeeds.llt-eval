@@ -1,0 +1,3 @@
+[x: 42  r: [match 42  $x: "hit"  ...: "miss"]]
+=== out
+{"r": "hit", "x": 42}

@@ -1,0 +1,7 @@
+# Integer-key dot access: [d: ["x"]  result: d.0] → String("x").
+# Auto-indexed list ["x"] creates key 0 → "x". Dot access .0 desugars to
+# builtin-dict-get with an integer key. The result must be String("x").
+# Migrated from eval_access.rs::test_bracket_access
+[d: ["x"]  result: d.0]
+=== out
+Dict({"d": Dict({"0": String("x")}), "result": String("x")})

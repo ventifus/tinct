@@ -127,7 +127,7 @@ pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 
 **Two population sites:**
 
-1. **`register_type_aliases` in `src/typecheck.rs`** — called during dict type-checking passes (Pass 1 / Pass 3). Processes each `[type ...]` entry: builtin-type declarations insert `TyConDef { builtin_type: Some(discriminant), constructors: [], variance: [] }`; nominal ADTs insert `TyConDef { constructors: [(qualified_tag, arity), ...], variance: inferred_or_declared, builtin_type: None }`. Both `target_env.insert_tycon_def` (scoped TypeEnv) and `state.tycon_env.insert` (flat InferState accumulator) are updated together.
+1. **`register_type_aliases` in `src/typecheck.rs`** — called during dict type-checking passes (step 2 / step 4). Processes each `[type ...]` entry: builtin-type declarations insert `TyConDef { builtin_type: Some(discriminant), constructors: [], variance: [] }`; nominal ADTs insert `TyConDef { constructors: [(qualified_tag, arity), ...], variance: inferred_or_declared, builtin_type: None }`. Both `target_env.insert_tycon_def` (scoped TypeEnv) and `state.tycon_env.insert` (flat InferState accumulator) are updated together.
 
 2. **`InferState::new()` in `src/type_infer.rs`** — seeds builtin TyCons in `tycon_env` at inference-state creation time, before any user code is processed. Currently seeds: `Seq` (1 param, Covariant), `Map` (2 params, [Invariant, Covariant]), `Handle` (1 param, Covariant). All three have `builtin_type: Some(name)` set. This enables `is_subtype` to apply variance-directed subtyping for builtin parameterized types.
 
@@ -1159,8 +1159,8 @@ Matches `TypeValue.Scheme` by ctor, extracts the `vars` dict and `body` TypeValu
 **Modified dict inference (letrec with generalization):**
 
 ```text
-Pass 0 — Key resolution: unchanged
-Pass 1 — Bind all (B-520):
+Step 1 — Key resolution: unchanged
+Step 2 — SCC computation + pre-allocation (B-520):
          For each fn-form entry kᵢ (SurfaceExpression::Fn):
            αᵢ = Fn([fresh βⱼ for each param j], variadic) → fresh γᵢ  at level ℓ+1
            Recursive calls see a Function-shaped callee so the
@@ -1172,22 +1172,22 @@ Pass 1 — Bind all (B-520):
            Forward references see αⱼ (participates in unification,
            unlike the previous Unknown which silently matched everything).
          Γ' = Γ, k₁:α₁, ..., kₙ:αₙ
-Pass 2 — Type aliases: unchanged. Aliases remain monomorphic
+Step 3 — Type declaration registration: unchanged. Aliases remain monomorphic
          (IndexMap<String, TypeValue>, not a TypeValue.Scheme).
-Pass 3 — Infer values: at level ℓ+1, for each non-alias
+Step 4 — Per-SCC inference: at level ℓ+1, for each non-alias
          entry kᵢ, infer Γ' ⊢ eᵢ : τᵢ, then unify(αᵢ, τᵢ).
          Apply resulting substitution S.
 
          Implementation note: substitution is handled through `state.ctx: InferenceContext`.
          `ctx.subst` is a monotonic map — bindings accumulate and are never removed. When
          a TypeVar is unified with a TypeValue, `ctx.bind(name, val)` records the binding.
-         Forward-reference TypeVars from Pass 1 are resolved by `ctx.apply_subst()` when
+         Forward-reference TypeVars from step 2 are resolved by `ctx.apply_subst()` when
          their binding propagates from an earlier sibling. This is the mechanism that makes
          letrec sibling cross-references work (e.g. `[a: "hi"  b: [length a]]`): `a`'s
          TypeVar is bound during its own inference step; when `b` is inferred, `ctx.apply_subst`
          chases the binding to the concrete String type.
 
-Pass 4 — Generalize: for each entry kᵢ,
+Step 5 — Per-SCC generalization: for each entry kᵢ,
          σᵢ = generalize_tv(ℓ, ctx.apply_subst(αᵢ), ctx)
          Update Γ'(kᵢ) = σᵢ
 Build Record(k₁:ctx.apply_subst(α₁)...kₙ:ctx.apply_subst(αₙ), Closed).
@@ -1211,9 +1211,9 @@ The Record type uses monomorphic (substitution-applied) types for the type map a
 
 **Level increments at document boundaries.** Each `infer_dict` call increments ℓ_current (via `ctx.current_level`), and `typecheck_document` also increments ℓ_current before inferring any non-Dict expression at a document boundary (both last and non-last positions). For `[a: [b: 42]]`, the outer dict runs at ℓ+1 and the inner dict at ℓ+2. For a non-Dict Record expression at a document boundary, ℓ_current is incremented to ℓ+1 before inference and restored to ℓ afterward, following the same protocol as `infer_dict`. This matches standard HM let-nesting: each binding scope increments the level.
 
-**Forward references within letrec.** Within a single dict (letrec group), all entries share level ℓ+1 during Pass 3 inference. Forward references see the monomorphic αᵢ from Pass 1 — these are fresh TypeVars that participate in unification via `ctx.subst`, producing binding constraints. After Pass 4, downstream consumers of the dict see polymorphic schemes.
+**Forward references within letrec.** Within a single dict (letrec group), all entries share level ℓ+1 during step 4 inference. Forward references see the monomorphic αᵢ from step 2 — these are fresh TypeVars that participate in unification via `ctx.subst`, producing binding constraints. After step 5, downstream consumers of the dict see polymorphic schemes.
 
-Mutually recursive entries constrain each other through unification during Pass 3. This is standard monomorphic letrec (OCaml, Haskell `let rec`) — entries see each other as monomorphic during inference, not polymorphic. Polymorphic recursion (Mycroft 1984) is not supported: it would require fixpoint iteration to convergence, which is more complex and can diverge. The monomorphic restriction is sufficient for tinct's use cases.
+Mutually recursive entries constrain each other through unification during step 4. This is standard monomorphic letrec (OCaml, Haskell `let rec`) — entries see each other as monomorphic during inference, not polymorphic. Polymorphic recursion (Mycroft 1984) is not supported: it would require fixpoint iteration to convergence, which is more complex and can diverge. The monomorphic restriction is sufficient for tinct's use cases.
 
 **Document-level scheme threading.** `typecheck_document` splats dict Record fields into the parent environment for downstream document expressions. To preserve polymorphism across `---` boundaries, schemes are stored in `Env` slots as `EnvSlot.scheme: Option<TypeValue>`. `typecheck_document` inserts these into the parent `Env` so downstream document expressions see polymorphic types via `Env.get_scheme()`.
 
@@ -1230,9 +1230,9 @@ Mutually recursive entries constrain each other through unification during Pass 
 - **Monomorphic binding** (bare TypeValue, no `TypeValue.Scheme` wrapper): routes to `check_call`, which infers the function expression normally. No instantiation occurs. The inferred type is typically concrete, so the CALL-MONO path fires directly.
 - **Non-VarRef function expressions** (e.g., inline lambdas): always route to `check_call`.
 
-**Substitution name uniqueness.** `ctx.subst` is keyed by TypeVar name. User-annotated type variables (e.g., `@a`) are mapped to fresh names by `resolve_type_name` during Pass 3 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different name than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same TypeVar (ensuring constraints are shared as intended). After Pass 4 generalization produces `TypeValue.Scheme` values, `instantiate_scheme_tv` renames the quantified variables to fresh names at each call site, preventing cross-call-site interference.
+**Substitution name uniqueness.** `ctx.subst` is keyed by TypeVar name. User-annotated type variables (e.g., `@a`) are mapped to fresh names by `resolve_type_name` during step 4 inference. Each function entry maintains its own `ann_mapping` (a per-function `HashMap<String, String>`), so `@a` in one function maps to a different name than `@a` in a sibling function. Within a single function, all references to the same annotation name `@a` resolve to the same TypeVar (ensuring constraints are shared as intended). After step 5 generalization produces `TypeValue.Scheme` values, `instantiate_scheme_tv` renames the quantified variables to fresh names at each call site, preventing cross-call-site interference.
 
-**Error recovery.** If Pass 3 inference fails for an entry, `TypeValue.Unknown` is used for that entry. Level lowering from partial unification before the failure is retained in `ctx.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in Pass 4 proceeds for successfully-inferred entries; failed entries use the bare `TypeValue.Unknown` without a scheme wrapper.
+**Error recovery.** If step 4 inference fails for an entry, `TypeValue.Unknown` is used for that entry. Level lowering from partial unification before the failure is retained in `ctx.levels` — this is conservative (may prevent generalization of some variables) but safe. Generalization in step 5 proceeds for successfully-inferred entries; failed entries use the bare `TypeValue.Unknown` without a scheme wrapper.
 
 **Key invariants:**
 
@@ -1241,7 +1241,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 3. **Value restriction (not needed):** Tinct does not have mutable references, so the value restriction (Wright, 1995) is unnecessary. All bindings can be generalized safely.
 4. **Occurs check:** Unchanged — prevents infinite types regardless of levels.
 5. **Substitution idempotence:** Unchanged — transitive chasing is orthogonal to levels.
-6. **Letrec monomorphism during inference:** Within a letrec group, entries see each other as monomorphic during Pass 3 (fresh type variables, not schemes). Polymorphism only becomes visible after Pass 4 generalization.
+6. **Letrec monomorphism during inference:** Within a letrec group, entries see each other as monomorphic during step 4 (fresh type variables, not schemes). Polymorphism only becomes visible after step 5 generalization.
 7. **TypeVar equality:** `TypeValue.Var` equality is by name (the `name` field in the payload dict). Levels are consulted only during generalization (via `ctx.levels`) — they are not compared for equality.
 
 **Key implementation types:**
@@ -1254,7 +1254,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `Env::get_scheme()` | Returns `Option<TypeValue>` — the stored scheme (if any) |
 | `Env::insert_scheme()` | `fn(name, Option<TypeValue>)` |
 | `infer_expr` VAR case | `instantiate_scheme_tv(env.get_scheme(name)?, &mut state.ctx, state.ctx.current_level)` |
-| `infer_dict` | Passes 0–4: key resolution, placeholder binding, type-alias pass, value inference+unify, generalize |
+| `infer_dict` | Steps 1–5: key resolution, SCC computation + pre-allocation, type declaration registration, per-SCC inference+unify, per-SCC generalization |
 | `typecheck_document` | Splats `EnvSlot.scheme` values into parent env across `---` boundaries |
 | `instantiate_scheme_tv()` | `fn(scheme: &TypeValue, ctx: &mut InferenceContext, level: u32) -> Option<TypeValue>` — `type_env.rs` |
 | `generalize_tv()` | `fn(enclosing_level: u32, ty: &TypeValue, ctx: &InferenceContext) -> TypeValue` — `type_env.rs` |

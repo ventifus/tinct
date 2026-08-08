@@ -761,7 +761,7 @@ pub(crate) fn eval_core_expr<'a>(
             // (no parent TypeDecl — shouldn't happen in practice), fall back to crate::type_infer::make_typevalue_unknown().
             // Registered identities are set by CoreExpr::TypeDecl before any constructor is forced.
             CoreExpr::Variant {
-                tag,
+                ctor_name,
                 payload,
                 type_decl_id,
                 ..
@@ -769,7 +769,7 @@ pub(crate) fn eval_core_expr<'a>(
                 None => Ok(Arc::new(Thunk::value(
                     Value::Variant {
                         type_decl_id: *type_decl_id,
-                        ctor: Arc::from(tag.as_str()),
+                        ctor: Arc::from(ctor_name.as_str()),
                         payload: None,
                         type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                     },
@@ -781,7 +781,7 @@ pub(crate) fn eval_core_expr<'a>(
                     Ok(Arc::new(Thunk::value(
                         Value::Variant {
                             type_decl_id: *type_decl_id,
-                            ctor: Arc::from(tag.as_str()),
+                            ctor: Arc::from(ctor_name.as_str()),
                             payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
                             type_val: Some(crate::type_infer::make_typevalue_nominal(
                                 *type_decl_id,

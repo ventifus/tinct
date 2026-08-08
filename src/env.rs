@@ -74,7 +74,7 @@ pub struct Env {
     /// Instance declarations keyed by mangled name (e.g., "ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⟨Int⟩⧽").
     pub(crate) instances: indexmap::IndexMap<String, InstanceDecl>,
     /// Type constructor definitions registered in this scope frame.
-    /// Populated alongside `InferState.tycon_env` during type-checking Pass 2.
+    /// Populated alongside `InferState.tycon_env` during the type declaration registration step of typecheck_letrec_group.
     /// Enables scoped TyConDef lookup via the Env parent chain, complementing
     /// the flat `InferState.tycon_env` store.
     pub(crate) tycon_defs: HashMap<String, Arc<crate::type_def::TyConDef>>,

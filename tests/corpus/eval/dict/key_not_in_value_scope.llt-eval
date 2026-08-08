@@ -1,0 +1,8 @@
+# Dict key names do not leak into sibling value scope as bare names.
+# [k: "found"  v: 42] — the value 42 must not accidentally resolve to k's value.
+# Guards against key names escaping into sibling scopes.
+# After evaluation, v must be exactly Int(42), not String("found").
+# Migrated from eval_dict.rs::test_dict_key_not_in_value_scope
+[k: "found"  v: 42]
+=== out
+Dict({"k": String("found"), "v": 42})

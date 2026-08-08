@@ -1264,11 +1264,11 @@ Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-g
 
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
 
-1. **Pass 0:** Resolve key names (literal keys extracted; computed keys resolved via type inference in parent scope)
-2. **Pass 1:** Bind all non-alias key names to fresh TypeVar placeholders. For `[fn ...]` entries, the placeholder is `TypeValue.Fn { params: Dict, return: TypeValue, variadic: Bool }` — enabling recursive calls to resolve the function shape without a return annotation. For non-fn entries, the placeholder is a bare fresh TypeVar as before.
-3. **Pass 2:** Register type aliases sequentially (each alias sees previously registered siblings)
-4. **Pass 3:** Infer actual value types and bind Pass 1 placeholders in the substitution. For fn entries, the pre-bound ret TypeVar is directly inserted into `subst.type_map` (not unified — `infer_dict` is sync; `unify` is async), resolving recursive references to the concrete return type.
-5. **Pass 4:** Generalize field types into polymorphic schemes
+1. **Step 1 (key resolution):** Resolve key names (literal keys extracted; computed keys resolved via type inference in parent scope)
+2. **Step 2 (SCC computation + pre-allocation):** Bind all non-alias key names to fresh TypeVar placeholders. For `[fn ...]` entries, the placeholder is `TypeValue.Fn { params: Dict, return: TypeValue, variadic: Bool }` — enabling recursive calls to resolve the function shape without a return annotation. For non-fn entries, the placeholder is a bare fresh TypeVar as before.
+3. **Step 3 (type declaration registration):** Register type aliases sequentially (each alias sees previously registered siblings)
+4. **Step 4 (per-SCC inference):** Infer actual value types and bind step 2 placeholders in the substitution. For fn entries, the pre-bound ret TypeVar is directly inserted into `subst.type_map` (not unified — `infer_dict` is sync; `unify` is async), resolving recursive references to the concrete return type.
+5. **Step 5 (per-SCC generalization):** Generalize field types into polymorphic schemes
 
 **Substitution idempotence invariant.** `InferenceContext::apply_subst()` (in `src/type_infer.rs`) is idempotent — applying the same substitution twice yields the same result. Achieved by transitive chaining through the `subst` HashMap (Robinson 1965).
 

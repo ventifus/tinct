@@ -941,13 +941,23 @@ fn core_expr_to_tinct(
         }
 
         // Variant: `TypeName.CtorName` or `[TypeName.CtorName payload]`
-        CoreExpr::Variant { tag, payload, .. } => {
+        CoreExpr::Variant {
+            tycon,
+            ctor_name,
+            payload,
+            ..
+        } => {
+            let qualified_tag = if tycon.is_empty() {
+                ctor_name.clone()
+            } else {
+                format!("{}.{}", tycon, ctor_name)
+            };
             if let Some(inner) = payload {
                 let inner_str =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
-                Ok(format!("[{} {}]", tag, inner_str))
+                Ok(format!("[{} {}]", qualified_tag, inner_str))
             } else {
-                Ok(tag.clone())
+                Ok(qualified_tag)
             }
         }
 
@@ -1306,7 +1316,17 @@ fn core_expr_to_tinct_raw(
         }
 
         // Variant: tag is opaque AST data inside quotes — emit as-is.
-        CoreExpr::Variant { tag, payload, .. } => {
+        CoreExpr::Variant {
+            tycon,
+            ctor_name,
+            payload,
+            ..
+        } => {
+            let qualified_tag = if tycon.is_empty() {
+                ctor_name.clone()
+            } else {
+                format!("{}.{}", tycon, ctor_name)
+            };
             if let Some(inner) = payload {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
@@ -1316,9 +1336,9 @@ fn core_expr_to_tinct_raw(
                     rename_map,
                     ctx,
                 )?;
-                Ok(format!("[{} {}]", tag, s))
+                Ok(format!("[{} {}]", qualified_tag, s))
             } else {
-                Ok(tag.clone())
+                Ok(qualified_tag)
             }
         }
 

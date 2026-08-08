@@ -624,9 +624,22 @@ pub fn core_expr_to_expr_value(
 
         // ── Variant ──────────────────────────────────────────────────────────────
         // This is AST variant construction (Expr.Variant), NOT Value::Variant itself
-        CoreExpr::Variant { tag, payload, .. } => {
+        CoreExpr::Variant {
+            tycon,
+            ctor_name,
+            payload,
+            ..
+        } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            fields.insert(HashableValue::Str("tag".into()), mk(string_val(tag)));
+            let qualified_tag = if tycon.is_empty() {
+                ctor_name.clone()
+            } else {
+                format!("{}.{}", tycon, ctor_name)
+            };
+            fields.insert(
+                HashableValue::Str("tag".into()),
+                mk(string_val(&qualified_tag)),
+            );
             fields.insert(
                 HashableValue::Str("payload".into()),
                 match payload {

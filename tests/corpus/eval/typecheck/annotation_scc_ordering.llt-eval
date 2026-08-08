@@ -1,0 +1,15 @@
+# Annotation reference creates SCC dependency edge.
+# A function annotated with @MyType appears BEFORE the MyType: [type ...] declaration
+# in the same dict. The annotation reference in collect_dependencies creates an edge
+# MyType <- annotated-fn, ensuring MyType is processed first in the SCC analysis.
+[
+  annotated-fn: [fn@MyType [let x] [MyType.Ok value: x]]
+  MyType: [type Ok: [value: Integer] Error: [msg: String]]
+  result: [annotated-fn 42]
+]
+
+---
+
+%.result
+=== out
+Variant(MyType.Ok, {"value": Int(42)})

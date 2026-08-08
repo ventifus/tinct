@@ -1,0 +1,7 @@
+# [x: 42  y: x] — letrec scope: y can see sibling x.
+# The dict uses letrec semantics: y's value expression x must resolve
+# to sibling x's value. Exercises FlatEnv child-scope allocation.
+# Migrated from eval_dict.rs::test_dict_letrec_value_scope
+[x: 42  y: x]
+=== out
+Dict({"x": 42, "y": 42})

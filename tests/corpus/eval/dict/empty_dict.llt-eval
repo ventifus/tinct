@@ -1,0 +1,5 @@
+# Empty dict [] evaluates to an empty Value::Dict.
+# Migrated from eval_dict.rs::test_empty_dict
+[]
+=== out
+Dict({})

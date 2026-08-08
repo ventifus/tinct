@@ -80,8 +80,8 @@ pub(crate) struct ClassDeclSurface<'a> {
 /// is evaluated directly (no Sequential wrapper).
 ///
 /// After `run_typecheck`, ctor_schemes (ADT constructor TypeSchemes) are recovered from the
-/// diff of `state.tycon_env` against a pre-run snapshot: `run_typecheck_dict` does not return
-/// ctor_schemes for the terminal dict (the DictPassZero caller discards the schemes return),
+/// diff of `state.tycon_env` against a pre-run snapshot: `typecheck_letrec_group` does not return
+/// ctor_schemes for the terminal dict (the LetrecGroupPassZero caller discards the schemes return),
 /// so we reconstruct them here for result_env.
 ///
 /// # Returns
@@ -247,7 +247,7 @@ pub(crate) async fn process_document(
 
     // Snapshot tycon_env keys before the run.
     // ctor_schemes for ADT types declared in the last Dict expression are not propagated
-    // by the DictPassZero handler (it discards the schemes return from run_typecheck_dict).
+    // by the LetrecGroupPassZero handler (it discards the schemes return from typecheck_letrec_group).
     // We reconstruct them by diffing tycon_env against this snapshot: new zero-arity TyCon
     // entries represent types declared here.
     let tycon_keys_before: std::collections::HashSet<u64> =
@@ -319,14 +319,14 @@ pub(crate) async fn process_document(
     let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
 
     // Extract schemes from the last expression's result type.
-    // The last Dict goes through DictPassZero → run_typecheck_dict, which produces mono field
+    // The last Dict goes through LetrecGroupPassZero → typecheck_letrec_group, which produces mono field
     // types (not generalized at the call site). Generalize at enclosing_level here —
-    // run_typecheck_dict restores state.ctx.current_level to enclosing_level before returning, so TypeVars
+    // typecheck_letrec_group restores state.ctx.current_level to enclosing_level before returning, so TypeVars
     // at level > enclosing_level are the ones from this document's inference and are safe to
     // generalize.
     //
     // Note: TyConDef entries (e.g., `Direction: [type North South]`) are excluded from
-    // the record's field_types in run_typecheck_dict. They are NOT in result_ty.fields
+    // the record's field_types in typecheck_letrec_group. They are NOT in result_ty.fields
     // and are handled separately below via the tycon_env diff.
     if let Some(fields) = extract_record_fields(&result_ty) {
         for (name, field_tv) in fields {
@@ -339,9 +339,9 @@ pub(crate) async fn process_document(
     }
 
     // Reconstruct schemes for zero-arity ADT types declared in this document.
-    // TypeAlias entries have is_alias=true in run_typecheck_dict and are excluded from
-    // resolved_field_types, so they are not in result_ty.fields. The DictPassZero handler
-    // also discards the schemes return from run_typecheck_dict. We recover both by diffing
+    // TypeAlias entries have is_type_decl=true in typecheck_letrec_group and are excluded from
+    // resolved_field_types, so they are not in result_ty.fields. The LetrecGroupPassZero handler
+    // also discards the schemes return from typecheck_letrec_group. We recover both by diffing
     // state.tycon_env against the pre-run snapshot:
     //   1. The type name itself (e.g., "Direction") → adt_value_type(body) — the constructor dict
     //   2. Each constructor name (e.g., "North", "South") → the NominalVariant type
@@ -371,7 +371,7 @@ pub(crate) async fn process_document(
     (Arc::new(RwLock::new(result_env_inner)), result_ty, errors)
 }
 
-/// Pre-register type aliases in `target_env` before Pass 1 inference.
+/// Pre-register type aliases in `target_env` before letrec inference.
 ///
 /// Map a resolved TypeValue (Arc<Value>) to the dispatch tag string used in instance dispatch.
 ///
@@ -417,7 +417,7 @@ pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
 
 /// Extract the `name` string from a TypeValue.Op variant payload (synchronously).
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
-/// Called from process_document (via CEK Sequential) and typecheck_cek::run_typecheck_dict — no Expr bridge needed.
+/// Called from process_document (via CEK Sequential) and typecheck_cek::typecheck_letrec_group — no Expr bridge needed.
 pub(crate) fn infer_class_decl_from_surface(
     decl: &ClassDeclSurface<'_>,
     state: &mut InferState,
@@ -446,7 +446,7 @@ pub(crate) fn infer_class_decl_from_surface(
         )]);
     }
 
-    // Method body validation is handled by dict inference (Pass 2, typecheck_dict.rs).
+    // Method body validation is handled by dict inference (type declaration registration step, typecheck_dict.rs).
     // resolve_type_expr is async and cannot be called from sync infer_class_decl_from_surface.
     // method_signatures is populated as empty (matches existing ClassDecl construction sites).
 
@@ -548,7 +548,7 @@ type SurfaceMatchArmData<'a> = (
 );
 
 /// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
-/// Called from process_document (via CEK Sequential) and typecheck_cek::run_typecheck_dict — no Expr bridge needed.
+/// Called from process_document (via CEK Sequential) and typecheck_cek::typecheck_letrec_group — no Expr bridge needed.
 pub(crate) async fn infer_instance_decl_from_surface(
     class_name: &str,
     arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],

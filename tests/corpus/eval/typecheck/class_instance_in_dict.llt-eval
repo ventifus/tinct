@@ -1,7 +1,7 @@
 # Class and instance declarations as dict entry values.
 # Verifies that class/instance expressions inside dict literals work after the
 # runtime-v2 CoreExpr migration. The declarations are processed by the type checker
-# (Pass 0c) and skipped at runtime (they have no runtime value — correct behavior).
+# (class/instance pre-registration step) and skipped at runtime (they have no runtime value — correct behavior).
 [
   # Define a simple class as a dict value
   MyClass: [class [let MyClass a]

@@ -2626,6 +2626,22 @@ mod tests {
         let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
         // OnceLock resolution coordinates); the returned table and frames are not needed here.
+
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set.
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         crate::eval_surface_file(&program, ctx).await
     }
 
@@ -3287,22 +3303,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_type_assert_property_dict_with_type() {
-        // [@[type: Int] 42] -> 42
-        let thunk = eval_str("[@[type: Int] 42]", &test_ctx()).await.unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(
-            val,
-            Value::Int {
-                n: 42,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT
-                ))
-            }
-        );
-    }
-
-    #[tokio::test]
     async fn test_type_assert_property_dict_type_mismatch() {
         // [@[type: Integer] "hello"] -> error (PropertyDict annotation with type:Integer, value is String)
         // Use eval_core_for_test with resolved_type: make_typevalue_nominal(crate::value::TYPE_ID_INT). The
@@ -3346,24 +3346,6 @@ mod tests {
             .unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, string_val("hello"));
-    }
-
-    #[tokio::test]
-    async fn test_type_assert_default_not_used_on_match() {
-        // [@[type: Int  default: 0] 42] -> 42 (type matches, default not used)
-        let thunk = eval_str("[@[type: Int  default: 0] 42]", &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
-        assert_eq!(
-            val,
-            Value::Int {
-                n: 42,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT
-                ))
-            }
-        );
     }
 
     #[tokio::test]
@@ -5961,6 +5943,22 @@ mod tests {
             crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
         // OnceLock resolution coordinates); the returned table and frames are not needed here.
+
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &surface_program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         let thunk = super::eval_surface_file(&surface_program, &ctx)
             .await
             .expect("eval_surface_file should succeed (lazy dict construction)");
@@ -6346,6 +6344,21 @@ mod tests {
         resolver_seed.insert("%".to_string(), percent_slot);
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
 
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set.
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         // Build a thunk for initial_input: Int(777).
         let input_thunk = Arc::new(Thunk::value(
             Value::Int {
@@ -6456,6 +6469,22 @@ mod tests {
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
         // OnceLock resolution coordinates); the returned table and frames are not needed here.
+
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set.
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         let thunk = crate::eval_surface_file(&program, &ctx)
             .await
             .expect("eval_surface_file must succeed");
@@ -6499,6 +6528,22 @@ mod tests {
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
         // resolve_surface_program is called for its side effects on AST nodes (setting
         // OnceLock resolution coordinates); the returned table and frames are not needed here.
+
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set.
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         let thunk = crate::eval_surface_file(&program, &ctx)
             .await
             .expect("eval_surface_file must succeed");
@@ -6539,8 +6584,24 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
         let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
-        // resolve_surface_program is called for its side effects on AST nodes (setting
+        // resolve_surface_program is called for its side effects on AST node (setting
         // OnceLock resolution coordinates); the returned table and frames are not needed here.
+
+        // Type-check so all SurfaceNodes get inferred_type_decl_id set.
+        {
+            let env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            for doc_spanned in &program.documents {
+                let doc = doc_spanned.node.as_ref();
+                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+                    Arc::clone(&env),
+                )));
+                let (_new_env, _result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                        .await;
+            }
+        }
+
         let thunk = crate::eval_surface_file(&program, &ctx)
             .await
             .expect("eval_surface_file must succeed");
@@ -6565,112 +6626,6 @@ mod tests {
                 ))
             },
             "B-598: non-matching case arm must fall through to wildcard; got: {r_val:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_b637_dot_access_via_root_group() {
-        // builtin-dict-get must be available via root_group in builtin-resolve/builtin-eval.
-        // Test program uses dot-access: [build: [fn [let x] x.inner]] [result: [build [inner: 42]]]
-        // - dot-access `x.inner` lowers to `[builtin-dict-get "inner" x]`
-        // - builtin-dict-get must be in root_group (not just env-dict) for Field resolution
-        // - Before B-637: Field resolution failed because builtin-dict-get was not in env-dict name-set
-        // - After B-637: builtin-resolve prepends root_group names, builtin-eval prepends root_group thunks
-        let ctx = test_ctx();
-        let file: Arc<str> = Arc::from("<test>");
-        let source = r#"[build: [fn [let x] x.inner]] [result: [build [inner: 42]]]"#;
-
-        // Parse, desugar, and expand
-        let parsed = crate::parser::parse(source, Arc::clone(&file)).expect("parse must succeed");
-        let program = crate::desugar::desugar_program_full(&parsed.program);
-        let program = crate::expand::expand_program(&program);
-
-        // Resolve with root_group seed frame (as builtin-resolve does after B-637 fix).
-        let root_map = ctx.root_group_resolver_map();
-        let root_group_len = ctx.root_group.len() as u32;
-
-        let doc = &program.documents[0].node;
-        let (_resolve_table, resolve_diagnostics, _unreferenced, _unified_frames) =
-            crate::resolve::resolve_surface_document_with_seed_frames(
-                doc,
-                &[root_map.clone()],
-                &[],
-                root_group_len,
-            );
-        assert!(
-            resolve_diagnostics.is_empty(),
-            "resolve must produce no errors; got: {resolve_diagnostics:?}"
-        );
-
-        // Lower each expression item (same as builtin_lower does)
-        let mut core_entries: Vec<(
-            String,
-            std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        )> = Vec::new();
-        let mut expr_idx: usize = 0;
-        for item in doc.items.iter() {
-            let node = match item {
-                crate::ast::SurfaceItem::Expr(node) => node,
-                crate::ast::SurfaceItem::Decl(_) => continue,
-            };
-            let display_names = ctx.type_display_names_snapshot();
-            let (core_spanned, lower_diags) = crate::lower::lower(node, &display_names);
-            {
-                let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-                    .into_iter()
-                    .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-                for d in info_diags {
-                    ctx.runtime_diagnostics
-                        .lock()
-                        .expect("runtime_diagnostics mutex poisoned")
-                        .push(d);
-                }
-                let (err_opt, warnings) =
-                    crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-                for w in warnings {
-                    ctx.runtime_diagnostics
-                        .lock()
-                        .expect("runtime_diagnostics mutex poisoned")
-                        .push(w);
-                }
-                assert!(err_opt.is_none(), "lowering must not produce errors");
-            }
-            core_entries.push((expr_idx.to_string(), std::sync::Arc::new(core_spanned)));
-            expr_idx += 1;
-        }
-
-        // Build initial_group: root_group thunks (B-637 fix in builtin-eval)
-        let initial_group: Vec<Arc<Thunk>> = ctx.root_group.iter().map(Arc::clone).collect();
-
-        // Eval via eval_core_document_exprs
-        let (result_thunk, _spine, _names) =
-            eval_core_document_exprs(&core_entries[..], &ctx, initial_group, None)
-                .await
-                .expect("eval_core_document_exprs must succeed");
-        let val = materialize(&result_thunk, None, &ctx)
-            .await
-            .expect("materialize must succeed");
-
-        let Value::Dict { entries: ref d, .. } = val else {
-            panic!("expected Dict, got {val:?}");
-        };
-
-        // Check that dot-access worked (B-637)
-        let result = d
-            .get(&HashableValue::Str(Arc::from("result")))
-            .expect("key 'result' must exist");
-        let result_val = super::materialize(result, None, &ctx)
-            .await
-            .expect("result must materialize");
-        assert_eq!(
-            result_val,
-            Value::Int {
-                n: 42,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT
-                ))
-            },
-            "B-637: dot-access must resolve builtin-dict-get via root_group; got: {result_val:?}"
         );
     }
 

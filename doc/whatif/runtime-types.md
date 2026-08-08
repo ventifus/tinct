@@ -226,7 +226,7 @@ declaration (from its env slot), stable across all Arc frame allocations (unlike
 differ between dict_env, scc_env, and new_env_inner). Two bindings with the same name but from
 different source locations have distinct `def_span` values and are therefore distinct `BindingId`s.
 
-In `run_typecheck_dict`, each entry's inference is bracketed with a save/restore:
+In `typecheck_letrec_group`, each entry's inference is bracketed with a save/restore:
 
 ```rust
 let saved_binding = state.current_binding.take();
