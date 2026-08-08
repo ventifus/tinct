@@ -1518,20 +1518,20 @@ pub enum CoreExpr {
     // Literals
     Int {
         value: i64,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     /// Unsigned 64-bit integer (from `42u`, `0xFFu` literals)
     U64 {
         value: u64,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Float {
         value: f64,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Str {
         value: String,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
 
     // VarRef with closure-converted addressing
@@ -1542,7 +1542,7 @@ pub enum CoreExpr {
         /// PropertyDict for user-written @[type: T  ...] forms.
         /// None for plain variable references.
         annotation: Option<Spanned<Annotation>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
 
     /// First-class variant constructor. Produced by lower.rs for type declarations.
@@ -1555,7 +1555,7 @@ pub enum CoreExpr {
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
         /// types in nested scopes from sharing identities (B-714).
         type_decl_id: u64,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
 
     UnitVariant {
@@ -1565,25 +1565,25 @@ pub enum CoreExpr {
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
         /// types in nested scopes from sharing identities (B-714).
         type_decl_id: u64,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
     // No Field variant — dot-access is desugared to Call(builtin-dict-get, [key, target]) by the lowerer.
     Sequential {
         exprs: Vec<Arc<Spanned<CoreExpr>>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Dict {
         entries: Vec<Spanned<CoreEntry>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Call {
         func: Arc<Spanned<CoreExpr>>,
         args: Vec<Arc<Spanned<CoreExpr>>>,
         named_args: Vec<Spanned<CoreNamedArg>>,
         implied: bool,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
         type_instantiation: Option<std::collections::HashMap<String, Arc<crate::value::Value>>>,
     },
     Fn {
@@ -1609,45 +1609,45 @@ pub enum CoreExpr {
         /// `FnAnnotation.extra` at function-definition time (enabling `trace:` and other
         /// annotation-driven runtime behavior). `None` for unannotated functions.
         return_ann: Option<Spanned<Annotation>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     TypeAssert {
         expr: Arc<Spanned<CoreExpr>>,
         check: TypeAssertCheck,
         pipeline_blame: Option<crate::error::PipelineBlame>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Rest {
         name: Option<String>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Match {
         scrutinee: Arc<Spanned<CoreExpr>>,
         arms: Vec<CoreClause>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Quote {
         expr: Arc<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Unquote {
         expr: Arc<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     UnquoteSplice {
         expr: Arc<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     PatternDecl {
         bindings: Vec<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     LetDecl {
         bindings: Vec<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     Placeholder {
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
     /// A type declaration with `repr:` metadata.
     ///
@@ -1667,7 +1667,7 @@ pub enum CoreExpr {
         is_pred: Option<Arc<Spanned<CoreExpr>>>,
         /// The inner constructor dict produced by `lower_type_alias_to_constructor_dict`.
         inner: Arc<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
 
     /// A named type declaration — wrapper that creates a stable Arc-level identity for the type.
@@ -1697,13 +1697,13 @@ pub enum CoreExpr {
         type_decl_id: u64,
         /// The inner expression: `CoreExpr::Dict` or `CoreExpr::ReprDecl { inner: Dict }`.
         inner: Arc<Spanned<CoreExpr>>,
-        inferred_type: Option<Arc<crate::value::Value>>,
+        inferred_type: Arc<crate::value::Value>,
     },
 }
 
 impl CoreExpr {
     /// Returns the inferred type for this expression.
-    pub fn inferred_type(&self) -> Option<&Arc<crate::value::Value>> {
+    pub fn inferred_type(&self) -> &Arc<crate::value::Value> {
         match self {
             CoreExpr::Int { inferred_type, .. }
             | CoreExpr::U64 { inferred_type, .. }
@@ -1726,12 +1726,12 @@ impl CoreExpr {
             | CoreExpr::LetDecl { inferred_type, .. }
             | CoreExpr::Placeholder { inferred_type }
             | CoreExpr::ReprDecl { inferred_type, .. }
-            | CoreExpr::TypeDecl { inferred_type, .. } => inferred_type.as_ref(),
+            | CoreExpr::TypeDecl { inferred_type, .. } => inferred_type,
         }
     }
 
     /// Set the inferred type on this expression.
-    pub fn set_inferred_type(&mut self, tv: Option<Arc<crate::value::Value>>) {
+    pub fn set_inferred_type(&mut self, tv: Arc<crate::value::Value>) {
         match self {
             CoreExpr::Int { inferred_type, .. }
             | CoreExpr::U64 { inferred_type, .. }

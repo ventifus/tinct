@@ -2021,18 +2021,7 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
-        let inferred_type = expr
-            .node
-            .inferred_type()
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!(
-                    "CoreExpr at {}:{}-{}:{} ({}) has no inferred_type — type checker did not annotate this expression",
-                    expr.span.start_line, expr.span.start_col,
-                    expr.span.end_line, expr.span.end_col,
-                    expr.span.file,
-                )
-            });
+        let inferred_type = Arc::clone(expr.node.inferred_type());
         let type_inst = frame.type_inst.clone();
         Self {
             inner: ThunkInner {
@@ -2170,12 +2159,7 @@ impl Thunk {
         } else {
             Some(Box::new(named))
         };
-        let inferred_type = spec
-            .original_call
-            .node
-            .inferred_type()
-            .cloned()
-            .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+        let inferred_type = Arc::clone(spec.original_call.node.inferred_type());
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -2563,7 +2547,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_INT),
             },
             span.clone(),
         ));
@@ -2742,7 +2726,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_INT),
             },
             span.clone(),
         ));
@@ -2774,7 +2758,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_INT),
             },
             span.clone(),
         ));
@@ -2794,7 +2778,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
+                inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_INT),
             },
             span.clone(),
         ));

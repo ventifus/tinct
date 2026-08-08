@@ -21,6 +21,7 @@ use crate::eval::{
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
+use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
 use crate::value::{
     string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
 };
@@ -633,7 +634,7 @@ pub(crate) fn apply_predicate_to_subject(
             original_call: Arc::new(Spanned {
                 node: CoreExpr::Int {
                     value: 0,
-                    inferred_type: None,
+                    inferred_type: make_typevalue_nominal(TYPE_ID_INT),
                 },
                 span: pred_span,
             }),
@@ -3090,7 +3091,7 @@ pub(crate) async fn apply_cont(
                                     original_call: Arc::new(Spanned {
                                         node: CoreExpr::Int {
                                             value: 0,
-                                            inferred_type: None,
+                                            inferred_type: make_typevalue_nominal(TYPE_ID_INT),
                                         },
                                         span: match_span.clone(),
                                     }),
@@ -3585,7 +3586,7 @@ fn eval_structural_pattern_inner<'a>(
                                     args: args.to_vec(),
                                     named_args: named_args.to_vec(),
                                     implied: *implied,
-                                    inferred_type: None,
+                                    inferred_type: make_typevalue_unknown(),
                                     type_instantiation: None,
                                 },
                                 match_span.clone(),
@@ -3669,7 +3670,7 @@ fn eval_structural_pattern_inner<'a>(
                                     args: args.to_vec(),
                                     named_args: named_args.to_vec(),
                                     implied: *implied,
-                                    inferred_type: None,
+                                    inferred_type: make_typevalue_unknown(),
                                     type_instantiation: None,
                                 },
                                 match_span.clone(),
@@ -4036,9 +4037,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
-                    )),
+                    ),
                 },
                 value_span.clone(),
             )),
@@ -4096,9 +4097,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
-                    )),
+                    ),
                 },
                 same_span.clone(),
             )),
@@ -4143,9 +4144,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
-                    )),
+                    ),
                 },
                 span.clone(),
             )),
@@ -4228,7 +4229,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
+                    inferred_type: crate::type_infer::make_typevalue_unknown(),
                 },
                 span.clone(),
             )),
@@ -4310,7 +4311,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
+                    inferred_type: crate::type_infer::make_typevalue_unknown(),
                 },
                 span.clone(),
             )),
@@ -4425,9 +4426,9 @@ mod tests {
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int {
             value: 99,
-            inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+            inferred_type: crate::type_infer::make_typevalue_nominal(
                 crate::value::TYPE_ID_INT,
-            )),
+            ),
         }));
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4562,9 +4563,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_DICT,
-                    )),
+                    ),
                 },
                 span.clone(),
             )),
@@ -4652,9 +4653,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_DICT,
-                    )),
+                    ),
                 },
                 span.clone(),
             )),
@@ -4672,9 +4673,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
-                    )),
+                    ),
                 },
                 span.clone(),
             )),
@@ -4945,9 +4946,9 @@ mod cek_lifecycle_tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 0,
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
-                    )),
+                    ),
                 },
                 span.clone(),
             )),
@@ -5010,9 +5011,9 @@ mod cek_lifecycle_tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 0,
-                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
-                    )),
+                    ),
                 },
                 span.clone(),
             )),

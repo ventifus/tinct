@@ -682,7 +682,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(crate::ast::Spanned::new(
             crate::ast::CoreExpr::Placeholder {
-                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
+                inferred_type: crate::type_infer::make_typevalue_unknown(),
             },
             span.clone(),
         ));
