@@ -151,26 +151,30 @@ pub(crate) fn lower_inner(
     } else {
         arc.span.clone()
     };
-    let core_expr = lower_expr(arc, &arc.expr, diagnostics, type_display_names);
 
-    // Apply type guard if the type checker set one on this node (T-2013).
-    // Use TypeAssertCheck::Resolved — the guard_type is already a resolved TypeValue.
-    // No annotation sentinel needed; the check field carries the TypeValue directly.
+    // Read the inferred type from the SurfaceNode BEFORE lowering, so lower_expr
+    // can use it directly during CoreExpr construction — no temporary Unknown.
+    let inferred_type = arc
+        .inferred_type_decl_id
+        .get()
+        .cloned()
+        .unwrap_or_else(make_typevalue_unknown);
+
+    let mut core_expr = lower_expr(arc, &arc.expr, diagnostics, type_display_names);
+    core_expr.set_inferred_type(Arc::clone(&inferred_type));
+
+    // Apply type guard if the type checker set one on this node.
     let core_expr = if let Some(guard_type) = arc.type_guard.get() {
         CoreExpr::TypeAssert {
             expr: Arc::new(crate::ast::Spanned::new(core_expr, span.clone())),
             check: crate::ast::TypeAssertCheck::Resolved(guard_type.clone()),
             pipeline_blame: None,
-            inferred_type: make_typevalue_unknown(),
+            inferred_type,
         }
     } else {
         core_expr
     };
 
-    let mut core_expr = core_expr;
-    if let Some(tv) = arc.inferred_type_decl_id.get() {
-        core_expr.set_inferred_type(Arc::clone(tv));
-    }
     Spanned::new(core_expr, span)
 }
 
