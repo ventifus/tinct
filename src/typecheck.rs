@@ -7,9 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::type_tags::*;
 // Pattern import deleted (T-1750)
-use crate::ast::{
-    Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode,
-};
+use crate::ast::{Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode};
 use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::InferenceContext;

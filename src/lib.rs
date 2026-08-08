@@ -176,6 +176,10 @@ pub async fn run_loader_pipeline(
     init_source: &str,
     init_path: &str,
     injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
+    core_env: Arc<std::sync::RwLock<crate::env::Env>>,
+    core_tycon_env: crate::type_def::TyConEnv,
+    core_type_stage_data: crate::type_infer::TypeStageData,
+    core_type_name_to_id: std::collections::HashMap<String, u64>,
 ) -> Result<(), String> {
     let loader_sf: Arc<str> = Arc::from(init_path);
     let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
@@ -189,8 +193,16 @@ pub async fn run_loader_pipeline(
     let loader_program = desugar::desugar_program_full(&loader_parsed.program);
     let loader_program = expand::expand_program(&loader_program);
 
-    // Build pipeline state from the Rust-native builtins.
-    let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
+    // Build pipeline state from the already-processed builtin_core results.
+    // The caller (main.rs) processes builtin_core.llt via build_builtin_core_envs
+    // and passes the results here. This function does not embed builtin_core.llt.
+    let mut state = crate::pipeline::PipelineState::from_core_envs(
+        core_env,
+        core_tycon_env,
+        core_type_stage_data,
+        core_type_name_to_id,
+    );
+    state.infer_state.eval_ctx = Some(Arc::clone(eval_ctx));
 
     // Inject capability types from the caller's injected_type_env.
     // PipelineState::from_builtins seeds all root_group slots (builtins + caps)
@@ -214,22 +226,10 @@ pub async fn run_loader_pipeline(
         }
     }
 
-    // Process builtin_core.llt first (embedded).
-    let bc_source = include_str!("../stdlib/builtin_core.llt");
-    let bc_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
-    let bc_program = desugar::desugar_program_full(
-        &parse(bc_source, bc_sf)
-            .map_err(|e| format!("builtin_core.llt parse error: {e}"))?
-            .program,
-    );
-    let bc_program = expand::expand_program(&bc_program);
-    for doc in &bc_program.documents {
-        crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
-            .await
-            .map_err(|e| format!("builtin_core.llt: {e}"))?;
-    }
-
     // Process init program documents.
+    // builtin_core.llt is already processed by build_builtin_core_envs (called by the
+    // caller in main.rs). Its results are seeded into PipelineState via from_builtins +
+    // capability injection above. The init program's documents are processed here.
     for doc in &loader_program.documents {
         crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
             .await
@@ -1150,7 +1150,14 @@ mod tests {
                 std::collections::HashMap::new(),
             );
             for doc in &program.documents {
-                let _ = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
+                let diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
+                for d in &diags {
+                    assert!(
+                        d.level != crate::error::DiagnosticLevel::Err,
+                        "unexpected type error in test: {}",
+                        d.message
+                    );
+                }
             }
         }
         let ctx = test_ctx().await;

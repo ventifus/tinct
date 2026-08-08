@@ -225,7 +225,11 @@ pub async fn process_pipeline_document(
     // Step 1: Resolve this document against the current environment.
     // env_names are exports from PREVIOUS documents (not builtins — those are in resolver_frames).
     // For the first document, this is empty.
-    let env_names: Vec<String> = Vec::new(); // TODO: populate from previous document exports
+    // env_names is empty: bootstrap documents share names via the root group (seed frames),
+    // not via cross-document exports. All builtin + builtin_core names are in resolver_frames.
+    // Document exports become part of the root group for subsequent documents via state.env,
+    // which is reflected in resolver_frames after each document is processed.
+    let env_names: Vec<String> = Vec::new();
     let root_group_len = state
         .resolver_frames
         .iter()

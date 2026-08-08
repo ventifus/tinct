@@ -2225,12 +2225,22 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             Some(std::sync::Arc::new(std::sync::RwLock::new(inj)))
         };
 
+        // Re-fetch builtin_core envs for the loader pipeline.
+        // build_builtin_core_envs is cached internally — no redundant re-parsing.
+        let (loader_core_env, loader_core_tycon_env, loader_core_name_to_id) =
+            tinct::build_builtin_core_envs().await;
+        let loader_core_ts_data = tinct::get_builtin_core_type_stage_scope().await;
+
         tinct::run_loader_pipeline(
             &eval_ctx,
             &libdir_for_loader,
             init_source,
             init_path,
             injected_type_env,
+            loader_core_env,
+            loader_core_tycon_env,
+            loader_core_ts_data,
+            loader_core_name_to_id,
         )
         .await
     })
@@ -2341,17 +2351,12 @@ async fn run_fmt(
         let (env_arc, tycon_env, type_name_to_id) = tinct::build_builtin_core_envs().await;
         let ts_data = tinct::get_builtin_core_type_stage_scope().await;
         let ctx = EvalContext::new_empty();
-        let mut state = tinct::PipelineState::from_core_envs(
-            env_arc,
-            tycon_env,
-            ts_data,
-            type_name_to_id,
-        );
+        let mut state =
+            tinct::PipelineState::from_core_envs(env_arc, tycon_env, ts_data, type_name_to_id);
 
         // Process each document through the pipeline: resolve → typecheck → eval.
         for doc in &program.documents {
-            if let Err(e) = tinct::process_pipeline_document(doc, &mut state, &ctx).await
-            {
+            if let Err(e) = tinct::process_pipeline_document(doc, &mut state, &ctx).await {
                 return Err(e.to_string());
             }
         }
