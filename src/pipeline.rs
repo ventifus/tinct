@@ -133,6 +133,10 @@ pub async fn process_pipeline_document(
     )
     .await;
 
+    // Log ALL type checker diagnostics.
+    for err in &tc_errors {
+        eprintln!("[pipeline typecheck] {:?}: {}", err.level, err.message);
+    }
     // Propagate type checker errors.
     for err in &tc_errors {
         if err.level == crate::error::DiagnosticLevel::Err {

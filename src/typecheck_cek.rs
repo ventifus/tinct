@@ -1723,8 +1723,12 @@ async fn apply_cont(
         // not an intermediate scope-chain body. The returned record type carries the full
         // structural type information.
         TypeCheckCont::DictPassZero { entries, env } => {
+            let body_slot_base_pre: Option<u32> = entries
+                .first()
+                .and_then(|e| e.node.assigned_slot.get().copied());
             let (record_type, _schemes, _nested_dict_env, mut dict_errs) =
-                Box::pin(run_typecheck_dict(&entries, &env, state, type_map, None)).await;
+                Box::pin(run_typecheck_dict(&entries, &env, state, type_map, body_slot_base_pre))
+                    .await;
             errors.append(&mut dict_errs);
             TypeCheckAction::Done(record_type)
         }

@@ -948,25 +948,32 @@ fn lower_expr(
             type_decl_id,
             params: _,
             inner,
-        } => CoreExpr::TypeDecl {
-            type_name: type_name.clone(),
-            type_decl_id: *type_decl_id,
-            inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
-            inferred_type: None,
-        },
+        } => {
+            let inner_lowered = Arc::new(lower_inner(inner, diagnostics, type_display_names));
+            let inferred = inner.inferred_type_decl_id.get().cloned();
+            CoreExpr::TypeDecl {
+                type_name: type_name.clone(),
+                type_decl_id: *type_decl_id,
+                inner: inner_lowered,
+                inferred_type: inferred,
+            }
+        }
 
         SurfaceExpression::ReprDecl {
             repr,
             is_pred,
             inner,
-        } => CoreExpr::ReprDecl {
-            repr: *repr,
-            is_pred: is_pred
-                .as_ref()
-                .map(|pred| Arc::new(lower_inner(pred, diagnostics, type_display_names))),
-            inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
-            inferred_type: None,
-        },
+        } => {
+            let inferred = inner.inferred_type_decl_id.get().cloned();
+            CoreExpr::ReprDecl {
+                repr: *repr,
+                is_pred: is_pred
+                    .as_ref()
+                    .map(|pred| Arc::new(lower_inner(pred, diagnostics, type_display_names))),
+                inner: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
+                inferred_type: inferred,
+            }
+        }
 
         SurfaceExpression::Error(span) => {
             diagnostics.push(Diagnostic::error(
