@@ -666,7 +666,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let expr = Arc::new(crate::ast::Spanned::new(
             crate::ast::CoreExpr::Placeholder {
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span.clone(),
         ));
@@ -2873,7 +2873,7 @@ mod tests {
             0,
             Arc::clone(&ctx),
             empty_evidence(),
-            None,
+            crate::type_infer::make_typevalue_unknown(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2926,7 +2926,7 @@ mod tests {
             0,
             Arc::clone(&ctx),
             empty_evidence(),
-            None,
+            crate::type_infer::make_typevalue_unknown(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],
@@ -2979,7 +2979,7 @@ mod tests {
             0,
             Arc::clone(&ctx),
             empty_evidence(),
-            None,
+            crate::type_infer::make_typevalue_unknown(),
         ));
         let err = run(builtin_try(BuiltinArgs {
             args: vec![pending_thunk],

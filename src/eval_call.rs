@@ -977,7 +977,7 @@ mod tests {
             name: "my_func".to_string(),
             addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
         };
         let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("my_func"));
@@ -1000,14 +1000,16 @@ mod tests {
         let expr = CoreExpr::Fn {
             clauses: vec![make_test_clause(sp(CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             }))],
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
 
             resolved_fn_type: None,
             return_ann: None,
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
         };
         let label = func_label_core(&expr);
         assert!(label
@@ -1022,14 +1024,16 @@ mod tests {
         let expr = CoreExpr::Fn {
             clauses: vec![make_test_clause(sp(CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             }))],
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
 
             resolved_fn_type: None,
             return_ann: None,
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
         };
         let label = func_label_core(&expr);
         assert_eq!(label, None);

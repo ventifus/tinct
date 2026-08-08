@@ -2346,6 +2346,7 @@ async fn run_fmt(
                 std::collections::HashMap::new(),
                 ts_data,
                 std::collections::HashMap::new(),
+                None,
             )
             .await;
 

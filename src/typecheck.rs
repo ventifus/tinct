@@ -102,6 +102,10 @@ pub async fn typecheck_program_bootstrap(
     seed_tycon_env: crate::type_def::TyConEnv,
     type_stage_data: crate::type_infer::TypeStageData,
     seed_type_name_to_id: std::collections::HashMap<String, u64>,
+    pre_resolved: Option<(
+        std::sync::Arc<crate::ast::ResolutionTable>,
+        Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>,
+    )>,
 ) -> (
     Vec<Diagnostic>,
     Arc<RwLock<Env>>,
@@ -177,13 +181,18 @@ pub async fn typecheck_program_bootstrap(
     // The root_frame contains the full accumulated group including TypeNode and other
     // type-stage entries at their absolute LGM slot positions.
     let root_frame_for_ts = root_frame.clone();
-    let (resolve_table, frames) = crate::resolve::resolve_surface_program_with_classes(
-        program,
-        &[root_frame],
-        std::collections::HashMap::new(),
-    );
-    state.resolution_table = Arc::new(resolve_table);
-    state.resolver_frames = frames;
+    if let Some((table, frames)) = pre_resolved {
+        state.resolution_table = table;
+        state.resolver_frames = frames;
+    } else {
+        let (resolve_table, frames) = crate::resolve::resolve_surface_program_with_classes(
+            program,
+            &[root_frame],
+            std::collections::HashMap::new(),
+        );
+        state.resolution_table = Arc::new(resolve_table);
+        state.resolver_frames = frames;
+    }
 
     // Seed child_env with all root-group entries so that get_scheme_at(N, slot) correctly
     // finds them at depth N via normal parent-chain traversal. Three priority levels:
@@ -317,19 +326,6 @@ pub async fn typecheck_program_bootstrap(
     let base_env = env.clone();
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
-        // Skip type-stage documents — they are evaluated before type-checking runs and their
-        // entries are already in state.type_stage_scope / child_env via the caller-supplied
-        // type_stage_data. Re-processing them through process_document produces resolver-slot-miss
-        // errors because child_env is seeded for runtime slots, not type-stage eval slots.
-        if doc.header.get("stage").is_some_and(|stage_node| {
-            matches!(
-                &stage_node.expr,
-                crate::ast::SurfaceExpression::StringLiteral { content, .. }
-                if content == "type"
-            )
-        }) {
-            continue;
-        }
         let (new_env, _, mut doc_errors) =
             process_document(doc, &base_env, &mut state, &mut None).await;
         errors.append(&mut doc_errors);

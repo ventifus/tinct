@@ -188,7 +188,6 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
             std::slice::from_ref(&root_frame),
             std::collections::HashMap::new(),
         );
-        // Extract just the frames, discarding FrameKind metadata
         let new_frames: Vec<indexmap::IndexMap<String, u32>> = new_frames_with_kind
             .into_iter()
             .map(|(frame, _kind)| frame)
@@ -215,14 +214,16 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         .cloned()
         .collect();
 
-    // Build type_stage_data by evaluating the type-stage documents with the correct context.
-    // eval_ctx_with_frames has the scope frames from the resolve pass, so VarRefs at any
-    // nesting level resolve correctly — including unit constructors (TypeNode.Int) which
-    // require outer-group frame lookup, not just builtins.
+    // Build type_stage_data by type-checking then evaluating the type-stage documents.
+    // The type checker runs first so every SurfaceNode gets its inferred_type — the
+    // evaluator carries it through to CoreExpr and Thunk. No seeding needed: the type
+    // checker infers types from primitives (Int, String, Dict) and discovers TYPE_IDs
+    // from [type repr: N] declarations in the tinct code.
     let type_stage_data: crate::type_infer::TypeStageData = if ts_docs.is_empty() {
         crate::type_infer::TypeStageData::new()
     } else {
         let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
+
         let ts_thunk = crate::eval::eval_surface_file(&ts_program, &eval_ctx_with_frames)
             .await
             .map_err(|e| {
@@ -422,6 +423,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
         std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
         type_stage_data,
         std::collections::HashMap::new(),
+        None, // pre_resolved: re-resolve normally
     )
     .await;
 

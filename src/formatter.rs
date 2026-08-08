@@ -99,6 +99,7 @@ pub async fn format_source_tinct(
             std::collections::HashMap::new(),
             ts_data,
             std::collections::HashMap::new(),
+            None,
         )
         .await;
     // Emit all diagnostics and only abort on type-assertion failures.

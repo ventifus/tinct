@@ -398,6 +398,7 @@ pub async fn run_loader_pipeline(
             seed_tycon_env,
             combined_type_stage_data,
             builtin_core_type_name_to_id,
+            None,
         )
         .await;
     // Wire the TyConEnv from the typecheck pass into the eval context so that
@@ -498,6 +499,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
         std::collections::HashMap::new(),
         ts_data,
         std::collections::HashMap::new(),
+        None,
     )
     .await;
     if diagnostics.is_empty() {
@@ -533,6 +535,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
         std::collections::HashMap::new(),
         ts_data,
         std::collections::HashMap::new(),
+        None,
     )
     .await;
     if !crate::error::has_type_errors(&diagnostics) {
@@ -1380,6 +1383,7 @@ mod tests {
                 std::collections::HashMap::new(),
                 crate::type_infer::TypeStageData::new(),
                 std::collections::HashMap::new(),
+                None,
             )
             .await;
         let ctx = test_ctx().await;

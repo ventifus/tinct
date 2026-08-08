@@ -775,19 +775,6 @@ pub const TYPE_ID_RESERVED_MAX: u64 = 99;
 /// Returns the TYPE_ID for literal and constructor expressions. Returns 0
 /// for dynamic expressions (Call, Match, Sequential) whose result type
 /// is only known after evaluation.
-pub fn type_decl_id_from_core_expr(expr: &CoreExpr) -> u64 {
-    match expr {
-        CoreExpr::Int { .. } => TYPE_ID_INT,
-        CoreExpr::U64 { .. } => TYPE_ID_U64,
-        CoreExpr::Float { .. } => TYPE_ID_FLOAT,
-        CoreExpr::Str { .. } => TYPE_ID_STRING,
-        CoreExpr::Dict { .. } => TYPE_ID_DICT,
-        CoreExpr::Variant { type_decl_id, .. } => *type_decl_id,
-        CoreExpr::UnitVariant { type_decl_id, .. } => *type_decl_id,
-        CoreExpr::Fn { .. } => TYPE_ID_FUNCTION,
-        _ => 0,
-    }
-}
 
 /// A materialized runtime value.
 pub enum Value {
@@ -1984,7 +1971,7 @@ pub struct Thunk {
     pub(crate) inner: ThunkInner,
     pub(crate) span: Span,
     pub type_inst: std::collections::HashMap<String, std::sync::Arc<Value>>,
-    pub inferred_type: Option<std::sync::Arc<Value>>,
+    pub inferred_type: std::sync::Arc<Value>,
 }
 
 pub(crate) struct ThunkPanicGuard(pub(crate) Option<Arc<Thunk>>);
@@ -2018,7 +2005,7 @@ impl Thunk {
             },
             span,
             type_inst: std::collections::HashMap::new(),
-            inferred_type: None,
+            inferred_type: crate::type_infer::make_typevalue_unknown(),
         }
     }
 
@@ -2027,25 +2014,25 @@ impl Thunk {
     /// Creates a thunk from a CoreExpr body.
     ///
     /// `inferred_type` is read from the CoreExpr (set by the type checker via the lowerer).
-    /// When the CoreExpr has no inferred_type but is a statically-typed literal or constructor,
-    /// a Nominal TypeValue is synthesized from the CoreExpr variant.
+    /// Panics if the CoreExpr has no inferred_type — every expression must be type-checked.
     pub fn core_expr(
         expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
         frame: std::sync::Arc<EvalFrame>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
-        let inferred_type = match expr.node.inferred_type() {
-            Some(tv) => Some(Arc::clone(tv)),
-            None => {
-                let static_id = type_decl_id_from_core_expr(&expr.node);
-                if static_id != 0 {
-                    Some(crate::type_infer::make_typevalue_nominal(static_id))
-                } else {
-                    None
-                }
-            }
-        };
+        let inferred_type = expr
+            .node
+            .inferred_type()
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "CoreExpr at {}:{}-{}:{} ({}) has no inferred_type — type checker did not annotate this expression",
+                    expr.span.start_line, expr.span.start_col,
+                    expr.span.end_line, expr.span.end_col,
+                    expr.span.file,
+                )
+            });
         let type_inst = frame.type_inst.clone();
         Self {
             inner: ThunkInner {
@@ -2071,7 +2058,10 @@ impl Thunk {
         if let Value::Annotated { inner: boxed, .. } = value {
             return Self::value(boxed.as_ref().clone(), span);
         }
-        let inferred_type = value.type_val().cloned();
+        let inferred_type = value
+            .type_val()
+            .cloned()
+            .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
         if inner.result.set(Ok(value)).is_err() {
             panic!("value thunk cell freshly created: set cannot fail");
         }
@@ -2101,7 +2091,7 @@ impl Thunk {
             },
             span,
             type_inst: std::collections::HashMap::new(),
-            inferred_type: None,
+            inferred_type: crate::type_infer::make_typevalue_unknown(),
         }
     }
 
@@ -2143,7 +2133,7 @@ impl Thunk {
         caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         caller_evidence: Scope,
-        inferred_type: Option<std::sync::Arc<Value>>,
+        inferred_type: std::sync::Arc<Value>,
     ) -> Self {
         Self {
             inner: ThunkInner {
@@ -2180,7 +2170,12 @@ impl Thunk {
         } else {
             Some(Box::new(named))
         };
-        let inferred_type = spec.original_call.node.inferred_type().cloned();
+        let inferred_type = spec
+            .original_call
+            .node
+            .inferred_type()
+            .cloned()
+            .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
@@ -2244,10 +2239,7 @@ impl Thunk {
     /// Derive the nominal type ID from this thunk's inferred_type.
     /// Returns 0 when no inferred_type is set or when the type is non-nominal.
     pub fn type_decl_id(&self) -> u64 {
-        self.inferred_type
-            .as_ref()
-            .and_then(|tv| crate::type_infer::typevalue_nominal_id(tv))
-            .unwrap_or(0)
+        crate::type_infer::typevalue_nominal_id(&self.inferred_type).unwrap_or(0)
     }
 
     /// Set the terminal result for this thunk. Write-once via OnceCell:
@@ -2266,10 +2258,8 @@ impl Thunk {
     pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
         // Resolve the type closure and set type_val on the Value before storing.
         let result = if let Ok(mut value) = result {
-            if let Some(ref inferred) = self.inferred_type {
-                let resolved = crate::eval::resolve_type_closure(inferred, &self.type_inst);
-                value = value.with_type_val(Some(resolved));
-            }
+            let resolved = crate::eval::resolve_type_closure(&self.inferred_type, &self.type_inst);
+            value = value.with_type_val(Some(resolved));
             Ok(value)
         } else {
             result
@@ -2573,7 +2563,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         ));
@@ -2752,7 +2742,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         ));
@@ -2784,7 +2774,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         ));
@@ -2804,7 +2794,7 @@ mod tests {
         let expr = Arc::new(Spanned::new(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
             },
             span.clone(),
         ));
@@ -3194,76 +3184,6 @@ mod tests {
             type_val: Some(crate::type_infer::make_typevalue_nominal(200)),
         };
         assert_eq!(variant.type_decl_id_of(), 200);
-    }
-
-    #[test]
-    fn test_type_decl_id_from_core_expr_literals() {
-        assert_eq!(
-            type_decl_id_from_core_expr(&CoreExpr::Int {
-                value: 42,
-                inferred_type: None
-            }),
-            TYPE_ID_INT
-        );
-        assert_eq!(
-            type_decl_id_from_core_expr(&CoreExpr::Float {
-                value: 3.14,
-                inferred_type: None
-            }),
-            TYPE_ID_FLOAT
-        );
-        assert_eq!(
-            type_decl_id_from_core_expr(&CoreExpr::Str {
-                value: "hello".to_string(),
-                inferred_type: None
-            }),
-            TYPE_ID_STRING
-        );
-        assert_eq!(
-            type_decl_id_from_core_expr(&CoreExpr::U64 {
-                value: 42,
-                inferred_type: None
-            }),
-            TYPE_ID_U64
-        );
-    }
-
-    #[test]
-    fn test_type_decl_id_from_core_expr_variant() {
-        let variant = CoreExpr::Variant {
-            tag: "Color.Red".to_string(),
-            payload: None,
-            type_decl_id: 150,
-            inferred_type: None,
-        };
-        assert_eq!(type_decl_id_from_core_expr(&variant), 150);
-
-        let unit = CoreExpr::UnitVariant {
-            tycon: "Color".to_string(),
-            ctor: "Red".to_string(),
-            type_decl_id: 150,
-            inferred_type: None,
-        };
-        assert_eq!(type_decl_id_from_core_expr(&unit), 150);
-    }
-
-    #[test]
-    fn test_type_decl_id_from_core_expr_unknown() {
-        let call = CoreExpr::Call {
-            func: Arc::new(Spanned {
-                node: CoreExpr::Int {
-                    value: 0,
-                    inferred_type: None,
-                },
-                span: test_span(1, 1, 1, 1),
-            }),
-            args: vec![],
-            named_args: vec![],
-            implied: false,
-            inferred_type: None,
-            type_instantiation: None,
-        };
-        assert_eq!(type_decl_id_from_core_expr(&call), 0);
     }
 }
 

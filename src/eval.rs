@@ -1480,14 +1480,7 @@ pub(crate) fn thunk_matches_nominal_type(
     }
 
     // Resolve the thunk's concrete type from its type closure.
-    let concrete_type = if let Some(ref inferred) = thunk.inferred_type {
-        resolve_type_closure(inferred, &thunk.type_inst)
-    } else if thunk.type_decl_id() != 0 {
-        crate::type_infer::make_typevalue_nominal(thunk.type_decl_id())
-    } else {
-        // No type information — needs materialization.
-        return None;
-    };
+    let concrete_type = resolve_type_closure(&thunk.inferred_type, &thunk.type_inst);
 
     // Use BAS is_consistent_subtype for the check.
     // Construct a runtime InferenceContext with tycon_env from the EvalContext.
@@ -2950,13 +2943,15 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                                    TYPE_ID_STRING,
+                                )),
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -2964,7 +2959,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             test_span(1, 1, 1, 15),
         );
@@ -3233,13 +3228,15 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3266,7 +3263,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
@@ -3274,7 +3271,7 @@ mod tests {
                     crate::value::TYPE_ID_STRING,
                 )),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3318,13 +3315,15 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3394,7 +3393,9 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
@@ -3405,7 +3406,7 @@ mod tests {
                     ),
                 },
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3427,13 +3428,15 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3476,7 +3479,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Placeholder {
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                     },
                     error_span,
                 )),
@@ -3487,7 +3490,7 @@ mod tests {
                     ),
                 },
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3516,7 +3519,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
@@ -3525,7 +3528,7 @@ mod tests {
                     None,
                 )),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3556,7 +3559,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
@@ -3565,7 +3568,7 @@ mod tests {
                     None,
                 )),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -3607,13 +3610,15 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                                    TYPE_ID_STRING,
+                                )),
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -3621,7 +3626,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             test_span(1, 1, 1, 15),
         );
@@ -3771,7 +3776,7 @@ mod tests {
         let err = eval_core_for_test(
             Spanned::new(
                 CoreExpr::Placeholder {
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                 },
                 placeholder_span,
             ),
@@ -3797,7 +3802,7 @@ mod tests {
             name: "f".to_string(),
             addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
         });
         assert_eq!(label.as_deref(), Some("f"));
     }
@@ -3811,7 +3816,7 @@ mod tests {
             name: "builtin-dict-get".to_string(),
             addr: crate::ast::VarAddr::ClosureCapture(0),
             annotation: None,
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
         };
         let label = func_label_core(&func_var);
         assert_eq!(label.as_deref(), Some("builtin-dict-get"));
@@ -3824,7 +3829,7 @@ mod tests {
         assert_eq!(
             func_label_core(&CoreExpr::Int {
                 value: 42,
-                inferred_type: None
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT))
             }),
             None
         );
@@ -3841,7 +3846,7 @@ mod tests {
                 name: "missing".to_string(),
                 addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                 annotation: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             test_span(1, 1, 1, 8),
         );
@@ -3908,13 +3913,15 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                                    TYPE_ID_STRING,
+                                )),
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -3922,7 +3929,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             test_span(1, 1, 1, 15),
         );
@@ -3979,7 +3986,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                 },
                 error_span.clone(),
             )),
@@ -4025,13 +4032,15 @@ mod tests {
                         key: Some(Arc::new(Spanned::new(
                             CoreExpr::Str {
                                 value: "x".to_string(),
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                                    TYPE_ID_STRING,
+                                )),
                             },
                             test_span(1, 1, 1, 2),
                         ))),
                         value: Arc::new(Spanned::new(
                             CoreExpr::Placeholder {
-                                inferred_type: None,
+                                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                             },
                             test_span(1, 5, 1, 15),
                         )),
@@ -4039,7 +4048,7 @@ mod tests {
                     },
                     test_span(1, 1, 1, 15),
                 )],
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
             },
             test_span(1, 1, 1, 15),
         );
@@ -4091,13 +4100,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4127,13 +4136,15 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_nominal(crate::value::TYPE_ID_INT)),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4158,7 +4169,9 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
@@ -4166,7 +4179,7 @@ mod tests {
                     crate::value::TYPE_ID_STRING,
                 )),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4187,13 +4200,15 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "anything".into(),
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_STRING,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_top()),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4214,13 +4229,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 99,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(make_typevalue_top()),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4263,14 +4278,22 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "name".into(),
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "Alice".into(),
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     )),
@@ -4283,14 +4306,22 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "age".into(),
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 30,
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_INT,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     )),
@@ -4299,13 +4330,15 @@ mod tests {
                                 span.clone(),
                             ),
                         ],
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_DICT,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4344,14 +4377,22 @@ mod tests {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str {
                                         value: "name".into(),
-                                        inferred_type: None,
+                                        inferred_type: Some(
+                                            crate::type_infer::make_typevalue_nominal(
+                                                TYPE_ID_STRING,
+                                            ),
+                                        ),
                                     },
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(
                                     CoreExpr::Str {
                                         value: "Alice".into(),
-                                        inferred_type: None,
+                                        inferred_type: Some(
+                                            crate::type_infer::make_typevalue_nominal(
+                                                TYPE_ID_STRING,
+                                            ),
+                                        ),
                                     },
                                     span.clone(),
                                 )),
@@ -4359,13 +4400,15 @@ mod tests {
                             },
                             span.clone(),
                         )],
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_DICT,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4403,14 +4446,22 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "x".into(),
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 1,
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_INT,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     )),
@@ -4423,14 +4474,22 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "extra".into(),
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 2,
-                                            inferred_type: None,
+                                            inferred_type: Some(
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_INT,
+                                                ),
+                                            ),
                                         },
                                         span.clone(),
                                     )),
@@ -4439,13 +4498,15 @@ mod tests {
                                 span.clone(),
                             ),
                         ],
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_DICT,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4486,14 +4547,20 @@ mod tests {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str {
                                         value: "x".into(),
-                                        inferred_type: None,
+                                        inferred_type: Some(
+                                            crate::type_infer::make_typevalue_nominal(
+                                                TYPE_ID_STRING,
+                                            ),
+                                        ),
                                     },
                                     span.clone(),
                                 ))),
                                 value: Arc::new(Spanned::new(
                                     CoreExpr::Int {
                                         value: 42,
-                                        inferred_type: None,
+                                        inferred_type: Some(
+                                            crate::type_infer::make_typevalue_nominal(TYPE_ID_INT),
+                                        ),
                                     },
                                     span.clone(),
                                 )),
@@ -4501,13 +4568,15 @@ mod tests {
                             },
                             span.clone(),
                         )],
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                            TYPE_ID_DICT,
+                        )),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4541,13 +4610,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -4722,13 +4791,13 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Int {
                         value: 42,
-                        inferred_type: None,
+                        inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                     },
                     span.clone(),
                 )),
                 check: TypeAssertCheck::Resolved(record_type),
                 pipeline_blame: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span,
         );
@@ -5823,7 +5892,7 @@ mod tests {
         // (we expect Int but will get String)
         let inner_expr = Arc::new(sp(CoreExpr::Str {
             value: "hello".into(),
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING)),
         }));
         let ctx = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
@@ -6044,7 +6113,7 @@ mod tests {
         // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict { entries: IndexMap::new(), type_val: crate::type_infer::make_typevalue_unknown() }`.
         let dict_expr = Arc::new(sp(CoreExpr::Dict {
             entries: vec![],
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         }));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
@@ -6078,7 +6147,7 @@ mod tests {
             0, // caller_env_id bridge placeholder
             Arc::clone(&ctx),
             crate::value::empty_scope(),
-            None,
+            crate::type_infer::make_typevalue_unknown(),
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is

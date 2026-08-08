@@ -1231,7 +1231,9 @@ mod tests {
         let val = eval_and_materialize(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
             },
             &ctx,
         )
@@ -1259,7 +1261,9 @@ mod tests {
         let val = eval_and_materialize(
             CoreExpr::Str {
                 value: "hello".to_string(),
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_STRING,
+                )),
             },
             &ctx,
         )
@@ -1307,7 +1311,7 @@ mod tests {
                 name: "test-binding".to_string(),
                 addr: VarAddr::Dispatch(0, 0),
                 annotation: None,
-                inferred_type: None,
+                inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
             },
             span.clone(),
         );

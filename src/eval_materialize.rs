@@ -4036,7 +4036,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 value_span.clone(),
             )),
@@ -4094,7 +4096,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 same_span.clone(),
             )),
@@ -4139,7 +4143,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 span.clone(),
             )),
@@ -4222,7 +4228,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                 },
                 span.clone(),
             )),
@@ -4304,7 +4310,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
                     annotation: None,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_unknown()),
                 },
                 span.clone(),
             )),
@@ -4419,7 +4425,9 @@ mod tests {
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int {
             value: 99,
-            inferred_type: None,
+            inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                crate::value::TYPE_ID_INT,
+            )),
         }));
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4554,7 +4562,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 span.clone(),
             )),
@@ -4587,7 +4597,7 @@ mod tests {
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
             crate::value::empty_scope(),
-            None,
+            crate::type_infer::make_typevalue_unknown(),
         ));
 
         // Force via the CEK machine (not via materialize() recursive path).
@@ -4642,7 +4652,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
                 },
                 span.clone(),
             )),
@@ -4660,7 +4672,9 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 42,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 span.clone(),
             )),
@@ -4714,7 +4728,7 @@ mod tests {
             0, // caller_env_id placeholder
             Arc::clone(&ctx),
             crate::value::empty_scope(),
-            None,
+            crate::type_infer::make_typevalue_unknown(),
         ));
 
         // Force via CEK — exercises BuiltinForceArg loop for both positions.
@@ -4931,7 +4945,9 @@ mod cek_lifecycle_tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 0,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 span.clone(),
             )),
@@ -4994,7 +5010,9 @@ mod cek_lifecycle_tests {
             Arc::new(Spanned::new(
                 CoreExpr::Int {
                     value: 0,
-                    inferred_type: None,
+                    inferred_type: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
                 },
                 span.clone(),
             )),
