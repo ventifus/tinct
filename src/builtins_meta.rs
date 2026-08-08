@@ -2657,7 +2657,7 @@ pub(crate) fn builtin_typecheck_doc(
         // stays empty, causing find_slot_in_frames to always return None and child_env seeding to
         // append entries sequentially rather than at their correct runtime slot positions.
         // state.resolution_table is intentionally not set here. builtin_typecheck_doc calls
-        // process_document directly (never typecheck_program_bootstrap), so the InferState
+        // process_document directly (never the old bootstrap path), so the InferState
         // resolution_table is empty. All VarRef lookups in infer_var_ref therefore take the
         // "no resolver address" branch and fall through to the name-based env.get_scheme()
         // lookup. This is correct: builtin-resolve has already set OnceLock coordinates on
@@ -2667,14 +2667,14 @@ pub(crate) fn builtin_typecheck_doc(
         state.resolver_frames = (*resolver_frames).clone();
 
         // Build root_frame_for_ts: the runtime root group resolver map (builtins + caps).
-        // This mirrors typecheck_program_bootstrap's approach: parent env entries are remapped
+        // This mirrors the per-document pipeline's approach: parent env entries are remapped
         // to their runtime slot positions (not the parent's slot positions, which are for a
         // different document's resolver scope).
         let root_frame_for_ts: indexmap::IndexMap<String, u32> = ctx.root_group_resolver_map();
 
         // Seed child_env with all root-group entries so that get_scheme_at(N, slot) correctly
         // finds them at depth N via normal parent-chain traversal. Same priority model as
-        // typecheck_program_bootstrap: type-stage entries first, then parent_env chain, then Unknown.
+        // the per-document pipeline (process_pipeline_document): type-stage entries first, then parent_env chain, then Unknown.
         let child_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
             Arc::clone(&parent_env),
         )));
@@ -2750,7 +2750,7 @@ pub(crate) fn builtin_typecheck_doc(
 
             // Walk parent_env chain from outermost to innermost, remapping entries to their
             // runtime root-group slot positions (via root_frame_for_ts). This mirrors
-            // typecheck_program_bootstrap's approach: only copy entries whose names are in the
+            // the per-document pipeline's approach: only copy entries whose names are in the
             // runtime root group, at the slot root_frame_for_ts assigns them. Entries not in
             // root_frame_for_ts are skipped — they belong to a different document's scope
             // and are accessible via the parent chain's name-based lookup (get_scheme).

@@ -102,6 +102,8 @@ pub use ast::{
 };
 /// Parser entry points.
 pub use parser::{format_parse_error, parse, parse_surface_expression, ParseOutput};
+/// Per-document pipeline.
+pub use pipeline::{process_pipeline_document, PipelineState};
 
 /// Evaluation functions.
 pub use eval::{
@@ -187,286 +189,51 @@ pub async fn run_loader_pipeline(
     let loader_program = desugar::desugar_program_full(&loader_parsed.program);
     let loader_program = expand::expand_program(&loader_program);
 
-    // Resolve the loader program. Seeded from FlatEnv so that builtin names
-    // (builtin-parse, etc.) resolve to de Bruijn coordinates instead of
-    // falling back to name-based lookup via the MAX/MAX sentinel.
-    // Borrow is scoped so it's dropped before eval_surface_file borrows_mut the arena.
-    //
-    // Capture the combined scope frames (root_frame + new_frames produced by the
-    // resolver) and thread them into a new eval_ctx via with_scope_frames(). This allows
-    // lower() to resolve scope-frame-dependent names (e.g., builtin-dict-merge for spread
-    // dicts) to correct De Bruijn coordinates at eval time.
-    let eval_ctx_with_frames: Arc<eval::EvalContext> = {
-        // Build the resolver seed map from the eval context's root group.
-        // root_group contains all static builtins (slots 0..N-1) followed by
-        // capabilities (slots N..M-1) in the same order they were registered via
-        // with_root_group_capabilities. root_group_resolver_map() reads slot indices
-        // directly from the group, so the resolver and evaluator are always in sync.
-        // Each name gets LGM(slot) from enter_scope_from_frame; at runtime accumulated_group
-        // starts with root_group so LGM(slot) indexes directly into the right thunk.
+    // Build pipeline state from the Rust-native builtins.
+    let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
+
+    // Inject capability types from the caller's injected_type_env.
+    // PipelineState::from_builtins seeds all root_group slots (builtins + caps)
+    // with Unknown type schemes. Upgrade the capability slots to their declared
+    // types so the per-document type checker sees %cwd, %libdir, etc. correctly.
+    if let Some(ref inj) = injected_type_env {
         let root_frame = eval_ctx.root_group_resolver_map();
-        let (_table, new_frames) = resolve::resolve_surface_program_with_classes(
-            &loader_program,
-            std::slice::from_ref(&root_frame),
-            std::collections::HashMap::new(),
-        );
-        // Combine: root_frame (outermost) followed by frames introduced by the program.
-        // Strip FrameKind for EvalContext.scope_frames — lower.rs only needs the name→slot maps.
-        let all_frames: Vec<indexmap::IndexMap<String, u32>> = std::iter::once(root_frame)
-            .chain(new_frames.into_iter().map(|(frame, _kind)| frame))
-            .collect();
-        eval_ctx.with_scope_frames(Arc::new(all_frames))
-    };
-
-    // Two-pass: evaluate type-stage documents first, force all thunks to build
-    // type_stage_data with fully materialized types, then typecheck the loader program.
-    let loader_type_stage_data: crate::type_infer::TypeStageData = {
-        // Filter type-stage documents (those with stage: "type" in their header).
-        let ts_docs: Vec<_> = loader_program
-            .documents
-            .iter()
-            .filter(|d| {
-                d.node.header.get("stage").is_some_and(|stage_node| {
-                    matches!(
-                        &stage_node.expr,
-                        crate::ast::SurfaceExpression::StringLiteral { content, .. }
-                        if content == "type"
-                    )
+        let cap_types: std::collections::HashMap<String, crate::type_infer::TypeValue> = {
+            let r = inj.read().unwrap();
+            r.iter_slots()
+                .filter_map(|(name, slot_entry)| {
+                    slot_entry.scheme.clone().map(|tv| (name.to_string(), tv))
                 })
-            })
-            .cloned()
-            .collect();
-
-        if ts_docs.is_empty() {
-            crate::type_infer::TypeStageData::new()
-        } else {
-            // Build a mini-program with only the type-stage documents and evaluate it.
-            // The documents are already desugared and resolved from the main program pass —
-            // do NOT re-run desugar (Arc sharing panics) or resolve (would overwrite inline
-            // de Bruijn coordinates with wrong values for empty frames).
-            let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
-
-            let ts_thunk = eval::eval_surface_file(&ts_program, &eval_ctx_with_frames)
-                .await
-                .map_err(|e| format!("type-stage evaluation failed: {e}"))?;
-            let ts_val = eval::materialize(&ts_thunk, None, &eval_ctx_with_frames)
-                .await
-                .map_err(|e| format!("type-stage materialization failed: {e}"))?;
-            match ts_val {
-                crate::value::Value::Dict { entries, .. } => {
-                    // Force all thunks and classify into the three maps.
-                    let mut scope_map: std::collections::HashMap<
-                        String,
-                        crate::type_infer::TypeValue,
-                    > = std::collections::HashMap::new();
-                    let mut fns_map: std::collections::HashMap<
-                        String,
-                        std::sync::Arc<crate::value::Thunk>,
-                    > = std::collections::HashMap::new();
-                    let mut type_vars_map: std::collections::HashMap<String, String> =
-                        std::collections::HashMap::new();
-                    for (key, thunk) in &entries {
-                        if let crate::value::HashableValue::Str(name) = key {
-                            let val = eval::materialize(thunk, None, &eval_ctx_with_frames)
-                                .await
-                                .map_err(|e| {
-                                    format!(
-                                        "type-stage thunk '{}' failed to materialize: {}",
-                                        name, e
-                                    )
-                                })?;
-
-                            let scope_so_far = vec![scope_map.clone()];
-                            // Derive partial type_name_to_id from scope entries processed so far.
-                            let partial_name_to_id: std::collections::HashMap<String, u64> =
-                                scope_map
-                                    .iter()
-                                    .filter_map(|(n, tv)| {
-                                        crate::type_infer::typevalue_nominal_id(tv)
-                                            .filter(|id| *id > 0)
-                                            .map(|id| (n.clone(), id))
-                                    })
-                                    .collect();
-                            let classified = crate::imports::classify_type_stage_entry(
-                                name,
-                                thunk,
-                                &val,
-                                &eval_ctx_with_frames,
-                                &scope_so_far,
-                                &partial_name_to_id,
-                            )
-                            .await
-                            .map_err(|e| format!("type-stage classify '{}' failed: {}", name, e))?;
-                            if let Some((tv, opt_thunk, opt_kind)) = classified {
-                                scope_map.insert(name.to_string(), Arc::clone(&tv));
-                                if let Some(thunk_arc) = opt_thunk {
-                                    fns_map.insert(name.to_string(), thunk_arc);
-                                }
-                                if let Some(kind_str) = opt_kind {
-                                    type_vars_map.insert(name.to_string(), kind_str);
-                                }
-                            }
-                        }
-                    }
-                    crate::type_infer::TypeStageData {
-                        scope: vec![scope_map],
-                        fns: fns_map,
-                        type_vars: type_vars_map,
-                    }
-                }
-                other => {
-                    return Err(format!(
-                        "type-stage evaluation produced {}, expected Dict",
-                        eval_ctx.type_display_name(other.type_decl_id_of())
-                    ));
-                }
-            }
-        }
-    };
-
-    // Typecheck the loader program, seeded with the builtin core type env so that
-    // builtin-* names are in scope. Populates the TypeContext with type signatures.
-    // Only "type-assertion" diagnostics are fatal; other type errors are expected
-    // during bootstrap because prelude names are not yet in scope (see below).
-    let (builtin_env_base, seed_tycon_env, builtin_core_type_name_to_id) =
-        crate::imports::build_builtin_core_envs().await;
-    // Prepend builtin_core.llt's type-stage scope to the loader's type-stage scope
-    // so that opaque types (BuilderHandle, TypeContext, DirCap, etc.) declared in
-    // builtin_core.llt's type-stage section are resolvable when typechecking the loader.
-    // Also saved separately for TypeContext pre-initialization (see below).
-    let builtin_core_ts_data = crate::imports::get_builtin_core_type_stage_scope().await;
-    // Combine: builtin_core entries first (outermost), loader entries innermost.
-    let combined_type_stage_data = {
-        let mut combined = builtin_core_ts_data.clone();
-        combined.scope.extend(loader_type_stage_data.scope);
-        combined.fns.extend(loader_type_stage_data.fns);
-        combined.type_vars.extend(loader_type_stage_data.type_vars);
-        combined
-    };
-    // Save clones for TypeContext pre-initialization before builtin_env_base and seed_tycon_env
-    // are consumed by the typecheck pass below.
-    let core_env_for_tc = Arc::clone(&builtin_env_base);
-    let core_tycon_for_tc = seed_tycon_env.clone();
-    // Chain injected types (from caller) above the builtin env so the type-checker
-    // sees %programs, %cwd, etc. at their correct runtime slot positions.
-    //
-    // Capabilities (%cwd, %libdir, %args, etc.) are in eval_ctx.root_group at slots
-    // N_builtins..N_builtins+N_caps-1. The resolver (via root_group_resolver_map) assigns
-    // those same slot numbers to capability names. The type-checker's builtin_env_base
-    // only has N_builtins entries (slots 0..N-1). We extend it with capability entries
-    // via insert_at_slot so that get_scheme_at(N+i) succeeds during type-checking.
-    // All capability entries go into slots at resolver-assigned slot positions.
-    let builtin_env = {
-        let mut wrapper = crate::env::Env::with_parent(Arc::clone(&builtin_env_base));
-        // Add capability entries at their correct runtime slot positions.
-        // root_group_resolver_map returns all root_group entries (builtins + caps).
-        // builtin_env_base.slots already covers builtins; we fill in the cap slots.
-        let root_map = eval_ctx.root_group_resolver_map();
-        let builtin_slots_len = {
-            let base = builtin_env_base.read().unwrap();
-            base.slots.len()
+                .collect()
         };
-        // Build a name→TypeValue lookup from injected_type_env for capability types.
-        // Capabilities are stored in slots (via insert_at_slot) in the injected_type_env.
-        let cap_types: std::collections::HashMap<String, crate::type_infer::TypeValue> =
-            if let Some(ref inj) = injected_type_env {
-                let r = inj.read().unwrap();
-                r.iter_slots()
-                    .filter_map(|(name, slot_entry)| {
-                        slot_entry.scheme.clone().map(|tv| (name.to_string(), tv))
-                    })
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            };
-        for (name, slot) in &root_map {
-            let slot = *slot as usize;
-            if slot >= builtin_slots_len {
-                // This slot is a capability — inject it with its type (Unknown if not found).
-                let tv = cap_types
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(crate::type_infer::make_typevalue_top);
-                wrapper.insert_at_slot(slot, name.clone(), tv, None);
+        let mut env_guard = state.env.write().unwrap();
+        for (name, &slot) in &root_frame {
+            if let Some(tv) = cap_types.get(name) {
+                env_guard.insert_at_slot(slot as usize, name.clone(), tv.clone(), None);
             }
         }
-        Arc::new(std::sync::RwLock::new(wrapper))
-    };
-    let (loader_diagnostics, _loader_env, loader_tycon_env, loader_type_name_to_id) =
-        typecheck::typecheck_program_bootstrap(
-            &loader_program,
-            builtin_env,
-            Some(Arc::clone(&eval_ctx_with_frames)),
-            seed_tycon_env,
-            combined_type_stage_data,
-            builtin_core_type_name_to_id,
-            None,
-        )
-        .await;
-    // Wire the TyConEnv from the typecheck pass into the eval context so that
-    // value_matches_type and TypeAssert error messages can look up TyCon definitions.
-    eval_ctx_with_frames.set_tycon_env(loader_tycon_env);
-    // Emit all diagnostics. Any error is fatal.
-    let mut has_errors = false;
-    for diag in &loader_diagnostics {
-        eprintln!("{}", format_diagnostic(diag, init_source, init_path));
-        if diag.level == crate::error::DiagnosticLevel::Err {
-            has_errors = true;
-        }
-    }
-    if has_errors {
-        return Err(format!(
-            "{init_path}: type error in init program — cannot proceed"
-        ));
     }
 
-    // Pre-initialize the EvalContext TypeContext with the builtin_core type-stage scope so
-    // that [builtin-make-type-ctx] in the init program is a no-op (init_type_context is
-    // idempotent), and [builtin-get-type-context] returns the pre-seeded TypeContext.
-    // This avoids tinct-side letrec cycles: when builtin-tc-update-type-stage-env
-    // materializes type-stage thunks from a letrec, mutual dependencies in the same
-    // letrec group (e.g. Integer → TypeNode → CoreDocument → TypeNode) create false cycles
-    // because the evaluator's InProgress detection fires before siblings are settled.
-    // The Rust-level pre-initialization bypasses this by evaluating builtin_core.llt
-    // in an isolated context with no InProgress thunks from the running init program.
-    eval_ctx_with_frames.init_type_context(TypeContextData {
-        inference_env: core_env_for_tc,
-        tycon_env: core_tycon_for_tc,
-        type_stage_scope: builtin_core_ts_data.scope,
-        type_stage_fns: builtin_core_ts_data.fns,
-        type_stage_type_vars: builtin_core_ts_data.type_vars,
-        type_diagnostics: Vec::new(),
-        type_display_names: loader_type_name_to_id
-            .iter()
-            .map(|(name, &id)| (id, name.clone()))
-            .collect(),
-        type_name_to_id: loader_type_name_to_id,
-    });
+    // Process builtin_core.llt first (embedded).
+    let bc_source = include_str!("../stdlib/builtin_core.llt");
+    let bc_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
+    let bc_program = desugar::desugar_program_full(
+        &parse(bc_source, bc_sf)
+            .map_err(|e| format!("builtin_core.llt parse error: {e}"))?
+            .program,
+    );
+    let bc_program = expand::expand_program(&bc_program);
+    for doc in &bc_program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
+            .await
+            .map_err(|e| format!("builtin_core.llt: {e}"))?;
+    }
 
-    // Evaluate the full init program. The resolver assigned slots based on the full
-    // program (including type-stage documents), so the evaluator must see the same
-    // document structure to keep slot indices aligned.
-    let loader_thunk = eval::eval_surface_file(&loader_program, &eval_ctx_with_frames)
-        .await
-        .map_err(|e| format!("{e}"))?;
-
-    // Materialize the loader result. The init program's final expression IS the
-    // pipeline execution (a top-level [>> ...] Sequential node, not a dict entry),
-    // so materialize() drives all side effects directly: stdout writes, emit
-    // channel drains, formatter execution.
-    eval::materialize(&loader_thunk, None, &eval_ctx_with_frames)
-        .await
-        .map_err(|e| format!("{e}"))?;
-
-    // Drain and print runtime diagnostics collected during evaluation.
-    {
-        let rt_diags = eval_ctx_with_frames
-            .runtime_diagnostics
-            .lock()
-            .map_err(|e| format!("runtime_diagnostics mutex poisoned: {e}"))?;
-        for diag in rt_diags.iter() {
-            eprintln!("{}", format_diagnostic(diag, init_source, init_path));
-        }
+    // Process init program documents.
+    for doc in &loader_program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
+            .await
+            .map_err(|e| format!("{init_path}: {e}"))?;
     }
 
     Ok(())
@@ -492,18 +259,17 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
-    let env_arc = imports::get_builtin_core_type_env().await;
+    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await;
     let ts_data = imports::get_builtin_core_type_stage_scope().await;
-    let (diagnostics, _env, _tycon_env, _type_name_to_id) = typecheck::typecheck_program_bootstrap(
-        &program,
-        env_arc,
-        None,
-        std::collections::HashMap::new(),
-        ts_data,
-        std::collections::HashMap::new(),
-        None,
-    )
-    .await;
+    let mut state =
+        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
+    let mut diagnostics = Vec::new();
+    for doc in &program.documents {
+        let mut doc_diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
+        diagnostics.append(&mut doc_diags);
+    }
+    // Include state-level diagnostics (e.g. unknown-type warnings from unification).
+    diagnostics.append(&mut state.infer_state.diagnostics);
     if diagnostics.is_empty() {
         Ok(())
     } else {
@@ -527,19 +293,18 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
-    // Type check the surface program.
-    let env_arc = imports::get_builtin_core_type_env().await;
+    // Type check the surface program using the per-document pipeline.
+    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await;
     let ts_data = imports::get_builtin_core_type_stage_scope().await;
-    let (diagnostics, _env, _tycon_env, _type_name_to_id) = typecheck::typecheck_program_bootstrap(
-        &program,
-        env_arc,
-        None,
-        std::collections::HashMap::new(),
-        ts_data,
-        std::collections::HashMap::new(),
-        None,
-    )
-    .await;
+    let mut state =
+        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
+    let mut diagnostics = Vec::new();
+    for doc in &program.documents {
+        let mut doc_diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
+        diagnostics.append(&mut doc_diags);
+    }
+    // Include state-level diagnostics (e.g. unknown-type warnings from unification).
+    diagnostics.append(&mut state.infer_state.diagnostics);
     if !crate::error::has_type_errors(&diagnostics) {
         Ok(())
     } else {
@@ -1375,19 +1140,19 @@ mod tests {
                 .program,
         );
         let program = expand::expand_program(&program);
-        // T-1576: test path uses bootstrap mode (no arena yet).
-        let (_table, _frames) = resolve::resolve_surface_program(&program, &[]);
-        let (_type_errors, _env, _tycon_env, _type_name_to_id) =
-            typecheck::typecheck_program_bootstrap(
-                &program,
+        // Per-document typecheck pipeline (results discarded — test only cares
+        // about eval error spans, not type diagnostics).
+        {
+            let mut state = crate::pipeline::PipelineState::from_core_envs(
                 std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-                None,
                 std::collections::HashMap::new(),
                 crate::type_infer::TypeStageData::new(),
                 std::collections::HashMap::new(),
-                None,
-            )
-            .await;
+            );
+            for doc in &program.documents {
+                let _ = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
+            }
+        }
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.

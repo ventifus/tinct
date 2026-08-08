@@ -1,7 +1,10 @@
 //! Per-document bootstrap pipeline: resolve → typecheck → eval.
 //!
-//! One function (`process_pipeline_document`) processes a single document against the
-//! accumulated `PipelineState`. The bootstrap is a simple loop over documents.
+//! Two entry points process a single document against the accumulated `PipelineState`:
+//! - [`process_pipeline_document`] — full pipeline (resolve → typecheck → eval)
+//! - [`typecheck_pipeline_document`] — typecheck-only (resolve → typecheck, no eval)
+//!
+//! The bootstrap is a simple loop over documents.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -27,7 +30,7 @@ pub struct PipelineState {
     /// Resolver seed frames — one per scope level (builtins + previous documents).
     pub resolver_frames: Vec<indexmap::IndexMap<String, u32>>,
     /// Type checker state — carries substitution, constraints, levels, etc.
-    pub infer_state: InferState,
+    pub(crate) infer_state: InferState,
 }
 
 impl PipelineState {
@@ -65,6 +68,146 @@ impl PipelineState {
             infer_state,
         }
     }
+
+    /// Create pipeline state seeded from the already-built builtin core envs.
+    ///
+    /// Use this for processing user programs: the env, tycon_env, type_stage_data,
+    /// and type_name_to_id come from `build_builtin_core_envs` /
+    /// `get_builtin_core_type_stage_scope` (which process `builtin_core.llt`).
+    /// The resolver frame is built from the env's slot_index so that the resolver
+    /// can find all builtin + builtin_core names by their slot addresses.
+    pub fn from_core_envs(
+        env: Arc<RwLock<Env>>,
+        tycon_env: crate::type_def::TyConEnv,
+        type_stage_data: TypeStageData,
+        type_name_to_id: HashMap<String, u64>,
+    ) -> Self {
+        // Build resolver frame from the env's full scope chain — walk parent
+        // frames to collect all names (builtins + builtin_core.llt exports)
+        // at their assigned slots. Inner scopes shadow outer ones.
+        let resolver_frame: indexmap::IndexMap<String, u32> = {
+            let mut frame = indexmap::IndexMap::new();
+            // Collect from outermost to innermost so inner wins on collision.
+            fn collect_slots(env: &Env, out: &mut Vec<(String, u32)>) {
+                if let Some(ref parent) = env.parent {
+                    let p = parent.read().unwrap();
+                    collect_slots(&p, out);
+                }
+                for (name, &slot) in &env.slot_index {
+                    out.push((name.clone(), slot as u32));
+                }
+            }
+            let mut pairs = Vec::new();
+            {
+                let env_guard = env.read().unwrap();
+                collect_slots(&env_guard, &mut pairs);
+            }
+            for (name, slot) in pairs {
+                frame.insert(name, slot);
+            }
+            frame
+        };
+
+        // Build type_display_names from type_name_to_id (reverse mapping).
+        let type_display_names: HashMap<u64, String> = type_name_to_id
+            .iter()
+            .map(|(name, &id)| (id, name.clone()))
+            .collect();
+
+        let mut infer_state = InferState::with_env(Arc::clone(&env));
+        infer_state.tycon_env = tycon_env.clone();
+        infer_state.type_name_to_id = type_name_to_id.clone();
+        infer_state.type_display_names = type_display_names.clone();
+        infer_state.type_stage_scope = type_stage_data.scope.clone();
+        infer_state.type_stage_fns = type_stage_data.fns.clone();
+        infer_state.type_stage_type_vars = type_stage_data.type_vars.clone();
+        infer_state.ctx.type_name_to_id = type_name_to_id.clone();
+        infer_state.ctx.type_display_names = type_display_names.clone();
+        for (id, def) in &tycon_env {
+            infer_state.ctx.tycon_env.insert(*id, Arc::clone(def));
+        }
+
+        Self {
+            env,
+            type_stage_data,
+            tycon_env,
+            type_name_to_id,
+            type_display_names,
+            resolver_frames: vec![resolver_frame],
+            infer_state,
+        }
+    }
+
+    /// Access type checker diagnostics collected during pipeline processing.
+    pub fn diagnostics(&self) -> &[crate::error::Diagnostic] {
+        &self.infer_state.diagnostics
+    }
+}
+
+/// Typecheck a single document: resolve → typecheck (no eval).
+///
+/// Returns diagnostics from the type checker. Used by typecheck-only paths
+/// (lint pipeline, corpus tests) that need diagnostic inspection without evaluation.
+pub async fn typecheck_pipeline_document(
+    doc_spanned: &Spanned<Arc<SurfaceDocument>>,
+    state: &mut PipelineState,
+) -> Vec<crate::error::Diagnostic> {
+    let doc = doc_spanned.node.as_ref();
+
+    // Step 1: Resolve this document against the current environment.
+    let env_names: Vec<String> = Vec::new();
+    let root_group_len = state
+        .resolver_frames
+        .iter()
+        .flat_map(|f| f.values())
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+
+    let (resolve_table, _resolve_diags, _unreferenced, resolve_frames) =
+        crate::resolve::resolve_surface_document_with_seed_frames(
+            doc,
+            &state.resolver_frames,
+            &env_names,
+            root_group_len,
+        );
+    let resolve_table = Arc::new(resolve_table);
+
+    // Step 2: Typecheck this document.
+    state.infer_state.resolution_table = Arc::clone(&resolve_table);
+    state.infer_state.resolver_frames = resolve_frames;
+    state.infer_state.type_stage_scope = state.type_stage_data.scope.clone();
+    state.infer_state.type_stage_fns = state.type_stage_data.fns.clone();
+    state.infer_state.type_stage_type_vars = state.type_stage_data.type_vars.clone();
+    state.infer_state.tycon_env = state.tycon_env.clone();
+    state.infer_state.type_name_to_id = state.type_name_to_id.clone();
+    state.infer_state.type_display_names = state.type_display_names.clone();
+    state.infer_state.ctx.type_name_to_id = state.type_name_to_id.clone();
+    state.infer_state.ctx.type_display_names = state.type_display_names.clone();
+    for (id, def) in &state.tycon_env {
+        state.infer_state.ctx.tycon_env.insert(*id, Arc::clone(def));
+    }
+
+    let doc_sequential_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+        &state.env,
+    ))));
+
+    let (new_env, _result_ty, tc_errors) = crate::typecheck::process_document(
+        doc,
+        &doc_sequential_env,
+        &mut state.infer_state,
+        &mut None,
+    )
+    .await;
+
+    // Update state for next document.
+    state.tycon_env = state.infer_state.tycon_env.clone();
+    state.type_name_to_id = state.infer_state.type_name_to_id.clone();
+    state.type_display_names = state.infer_state.type_display_names.clone();
+    state.env = new_env;
+
+    tc_errors
 }
 
 /// Process a single document through the full pipeline: resolve → typecheck → eval.
@@ -133,10 +276,6 @@ pub async fn process_pipeline_document(
     )
     .await;
 
-    // Log ALL type checker diagnostics.
-    for err in &tc_errors {
-        eprintln!("[pipeline typecheck] {:?}: {}", err.level, err.message);
-    }
     // Propagate type checker errors.
     for err in &tc_errors {
         if err.level == crate::error::DiagnosticLevel::Err {
@@ -165,12 +304,7 @@ pub async fn process_pipeline_document(
         })
         .collect();
 
-    let result_thunk = crate::eval::eval_document_exprs_with_env(
-        &expr_nodes,
-        ctx,
-        None,
-    )
-    .await?;
+    let result_thunk = crate::eval::eval_document_exprs_with_env(&expr_nodes, ctx, None).await?;
 
     // Step 4: Route results based on stage header.
     let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
@@ -205,7 +339,10 @@ pub async fn process_pipeline_document(
                             state.type_stage_data.fns.insert(name.to_string(), fn_thunk);
                         }
                         if let Some(kind) = opt_kind {
-                            state.type_stage_data.type_vars.insert(name.to_string(), kind);
+                            state
+                                .type_stage_data
+                                .type_vars
+                                .insert(name.to_string(), kind);
                         }
                         // Register type_name_to_id from the TypeValue if nominal.
                         if let Some(id) = crate::type_infer::typevalue_nominal_id(

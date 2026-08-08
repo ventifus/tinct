@@ -40,7 +40,6 @@ pub async fn format_source_tinct(
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
     use crate::resolve;
-    use crate::typecheck;
     use crate::value::Value;
     use std::sync::Arc;
 
@@ -89,39 +88,12 @@ pub async fn format_source_tinct(
         return Err(msgs.join("\n"));
     }
 
-    // Typecheck the desugared formatter (writes inline type annotations).
-    let ts_data = crate::imports::get_builtin_core_type_stage_scope().await;
-    let (tc_diags, _formatter_env, _tycon_env, _type_name_to_id) =
-        typecheck::typecheck_program_bootstrap(
-            &formatter_program,
-            std::sync::Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
-            None,
-            std::collections::HashMap::new(),
-            ts_data,
-            std::collections::HashMap::new(),
-            None,
-        )
-        .await;
-    // Emit all diagnostics and only abort on type-assertion failures.
-    // The formatter script is type-checked with a minimal env (builtins resolve by slot
-    // but have no type scheme — the env is empty), so "resolver-slot-miss" diagnostics
-    // for every resolved reference are inherent to the bootstrap architecture.
-    // Only "type-assertion" errors indicate a behavioral mismatch that is genuinely fatal.
-    for diag in &tc_diags {
-        if diag.level == DiagnosticLevel::Err {
-            eprintln!("formatter typecheck [{}]: {}", diag.kind, diag.message);
-        }
-    }
-    if tc_diags
-        .iter()
-        .any(|d| d.level == DiagnosticLevel::Err && d.kind == "type-assertion")
-    {
-        let msgs: Vec<String> = tc_diags
-            .iter()
-            .filter(|d| d.level == DiagnosticLevel::Err && d.kind == "type-assertion")
-            .map(|d| format!("type assertion error: {}", d.message))
-            .collect();
-        return Err(msgs.join("\n"));
+    // Typecheck the desugared formatter via the per-document pipeline.
+    let mut pipeline_state = crate::pipeline::PipelineState::from_builtins(&ctx);
+    for doc in &formatter_program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut pipeline_state, &ctx)
+            .await
+            .map_err(|e| format!("formatter typecheck error: {e}"))?;
     }
 
     // Convert input AST to dict using the now-stable ctx.

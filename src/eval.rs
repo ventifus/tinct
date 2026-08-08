@@ -485,7 +485,7 @@ pub struct TypeContextData {
     /// Currently stored for observability; not surfaced to tinct code yet.
     pub type_diagnostics: Vec<crate::error::Diagnostic>,
     /// Maps type name → numeric type_decl_id for nominal types.
-    /// Derived from the type-stage scope; propagated from typecheck_program_bootstrap.
+    /// Derived from the type-stage scope; propagated from the per-document pipeline (process_pipeline_document).
     /// Used to seed InferState.type_name_to_id for subsequent typecheck calls.
     pub type_name_to_id: std::collections::HashMap<String, u64>,
     /// Maps type_decl_id → display name. Inverse of type_name_to_id.

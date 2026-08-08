@@ -1726,9 +1726,10 @@ async fn apply_cont(
             let body_slot_base_pre: Option<u32> = entries
                 .first()
                 .and_then(|e| e.node.assigned_slot.get().copied());
-            let (record_type, _schemes, _nested_dict_env, mut dict_errs) =
-                Box::pin(run_typecheck_dict(&entries, &env, state, type_map, body_slot_base_pre))
-                    .await;
+            let (record_type, _schemes, _nested_dict_env, mut dict_errs) = Box::pin(
+                run_typecheck_dict(&entries, &env, state, type_map, body_slot_base_pre),
+            )
+            .await;
             errors.append(&mut dict_errs);
             TypeCheckAction::Done(record_type)
         }
@@ -1949,7 +1950,7 @@ async fn infer_var_ref(
                 // Single-phase slot lookup: the env chain mirrors the resolver's frame structure.
                 // get_scheme_at(resolver_level, slot) traverses resolver_level parent links and
                 // looks up the slot there. Root-group entries are in child_env (seeded by
-                // typecheck_program_bootstrap) at their absolute slots; Sequential body entries
+                // the per-document pipeline via process_pipeline_document) at their absolute slots; Sequential body entries
                 // are in their respective env frames at the correct depths.
                 let slot_scheme = {
                     let env_read = env.read().unwrap();
@@ -1982,16 +1983,11 @@ async fn infer_var_ref(
                     }
                     slot_scheme
                 } else {
-                    let env_read = env.read().unwrap();
-                    let env_slots_len = env_read.slots.len();
-                    let parent_slots_len = env_read.parent.as_ref().map(|p| p.read().unwrap().slots.len()).unwrap_or(0);
-                    let grandparent_slots_len = env_read.parent.as_ref().and_then(|p| p.read().unwrap().parent.as_ref().map(|gp| gp.read().unwrap().slots.len())).unwrap_or(0);
-                    drop(env_read);
                     errors.push(Diagnostic::error(
                         "resolver-slot-miss",
                         format!(
-                            "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address (env slots: {}, parent slots: {}, grandparent slots: {})",
-                            resolver_level, slot, name, env_slots_len, parent_slots_len, grandparent_slots_len
+                            "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address",
+                            resolver_level, slot, name
                         ),
                         node.span.clone(),
                     ));
@@ -4644,7 +4640,7 @@ pub(crate) async fn run_typecheck_dict(
     state.ctx.current_level += 1;
 
     // dict_env is a fresh child of the incoming env. The parent chain already contains all
-    // root-group entries (seeded into child_env by typecheck_program_bootstrap) at their
+    // root-group entries (seeded into child_env by the per-document pipeline) at their
     // correct depths. get_scheme_at(depth, slot) traverses the chain naturally.
     let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
 

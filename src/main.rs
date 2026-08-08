@@ -2327,7 +2327,7 @@ async fn run_fmt(
     let (sf_path, source) = read_source(file_path)?;
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
-    // Parse once and run the type checking pipeline on the parsed AST.
+    // Parse once and run the per-document pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
         let output = parse(&source, Arc::clone(&sf_path))
@@ -2336,32 +2336,24 @@ async fn run_fmt(
         // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
         let program = tinct::expand::expand_program(&program);
-        let env_arc = tinct::get_builtin_core_type_env().await;
+
+        // Seed pipeline state from the already-built builtin core envs.
+        let (env_arc, tycon_env, type_name_to_id) = tinct::build_builtin_core_envs().await;
         let ts_data = tinct::get_builtin_core_type_stage_scope().await;
-        let (diagnostics, _env, _tycon_env, _type_name_to_id) =
-            tinct::typecheck::typecheck_program_bootstrap(
-                &program,
-                env_arc,
-                None,
-                std::collections::HashMap::new(),
-                ts_data,
-                std::collections::HashMap::new(),
-                None,
-            )
-            .await;
+        let ctx = EvalContext::new_empty();
+        let mut state = tinct::PipelineState::from_core_envs(
+            env_arc,
+            tycon_env,
+            ts_data,
+            type_name_to_id,
+        );
 
-        // Filter error-level diagnostics
-        let type_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| matches!(d.level, tinct::DiagnosticLevel::Err))
-            .collect();
-
-        if !type_errors.is_empty() {
-            let error_msgs: Vec<String> = type_errors
-                .iter()
-                .map(|e| format_diagnostic(e, &source, file_path))
-                .collect();
-            return Err(error_msgs.join("\n"));
+        // Process each document through the pipeline: resolve → typecheck → eval.
+        for doc in &program.documents {
+            if let Err(e) = tinct::process_pipeline_document(doc, &mut state, &ctx).await
+            {
+                return Err(e.to_string());
+            }
         }
 
         // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
@@ -2369,8 +2361,9 @@ async fn run_fmt(
         // as fatal (they escalate Info→Warn→Err under --strict).
         {
             use tinct::DiagnosticLevel;
+            let diagnostics = state.diagnostics();
             let mut has_fatal_diag = false;
-            for d in &diagnostics {
+            for d in diagnostics {
                 let effective = if strict {
                     let bumped = d.bump_level();
                     if bumped.level == DiagnosticLevel::Err {
