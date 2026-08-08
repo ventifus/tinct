@@ -201,6 +201,13 @@ pub async fn typecheck_pipeline_document(
     )
     .await;
 
+    // Append tc_errors to state diagnostics so state.diagnostics() is the
+    // single source of truth — consistent with process_pipeline_document.
+    state
+        .infer_state
+        .diagnostics
+        .extend(tc_errors.iter().cloned());
+
     // Update state for next document.
     state.tycon_env = state.infer_state.tycon_env.clone();
     state.type_name_to_id = state.infer_state.type_name_to_id.clone();
@@ -377,4 +384,51 @@ pub async fn process_pipeline_document(
     // (The resolver_frames were already updated by the resolve step's unified_frames output.)
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn test_ctx() -> Arc<EvalContext> {
+        EvalContext::new_empty()
+    }
+
+    #[tokio::test]
+    async fn typecheck_pipeline_document_simple_dict() {
+        // Parse a minimal tinct program.
+        let file: Arc<str> = Arc::from("<test>");
+        let parsed = crate::parser::parse("[x: 42]", file).expect("parse should succeed");
+        let program = crate::desugar::desugar_program_full(&parsed.program);
+        let program = crate::expand::expand_program(&program);
+
+        let ctx = test_ctx();
+        let mut state = PipelineState::from_builtins(&ctx);
+
+        for doc in &program.documents {
+            let diags = super::typecheck_pipeline_document(doc, &mut state).await;
+            let errors: Vec<_> = diags
+                .iter()
+                .filter(|d| d.level == crate::error::DiagnosticLevel::Err)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "unexpected type errors: {:?}",
+                errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+
+        // State-level diagnostics should also be error-free.
+        let state_errors: Vec<_> = state
+            .diagnostics()
+            .iter()
+            .filter(|d| d.level == crate::error::DiagnosticLevel::Err)
+            .collect();
+        assert!(
+            state_errors.is_empty(),
+            "unexpected state-level type errors: {:?}",
+            state_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }
