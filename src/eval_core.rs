@@ -648,7 +648,7 @@ pub(crate) async fn extract_fn_annotation_extra(
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
                 match eval_core_expr(&core_expr, frame, ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&e.node.value.span), ctx).await?,
-                    Err(e) if matches!(&e.kind, crate::error::ErrorKind::Unimplemented { .. }) => {
+                    Err(e) if e.kind == "unimplemented" => {
                         // Placeholder from nested type expressions → skip this key.
                         continue;
                     }
@@ -1231,9 +1231,7 @@ mod tests {
         let val = eval_and_materialize(
             CoreExpr::Int {
                 value: 42,
-                inferred_type: crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                ),
+                inferred_type: crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
             },
             &ctx,
         )

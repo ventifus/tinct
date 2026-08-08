@@ -6853,11 +6853,11 @@ pub fn format_parse_error(err: &Diagnostic, source: &str, file_name: &str) -> St
     use crate::error::render_span_snippet;
 
     // If there are no spans, fall back to basic message formatting
-    if err.spans.is_empty() {
+    if err.labels.is_empty() {
         return format!("error: {}", err.message);
     }
 
-    let span = err.spans[0].0.clone();
+    let span = err.labels[0].span.clone();
     let line = span.start_line;
     let col = span.start_col;
 
@@ -6876,11 +6876,6 @@ pub fn format_parse_error(err: &Diagnostic, source: &str, file_name: &str) -> St
     // Notes (e.g. "while parsing fn expression")
     for note in &err.notes {
         out.push_str(&format!("  = note: {note}\n"));
-    }
-
-    // Help line
-    if let Some(help) = &err.help {
-        out.push_str(&format!("  = help: {help}\n"));
     }
 
     out

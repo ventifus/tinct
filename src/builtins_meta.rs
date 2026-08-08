@@ -87,10 +87,10 @@ fn serialize_diagnostic(
 
     // secondary-spans: spans[1..] as [{span, label}] dicts
     let mut secondary: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-    for (j, (span, label)) in diag.spans.iter().skip(1).enumerate() {
+    for (j, sl) in diag.labels.iter().skip(1).enumerate() {
         let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        ss.insert(HashableValue::Str("span".into()), mk_span(span));
-        ss.insert(HashableValue::Str("label".into()), mk(string_val(label)));
+        ss.insert(HashableValue::Str("span".into()), mk_span(&sl.span));
+        ss.insert(HashableValue::Str("label".into()), mk(string_val(&sl.message)));
         secondary.insert(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
@@ -129,32 +129,14 @@ fn serialize_diagnostic(
         }),
     );
 
-    // help: integer-keyed dict of strings (0 or 1 entries from Option<String>)
-    let mut help_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-    for (j, help) in diag.help.iter().enumerate() {
-        help_dict.insert(HashableValue::Int(j as i64), mk(string_val(help)));
-    }
-    w.insert(
-        HashableValue::Str("help".into()),
-        mk(crate::value::Value::Dict {
-            entries: help_dict,
-            type_decl_id: TYPE_ID_DICT,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                crate::value::TYPE_ID_DICT,
-            )),
-        }),
-    );
-
-    // call-stack: [{label, span}] from Diagnostic.call_stack
-    let mut call_stack_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-    for (j, (label, span)) in diag.call_stack.iter().enumerate() {
-        let mut frame: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        frame.insert(HashableValue::Str("label".into()), mk(string_val(label)));
-        frame.insert(HashableValue::Str("span".into()), mk_span(span));
-        call_stack_dict.insert(
+    // children: serialized child diagnostics
+    let mut children_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (j, child) in diag.children.iter().enumerate() {
+        let child_entries = serialize_diagnostic(child, call_span);
+        children_dict.insert(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
-                entries: frame,
+                entries: child_entries,
                 type_decl_id: TYPE_ID_DICT,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DICT,
@@ -163,48 +145,13 @@ fn serialize_diagnostic(
         );
     }
     w.insert(
-        HashableValue::Str("call-stack".into()),
+        HashableValue::Str("children".into()),
         mk(crate::value::Value::Dict {
-            entries: call_stack_dict,
+            entries: children_dict,
             type_decl_id: TYPE_ID_DICT,
             type_val: Some(crate::type_infer::make_typevalue_nominal(
                 crate::value::TYPE_ID_DICT,
             )),
-        }),
-    );
-
-    let macro_val = if let Some(inner) = &diag.macro_expand {
-        let inner_entries = serialize_diagnostic(inner, call_span);
-        crate::value::Value::Dict {
-            entries: inner_entries,
-            type_decl_id: TYPE_ID_DICT,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                crate::value::TYPE_ID_DICT,
-            )),
-        }
-    } else {
-        crate::value::Value::Dict {
-            entries: IndexMap::new(),
-            type_decl_id: TYPE_ID_DICT,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                crate::value::TYPE_ID_DICT,
-            )),
-        }
-    };
-    w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
-
-    // blame: string value or {} if None
-    w.insert(
-        HashableValue::Str("blame".into()),
-        mk(match &diag.blame {
-            Some(b) => string_val(b),
-            None => crate::value::Value::Dict {
-                entries: IndexMap::new(),
-                type_decl_id: TYPE_ID_DICT,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_DICT,
-                )),
-            },
         }),
     );
 
@@ -432,8 +379,7 @@ pub(crate) fn builtin_try(
             }
             Err(e) => {
                 // ResourceLimitExceeded is non-catchable: it indicates a system-level limit.
-                use crate::error::ErrorKind;
-                if let ErrorKind::ResourceLimitExceeded { .. } = &e.kind {
+                if e.kind == "resource-limit" {
                     return Err(e);
                 }
                 // Failure: full diagnostic dict matching the unified protocol.
@@ -441,14 +387,14 @@ pub(crate) fn builtin_try(
                 let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
                 let mk_span =
                     |span: &crate::ast::Span| -> Arc<Thunk> { make_span_dict(span, &call_span) };
-                let primary_span = e.spans.first().map(|(s, _)| s).unwrap_or(&call_span);
+                let primary_span = e.labels.first().map(|sl| &sl.span).unwrap_or(&call_span);
                 let mut w: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 // Unified diagnostic protocol fields:
-                let error_msg = e.kind.to_string();
+                let error_msg = e.message.clone();
                 w.insert(HashableValue::Str("level".into()), mk(string_val("error")));
                 w.insert(
                     HashableValue::Str("kind".into()),
-                    mk(string_val(e.kind.kind_name())),
+                    mk(string_val(e.kind)),
                 );
                 w.insert(
                     HashableValue::Str("message".into()),
@@ -457,10 +403,10 @@ pub(crate) fn builtin_try(
                 w.insert(HashableValue::Str("span".into()), mk_span(primary_span));
                 // secondary-spans: spans[1..] as [{span, label}] dicts
                 let mut secondary: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                for (j, (span, label)) in e.spans.iter().skip(1).enumerate() {
+                for (j, sl) in e.labels.iter().skip(1).enumerate() {
                     let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                    ss.insert(HashableValue::Str("span".into()), mk_span(span));
-                    ss.insert(HashableValue::Str("label".into()), mk(string_val(label)));
+                    ss.insert(HashableValue::Str("span".into()), mk_span(&sl.span));
+                    ss.insert(HashableValue::Str("label".into()), mk(string_val(&sl.message)));
                     secondary.insert(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
@@ -506,29 +452,8 @@ pub(crate) fn builtin_try(
                         )),
                     }),
                 );
-                // call-stack: [{label, span}] from EvalError.stack
-                let mut stack: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                for (j, frame) in e.stack.iter().enumerate() {
-                    let mut fd: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                    fd.insert(
-                        HashableValue::Str("label".into()),
-                        mk(string_val(&frame.label)),
-                    );
-                    fd.insert(
-                        HashableValue::Str("span".into()),
-                        mk_span(&frame.definition_span),
-                    );
-                    stack.insert(
-                        HashableValue::Int(j as i64),
-                        mk(Value::Dict {
-                            entries: fd,
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                crate::value::TYPE_ID_DICT,
-                            )),
-                        }),
-                    );
-                }
+                // call-stack: now empty — stack frames are merged into labels (secondary-spans above)
+                let stack: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 w.insert(
                     HashableValue::Str("call-stack".into()),
                     mk(Value::Dict {
@@ -539,10 +464,10 @@ pub(crate) fn builtin_try(
                         )),
                     }),
                 );
-                let macro_val = if let Some((name, span)) = &e.macro_expansion {
+                let macro_val = if let Some(child) = e.children.iter().find(|c| c.kind == "macro-expansion") {
                     let mut me: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                    me.insert(HashableValue::Str("name".into()), mk(string_val(name)));
-                    me.insert(HashableValue::Str("span".into()), mk_span(span));
+                    me.insert(HashableValue::Str("name".into()), mk(string_val(&child.message)));
+                    me.insert(HashableValue::Str("span".into()), mk_span(child.primary_span()));
                     Value::Dict {
                         entries: me,
                         type_decl_id: TYPE_ID_DICT,
@@ -5765,7 +5690,7 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for annotated non-variant, got: {:?}",
             err.kind
         );

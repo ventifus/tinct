@@ -567,7 +567,7 @@ mod tests {
     };
     use crate::builtins_meta::{builtin_raise, builtin_try, builtin_type_of};
     use crate::builtins_string::{builtin_replace, builtin_trim};
-    use crate::error::ErrorKind;
+
     use crate::rust_span;
     use crate::test_util::test_span;
     use crate::value::TYPE_ID_DICT;
@@ -2014,7 +2014,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Int input to to-int, got: {:?}",
             err.kind
         );
@@ -3744,7 +3744,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Int input to keys, got: {:?}",
             err.kind
         );
@@ -3764,7 +3764,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for String input to keys, got: {:?}",
             err.kind
         );
@@ -4159,7 +4159,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Int pattern in replace, got: {:?}",
             err.kind
         );
@@ -4192,7 +4192,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Dict replacement in replace, got: {:?}",
             err.kind
         );
@@ -4224,7 +4224,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Float input in replace, got: {:?}",
             err.kind
         );
@@ -4252,7 +4252,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Float input to trim, got: {:?}",
             err.kind
         );
@@ -5132,7 +5132,7 @@ mod tests {
         .unwrap_err();
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
-            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            e.kind == "type-mismatch",
             "expected TypeMismatch error for Int + String, got: {}",
             e.kind
         );
@@ -5486,7 +5486,7 @@ mod tests {
         .unwrap_err();
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
-            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            e.kind == "type-mismatch",
             "expected TypeMismatch error for Int - String, got: {}",
             e.kind
         );
@@ -6092,14 +6092,14 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(e.kind, crate::error::ErrorKind::DivisionByZero { .. }),
+            e.kind == "division-by-zero",
             "expected DivisionByZero, got: {}",
             e.kind
         );
         assert!(
-            e.kind.to_string().contains("division by zero"),
+            e.message.contains("division by zero"),
             "expected message containing 'division by zero', got: {}",
-            e.kind
+            e.message
         );
     }
 
@@ -6866,7 +6866,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            e.kind == "type-mismatch",
             "expected TypeMismatch for Int vs Float in builtin-lt, got: {}",
             e.kind
         );
@@ -6906,7 +6906,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            e.kind == "type-mismatch",
             "expected TypeMismatch for Float vs Int in builtin-lt, got: {}",
             e.kind
         );
@@ -6937,7 +6937,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            e.kind == "type-mismatch",
             "expected TypeMismatch for Int vs String in builtin-lt, got: {}",
             e.kind
         );
@@ -7849,7 +7849,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch for Variant xs, got {:?}",
             err.kind
         );
@@ -8481,7 +8481,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err.kind, ErrorKind::KeyNotFound { .. }),
+            err.kind == "key-not-found",
             "expected KeyNotFound, got {:?}",
             err.kind
         );

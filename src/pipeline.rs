@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
 use crate::env::Env;
-use crate::error::{EvalError, EvalResult};
+use crate::error::EvalResult;
 use crate::eval::EvalContext;
 use crate::type_infer::{InferState, TypeStageData, TypeValue};
 
@@ -287,24 +287,10 @@ pub async fn process_pipeline_document(
     )
     .await;
 
-    // Propagate type checker errors with full span information.
+    // Propagate type checker errors — they are already Diagnostics.
     for err in &tc_errors {
         if err.level == crate::error::DiagnosticLevel::Err {
-            return Err(Box::new(EvalError {
-                kind: crate::error::ErrorKind::Internal {
-                    message: format!("typecheck error: {}", err.message),
-                },
-                spans: if err.spans.is_empty() {
-                    vec![(crate::rust_span!(), String::new())]
-                } else {
-                    err.spans.clone()
-                },
-                stack: smallvec::SmallVec::new(),
-                macro_expansion: None,
-                blame: None,
-                pipeline_stage: None,
-                notes: err.notes.clone(),
-            }));
+            return Err(Box::new(err.clone()));
         }
     }
 

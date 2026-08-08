@@ -133,10 +133,10 @@ pub fn lower_errors_to_eval_error(
         return (None, warnings);
     }
     let fmt_loc = |diag: &crate::error::Diagnostic| -> String {
-        if !diag.spans.is_empty() && !diag.spans[0].0.file.starts_with('<') {
+        if !diag.labels.is_empty() && !diag.labels[0].span.file.starts_with('<') {
             format!(
                 " (at {}:{}:{})",
-                diag.spans[0].0.file, diag.spans[0].0.start_line, diag.spans[0].0.start_col
+                diag.labels[0].span.file, diag.labels[0].span.start_line, diag.labels[0].span.start_col
             )
         } else {
             String::new()
@@ -149,8 +149,8 @@ pub fn lower_errors_to_eval_error(
         msg.push_str(&extra.message);
         msg.push_str(&fmt_loc(extra));
     }
-    let first_span = if !first.spans.is_empty() {
-        first.spans[0].0.clone()
+    let first_span = if !first.labels.is_empty() {
+        first.labels[0].span.clone()
     } else {
         crate::rust_span!()
     };
@@ -172,10 +172,10 @@ pub(crate) fn attach_materialization_context(
     if let Some(span) = mat_span {
         // spans[0] is always the primary span. spans[1] is the first note span (typically
         // the materialization site). If no note span has been added yet, push this mat span.
-        let first_note = err.spans.get(1).map(|(s, _)| s);
+        let first_note = err.labels.get(1).map(|sl| &sl.span);
         if first_note.is_none() {
             err = Box::new(err.with_materialization_span(span.clone()));
-        } else if first_note != Some(span) && !err.stack.iter().any(|f| f.definition_span == *span)
+        } else if first_note != Some(span) && !err.labels.iter().any(|l| l.span == *span)
         {
             // Only push a frame if the span differs from the existing
             // materialization span and isn't already in the stack (avoids
@@ -186,9 +186,9 @@ pub(crate) fn attach_materialization_context(
     }
     if let Some(label) = origin {
         if !err
-            .stack
+            .labels
             .iter()
-            .any(|f| f.definition_span == thunk_span && f.label == label)
+            .any(|l| l.span == thunk_span && l.message == label)
         {
             err.push_frame(label.to_string(), thunk_span);
         }
@@ -661,11 +661,11 @@ pub(crate) async fn force_step(
                 Err(e) => {
                     let mut cloned = Box::new((**e).clone());
                     if let Some(ref span) = mat_span {
-                        let first_note = cloned.spans.get(1).map(|(s, _)| s);
+                        let first_note = cloned.labels.get(1).map(|sl| &sl.span);
                         if first_note.is_none() {
                             cloned = Box::new(cloned.with_materialization_span(span.clone()));
                         } else if first_note != Some(span)
-                            && !cloned.stack.iter().any(|f| f.definition_span == *span)
+                            && !cloned.labels.iter().any(|l| l.span == *span)
                         {
                             cloned.push_frame("materialized".to_string(), span.clone());
                         }
@@ -4007,19 +4007,19 @@ mod tests {
         );
 
         // Verify materialization span is set as spans[1] with label "evaluated here"
-        assert_eq!(decorated.spans.len(), 2);
-        assert_eq!(decorated.spans[1].0, mat_span);
-        assert_eq!(decorated.spans[1].1, "evaluated here");
+        assert_eq!(decorated.labels.len(), 2);
+        assert_eq!(decorated.labels[1].span, mat_span);
+        assert_eq!(decorated.labels[1].message, "evaluated here");
 
         // Verify origin frame is added
         assert!(
             decorated
-                .stack
+                .labels
                 .iter()
-                .any(|f| f.label == origin && f.definition_span == thunk_span),
-            "Expected origin frame with label '{}' and thunk_span, but stack frames were: {:?}",
+                .any(|l| l.message == origin && l.span == thunk_span),
+            "Expected origin frame with label '{}' and thunk_span, but labels were: {:?}",
             origin,
-            decorated.stack
+            decorated.labels
         );
     }
 
@@ -4069,14 +4069,14 @@ mod tests {
 
         // spans[0] is the primary (definition site), spans[1..] are notes.
         // One of the note spans should point to the value production site.
-        let note_spans: Vec<_> = err.spans.iter().skip(1).collect();
+        let note_spans: Vec<_> = err.labels.iter().skip(1).collect();
         assert!(
             !note_spans.is_empty(),
             "Expected at least one note span in spans[1..]"
         );
         let value_produced_note = note_spans
             .iter()
-            .find(|(s, l)| s == &value_span && l == "value produced here");
+            .find(|sl| sl.span == value_span && sl.message == "value produced here");
         assert!(
             value_produced_note.is_some(),
             "Expected a note span pointing to value production site with label 'value produced here'"
@@ -4125,7 +4125,7 @@ mod tests {
 
         // No "value produced here" note span should be present because it would be
         // the same as the definition span (redundant).
-        let value_produced_note = err.spans.iter().find(|(_, l)| l == "value produced here");
+        let value_produced_note = err.labels.iter().find(|sl| sl.message == "value produced here");
         assert!(
             value_produced_note.is_none(),
             "No 'value produced here' note should be added when spans are equal"
@@ -4426,9 +4426,7 @@ mod tests {
         // The default expression evaluates to 99 directly without a variable lookup.
         let default_expr = Arc::new(sp(CoreExpr::Int {
             value: 99,
-            inferred_type: crate::type_infer::make_typevalue_nominal(
-                crate::value::TYPE_ID_INT,
-            ),
+            inferred_type: crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
         }));
         use crate::type_infer::make_typevalue_nominal;
         let guarded = Arc::new(Thunk::guarded(
@@ -4786,12 +4784,12 @@ mod deep_tests {
         );
 
         assert_eq!(
-            decorated.spans.get(1).map(|(s, _)| s),
+            decorated.labels.get(1).map(|sl| &sl.span),
             Some(&mat_span),
             "spans[1] should be the first materialization span"
         );
         assert_eq!(
-            decorated.spans.get(1).map(|(_, l)| l.as_str()),
+            decorated.labels.get(1).map(|sl| sl.message.as_str()),
             Some("evaluated here"),
             "spans[1] label should be 'evaluated here'"
         );
@@ -4807,7 +4805,7 @@ mod deep_tests {
 
         // spans[1] should still be the original mat_span (preserved, not overwritten)
         assert_eq!(
-            decorated2.spans.get(1).map(|(s, _)| s),
+            decorated2.labels.get(1).map(|sl| &sl.span),
             Some(&mat_span),
             "spans[1] should preserve the first materialization span, not overwrite"
         );

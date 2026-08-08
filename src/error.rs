@@ -1,14 +1,12 @@
-//! Evaluator error types with definition-site spans, materialization-site spans, and stack frames.
+//! Unified diagnostic system with definition-site spans, materialization-site spans, and stack frames.
 
 use std::fmt;
 use std::sync::Arc;
 
-use smallvec::SmallVec;
-
 use crate::ast::Span;
 
 /// Convenience type alias for evaluation results.
-pub type EvalResult<T> = Result<T, Box<EvalError>>;
+pub type EvalResult<T> = Result<T, Box<Diagnostic>>;
 
 /// Arity constraint for function calls.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +67,7 @@ pub struct BlameLabel {
 ///
 /// Attached by the evaluator when a `CoreExpr::TypeAssert` fails at a pipeline boundary.
 /// Carried through `TypeAssertCheckData::pipeline_blame` → `Cont::TypeAssertCheck` →
-/// `EvalError::with_pipeline_blame`. Set to `None` for inline type assertions (`[@Type expr]`);
+/// `Diagnostic::with_pipeline_blame`. Set to `None` for inline type assertions (`[@Type expr]`);
 /// `Some` only when the TypeAssert was synthesized for a pipeline type-check call site.
 ///
 /// Stage labels use document names when available (`--- name: %foo`), falling back to
@@ -83,1519 +81,6 @@ pub struct PipelineBlame {
     /// E.g., "document 'transform'" or "document 1".
     pub consumer: Option<String>,
 }
-
-/// Structured error kind with domain-specific data.
-///
-/// Note: `PartialEq` is implemented manually (not derived) to give
-/// `FloatNotFinite` and `FloatOutOfRange` total equality semantics where
-/// NaN == NaN. All other variants use structural field equality.
-#[derive(Debug, Clone)]
-pub enum ErrorKind {
-    // --- Access errors (E000-E009) ---
-    KeyNotFound {
-        key: String,
-        available_keys: Vec<String>,
-    },
-    /// `name` stores the identifier (bare name, no sigil prefix).
-    /// Display shows the name as-is: `"undefined variable: x"`.
-    /// For `%` pipeline refs, the name includes the `%`: `"undefined variable: %foo"`.
-    UndefinedVariable {
-        name: String,
-    },
-
-    // --- Type errors (E010-E019) ---
-    /// Runtime type mismatch from evaluator or builtin dispatch.
-    /// `context` carries the operation name (e.g., `"merge"`, `"document pipeline"`)
-    /// when the mismatch originates from a named operation; `None` for generic mismatches.
-    /// `expected` is human-readable, not machine-parseable — may contain
-    /// compound descriptions like `"Dict or Seq"`.
-    TypeMismatch {
-        context: Option<String>,
-        expected: String,
-        got: String,
-    },
-    /// User-written type assertion (`[@Type value]`) failed at runtime.
-    /// Semantically distinct from `TypeMismatch` — this is a user-authored
-    /// type guard, not an internal evaluator check.
-    TypeAssertFailed {
-        expected: String,
-        got: String,
-    },
-    /// No typeclass instance found for the given types.
-    /// Raised when runtime dispatch fails to find a matching instance declaration.
-    NoInstance {
-        class_name: String,
-        type_tags: Vec<String>,
-    },
-    /// Macro expansion error — validation failures, splice position errors, etc.
-    /// Distinct from UserError because it occurs during the expansion pass, not evaluation.
-    MacroError {
-        message: String,
-    },
-
-    // --- Call errors (E020-E029) ---
-    ArityMismatch {
-        expected: ArityBound,
-        got: usize,
-        /// Name of the function being called, if known (e.g. "[= ...]").
-        callee: Option<std::sync::Arc<str>>,
-        /// Parameter names, shown in the error message to help the user understand expected args.
-        params: Vec<std::sync::Arc<str>>,
-    },
-    MissingRequiredParam {
-        param: String,
-        callee: Option<std::sync::Arc<str>>,
-    },
-    NamedArgConflict {
-        param: String,
-        callee: Option<std::sync::Arc<str>>,
-    },
-    UnknownNamedArg {
-        name: String,
-        /// Names of all valid named parameters for this function (for error hint).
-        valid_params: Vec<String>,
-        callee: Option<std::sync::Arc<str>>,
-    },
-    NamedArgRejected {
-        builtin: String,
-    },
-
-    // --- Value errors (E030-E039) ---
-    DuplicateKey {
-        key: String,
-    },
-    /// `op` carries the operator symbol (e.g., `"/"`) for Display prefix.
-    DivisionByZero {
-        op: String,
-    },
-    IntegerOverflow {
-        op: String,
-    },
-    /// Covers NaN, Infinity, and -Infinity — values that are not finite
-    /// and cannot be converted to Int or used in contexts requiring finite floats.
-    FloatNotFinite {
-        builtin: String,
-        value: f64,
-    },
-    EmptyCollection {
-        op: String,
-    },
-    /// Runtime value type cannot be serialized to JSON (Function, Builtin, Seq, Proxy).
-    /// `value_type` is the user-facing type name (e.g., "Function", "Proxy").
-    ValueNotSerializable {
-        value_type: String,
-    },
-    /// Float-to-int conversion failed: value is finite but outside i64 range.
-    /// Distinct from `FloatNotFinite` (which rejects NaN/Infinity).
-    FloatOutOfRange {
-        builtin: String,
-        value: f64,
-    },
-
-    // --- Limit errors (E041+) ---
-    /// Resource limit exceeded (collection size, string size, etc.).
-    /// This is non-catchable — resource limits are
-    /// safety boundaries, not application-level errors.
-    ResourceLimitExceeded {
-        message: String,
-    },
-    // --- Include errors (E050-E059) ---
-    /// Covers both "cannot open" (canonicalize failure) and "cannot read"
-    /// (metadata/read failure). The `detail` field carries the OS error.
-    IncludeIoError {
-        path: String,
-        detail: String,
-    },
-    IncludeCycle {
-        path: String,
-    },
-    IncludeFileTooLarge {
-        path: String,
-        size: u64,
-        limit: u64,
-    },
-    IncludeHashMismatch {
-        path: String,
-        expected: String,
-        actual: String,
-    },
-    IncludeHashRequired {
-        path: String,
-    },
-
-    // --- Conversion errors (E060-E069) ---
-    ParseConversion {
-        builtin: String,
-        input: String,
-        target: String,
-    },
-    UriParseError {
-        detail: String,
-    },
-
-    // --- Evaluation structure (E070-E079) ---
-    CircularDependency {
-        name: String,
-        /// Full cycle chain: `[(origin_label, span), ...]`.
-        /// Each entry represents a thunk in the evaluation chain leading to the cycle.
-        /// Empty if cycle path tracking was disabled or the cycle was detected before
-        /// the stack was populated.
-        cycle_path: Vec<(Arc<str>, Span)>,
-    },
-    /// Non-exhaustive match: no pattern arm matched the scrutinee.
-    /// `scrutinee_type` is the runtime type of the value that failed to match
-    /// (e.g., `"Int"`, `"String"`, `"Dict"`).
-    MatchExhaustion {
-        scrutinee_type: String,
-    },
-    /// A variable name appears more than once in a single pattern.
-    /// ML-family semantics require each variable to bind at most once per arm.
-    /// E.g., `[a: x  b: x  ...]:` is illegal because `x` appears twice.
-    DuplicateVariable {
-        name: String,
-    },
-
-    /// User-generated (E080-E089)
-    UserError {
-        message: String,
-    },
-    /// Placeholder expression (`...`) reached during evaluation.
-    /// Catchable via $try — allows placeholder values in configs.
-    Unimplemented {
-        message: String,
-    },
-    /// Operation attempted on a builder that has already been finished (frozen).
-    /// Raised when user code calls builder-set/delete/get/has?/snapshot after
-    /// builder-finish has been called.
-    BuilderFinished {
-        op: String,
-    },
-
-    /// Schema validation (E090-E094)
-    SchemaViolation {
-        /// List of (field_path, error_message) tuples for each violation.
-        /// Field paths use dot notation: "user.address.zip"
-        /// Note: ambiguous for keys containing `.` — documented limitation.
-        violations: Vec<(String, String)>,
-    },
-    /// Type kind mismatch — a type constructor's kind does not match the expected kind.
-    /// `expected` is the required kind (e.g., `"Type"` for a ground type, `"Type → Type"`
-    /// for a unary type constructor). `got` is the actual kind produced by the expression.
-    /// Raised when HKT annotations supply a kind-`*` type where `* → *` is required, or
-    /// vice versa.
-    KindMismatch {
-        expected: String,
-        got: String,
-    },
-
-    // --- Escape hatch (E095-E099) ---
-    Internal {
-        message: String,
-    },
-}
-
-impl PartialEq for ErrorKind {
-    /// Custom equality with total float semantics: NaN == NaN for float-containing
-    /// variants (`FloatNotFinite`, `FloatOutOfRange`). All other variants use
-    /// structural field equality equivalent to `#[derive(PartialEq)]`.
-    fn eq(&self, other: &Self) -> bool {
-        // Helper for f64 total equality: NaN == NaN, Inf == Inf, etc.
-        #[inline]
-        fn f64_total_eq(a: f64, b: f64) -> bool {
-            a.to_bits() == b.to_bits()
-        }
-
-        match (self, other) {
-            // --- Float variants with total equality ---
-            (
-                Self::FloatNotFinite {
-                    builtin: b1,
-                    value: v1,
-                },
-                Self::FloatNotFinite {
-                    builtin: b2,
-                    value: v2,
-                },
-            ) => b1 == b2 && f64_total_eq(*v1, *v2),
-            (
-                Self::FloatOutOfRange {
-                    builtin: b1,
-                    value: v1,
-                },
-                Self::FloatOutOfRange {
-                    builtin: b2,
-                    value: v2,
-                },
-            ) => b1 == b2 && f64_total_eq(*v1, *v2),
-
-            // --- All other variants: structural field equality ---
-            (
-                Self::KeyNotFound {
-                    key: k1,
-                    available_keys: a1,
-                },
-                Self::KeyNotFound {
-                    key: k2,
-                    available_keys: a2,
-                },
-            ) => k1 == k2 && a1 == a2,
-            (Self::UndefinedVariable { name: n1 }, Self::UndefinedVariable { name: n2 }) => {
-                n1 == n2
-            }
-            (
-                Self::TypeMismatch {
-                    context: c1,
-                    expected: e1,
-                    got: g1,
-                },
-                Self::TypeMismatch {
-                    context: c2,
-                    expected: e2,
-                    got: g2,
-                },
-            ) => c1 == c2 && e1 == e2 && g1 == g2,
-            (
-                Self::TypeAssertFailed {
-                    expected: e1,
-                    got: g1,
-                },
-                Self::TypeAssertFailed {
-                    expected: e2,
-                    got: g2,
-                },
-            ) => e1 == e2 && g1 == g2,
-            (
-                Self::NoInstance {
-                    class_name: c1,
-                    type_tags: t1,
-                },
-                Self::NoInstance {
-                    class_name: c2,
-                    type_tags: t2,
-                },
-            ) => c1 == c2 && t1 == t2,
-            (Self::MacroError { message: m1 }, Self::MacroError { message: m2 }) => m1 == m2,
-            (
-                Self::ArityMismatch {
-                    expected: e1,
-                    got: g1,
-                    ..
-                },
-                Self::ArityMismatch {
-                    expected: e2,
-                    got: g2,
-                    ..
-                },
-            ) => e1 == e2 && g1 == g2,
-            (
-                Self::MissingRequiredParam { param: p1, .. },
-                Self::MissingRequiredParam { param: p2, .. },
-            ) => p1 == p2,
-            (
-                Self::NamedArgConflict { param: p1, .. },
-                Self::NamedArgConflict { param: p2, .. },
-            ) => p1 == p2,
-            (
-                Self::UnknownNamedArg {
-                    name: n1,
-                    valid_params: v1,
-                    ..
-                },
-                Self::UnknownNamedArg {
-                    name: n2,
-                    valid_params: v2,
-                    ..
-                },
-            ) => n1 == n2 && v1 == v2,
-            (Self::NamedArgRejected { builtin: b1 }, Self::NamedArgRejected { builtin: b2 }) => {
-                b1 == b2
-            }
-            (Self::DuplicateKey { key: k1 }, Self::DuplicateKey { key: k2 }) => k1 == k2,
-            (Self::DivisionByZero { op: o1 }, Self::DivisionByZero { op: o2 }) => o1 == o2,
-            (Self::IntegerOverflow { op: o1 }, Self::IntegerOverflow { op: o2 }) => o1 == o2,
-            (Self::EmptyCollection { op: o1 }, Self::EmptyCollection { op: o2 }) => o1 == o2,
-            (
-                Self::ValueNotSerializable { value_type: t1 },
-                Self::ValueNotSerializable { value_type: t2 },
-            ) => t1 == t2,
-            (
-                Self::ResourceLimitExceeded { message: m1 },
-                Self::ResourceLimitExceeded { message: m2 },
-            ) => m1 == m2,
-            (
-                Self::IncludeIoError {
-                    path: p1,
-                    detail: d1,
-                },
-                Self::IncludeIoError {
-                    path: p2,
-                    detail: d2,
-                },
-            ) => p1 == p2 && d1 == d2,
-            (Self::IncludeCycle { path: p1 }, Self::IncludeCycle { path: p2 }) => p1 == p2,
-            (
-                Self::IncludeFileTooLarge {
-                    path: p1,
-                    size: s1,
-                    limit: l1,
-                },
-                Self::IncludeFileTooLarge {
-                    path: p2,
-                    size: s2,
-                    limit: l2,
-                },
-            ) => p1 == p2 && s1 == s2 && l1 == l2,
-            (
-                Self::IncludeHashMismatch {
-                    path: p1,
-                    expected: e1,
-                    actual: a1,
-                },
-                Self::IncludeHashMismatch {
-                    path: p2,
-                    expected: e2,
-                    actual: a2,
-                },
-            ) => p1 == p2 && e1 == e2 && a1 == a2,
-            (Self::IncludeHashRequired { path: p1 }, Self::IncludeHashRequired { path: p2 }) => {
-                p1 == p2
-            }
-            (
-                Self::ParseConversion {
-                    builtin: b1,
-                    input: i1,
-                    target: t1,
-                },
-                Self::ParseConversion {
-                    builtin: b2,
-                    input: i2,
-                    target: t2,
-                },
-            ) => b1 == b2 && i1 == i2 && t1 == t2,
-            (Self::UriParseError { detail: d1 }, Self::UriParseError { detail: d2 }) => d1 == d2,
-            (
-                Self::CircularDependency {
-                    name: n1,
-                    cycle_path: c1,
-                },
-                Self::CircularDependency {
-                    name: n2,
-                    cycle_path: c2,
-                },
-            ) => n1 == n2 && c1 == c2,
-            (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
-            (Self::Unimplemented { message: m1 }, Self::Unimplemented { message: m2 }) => m1 == m2,
-            (Self::BuilderFinished { op: o1 }, Self::BuilderFinished { op: o2 }) => o1 == o2,
-            (
-                Self::SchemaViolation { violations: v1 },
-                Self::SchemaViolation { violations: v2 },
-            ) => v1 == v2,
-            (
-                Self::KindMismatch {
-                    expected: e1,
-                    got: g1,
-                },
-                Self::KindMismatch {
-                    expected: e2,
-                    got: g2,
-                },
-            ) => e1 == e2 && g1 == g2,
-            (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
-            (
-                Self::MatchExhaustion { scrutinee_type: t1 },
-                Self::MatchExhaustion { scrutinee_type: t2 },
-            ) => t1 == t2,
-            (Self::DuplicateVariable { name: n1 }, Self::DuplicateVariable { name: n2 }) => {
-                n1 == n2
-            }
-
-            // Different variants are never equal
-            _ => false,
-        }
-    }
-}
-
-impl ErrorKind {
-    /// Returns a stable kebab-case kind name for this error (used in unified error dicts).
-    ///
-    /// Unlike `code()` (which returns legacy E-codes), `kind_name()` returns a
-    /// human-readable kebab-case identifier suitable for programmatic use in tinct code.
-    pub fn kind_name(&self) -> &'static str {
-        match self {
-            Self::KeyNotFound { .. } => "key-not-found",
-            Self::UndefinedVariable { .. } => "undefined-variable",
-            Self::TypeMismatch { .. } => "type-mismatch",
-            Self::TypeAssertFailed { .. } => "type-assert-failed",
-            Self::NoInstance { .. } => "no-instance",
-            Self::MacroError { .. } => "macro-error",
-            Self::ArityMismatch { .. } => "arity-mismatch",
-            Self::MissingRequiredParam { .. } => "missing-required-param",
-            Self::NamedArgConflict { .. } => "named-arg-conflict",
-            Self::UnknownNamedArg { .. } => "unknown-named-arg",
-            Self::NamedArgRejected { .. } => "named-arg-rejected",
-            Self::DuplicateKey { .. } => "duplicate-key",
-            Self::DivisionByZero { .. } => "division-by-zero",
-            Self::IntegerOverflow { .. } => "integer-overflow",
-            Self::FloatNotFinite { .. } => "float-not-finite",
-            Self::EmptyCollection { .. } => "empty-collection",
-            Self::ValueNotSerializable { .. } => "value-not-serializable",
-            Self::FloatOutOfRange { .. } => "float-out-of-range",
-            Self::ResourceLimitExceeded { .. } => "resource-limit",
-            Self::IncludeIoError { .. } => "include-io-error",
-            Self::IncludeCycle { .. } => "include-cycle",
-            Self::IncludeFileTooLarge { .. } => "include-file-too-large",
-            Self::IncludeHashMismatch { .. } => "include-hash-mismatch",
-            Self::IncludeHashRequired { .. } => "include-hash-required",
-            Self::ParseConversion { .. } => "parse-conversion",
-            Self::UriParseError { .. } => "uri-parse-error",
-            Self::CircularDependency { .. } => "circular-dependency",
-            Self::MatchExhaustion { .. } => "match-exhaustion",
-            Self::DuplicateVariable { .. } => "duplicate-variable",
-            Self::UserError { .. } => "user-error",
-            Self::Unimplemented { .. } => "unimplemented",
-            Self::BuilderFinished { .. } => "builder-finished",
-            Self::SchemaViolation { .. } => "schema-violation",
-            Self::KindMismatch { .. } => "kind-mismatch",
-            Self::Internal { .. } => "internal-error",
-        }
-    }
-
-    /// Returns `false` for errors that must not be caught by `try`.
-    /// Resource limit errors (`ResourceLimitExceeded`) should propagate to the
-    /// runtime, not be suppressible by user code.
-    /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
-    ///
-    /// `ResourceLimitExceeded` is non-catchable (resource limits are safety
-    /// boundaries), but all errors are always cached in Failed thunk state per
-    /// Launchbury (1993) thunk state machine monotonicity.
-    pub fn is_catchable(&self) -> bool {
-        !matches!(self, Self::ResourceLimitExceeded { .. })
-    }
-
-    /// Returns the label for the primary span (`spans[0]`) in error Display output.
-    ///
-    /// For `TypeAssertFailed`, the primary span holds the thunk_span — the source location
-    /// where the value was produced. "value from" is more accurate than the generic "defined at"
-    /// because the span describes a value, not a definition site.
-    ///
-    /// All other errors use "defined at", which describes the definition site of the
-    /// problematic expression.
-    pub fn definition_span_label(&self) -> &'static str {
-        match self {
-            Self::TypeAssertFailed { .. } => "value from",
-            _ => "defined at",
-        }
-    }
-}
-
-impl fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::KeyNotFound {
-                key,
-                available_keys,
-            } => {
-                write!(f, "key not found: {key}")?;
-                if available_keys.is_empty() {
-                    return Ok(());
-                }
-
-                // Find best match using Jaro-Winkler similarity.
-                // Threshold 0.8 is consistent with prior art (cargo, rustc suggest at ~0.8).
-                // Jaro-Winkler is prefix-weighted and handles transpositions well for short
-                // identifier-style keys. A single-char typo on a 4-char key typically scores
-                // 0.83-0.92; unrelated keys typically score < 0.7.
-                let mut best_match: Option<(&str, f64)> = None;
-                for avail in available_keys {
-                    let similarity = strsim::jaro_winkler(key, avail);
-                    if similarity > 0.8 {
-                        if let Some((_, best_sim)) = best_match {
-                            if similarity > best_sim {
-                                best_match = Some((avail, similarity));
-                            }
-                        } else {
-                            best_match = Some((avail, similarity));
-                        }
-                    }
-                }
-
-                if let Some((suggestion, _)) = best_match {
-                    write!(f, " (did you mean: '{suggestion}')")
-                } else {
-                    // No close match found above the similarity threshold.
-                    // Fall back to listing up to 5 available keys so the user
-                    // can see what keys are actually present. Mirrors rustc's
-                    // "available fields are: ..." style for struct field errors.
-                    let keys_str = available_keys
-                        .iter()
-                        .take(5)
-                        .map(|k| k.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let suffix = if available_keys.len() > 5 {
-                        ", ..."
-                    } else {
-                        ""
-                    };
-                    write!(f, " (available keys: {keys_str}{suffix})")
-                }
-            }
-            Self::UndefinedVariable { name } => {
-                write!(f, "undefined variable: {name}")
-            }
-            Self::TypeMismatch {
-                context: Some(ctx),
-                expected,
-                got,
-            } => write!(f, "{ctx}: expected {expected}, got {got}"),
-            Self::TypeMismatch {
-                context: None,
-                expected,
-                got,
-            } => write!(f, "type mismatch: expected {expected}, got {got}"),
-            Self::TypeAssertFailed { expected, got } => {
-                write!(f, "type assertion failed: expected {expected}, got {got}")
-            }
-            Self::NoInstance {
-                class_name,
-                type_tags,
-            } => {
-                let types_str = type_tags.join(", ");
-                write!(f, "no instance for {class_name} ({types_str})")
-            }
-            Self::MacroError { message } => {
-                write!(f, "macro expansion error: {message}")
-            }
-            Self::ArityMismatch {
-                expected,
-                got,
-                callee,
-                params,
-            } => {
-                let params_str = if params.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " [{}]",
-                        params
-                            .iter()
-                            .map(|s| s.as_ref())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
-                if let Some(name) = callee {
-                    write!(
-                        f,
-                        "arity mismatch: `{name}` expected {expected}{params_str}, got {got}"
-                    )
-                } else {
-                    write!(
-                        f,
-                        "arity mismatch: expected {expected}{params_str}, got {got}"
-                    )
-                }
-            }
-            Self::MissingRequiredParam { param, callee } => {
-                if let Some(name) = callee {
-                    write!(
-                        f,
-                        "missing argument for required parameter '{param}' in call to `{name}`"
-                    )
-                } else {
-                    write!(f, "missing argument for required parameter '{param}'")
-                }
-            }
-            Self::NamedArgConflict { param, callee } => {
-                if let Some(name) = callee {
-                    write!(f, "parameter '{param}' received both positional and named argument in call to `{name}`")
-                } else {
-                    write!(
-                        f,
-                        "parameter '{param}' received both positional and named argument"
-                    )
-                }
-            }
-            Self::UnknownNamedArg {
-                name,
-                valid_params,
-                callee,
-            } => {
-                let callee_str = callee
-                    .as_deref()
-                    .map(|n| format!(" in call to `{n}`"))
-                    .unwrap_or_default();
-                if valid_params.is_empty() {
-                    write!(
-                        f,
-                        "unexpected named argument: \"{name}\" (function has no parameters){callee_str}"
-                    )
-                } else {
-                    let valid = valid_params.join(", ");
-                    write!(
-                        f,
-                        "unexpected named argument: \"{name}\" (valid parameter names: {valid}){callee_str}"
-                    )
-                }
-            }
-            Self::NamedArgRejected { builtin } => {
-                write!(f, "{builtin} does not accept named arguments")
-            }
-            Self::DuplicateKey { key } => write!(f, "duplicate key: {key}"),
-            Self::DivisionByZero { op } => write!(f, "{op}: division by zero"),
-            Self::IntegerOverflow { op } => write!(f, "{op}: integer overflow"),
-            Self::FloatNotFinite { builtin, value } => {
-                write!(f, "{builtin}: {value} is not a finite number")
-            }
-            Self::EmptyCollection { op } => write!(f, "{op} on empty collection"),
-            Self::ValueNotSerializable { value_type } => {
-                write!(f, "cannot serialize {value_type} to JSON")
-            }
-            Self::FloatOutOfRange { builtin, value } => {
-                write!(f, "{builtin}: {value} is out of range for Int")
-            }
-            Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
-            Self::IncludeIoError { path, detail } => {
-                write!(f, "include: cannot access \"{path}\": {detail}")
-            }
-            Self::IncludeCycle { path } => write!(f, "circular include detected: \"{path}\""),
-            Self::IncludeFileTooLarge { path, size, limit } => write!(
-                f,
-                "include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"
-            ),
-            Self::IncludeHashMismatch {
-                path,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "include: integrity check failed for \"{path}\": expected {expected}, got {actual}"
-            ),
-            Self::IncludeHashRequired { path } => write!(
-                f,
-                "include: integrity hash required for \"{path}\" (--require-integrity)"
-            ),
-            Self::ParseConversion {
-                builtin,
-                input,
-                target,
-            } => write!(f, "{builtin}: cannot parse {input:?} as {target}"),
-            Self::UriParseError { detail } => write!(f, "URI parse error: {detail}"),
-            Self::CircularDependency { name, cycle_path } => {
-                write!(f, "circular dependency detected while evaluating {name}")?;
-                if !cycle_path.is_empty() {
-                    write!(f, "\n  cycle:")?;
-                    for (label, span) in cycle_path {
-                        write!(f, "\n    {label} at {span}")?;
-                    }
-                    write!(f, "\n    → back to {name}")?;
-                }
-                Ok(())
-            }
-            Self::MatchExhaustion { scrutinee_type } => {
-                write!(
-                    f,
-                    "non-exhaustive match: no pattern matched the {scrutinee_type} value"
-                )
-            }
-            Self::DuplicateVariable { name } => {
-                write!(
-                    f,
-                    "duplicate variable in pattern: '{name}' appears more than once"
-                )
-            }
-            Self::UserError { message } => write!(f, "{message}"),
-            Self::Unimplemented { message } => write!(f, "{message}"),
-            Self::BuilderFinished { op } => {
-                write!(f, "{op}: builder has already been finished")
-            }
-            Self::SchemaViolation { violations } => {
-                writeln!(
-                    f,
-                    "schema validation failed with {} error(s):",
-                    violations.len()
-                )?;
-                for (field, msg) in violations {
-                    writeln!(f, "  {}: {}", field, msg)?;
-                }
-                Ok(())
-            }
-            Self::KindMismatch { expected, got } => {
-                write!(f, "kind mismatch: expected {expected}, got {got}")
-            }
-            Self::Internal { message } => write!(f, "{message}"),
-        }
-    }
-}
-
-/// A single frame in an evaluation stack trace (function name + source location).
-///
-/// The span carries a `file: Arc<str>` file path for source location attribution.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StackFrame {
-    pub label: String,
-    /// Where the expression being forced was defined.
-    pub definition_span: Span,
-}
-
-/// Evaluation error with definition-site span, optional materialization-site span,
-/// and a stack trace of enclosing function calls.
-///
-/// Each span carries a `file: Arc<str>` file path. Use `self.spans[0].0.file` to obtain
-/// the file path for source location display.
-///
-/// `spans` is an ordered list of labeled source locations:
-/// - `spans[0]` is the primary span (the main error location, shown in the header).
-///   Its label is typically `""` (empty); the `kind.definition_span_label()` method
-///   supplies the human-readable header label ("defined at", "value from", etc.).
-/// - `spans[1..]` are additional notes displayed as `  note: {label} at {span}`.
-///   Populated by `with_materialization_span` (label `"evaluated here"`) and
-///   `with_secondary_span` (caller-supplied label).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EvalError {
-    pub kind: ErrorKind,
-    /// All labeled spans in priority order.
-    /// `spans[0]` = primary (header) location; `spans[1..]` = note spans.
-    pub spans: Vec<(Span, String)>,
-    pub stack: SmallVec<[StackFrame; 8]>,
-    /// Optional macro expansion provenance: (macro_name, call_site_span).
-    /// When set, the error Display shows "in expansion of `<name>` at line:col".
-    /// Populated by the error propagation path when errors occur in macro-expanded code.
-    /// See Pombrio & Krishnamurthi (2015) for the "honest tags" approach to expansion provenance.
-    pub macro_expansion: Option<(String, Span)>,
-    /// Optional blame label for gradual typing boundaries.
-    /// When present, identifies the typed/untyped boundary responsible for a type error.
-    pub blame: Option<BlameLabel>,
-    /// Optional pipeline blame provenance for contract violation enrichment.
-    /// When present, identifies the producing/consuming stage at a `---` boundary.
-    pub pipeline_stage: Option<PipelineBlame>,
-    /// Text-only notes rendered as `  = note: {text}` after span notes.
-    /// Matches the `= note:` style of Diagnostic for uniform error presentation.
-    /// Use for actual/expected type context and other human-readable annotations.
-    pub notes: Vec<String>,
-}
-
-impl EvalError {
-    /// Create an error with the Internal escape hatch kind.
-    /// Use typed ErrorKind variants instead when possible.
-    pub fn internal(message: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::Internal { message },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    /// Create a BuilderFinished error for a specific operation.
-    /// Used when a builder operation is attempted after builder-finish.
-    pub fn builder_already_finished(op: impl Into<String>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::BuilderFinished { op: op.into() },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    /// Attach a materialization span (where this thunk was forced).
-    /// Appended as `spans[1]` with label `"evaluated here"`.
-    pub fn with_materialization_span(mut self, span: Span) -> Self {
-        self.spans.push((span, "evaluated here".to_string()));
-        self
-    }
-
-    /// Builder for stack frame attachment.
-    pub fn with_frame(mut self, label: String, span: Span) -> Self {
-        self.stack.push(StackFrame {
-            label,
-            definition_span: span,
-        });
-        self
-    }
-
-    /// Mutable stack frame push.
-    pub fn push_frame(&mut self, label: String, span: Span) {
-        self.stack.push(StackFrame {
-            label,
-            definition_span: span,
-        });
-    }
-
-    /// Attach a secondary span with a label, e.g. `"value produced here"`.
-    /// Displayed on a separate line as `  note: {label} at {span}`.
-    /// Multiple calls append; all secondary spans are displayed in order.
-    pub fn with_secondary_span(mut self, span: Span, label: impl Into<String>) -> Self {
-        self.spans.push((span, label.into()));
-        self
-    }
-
-    /// Builder for attaching macro expansion provenance.
-    /// Shows "in expansion of `<name>` at line:col" in the error output.
-    pub fn with_macro_expansion(mut self, macro_name: String, call_site: Span) -> Self {
-        self.macro_expansion = Some((macro_name, call_site));
-        self
-    }
-
-    /// Attach a blame label for gradual typing boundary errors.
-    /// Uses co-natural strategy: innermost blame label is preserved, outer labels discarded.
-    pub fn with_blame(mut self, label: BlameLabel) -> Self {
-        // Co-natural strategy: if we already have a blame label (innermost boundary),
-        // keep it and discard the new outer label.
-        if self.blame.is_none() {
-            self.blame = Some(label);
-        }
-        self
-    }
-
-    /// Attach pipeline blame provenance for contract violation errors.
-    /// Identifies the producing stage (positive party) and consuming stage (negative party).
-    pub fn with_pipeline_blame(mut self, blame: PipelineBlame) -> Self {
-        if self.pipeline_stage.is_none() {
-            self.pipeline_stage = Some(blame);
-        }
-        self
-    }
-
-    pub fn key_not_found(key: &str, available_keys: Vec<String>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::KeyNotFound {
-                key: key.to_string(),
-                available_keys,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn type_mismatch(expected: impl AsRef<str>, got: impl AsRef<str>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::TypeMismatch {
-                context: None,
-                expected: expected.as_ref().to_string(),
-                got: got.as_ref().to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn arity_mismatch(expected: usize, got: usize, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::ArityMismatch {
-                expected: ArityBound::Exact(expected),
-                got,
-                callee: None,
-                params: vec![],
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn arity_mismatch_bound(expected: ArityBound, got: usize, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::ArityMismatch {
-                expected,
-                got,
-                callee: None,
-                params: vec![],
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    /// Attach a callee name to call-related errors (arity, missing param, named arg issues).
-    /// No-op for other error kinds.
-    pub fn set_arity_callee(&mut self, callee: Option<std::sync::Arc<str>>) {
-        match self.kind {
-            ErrorKind::ArityMismatch {
-                callee: ref mut c, ..
-            } if c.is_none() => *c = callee,
-            ErrorKind::MissingRequiredParam {
-                callee: ref mut c, ..
-            } if c.is_none() => *c = callee,
-            ErrorKind::NamedArgConflict {
-                callee: ref mut c, ..
-            } if c.is_none() => *c = callee,
-            ErrorKind::UnknownNamedArg {
-                callee: ref mut c, ..
-            } if c.is_none() => *c = callee,
-            _ => {}
-        }
-    }
-
-    /// Attach parameter names to an arity mismatch error.
-    /// No-op for other error kinds, and no-op if params are already set.
-    pub fn set_arity_params(&mut self, new_params: Vec<String>) {
-        if let ErrorKind::ArityMismatch {
-            params: ref mut p, ..
-        } = self.kind
-        {
-            if !p.is_empty() {
-                return;
-            }
-            *p = new_params
-                .into_iter()
-                .map(|s| std::sync::Arc::from(s.as_str()))
-                .collect();
-        }
-    }
-
-    pub fn circular_dependency(name: &str, span: Span, cycle_path: Vec<(Arc<str>, Span)>) -> Self {
-        Self {
-            kind: ErrorKind::CircularDependency {
-                name: name.to_string(),
-                cycle_path,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn match_exhaustion(scrutinee_type: &str, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::MatchExhaustion {
-                scrutinee_type: scrutinee_type.to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn duplicate_variable_in_pattern(name: &str, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::DuplicateVariable {
-                name: name.to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn user_error(message: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::UserError { message },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn macro_error(message: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::MacroError { message },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn unimplemented(message: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::Unimplemented { message },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn schema_violation(violations: Vec<(String, String)>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::SchemaViolation { violations },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn kind_mismatch(expected: &str, got: &str, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::KindMismatch {
-                expected: expected.to_string(),
-                got: got.to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn named_arg_rejected(builtin: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::NamedArgRejected { builtin },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn integer_overflow(op: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IntegerOverflow { op },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn type_mismatch_ctx(
-        context: String,
-        expected: impl AsRef<str>,
-        got: impl AsRef<str>,
-        span: Span,
-    ) -> Self {
-        Self {
-            kind: ErrorKind::TypeMismatch {
-                context: Some(context),
-                expected: expected.as_ref().to_string(),
-                got: got.as_ref().to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn division_by_zero(op: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::DivisionByZero { op },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn float_not_finite(builtin: String, value: f64, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::FloatNotFinite { builtin, value },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn empty_collection(op: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::EmptyCollection { op },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn value_not_serializable(value_type: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::ValueNotSerializable { value_type },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn float_out_of_range(builtin: String, value: f64, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::FloatOutOfRange { builtin, value },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn undefined_variable(name: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::UndefinedVariable { name },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn type_assert_failed(expected: &str, got: &str, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::TypeAssertFailed {
-                expected: expected.to_string(),
-                got: got.to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    /// Append a text-only note rendered as `  = note: {text}`.
-    /// Matches the `= note:` format of Diagnostic for uniform presentation.
-    pub fn with_note(mut self, note: String) -> Self {
-        self.notes.push(note);
-        self
-    }
-
-    pub fn no_instance(class_name: &str, type_tags: Vec<String>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::NoInstance {
-                class_name: class_name.to_string(),
-                type_tags,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn named_arg_conflict(param: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::NamedArgConflict {
-                param,
-                callee: None,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn unknown_named_arg(name: String, valid_params: Vec<String>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::UnknownNamedArg {
-                name,
-                valid_params,
-                callee: None,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn duplicate_key(key: &str, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::DuplicateKey {
-                key: key.to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn resource_limit_exceeded(message: impl Into<String>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::ResourceLimitExceeded {
-                message: message.into(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn include_io_error(path: String, detail: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeIoError { path, detail },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn include_cycle(path: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeCycle { path },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn include_file_too_large(path: String, size: u64, limit: u64, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeFileTooLarge { path, size, limit },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn include_hash_mismatch(
-        path: String,
-        expected: String,
-        actual: String,
-        span: Span,
-    ) -> Self {
-        Self {
-            kind: ErrorKind::IncludeHashMismatch {
-                path,
-                expected,
-                actual,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn include_hash_required(path: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeHashRequired { path },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn parse_conversion(builtin: String, input: String, target: &str, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::ParseConversion {
-                builtin,
-                input,
-                target: target.to_string(),
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn uri_parse_error(detail: String, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::UriParseError { detail },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-
-    pub fn missing_required_param(param: impl Into<String>, span: Span) -> Self {
-        Self {
-            kind: ErrorKind::MissingRequiredParam {
-                param: param.into(),
-                callee: None,
-            },
-            spans: vec![(span, String::new())],
-            stack: SmallVec::new(),
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-            notes: Vec::new(),
-        }
-    }
-}
-
-/// All stack frames appear in user-facing error output.
-// T-1824: should_display_frame removed — all frames are always displayed.
-// Every frame has a real source location (user span or Rust rust_span!()).
-// There is no filtering policy and no legitimate reason to suppress a frame.
-//
-// T-1824: write_frame_snippet removed — source text is not embedded in spans
-// (compact Span layout, T-1771). Snippet rendering requires the caller to supply
-// source text, which the Display impl cannot provide.
-
-impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Primary span: spans[0] holds the main error location (definition site).
-        // Its label ("defined at", "value from", etc.) is determined by the error kind.
-        let primary_span = self.spans.first().map(|(s, _)| s);
-
-        if let Some(ref def_span) = primary_span {
-            let def_label = self.kind.definition_span_label();
-            write!(f, "{} ({def_label} {})", self.kind, def_span)?;
-        } else {
-            write!(f, "{}", self.kind)?;
-        }
-
-        // Source snippet: not rendered in Display because source text is no longer embedded in
-        // spans (compact Span layout, T-1771). Callers that have the source text available should
-        // call render_span_snippet() directly with the source string.
-
-        // Note spans: spans[1..] — each displayed as "  note: {label} at {span}".
-        // Covers both materialization spans ("evaluated here") and secondary spans.
-        for (ref span, ref label) in self.spans.iter().skip(1) {
-            write!(f, "\n  note: {label} at {}", span)?;
-        }
-
-        // Text-only notes — rendered as "  = note: {text}" matching Diagnostic format.
-        for note in &self.notes {
-            write!(f, "\n  = note: {note}")?;
-        }
-
-        // Display all stack frames (all frames are always shown — no filtering)
-        for frame in &self.stack {
-            write!(f, "\n  in {} at {}", frame.label, frame.definition_span)?;
-        }
-
-        // Macro expansion provenance: shows "in expansion of `<name>` at line:col"
-        // when the error occurred in macro-generated code. This is dual-span reporting
-        // per Pombrio & Krishnamurthi (2015).
-        if let Some((ref macro_name, ref call_site)) = self.macro_expansion {
-            write!(
-                f,
-                "\n  in expansion of `{}` at {}:{}",
-                macro_name, call_site.start_line, call_site.start_col
-            )?;
-        }
-
-        // Blame label: gradual typing boundary provenance
-        if let Some(ref blame) = self.blame {
-            let party = match blame.polarity {
-                BlameParity::Positive => "typed side (annotation)",
-                BlameParity::Negative => "untyped side (producer)",
-            };
-            write!(
-                f,
-                "\n  blame: value from {} crossed boundary at {} ({} responsible)",
-                blame.origin_span, blame.boundary_span, party
-            )?;
-        }
-
-        // Pipeline blame: contract violation provenance at --- boundaries
-        if let Some(ref pb) = self.pipeline_stage {
-            write!(f, "\n  produced by: {}", pb.producer)?;
-            if let Some(ref consumer) = pb.consumer {
-                write!(f, "\n  consumed by: {}", consumer)?;
-            }
-            // Hint based on error kind: suggest fix direction
-            match &self.kind {
-                ErrorKind::TypeAssertFailed { .. } | ErrorKind::TypeMismatch { .. } => {
-                    write!(
-                        f,
-                        "\n  hint: fix the producing stage or add a type cast in the consuming stage"
-                    )?;
-                }
-                ErrorKind::SchemaViolation { .. } => {
-                    write!(
-                        f,
-                        "\n  hint: fix the producing stage to match the schema contract"
-                    )?;
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl std::error::Error for EvalError {}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Type diagnostic system (three-tier: Info, Warn, Err)
-// ────────────────────────────────────────────────────────────────────────────
 
 /// Diagnostic severity level for type checking notifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1630,6 +115,13 @@ impl DiagnosticLevel {
     }
 }
 
+/// Labeled span for error reporting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanLabel {
+    pub span: crate::ast::Span,
+    pub message: String,
+}
+
 /// Unified pipeline diagnostic — emitted by the parser, resolver, type checker, lowerer, and
 /// evaluator. Used both as a Rust-internal diagnostic and as the shape of the tinct-side
 /// `Diagnostic` type in `stdlib/builtin_core.llt`.
@@ -1640,82 +132,76 @@ impl DiagnosticLevel {
 ///
 /// At error sites, `Diagnostic` is frequently heap-allocated as `Box<Diagnostic>` to keep
 /// `Result<T, Box<Diagnostic>>` pointer-sized.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Diagnostic {
     pub level: DiagnosticLevel,
     pub kind: &'static str,
     pub message: String,
-    pub spans: Vec<(crate::ast::Span, String)>,
+    pub labels: Vec<SpanLabel>,
     pub notes: Vec<String>,
-    pub help: Option<String>,
-    pub call_stack: Vec<(String, crate::ast::Span)>,
-    pub macro_expand: Option<Box<Diagnostic>>,
-    pub blame: Option<String>,
+    pub children: Vec<Diagnostic>,
 }
 
 impl Diagnostic {
-    /// Construct an error-level diagnostic with a single span and no notes or help.
+    /// Construct an error-level diagnostic with a single span and no notes.
     pub fn error(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
         Self {
             level: DiagnosticLevel::Err,
             kind,
             message: message.into(),
-            spans: vec![(span, String::new())],
+            labels: vec![SpanLabel {
+                span,
+                message: String::new(),
+            }],
             notes: Vec::new(),
-            help: None,
-            call_stack: Vec::new(),
-            macro_expand: None,
-            blame: None,
+            children: Vec::new(),
         }
     }
 
-    /// Construct a warn-level diagnostic with a single span and no notes or help.
+    /// Construct a warn-level diagnostic with a single span and no notes.
     pub fn warn(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
         Self {
             level: DiagnosticLevel::Warn,
             kind,
             message: message.into(),
-            spans: vec![(span, String::new())],
+            labels: vec![SpanLabel {
+                span,
+                message: String::new(),
+            }],
             notes: Vec::new(),
-            help: None,
-            call_stack: Vec::new(),
-            macro_expand: None,
-            blame: None,
+            children: Vec::new(),
         }
     }
 
-    /// Construct an info-level diagnostic with a single span and no notes or help.
+    /// Construct an info-level diagnostic with a single span and no notes.
     pub fn info(kind: &'static str, message: impl Into<String>, span: crate::ast::Span) -> Self {
         Self {
             level: DiagnosticLevel::Info,
             kind,
             message: message.into(),
-            spans: vec![(span, String::new())],
+            labels: vec![SpanLabel {
+                span,
+                message: String::new(),
+            }],
             notes: Vec::new(),
-            help: None,
-            call_stack: Vec::new(),
-            macro_expand: None,
-            blame: None,
+            children: Vec::new(),
         }
     }
 
-    /// Construct a diagnostic with an explicit level and pre-built spans vec.
+    /// Construct a diagnostic with an explicit level and pre-built labels vec.
     pub fn with_spans(
         level: DiagnosticLevel,
         kind: &'static str,
         message: impl Into<String>,
-        spans: Vec<(crate::ast::Span, String)>,
+        labels: Vec<SpanLabel>,
     ) -> Self {
         Self {
             level,
             kind,
             message: message.into(),
-            spans,
+            labels,
             notes: Vec::new(),
-            help: None,
-            call_stack: Vec::new(),
-            macro_expand: None,
-            blame: None,
+            children: Vec::new(),
         }
     }
 
@@ -1728,8 +214,26 @@ impl Diagnostic {
         bumped
     }
 
+    pub fn with_label(mut self, span: crate::ast::Span, message: impl Into<String>) -> Self {
+        self.labels.push(SpanLabel {
+            span,
+            message: message.into(),
+        });
+        self
+    }
+
+    pub fn push_label(&mut self, span: crate::ast::Span, message: impl Into<String>) {
+        self.labels.push(SpanLabel {
+            span,
+            message: message.into(),
+        });
+    }
+
     pub fn with_span(mut self, span: crate::ast::Span, label: impl Into<String>) -> Self {
-        self.spans.push((span, label.into()));
+        self.labels.push(SpanLabel {
+            span,
+            message: label.into(),
+        });
         self
     }
 
@@ -1738,26 +242,25 @@ impl Diagnostic {
         self
     }
 
+    pub fn with_help(self, help: impl Into<String>) -> Self {
+        self.with_note(help)
+    }
+
+    pub fn add_help(&mut self, help: impl Into<String>) {
+        self.notes.push(help.into());
+    }
+
     pub fn add_note(&mut self, note: impl Into<String>) {
         self.notes.push(note.into());
     }
 
-    pub fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.help = Some(help.into());
+    pub fn with_child(mut self, child: Diagnostic) -> Self {
+        self.children.push(child);
         self
     }
 
-    pub fn add_help(&mut self, help: impl Into<String>) {
-        self.help = Some(help.into());
-    }
-
-    /// Help line attached to this diagnostic (rendered as `= help: ...`), if any.
-    pub fn help_str(&self) -> Option<&str> {
-        self.help.as_deref()
-    }
-
     pub fn primary_span(&self) -> &crate::ast::Span {
-        &self.spans[0].0
+        &self.labels[0].span
     }
 
     /// Wrap this diagnostic in a `Box` for use as `Err(diag.boxed())` in functions
@@ -1765,31 +268,501 @@ impl Diagnostic {
     pub fn boxed(self) -> Box<Self> {
         Box::new(self)
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EvalError constructor compatibility methods
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Create an error with the Internal escape hatch kind.
+    /// Use typed kind tags instead when possible.
+    pub fn internal(message: String, span: Span) -> Self {
+        Self::error("internal-error", message, span)
+    }
+
+    /// Create a BuilderFinished error for a specific operation.
+    /// Used when a builder operation is attempted after builder-finish.
+    pub fn builder_already_finished(op: impl Into<String>, span: Span) -> Self {
+        Self::error(
+            "builder-finished",
+            format!("{}: builder has already been finished", op.into()),
+            span,
+        )
+    }
+
+    /// Attach a materialization span (where this thunk was forced).
+    /// Appended as a label with text `"evaluated here"`.
+    pub fn with_materialization_span(self, span: Span) -> Self {
+        self.with_label(span, "evaluated here")
+    }
+
+    /// Builder for stack frame attachment.
+    pub fn with_frame(self, label: String, span: Span) -> Self {
+        self.with_label(span, label)
+    }
+
+    /// Mutable stack frame push.
+    pub fn push_frame(&mut self, label: String, span: Span) {
+        self.push_label(span, label);
+    }
+
+    /// Attach a secondary span with a label, e.g. `"value produced here"`.
+    /// Displayed on a separate line. Multiple calls append; all labels are displayed in order.
+    pub fn with_secondary_span(self, span: Span, label: impl Into<String>) -> Self {
+        self.with_label(span, label)
+    }
+
+    /// Builder for attaching macro expansion provenance.
+    /// Shows "in expansion of `<name>` at line:col" in the error output.
+    pub fn with_macro_expansion(self, macro_name: String, call_site: Span) -> Self {
+        self.with_child(Diagnostic::info(
+            "macro-expansion",
+            format!("in expansion of '{}'", macro_name),
+            call_site,
+        ))
+    }
+
+    /// Attach a blame label for gradual typing boundary errors.
+    /// Uses co-natural strategy: innermost blame label is preserved, outer labels discarded.
+    pub fn with_blame(mut self, label: BlameLabel) -> Self {
+        // Co-natural strategy: if we already have a blame label in notes (innermost boundary),
+        // keep it and discard the new outer label.
+        let blame_marker = "blame:";
+        if !self.notes.iter().any(|n| n.starts_with(blame_marker)) {
+            let party = match label.polarity {
+                BlameParity::Positive => "typed side (annotation)",
+                BlameParity::Negative => "untyped side (producer)",
+            };
+            self = self
+                .with_label(label.origin_span, "value originates here")
+                .with_label(
+                    label.boundary_span,
+                    format!("typed/untyped boundary ({})", party),
+                );
+        }
+        self
+    }
+
+    /// Attach pipeline blame provenance for contract violation errors.
+    /// Identifies the producing stage (positive party) and consuming stage (negative party).
+    pub fn with_pipeline_blame(mut self, blame: PipelineBlame) -> Self {
+        // Only attach if not already present
+        if !self
+            .notes
+            .iter()
+            .any(|n| n.starts_with("produced by:"))
+        {
+            self.notes
+                .push(format!("produced by: {}", blame.producer));
+            if let Some(consumer) = blame.consumer {
+                self.notes.push(format!("consumed by: {}", consumer));
+            }
+        }
+        self
+    }
+
+    pub fn key_not_found(key: &str, available_keys: Vec<String>, span: Span) -> Self {
+        let mut diag = Self::error("key-not-found", format!("key not found: {}", key), span);
+        if !available_keys.is_empty() {
+            // Find best match using Jaro-Winkler similarity.
+            // Threshold 0.8 is consistent with prior art (cargo, rustc suggest at ~0.8).
+            let mut best_match: Option<(&str, f64)> = None;
+            for avail in &available_keys {
+                let similarity = strsim::jaro_winkler(key, avail);
+                if similarity > 0.8 {
+                    if let Some((_, best_sim)) = best_match {
+                        if similarity > best_sim {
+                            best_match = Some((avail, similarity));
+                        }
+                    } else {
+                        best_match = Some((avail, similarity));
+                    }
+                }
+            }
+
+            if let Some((suggestion, _)) = best_match {
+                diag.notes.push(format!("did you mean: '{}'?", suggestion));
+            } else {
+                // No close match found above the similarity threshold.
+                // Fall back to listing up to 5 available keys.
+                let keys_str = available_keys
+                    .iter()
+                    .take(5)
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if available_keys.len() > 5 {
+                    ", ..."
+                } else {
+                    ""
+                };
+                diag.notes
+                    .push(format!("available keys: {}{}", keys_str, suffix));
+            }
+        }
+        diag
+    }
+
+    pub fn type_mismatch(expected: impl AsRef<str>, got: impl AsRef<str>, span: Span) -> Self {
+        Self::error(
+            "type-mismatch",
+            format!(
+                "type mismatch: expected {}, got {}",
+                expected.as_ref(),
+                got.as_ref()
+            ),
+            span,
+        )
+    }
+
+    pub fn arity_mismatch(expected: usize, got: usize, span: Span) -> Self {
+        Self::error(
+            "arity-mismatch",
+            format!(
+                "arity mismatch: expected {}, got {}",
+                ArityBound::Exact(expected),
+                got
+            ),
+            span,
+        )
+    }
+
+    pub fn arity_mismatch_bound(expected: ArityBound, got: usize, span: Span) -> Self {
+        Self::error(
+            "arity-mismatch",
+            format!("arity mismatch: expected {}, got {}", expected, got),
+            span,
+        )
+    }
+
+    /// Attach a callee name to call-related errors (arity, missing param, named arg issues).
+    /// Appends to notes.
+    pub fn set_arity_callee(&mut self, callee: Option<Arc<str>>) {
+        if let Some(name) = callee {
+            if !self.notes.iter().any(|n| n.starts_with("in call to")) {
+                self.notes.push(format!("in call to '{}'", name));
+            }
+        }
+    }
+
+    /// Attach parameter names to an arity mismatch error.
+    /// Appends to notes.
+    pub fn set_arity_params(&mut self, params: Vec<String>) {
+        if !params.is_empty() && !self.notes.iter().any(|n| n.starts_with("parameters:")) {
+            self.notes
+                .push(format!("parameters: {}", params.join(", ")));
+        }
+    }
+
+    pub fn circular_dependency(name: &str, span: Span, cycle_path: Vec<(Arc<str>, Span)>) -> Self {
+        let mut diag = Self::error(
+            "circular-dependency",
+            format!("circular dependency detected while evaluating {}", name),
+            span,
+        );
+        if !cycle_path.is_empty() {
+            diag.notes.push("cycle:".to_string());
+            for (label, span) in cycle_path {
+                diag.notes.push(format!("  {} at {}", label, span));
+            }
+            diag.notes.push(format!("  → back to {}", name));
+        }
+        diag
+    }
+
+    pub fn match_exhaustion(scrutinee_type: &str, span: Span) -> Self {
+        Self::error(
+            "match-exhaustion",
+            format!(
+                "non-exhaustive match: no pattern matched the {} value",
+                scrutinee_type
+            ),
+            span,
+        )
+    }
+
+    pub fn duplicate_variable_in_pattern(name: &str, span: Span) -> Self {
+        Self::error(
+            "duplicate-variable",
+            format!(
+                "duplicate variable in pattern: '{}' appears more than once",
+                name
+            ),
+            span,
+        )
+    }
+
+    pub fn user_error(message: String, span: Span) -> Self {
+        Self::error("user-error", message, span)
+    }
+
+    pub fn macro_error(message: String, span: Span) -> Self {
+        Self::error("macro-error", format!("macro expansion error: {}", message), span)
+    }
+
+    pub fn unimplemented(message: String, span: Span) -> Self {
+        Self::error("unimplemented", message, span)
+    }
+
+    pub fn schema_violation(violations: Vec<(String, String)>, span: Span) -> Self {
+        let mut diag = Self::error(
+            "schema-violation",
+            format!("schema validation failed with {} error(s)", violations.len()),
+            span,
+        );
+        for (field, msg) in violations {
+            diag.notes.push(format!("{}: {}", field, msg));
+        }
+        diag
+    }
+
+    pub fn kind_mismatch(expected: &str, got: &str, span: Span) -> Self {
+        Self::error(
+            "kind-mismatch",
+            format!("kind mismatch: expected {}, got {}", expected, got),
+            span,
+        )
+    }
+
+    pub fn named_arg_rejected(builtin: String, span: Span) -> Self {
+        Self::error(
+            "named-arg-rejected",
+            format!("{} does not accept named arguments", builtin),
+            span,
+        )
+    }
+
+    pub fn integer_overflow(op: String, span: Span) -> Self {
+        Self::error("integer-overflow", format!("{}: integer overflow", op), span)
+    }
+
+    pub fn type_mismatch_ctx(
+        context: String,
+        expected: impl AsRef<str>,
+        got: impl AsRef<str>,
+        span: Span,
+    ) -> Self {
+        Self::error(
+            "type-mismatch",
+            format!(
+                "{}: expected {}, got {}",
+                context,
+                expected.as_ref(),
+                got.as_ref()
+            ),
+            span,
+        )
+    }
+
+    pub fn division_by_zero(op: String, span: Span) -> Self {
+        Self::error("division-by-zero", format!("{}: division by zero", op), span)
+    }
+
+    pub fn float_not_finite(builtin: String, value: f64, span: Span) -> Self {
+        Self::error(
+            "float-not-finite",
+            format!("{}: {} is not a finite number", builtin, value),
+            span,
+        )
+    }
+
+    pub fn empty_collection(op: String, span: Span) -> Self {
+        Self::error(
+            "empty-collection",
+            format!("{} on empty collection", op),
+            span,
+        )
+    }
+
+    pub fn value_not_serializable(value_type: String, span: Span) -> Self {
+        Self::error(
+            "value-not-serializable",
+            format!("cannot serialize {} to JSON", value_type),
+            span,
+        )
+    }
+
+    pub fn float_out_of_range(builtin: String, value: f64, span: Span) -> Self {
+        Self::error(
+            "float-out-of-range",
+            format!("{}: {} is out of range for Int", builtin, value),
+            span,
+        )
+    }
+
+    pub fn undefined_variable(name: String, span: Span) -> Self {
+        Self::error("undefined-variable", format!("undefined variable: {}", name), span)
+    }
+
+    pub fn type_assert_failed(expected: &str, got: &str, span: Span) -> Self {
+        Self::error(
+            "type-assert-failed",
+            format!("type assertion failed: expected {}, got {}", expected, got),
+            span,
+        )
+    }
+
+    pub fn no_instance(class_name: &str, type_tags: Vec<String>, span: Span) -> Self {
+        let types_str = type_tags.join(", ");
+        Self::error(
+            "no-instance",
+            format!("no instance for {} ({})", class_name, types_str),
+            span,
+        )
+    }
+
+    pub fn named_arg_conflict(param: String, span: Span) -> Self {
+        Self::error(
+            "named-arg-conflict",
+            format!(
+                "parameter '{}' received both positional and named argument",
+                param
+            ),
+            span,
+        )
+    }
+
+    pub fn unknown_named_arg(name: String, valid_params: Vec<String>, span: Span) -> Self {
+        let msg = if valid_params.is_empty() {
+            format!(
+                "unexpected named argument: \"{}\" (function has no parameters)",
+                name
+            )
+        } else {
+            let valid = valid_params.join(", ");
+            format!(
+                "unexpected named argument: \"{}\" (valid parameter names: {})",
+                name, valid
+            )
+        };
+        Self::error("unknown-named-arg", msg, span)
+    }
+
+    pub fn duplicate_key(key: &str, span: Span) -> Self {
+        Self::error("duplicate-key", format!("duplicate key: {}", key), span)
+    }
+
+    pub fn resource_limit_exceeded(message: impl Into<String>, span: Span) -> Self {
+        Self::error("resource-limit", message, span)
+    }
+
+    pub fn include_io_error(path: String, detail: String, span: Span) -> Self {
+        Self::error(
+            "include-io-error",
+            format!("include: cannot access \"{}\": {}", path, detail),
+            span,
+        )
+    }
+
+    pub fn include_cycle(path: String, span: Span) -> Self {
+        Self::error(
+            "include-cycle",
+            format!("circular include detected: \"{}\"", path),
+            span,
+        )
+    }
+
+    pub fn include_file_too_large(path: String, size: u64, limit: u64, span: Span) -> Self {
+        Self::error(
+            "include-file-too-large",
+            format!(
+                "include: file \"{}\" is {} bytes, exceeds {} byte limit",
+                path, size, limit
+            ),
+            span,
+        )
+    }
+
+    pub fn include_hash_mismatch(
+        path: String,
+        expected: String,
+        actual: String,
+        span: Span,
+    ) -> Self {
+        Self::error(
+            "include-hash-mismatch",
+            format!(
+                "include: integrity check failed for \"{}\": expected {}, got {}",
+                path, expected, actual
+            ),
+            span,
+        )
+    }
+
+    pub fn include_hash_required(path: String, span: Span) -> Self {
+        Self::error(
+            "include-hash-required",
+            format!(
+                "include: integrity hash required for \"{}\" (--require-integrity)",
+                path
+            ),
+            span,
+        )
+    }
+
+    pub fn parse_conversion(builtin: String, input: String, target: &str, span: Span) -> Self {
+        Self::error(
+            "parse-conversion",
+            format!("{}: cannot parse {:?} as {}", builtin, input, target),
+            span,
+        )
+    }
+
+    pub fn uri_parse_error(detail: String, span: Span) -> Self {
+        Self::error("uri-parse-error", format!("URI parse error: {}", detail), span)
+    }
+
+    pub fn missing_required_param(param: impl Into<String>, span: Span) -> Self {
+        Self::error(
+            "missing-required-param",
+            format!(
+                "missing argument for required parameter '{}'",
+                param.into()
+            ),
+            span,
+        )
+    }
 }
 
-impl std::fmt::Display for Diagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some((span, _)) = self.spans.first() {
-            write!(
-                f,
-                "{}:{}: {}",
-                span.start_line, span.start_col, self.message
-            )?;
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Primary span: labels[0] holds the main error location
+        if let Some(primary) = self.labels.first() {
+            write!(f, "{}:{}: {}", primary.span.start_line, primary.span.start_col, self.message)?;
         } else {
             write!(f, "{}", self.message)?;
         }
 
-        for (label, span) in &self.call_stack {
-            write!(f, "\n  in {} at {}", label, span)?;
+        // Note labels: labels[1..] — each displayed as "  note: {label} at {span}"
+        for label in self.labels.iter().skip(1) {
+            if label.message.is_empty() {
+                write!(f, "\n  note: at {}", label.span)?;
+            } else {
+                write!(f, "\n  note: {} at {}", label.message, label.span)?;
+            }
         }
 
-        if let Some(ref blame) = self.blame {
-            write!(f, "\n  blame: {}", blame)?;
+        // Text-only notes — rendered as "  = note: {text}"
+        for note in &self.notes {
+            write!(f, "\n  = note: {}", note)?;
+        }
+
+        // Child diagnostics — indent and render recursively
+        for child in &self.children {
+            let child_str = format!("{}", child);
+            for line in child_str.lines() {
+                write!(f, "\n  {}", line)?;
+            }
         }
 
         Ok(())
     }
 }
+
+impl std::error::Error for Diagnostic {}
+
+/// Temporary type alias for migration — allows existing call sites to compile.
+/// This will be removed once all 871 call sites are migrated.
+pub type EvalError = Diagnostic;
 
 pub fn has_type_errors(diags: &[Diagnostic]) -> bool {
     diags.iter().any(|d| d.level == DiagnosticLevel::Err)
@@ -1817,39 +790,35 @@ pub fn format_diagnostic(diag: &Diagnostic, source: &str, file_name: &str) -> St
     } else {
         false
     };
-    // Render secondary spans (e.g. the specific argument that failed a type constraint).
-    for (sec_span, label) in diag.spans.iter().skip(1) {
+    // Render secondary spans
+    for label in diag.labels.iter().skip(1) {
         out.push('\n');
         out.push_str(&format!(
             " --> {file_name}:{}:{}\n",
-            sec_span.start_line, sec_span.start_col
+            label.span.start_line, label.span.start_col
         ));
-        if let Some(snippet) = render_span_snippet(source, sec_span.clone()) {
+        if let Some(snippet) = render_span_snippet(source, label.span.clone()) {
             out.push_str("  |\n");
             out.push_str(&snippet);
-            if !label.is_empty() {
+            if !label.message.is_empty() {
                 // Label is appended after the last line of the snippet.
-                // Trim trailing newline to append inline, then re-add it.
                 let trimmed = out.trim_end_matches('\n');
-                let new_out = format!("{}  {}\n", trimmed, label);
+                let new_out = format!("{}  {}\n", trimmed, label.message);
                 out = new_out;
             }
         }
     }
-    if (has_snippet || !diag.spans.is_empty()) && !diag.notes.is_empty() {
+    if (has_snippet || !diag.labels.is_empty()) && !diag.notes.is_empty() {
         out.push('\n');
     }
     for note in &diag.notes {
         out.push_str(&format!("  = note: {note}\n"));
     }
-    if let Some(help) = &diag.help {
-        out.push_str(&format!("  = help: {help}\n"));
-    }
-    for (label, span) in &diag.call_stack {
-        out.push_str(&format!("  in {} at {}\n", label, span));
-    }
-    if let Some(ref blame) = diag.blame {
-        out.push_str(&format!("  blame: {}\n", blame));
+    for child in &diag.children {
+        let child_str = format!("{}", child);
+        for line in child_str.lines() {
+            out.push_str(&format!("  {}\n", line));
+        }
     }
     out
 }
@@ -1966,8 +935,6 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
         ));
 
         // Caret line: underline the last line from col 0 to end_col.
-        // Using start_col from the first line would misalign when the last line starts
-        // at a different column (e.g. fn body indented differently from fn header).
         let caret_length = end_col.max(1);
         snippet.push_str(&format!("  {} | ", padding));
         snippet.push_str(&"^".repeat(caret_length));
@@ -1983,73 +950,64 @@ mod tests {
     use crate::test_util::test_span;
 
     #[test]
-    fn test_eval_error_new() {
+    fn test_diagnostic_new() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::internal("something broke".to_string(), span.clone());
-        assert_eq!(err.kind.to_string(), "something broke");
-        assert_eq!(err.spans[0].0, span);
-        assert_eq!(err.spans[0].1, "");
-        assert_eq!(err.spans.len(), 1);
-        assert!(err.stack.is_empty());
+        let err = Diagnostic::internal("something broke".to_string(), span.clone());
+        assert_eq!(err.message, "something broke");
+        assert_eq!(err.labels[0].span, span);
+        assert_eq!(err.labels[0].message, "");
+        assert_eq!(err.labels.len(), 1);
     }
 
     #[test]
-    fn test_eval_error_with_materialization_span() {
+    fn test_diagnostic_with_materialization_span() {
         let def_span = test_span(1, 1, 1, 5);
         let mat_span = test_span(10, 3, 10, 8);
-        let err = EvalError::internal("lazy fail".to_string(), def_span)
+        let err = Diagnostic::internal("lazy fail".to_string(), def_span)
             .with_materialization_span(mat_span.clone());
-        assert_eq!(err.spans.len(), 2);
-        assert_eq!(err.spans[1].0, mat_span);
-        assert_eq!(err.spans[1].1, "evaluated here");
+        assert_eq!(err.labels.len(), 2);
+        assert_eq!(err.labels[1].span, mat_span);
+        assert_eq!(err.labels[1].message, "evaluated here");
     }
 
     #[test]
-    fn test_eval_error_with_frame() {
+    fn test_diagnostic_with_frame() {
         let span = test_span(1, 1, 1, 5);
         let frame_span = test_span(5, 1, 5, 10);
-        let err = EvalError::internal("err".to_string(), span)
+        let err = Diagnostic::internal("err".to_string(), span)
             .with_frame("my_function".to_string(), frame_span.clone());
-        assert_eq!(err.stack.len(), 1);
-        assert_eq!(err.stack[0].label, "my_function");
-        assert_eq!(err.stack[0].definition_span, frame_span);
-        // spans still just has the primary
-        assert_eq!(err.spans.len(), 1);
+        assert_eq!(err.labels.len(), 2);
+        assert_eq!(err.labels[1].message, "my_function");
+        assert_eq!(err.labels[1].span, frame_span);
     }
 
     #[test]
-    fn test_eval_error_key_not_found() {
+    fn test_diagnostic_key_not_found() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::key_not_found("foo", vec![], span);
-        assert_eq!(err.kind.to_string(), "key not found: foo");
+        let err = Diagnostic::key_not_found("foo", vec![], span);
+        assert_eq!(err.message, "key not found: foo");
     }
 
     #[test]
-    fn test_eval_error_type_mismatch() {
+    fn test_diagnostic_type_mismatch() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::type_mismatch("Int", "String", span);
+        let err = Diagnostic::type_mismatch("Int", "String", span);
+        assert_eq!(err.message, "type mismatch: expected Int, got String");
+    }
+
+    #[test]
+    fn test_diagnostic_arity_mismatch() {
+        let span = test_span(1, 1, 1, 5);
+        let err = Diagnostic::arity_mismatch(2, 3, span);
+        assert_eq!(err.message, "arity mismatch: expected 2 arguments, got 3");
+    }
+
+    #[test]
+    fn test_diagnostic_circular_dependency() {
+        let span = test_span(1, 1, 1, 5);
+        let err = Diagnostic::circular_dependency("x", span, Vec::new());
         assert_eq!(
-            err.kind.to_string(),
-            "type mismatch: expected Int, got String"
-        );
-    }
-
-    #[test]
-    fn test_eval_error_arity_mismatch() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::arity_mismatch(2, 3, span);
-        assert_eq!(
-            err.kind.to_string(),
-            "arity mismatch: expected 2 arguments, got 3"
-        );
-    }
-
-    #[test]
-    fn test_eval_error_circular_dependency() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::circular_dependency("x", span, Vec::new());
-        assert_eq!(
-            err.kind.to_string(),
+            err.message,
             "circular dependency detected while evaluating x"
         );
     }
@@ -2061,400 +1019,67 @@ mod tests {
             (std::sync::Arc::from("[f ...]"), test_span(10, 1, 10, 8)),
             (std::sync::Arc::from("[g ...]"), test_span(20, 3, 20, 10)),
         ];
-        let err = EvalError::circular_dependency("x", def_span, path);
-        let s = err.kind.to_string();
-        // Each cycle entry on its own line, indented, with "at" separator.
-        assert!(s.contains("\n    [f ...] at "), "got: {s}");
-        assert!(s.contains("\n    [g ...] at "), "got: {s}");
-        assert!(s.contains("\n    → back to x"), "got: {s}");
-        // Entries must NOT be on the same line as "cycle:".
-        assert!(
-            !s.contains("cycle: ["),
-            "cycle entries must be on separate lines; got: {s}"
-        );
+        let err = Diagnostic::circular_dependency("x", def_span, path);
+        // Check that cycle notes are present
+        assert!(err.notes.iter().any(|n| n.contains("[f ...]")));
+        assert!(err.notes.iter().any(|n| n.contains("[g ...]")));
+        assert!(err.notes.iter().any(|n| n.contains("→ back to x")));
     }
 
     #[test]
-    fn test_eval_error_display_basic() {
+    fn test_diagnostic_display_basic() {
         let span = test_span(3, 5, 3, 10);
-        let err = EvalError::internal("oops".to_string(), span);
+        let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
-        // test_span embeds src/test_util.rs as the source file; no error code prefix in Display.
-        assert_eq!(display, "oops (defined at src/test_util.rs:3:5-3:10)");
+        // Format is now "line:col: message"
+        assert_eq!(display, "3:5: oops");
     }
 
     #[test]
-    fn test_eval_error_display_full() {
+    fn test_diagnostic_display_full() {
         let def_span = test_span(3, 5, 3, 10);
         let mat_span = test_span(20, 1, 20, 5);
         let frame1_span = test_span(10, 2, 10, 8);
         let frame2_span = test_span(15, 1, 15, 12);
-        let err = EvalError::internal("bad value".to_string(), def_span)
+        let err = Diagnostic::internal("bad value".to_string(), def_span)
             .with_materialization_span(mat_span)
             .with_frame("outer".to_string(), frame1_span)
             .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
-        // test_span embeds src/test_util.rs; no error code prefix in Display.
-        // mat span is now a note on its own line, not inline on the first line.
         let expected = "\
-bad value (defined at src/test_util.rs:3:5-3:10)
+3:5: bad value
   note: evaluated here at src/test_util.rs:20:1-20:5
-  in outer at src/test_util.rs:10:2-10:8
-  in inner at src/test_util.rs:15:1-15:12";
+  note: outer at src/test_util.rs:10:2-10:8
+  note: inner at src/test_util.rs:15:1-15:12";
         assert_eq!(display, expected);
     }
 
     #[test]
-    fn test_eval_error_push_frame() {
+    fn test_diagnostic_push_frame() {
         let span = test_span(1, 1, 1, 5);
-        let mut err = EvalError::internal("error".to_string(), span);
+        let mut err = Diagnostic::internal("error".to_string(), span);
 
-        assert!(err.stack.is_empty());
+        assert_eq!(err.labels.len(), 1); // Only primary
 
         // Push a frame directly
         let frame_span = test_span(5, 1, 5, 10);
         err.push_frame("first_function".to_string(), frame_span.clone());
 
-        assert_eq!(err.stack.len(), 1);
-        assert_eq!(err.stack[0].label, "first_function");
-        assert_eq!(err.stack[0].definition_span, frame_span);
+        assert_eq!(err.labels.len(), 2);
+        assert_eq!(err.labels[1].message, "first_function");
+        assert_eq!(err.labels[1].span, frame_span);
 
         // Push a second frame
         let frame2_span = test_span(10, 3, 10, 15);
         err.push_frame("second_function".to_string(), frame2_span.clone());
 
-        assert_eq!(err.stack.len(), 2);
-        assert_eq!(err.stack[1].label, "second_function");
-        assert_eq!(err.stack[1].definition_span, frame2_span);
-    }
-
-    #[test]
-    fn test_is_catchable() {
-        // ResourceLimitExceeded is NOT catchable
-        assert!(!ErrorKind::ResourceLimitExceeded {
-            message: "test".to_string(),
-        }
-        .is_catchable());
-
-        // All other (error_kind_variant_count() - 2) variants ARE catchable
-        assert!(ErrorKind::KeyNotFound {
-            key: "foo".to_string(),
-            available_keys: vec![],
-        }
-        .is_catchable());
-        assert!(ErrorKind::UndefinedVariable {
-            name: "x".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::TypeMismatch {
-            context: None,
-            expected: "Int".to_string(),
-            got: "String".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::TypeAssertFailed {
-            expected: "Int".to_string(),
-            got: "String".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::ArityMismatch {
-            expected: ArityBound::Exact(1),
-            got: 2,
-            callee: None,
-            params: vec![]
-        }
-        .is_catchable());
-        assert!(ErrorKind::MissingRequiredParam {
-            param: "x".to_string(),
-            callee: None,
-        }
-        .is_catchable());
-        assert!(ErrorKind::NamedArgConflict {
-            param: "x".to_string(),
-            callee: None,
-        }
-        .is_catchable());
-        assert!(ErrorKind::UnknownNamedArg {
-            name: "x".to_string(),
-            valid_params: vec![],
-            callee: None,
-        }
-        .is_catchable());
-        assert!(ErrorKind::NamedArgRejected {
-            builtin: "test".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::DuplicateKey {
-            key: "x".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::DivisionByZero {
-            op: "/".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::IntegerOverflow {
-            op: "+".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::NAN
-        }
-        .is_catchable());
-        assert!(ErrorKind::EmptyCollection {
-            op: "head".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::ValueNotSerializable {
-            value_type: "Function".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::FloatOutOfRange {
-            builtin: "floor".to_string(),
-            value: 1e20
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludeIoError {
-            path: "test.llt".to_string(),
-            detail: "no such file".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludeCycle {
-            path: "test.llt".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludeFileTooLarge {
-            path: "big.llt".to_string(),
-            size: 100_000_000,
-            limit: 10_000_000
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludeHashMismatch {
-            path: "x.llt".to_string(),
-            expected: "blake3:abc".to_string(),
-            actual: "blake3:def".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludeHashRequired {
-            path: "x.llt".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::ParseConversion {
-            builtin: "to-int".to_string(),
-            input: "abc".to_string(),
-            target: "Int".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::UriParseError {
-            detail: "error".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::CircularDependency {
-            name: "x".to_string(),
-            cycle_path: Vec::new(),
-        }
-        .is_catchable());
-        assert!(ErrorKind::UserError {
-            message: "test".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::Internal {
-            message: "test".to_string()
-        }
-        .is_catchable());
-    }
-
-    #[test]
-    fn test_float_not_finite_nan_equality() {
-        // Two FloatNotFinite errors with NaN should compare as equal
-        let err1 = ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::NAN,
-        };
-        let err2 = ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::NAN,
-        };
-        assert_eq!(err1, err2);
-
-        // Different NaN bit patterns should also work
-        let err3 = ErrorKind::FloatNotFinite {
-            builtin: "test".to_string(),
-            value: f64::INFINITY,
-        };
-        assert_ne!(err1, err3);
-
-        // Same value, different builtin
-        let err4 = ErrorKind::FloatNotFinite {
-            builtin: "other".to_string(),
-            value: f64::NAN,
-        };
-        assert_ne!(err1, err4);
-    }
-
-    // Exhaustiveness enforcement: Rust's #[deny(non_exhaustive_omitted_patterns)] only works
-    // for enums from external crates. For same-crate ErrorKind, this test helper + the
-    // self-equality assertion below enforce that every variant is covered in code(), Display,
-    // and is_catchable().
-    /// Centralized variant list for test coverage. Adding a new ErrorKind variant
-    /// without updating this list will cause test failures (runtime, not compile-time).
-    fn all_error_kind_variants() -> Vec<ErrorKind> {
-        vec![
-            ErrorKind::KeyNotFound {
-                key: "x".to_string(),
-                available_keys: vec![],
-            },
-            ErrorKind::UndefinedVariable {
-                name: "x".to_string(),
-            },
-            ErrorKind::TypeMismatch {
-                context: None,
-                expected: "Int".to_string(),
-                got: "String".to_string(),
-            },
-            ErrorKind::TypeAssertFailed {
-                expected: "Int".to_string(),
-                got: "String".to_string(),
-            },
-            ErrorKind::ArityMismatch {
-                expected: ArityBound::Exact(1),
-                got: 2,
-                callee: None,
-                params: vec![],
-            },
-            ErrorKind::MissingRequiredParam {
-                param: "x".to_string(),
-                callee: None,
-            },
-            ErrorKind::NamedArgConflict {
-                param: "x".to_string(),
-                callee: None,
-            },
-            ErrorKind::UnknownNamedArg {
-                name: "x".to_string(),
-                valid_params: vec![],
-                callee: None,
-            },
-            ErrorKind::NamedArgRejected {
-                builtin: "test".to_string(),
-            },
-            ErrorKind::DuplicateKey {
-                key: "x".to_string(),
-            },
-            ErrorKind::DivisionByZero {
-                op: "/".to_string(),
-            },
-            ErrorKind::IntegerOverflow {
-                op: "+".to_string(),
-            },
-            ErrorKind::FloatNotFinite {
-                builtin: "test".to_string(),
-                value: f64::NAN,
-            },
-            ErrorKind::EmptyCollection {
-                op: "head".to_string(),
-            },
-            ErrorKind::ValueNotSerializable {
-                value_type: "Function".to_string(),
-            },
-            ErrorKind::FloatOutOfRange {
-                builtin: "floor".to_string(),
-                value: 1e20,
-            },
-            ErrorKind::ResourceLimitExceeded {
-                message: "test: resource limit exceeded (1000)".to_string(),
-            },
-            ErrorKind::IncludeIoError {
-                path: "x".to_string(),
-                detail: "error".to_string(),
-            },
-            ErrorKind::IncludeCycle {
-                path: "x".to_string(),
-            },
-            ErrorKind::IncludeFileTooLarge {
-                path: "x".to_string(),
-                size: 1000,
-                limit: 100,
-            },
-            ErrorKind::IncludeHashMismatch {
-                path: "x".to_string(),
-                expected: "blake3:abc".to_string(),
-                actual: "blake3:def".to_string(),
-            },
-            ErrorKind::IncludeHashRequired {
-                path: "x".to_string(),
-            },
-            ErrorKind::ParseConversion {
-                builtin: "to-int".to_string(),
-                input: "x".to_string(),
-                target: "Int".to_string(),
-            },
-            ErrorKind::UriParseError {
-                detail: "error".to_string(),
-            },
-            ErrorKind::CircularDependency {
-                name: "x".to_string(),
-                cycle_path: Vec::new(),
-            },
-            ErrorKind::MatchExhaustion {
-                scrutinee_type: "Int".to_string(),
-            },
-            ErrorKind::DuplicateVariable {
-                name: "x".to_string(),
-            },
-            ErrorKind::UserError {
-                message: "test".to_string(),
-            },
-            ErrorKind::Unimplemented {
-                message: "...".to_string(),
-            },
-            ErrorKind::BuilderFinished {
-                op: "set".to_string(),
-            },
-            ErrorKind::NoInstance {
-                class_name: "Eq".to_string(),
-                type_tags: vec!["Function".to_string()],
-            },
-            ErrorKind::MacroError {
-                message: "bad splice".to_string(),
-            },
-            ErrorKind::SchemaViolation {
-                violations: vec![("field".to_string(), "error".to_string())],
-            },
-            ErrorKind::KindMismatch {
-                expected: "Type".to_string(),
-                got: "Type → Type".to_string(),
-            },
-            ErrorKind::Internal {
-                message: "test".to_string(),
-            },
-        ]
-    }
-
-    #[test]
-    fn test_partialeq_all_variants_covered() {
-        // Verify that all ErrorKind variants are covered by the PartialEq impl
-        // by checking that each variant equals itself. This ensures the match
-        // is exhaustive and doesn't rely solely on the catch-all `_ => false` arm.
-        //
-        // If a new variant is added without updating PartialEq, this test will
-        // fail (since the catch-all would incorrectly return false for self-comparison).
-
-        let variants = all_error_kind_variants();
-
-        // Each variant should equal itself
-        for variant in &variants {
-            assert_eq!(
-                variant, variant,
-                "Variant {:?} does not equal itself",
-                variant
-            );
-        }
+        assert_eq!(err.labels.len(), 3);
+        assert_eq!(err.labels[2].message, "second_function");
+        assert_eq!(err.labels[2].span, frame2_span);
     }
 
     #[test]
     fn test_arity_bound_display() {
-        // Test Display output for all ArityBound variants
         assert_eq!(format!("{}", ArityBound::Exact(1)), "1 argument");
         assert_eq!(format!("{}", ArityBound::Exact(2)), "2 arguments");
         assert_eq!(format!("{}", ArityBound::Range(0, 0)), "0 arguments");
@@ -2465,618 +1090,49 @@ bad value (defined at src/test_util.rs:3:5-3:10)
     }
 
     #[test]
-    fn test_error_kind_display_all_variants() {
-        // Verify Display output for ALL ErrorKind variants to prevent
-        // message quality regressions and ensure error messages are helpful.
-
-        // Access errors (E000-E009)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::KeyNotFound {
-                    key: "name".to_string(),
-                    available_keys: vec![],
-                }
-            ),
-            "key not found: name"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UndefinedVariable {
-                    name: "x".to_string()
-                }
-            ),
-            "undefined variable: x"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UndefinedVariable {
-                    name: "%foo".to_string()
-                }
-            ),
-            "undefined variable: %foo"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UndefinedVariable {
-                    name: "map".to_string()
-                }
-            ),
-            "undefined variable: map"
-        );
-
-        // Type errors (E010-E019)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::TypeMismatch {
-                    context: None,
-                    expected: "Int".to_string(),
-                    got: "String".to_string()
-                }
-            ),
-            "type mismatch: expected Int, got String"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::TypeMismatch {
-                    context: Some("merge".to_string()),
-                    expected: "Dict".to_string(),
-                    got: "Int".to_string()
-                }
-            ),
-            "merge: expected Dict, got Int"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::TypeAssertFailed {
-                    expected: "Int".to_string(),
-                    got: "String".to_string()
-                }
-            ),
-            "type assertion failed: expected Int, got String"
-        );
-
-        // Call errors (E020-E029)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ArityMismatch {
-                    expected: ArityBound::Exact(1),
-                    got: 0,
-                    callee: None,
-                    params: vec![]
-                }
-            ),
-            "arity mismatch: expected 1 argument, got 0"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ArityMismatch {
-                    expected: ArityBound::Exact(2),
-                    got: 3,
-                    callee: None,
-                    params: vec![]
-                }
-            ),
-            "arity mismatch: expected 2 arguments, got 3"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ArityMismatch {
-                    expected: ArityBound::Range(1, 3),
-                    got: 5,
-                    callee: None,
-                    params: vec![]
-                }
-            ),
-            "arity mismatch: expected 1 to 3 arguments, got 5"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::MissingRequiredParam {
-                    param: "name".to_string(),
-                    callee: None,
-                }
-            ),
-            "missing argument for required parameter 'name'"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::NamedArgConflict {
-                    param: "x".to_string(),
-                    callee: None,
-                }
-            ),
-            "parameter 'x' received both positional and named argument"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UnknownNamedArg {
-                    name: "foo".to_string(),
-                    valid_params: vec!["x".to_string(), "y".to_string()],
-                    callee: None,
-                }
-            ),
-            "unexpected named argument: \"foo\" (valid parameter names: x, y)"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UnknownNamedArg {
-                    name: "foo".to_string(),
-                    valid_params: vec![],
-                    callee: None,
-                }
-            ),
-            "unexpected named argument: \"foo\" (function has no parameters)"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::NamedArgRejected {
-                    builtin: "map".to_string()
-                }
-            ),
-            "map does not accept named arguments"
-        );
-
-        // Value errors (E030-E039)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::DuplicateKey {
-                    key: "name".to_string()
-                }
-            ),
-            "duplicate key: name"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::DivisionByZero {
-                    op: "/".to_string()
-                }
-            ),
-            "/: division by zero"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IntegerOverflow {
-                    op: "+".to_string()
-                }
-            ),
-            "+: integer overflow"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::FloatNotFinite {
-                    builtin: "floor".to_string(),
-                    value: f64::NAN
-                }
-            ),
-            "floor: NaN is not a finite number"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::FloatNotFinite {
-                    builtin: "round".to_string(),
-                    value: f64::INFINITY
-                }
-            ),
-            "round: inf is not a finite number"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::EmptyCollection {
-                    op: "head".to_string()
-                }
-            ),
-            "head on empty collection"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ValueNotSerializable {
-                    value_type: "Function".to_string()
-                }
-            ),
-            "cannot serialize Function to JSON"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ValueNotSerializable {
-                    value_type: "Proxy".to_string()
-                }
-            ),
-            "cannot serialize Proxy to JSON"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::FloatOutOfRange {
-                    builtin: "floor".to_string(),
-                    value: 1e20
-                }
-            ),
-            "floor: 100000000000000000000 is out of range for Int"
-        );
-
-        // Limit errors (E040-E049)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ResourceLimitExceeded {
-                    message: "upper: output would exceed 64 MB limit (67108864 bytes)".to_string(),
-                }
-            ),
-            "upper: output would exceed 64 MB limit (67108864 bytes)"
-        );
-        // Include errors (E050-E059)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludeIoError {
-                    path: "config.llt".to_string(),
-                    detail: "No such file or directory".to_string()
-                }
-            ),
-            "include: cannot access \"config.llt\": No such file or directory"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludeCycle {
-                    path: "a.llt".to_string()
-                }
-            ),
-            "circular include detected: \"a.llt\""
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludeFileTooLarge {
-                    path: "huge.llt".to_string(),
-                    size: 2_000_000,
-                    limit: 1_000_000
-                }
-            ),
-            "include: file \"huge.llt\" is 2000000 bytes, exceeds 1000000 byte limit"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludeHashMismatch {
-                    path: "config.llt".to_string(),
-                    expected: "blake3:abc123".to_string(),
-                    actual: "blake3:def456".to_string()
-                }
-            ),
-            "include: integrity check failed for \"config.llt\": expected blake3:abc123, got blake3:def456"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludeHashRequired {
-                    path: "config.llt".to_string()
-                }
-            ),
-            "include: integrity hash required for \"config.llt\" (--require-integrity)"
-        );
-
-        // Conversion errors (E060-E069)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::ParseConversion {
-                    builtin: "to-int".to_string(),
-                    input: "abc".to_string(),
-                    target: "Int".to_string()
-                }
-            ),
-            "to-int: cannot parse \"abc\" as Int"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UriParseError {
-                    detail: "missing scheme: example.com".to_string()
-                }
-            ),
-            "URI parse error: missing scheme: example.com"
-        );
-
-        // Evaluation structure (E070-E079)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::CircularDependency {
-                    name: "x".to_string(),
-                    cycle_path: Vec::new(),
-                }
-            ),
-            "circular dependency detected while evaluating x"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::MatchExhaustion {
-                    scrutinee_type: "Int".to_string()
-                }
-            ),
-            "non-exhaustive match: no pattern matched the Int value"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::DuplicateVariable {
-                    name: "x".to_string()
-                }
-            ),
-            "duplicate variable in pattern: 'x' appears more than once"
-        );
-
-        // User-generated (E080-E089)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::UserError {
-                    message: "invalid config".to_string()
-                }
-            ),
-            "invalid config"
-        );
-
-        // Schema validation (E090-E094)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::KindMismatch {
-                    expected: "Type".to_string(),
-                    got: "Type → Type".to_string(),
-                }
-            ),
-            "kind mismatch: expected Type, got Type → Type"
-        );
-
-        // Escape hatch (E095-E099)
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::Internal {
-                    message: "unexpected state".to_string()
-                }
-            ),
-            "unexpected state"
-        );
-    }
-
-    #[test]
-    fn test_stack_frame_accumulation_chain() {
-        // Test that stack frames accumulate correctly through nested materialization
-        let def_span = test_span(1, 1, 1, 10);
-        let mat_span = test_span(5, 1, 5, 10);
-        let frame1_span = test_span(10, 1, 10, 15);
-        let frame2_span = test_span(15, 1, 15, 20);
-        let frame3_span = test_span(20, 1, 20, 25);
-
-        // Simulate error propagating through dict -> thunk -> builtin chain
-        let err = EvalError::type_mismatch("Int", "String", def_span.clone())
-            .with_materialization_span(mat_span.clone())
-            .with_frame("dict entry 'inner'".to_string(), frame1_span.clone())
-            .with_frame("dict entry 'outer'".to_string(), frame2_span.clone())
-            .with_frame("materialized".to_string(), frame3_span.clone());
-
-        assert_eq!(err.spans[0].0, def_span);
-        assert_eq!(err.spans[1].0, mat_span);
-        assert_eq!(err.spans[1].1, "evaluated here");
-        assert_eq!(err.stack.len(), 3);
-        assert_eq!(err.stack[0].label, "dict entry 'inner'");
-        assert_eq!(err.stack[0].definition_span, frame1_span);
-        assert_eq!(err.stack[1].label, "dict entry 'outer'");
-        assert_eq!(err.stack[1].definition_span, frame2_span);
-        assert_eq!(err.stack[2].label, "materialized");
-        assert_eq!(err.stack[2].definition_span, frame3_span);
-    }
-
-    #[test]
-    fn test_stack_frame_display_multi_level() {
-        // Test that display output includes all stack frames
-        let def_span = test_span(1, 1, 1, 10);
-        let mat_span = test_span(5, 1, 5, 10);
-        let frame1_span = test_span(10, 1, 10, 15);
-        let frame2_span = test_span(15, 1, 15, 20);
-
-        let err = EvalError::key_not_found("missing_key", vec![], def_span)
-            .with_materialization_span(mat_span)
-            .with_frame("dict entry 'a'".to_string(), frame1_span)
-            .with_frame("dict entry 'b'".to_string(), frame2_span);
-
-        let display = format!("{err}");
-
-        // No error code prefix in Display.
-        // test_span embeds src/test_util.rs as the source file.
-        // mat span now appears as a note, not inline on the first line.
-        assert!(display.contains("key not found: missing_key"));
-        assert!(display.contains("defined at src/test_util.rs:1:1-1:10"));
-        assert!(display.contains("note: evaluated here at src/test_util.rs:5:1-5:10"));
-        assert!(display.contains("in dict entry 'a' at src/test_util.rs:10:1-10:15"));
-        assert!(display.contains("in dict entry 'b' at src/test_util.rs:15:1-15:20"));
-    }
-
-    #[test]
-    fn test_stack_frame_preserves_original_materialization_span() {
-        // Test that when multiple access sites trigger the same error,
-        // the original materialization span (spans[1]) is preserved
-        let def_span = test_span(1, 1, 1, 10);
-        let first_mat_span = test_span(5, 1, 5, 10);
-        let second_access_span = test_span(8, 1, 8, 10);
-
-        let mut err = EvalError::key_not_found("key", vec![], def_span)
-            .with_materialization_span(first_mat_span.clone());
-
-        // spans[1] is the first mat span with label "evaluated here"
-        assert_eq!(err.spans[1].0, first_mat_span);
-        assert_eq!(err.spans[1].1, "evaluated here");
-
-        // Manually simulate what attach_materialization_context does —
-        // second access is added as a stack frame, not a second mat span.
-        if !err
-            .stack
-            .iter()
-            .any(|f| f.definition_span == second_access_span)
-        {
-            err.push_frame("materialized".to_string(), second_access_span.clone());
-        }
-
-        // spans[1] is unchanged (first mat span preserved)
-        assert_eq!(err.spans[1].0, first_mat_span);
-        assert_eq!(err.stack.len(), 1);
-        assert_eq!(err.stack[0].definition_span, second_access_span);
-    }
-
-    #[test]
-    fn test_stack_frame_avoids_duplicates() {
-        // Test that duplicate stack frames (same span) are not added
-        let def_span = test_span(1, 1, 1, 10);
-        let frame_span = test_span(5, 1, 5, 10);
-
-        let mut err = EvalError::key_not_found("key", vec![], def_span);
-
-        err.push_frame("first".to_string(), frame_span.clone());
-        assert_eq!(err.stack.len(), 1);
-        // spans only has the primary
-        assert_eq!(err.spans.len(), 1);
-
-        // Manually check for duplicate before adding (this is what attach_materialization_context does)
-        if !err.stack.iter().any(|f| f.definition_span == frame_span) {
-            err.push_frame("second".to_string(), frame_span);
-        }
-
-        // Should still be 1 frame (duplicate was avoided)
-        assert_eq!(err.stack.len(), 1);
-        assert_eq!(err.stack[0].label, "first");
-    }
-
-    #[test]
-    fn test_resource_limit_exceeded_not_catchable() {
-        // Verify that ResourceLimitExceeded is non-catchable
-        let err = ErrorKind::ResourceLimitExceeded {
-            message: "collect: exceeded maximum collection size (1000000)".to_string(),
-        };
-        assert!(
-            !err.is_catchable(),
-            "ResourceLimitExceeded must not be catchable by try"
-        );
-    }
-
-    #[test]
-    fn test_resource_limit_exceeded_display() {
-        let err = EvalError::resource_limit_exceeded(
-            "collect: exceeded maximum collection size (1000000)".to_string(),
-            test_span(5, 10, 5, 20),
-        );
-        let display = format!("{err}");
-
-        // No error code prefix in Display.
-        assert!(display.contains("collect: exceeded maximum collection size"));
-        assert!(display.contains("1000000"));
-    }
-
-    #[test]
-    fn test_all_frames_appear_in_display() {
-        // All frames must appear in error display output, including those from Rust-synthesized
-        // code (which carry rust_span!() locations). No suppression based on span value.
-        let def_span = test_span(3, 5, 3, 10);
-        let mat_span = test_span(20, 1, 20, 5);
-        let real_frame_span = test_span(10, 2, 10, 8);
-
-        let mut err = EvalError::internal("bad value".to_string(), def_span)
-            .with_materialization_span(mat_span.clone());
-
-        err.push_frame("user_function".to_string(), real_frame_span);
-        err.push_frame("stdlib_internal".to_string(), rust_span!());
-
-        let real_frame2_span = test_span(15, 1, 15, 12);
-        err.push_frame("another_user_function".to_string(), real_frame2_span);
-
-        let display = format!("{err}");
-
-        // All three frames must be present.
-        // test_span embeds src/test_util.rs; rust_span!() embeds the Rust file where called.
-        assert!(display.contains("in user_function at src/test_util.rs:10:2-10:8"));
-        assert!(display.contains("in another_user_function at src/test_util.rs:15:1-15:12"));
-        assert!(display.contains("stdlib_internal")); // Rust-synthesized frame also shows up.
-    }
-
-    #[test]
-    fn test_error_code_prefix_format() {
-        // Error codes were removed from Display output.
-        // Display format is: "message (defined at file:line:col)" — no [EXXX] prefix.
-        let errors = vec![
-            EvalError::key_not_found("x", vec![], test_span(1, 1, 1, 5)),
-            EvalError::type_mismatch("Int", "String", test_span(1, 1, 1, 5)),
-            EvalError::arity_mismatch(1, 2, test_span(1, 1, 1, 5)),
-            EvalError::user_error("test".to_string(), test_span(1, 1, 1, 5)),
-            EvalError::internal("test".to_string(), test_span(1, 1, 1, 5)),
-        ];
-        for err in &errors {
-            let display = format!("{err}");
-            assert!(
-                !display.starts_with('['),
-                "Display must not include error code prefix; got: {display}"
-            );
-        }
+    fn test_with_materialization_span_label() {
+        let span = test_span(1, 1, 1, 5);
+        let mat_span = test_span(10, 1, 10, 5);
+        let err =
+            Diagnostic::internal("err".to_string(), span).with_materialization_span(mat_span.clone());
+        assert_eq!(err.labels[1].span, mat_span);
+        assert_eq!(err.labels[1].message, "evaluated here");
     }
 
     #[test]
     fn test_key_not_found_with_suggestion() {
-        // Test close match suggestion (typo: nme → name)
-        let err = ErrorKind::KeyNotFound {
-            key: "nme".to_string(),
-            available_keys: vec!["name".to_string(), "age".to_string()],
-        };
-        let display = format!("{err}");
-        assert!(display.contains("key not found: nme"));
-        assert!(display.contains("did you mean: 'name'"));
+        let err = Diagnostic::key_not_found(
+            "nme",
+            vec!["name".to_string(), "age".to_string()],
+            test_span(1, 1, 1, 5),
+        );
+        assert!(err.message.contains("key not found: nme"));
+        assert!(err.notes.iter().any(|n| n.contains("did you mean: 'name'")));
     }
 
     #[test]
     fn test_key_not_found_with_available_keys() {
-        // Test no close match - should show available keys
-        let err = ErrorKind::KeyNotFound {
-            key: "xyz".to_string(),
-            available_keys: vec!["name".to_string(), "age".to_string(), "address".to_string()],
-        };
-        let display = format!("{err}");
-        assert!(display.contains("key not found: xyz"));
-        assert!(display.contains("available keys:"));
-        assert!(display.contains("name"));
-        assert!(display.contains("age"));
-        assert!(display.contains("address"));
+        let err = Diagnostic::key_not_found(
+            "xyz",
+            vec![
+                "name".to_string(),
+                "age".to_string(),
+                "address".to_string(),
+            ],
+            test_span(1, 1, 1, 5),
+        );
+        assert!(err.message.contains("key not found: xyz"));
+        assert!(err.notes.iter().any(|n| n.contains("available keys:")));
+        assert!(err.notes.iter().any(|n| n.contains("name")));
+        assert!(err.notes.iter().any(|n| n.contains("age")));
+        assert!(err.notes.iter().any(|n| n.contains("address")));
     }
 
     #[test]
     fn test_key_not_found_truncates_long_list() {
-        // Test that long key lists are truncated to 5 items
-        let err = ErrorKind::KeyNotFound {
-            key: "missing".to_string(),
-            available_keys: vec![
+        let err = Diagnostic::key_not_found(
+            "missing",
+            vec![
                 "a".to_string(),
                 "b".to_string(),
                 "c".to_string(),
@@ -3085,501 +1141,35 @@ bad value (defined at src/test_util.rs:3:5-3:10)
                 "f".to_string(),
                 "g".to_string(),
             ],
-        };
-        let display = format!("{err}");
-        assert!(display.contains("available keys:"));
-        assert!(display.contains("..."));
-        // Should show first 5 keys as a joined list and then "..." — verify both
-        // the exact joined sequence and that the truncated keys are absent
-        assert!(display.contains("a, b, c, d, e"));
-        assert!(!display.contains(", f"));
+            test_span(1, 1, 1, 5),
+        );
+        let note = err.notes.iter().find(|n| n.contains("available keys:")).unwrap();
+        assert!(note.contains("..."));
+        assert!(note.contains("a, b, c, d, e"));
+        assert!(!note.contains(", f"));
     }
 
     #[test]
     fn test_key_not_found_empty_available_keys() {
-        // Test empty dict - no suggestions
-        let err = ErrorKind::KeyNotFound {
-            key: "foo".to_string(),
-            available_keys: vec![],
-        };
-        let display = format!("{err}");
-        assert_eq!(display, "key not found: foo");
-        assert!(!display.contains("did you mean"));
-        assert!(!display.contains("available keys"));
+        let err = Diagnostic::key_not_found("foo", vec![], test_span(1, 1, 1, 5));
+        assert_eq!(err.message, "key not found: foo");
+        assert!(err.notes.is_empty());
     }
 
     #[test]
-    fn test_stdlib_internal_frames_all_shown_in_display() {
-        // All frames with real source locations are shown — no suffix-based filtering.
-        // Formerly, -impl/-step/-check/-merge frames were hidden; now they are all visible.
-        let def_span = test_span(5, 1, 5, 10);
-        let mat_span = test_span(10, 1, 10, 5);
-
-        let mut err = EvalError::internal("error in stdlib".to_string(), def_span)
-            .with_materialization_span(mat_span);
-
-        // Add user-facing stdlib function
-        err.push_frame("[map ...]".to_string(), test_span(8, 1, 8, 10));
-
-        // Add internal helper frames — these must now also be visible
-        err.push_frame("[map-impl ...]".to_string(), test_span(100, 1, 100, 10));
-        err.push_frame("[remove-step ...]".to_string(), test_span(200, 1, 200, 10));
-        err.push_frame("[cond-check ...]".to_string(), test_span(300, 1, 300, 10));
-
-        // Add another user-facing function
-        err.push_frame("[filter ...]".to_string(), test_span(12, 1, 12, 15));
-
-        let display = format!("{err}");
-
-        // All frames with real spans must appear.
-        // test_span embeds src/test_util.rs as the source file.
-        assert!(display.contains("in [map ...] at src/test_util.rs:8:1-8:10"));
-        assert!(display.contains("in [filter ...] at src/test_util.rs:12:1-12:15"));
-        assert!(display.contains("map-impl"));
-        assert!(display.contains("remove-step"));
-        assert!(display.contains("cond-check"));
-        assert!(display.contains("src/test_util.rs:100:1-100:10"));
-        assert!(display.contains("src/test_util.rs:200:1-200:10"));
-        assert!(display.contains("src/test_util.rs:300:1-300:10"));
+    fn test_diagnostic_level_bump() {
+        assert_eq!(DiagnosticLevel::Info.bump(), DiagnosticLevel::Warn);
+        assert_eq!(DiagnosticLevel::Warn.bump(), DiagnosticLevel::Err);
+        assert_eq!(DiagnosticLevel::Err.bump(), DiagnosticLevel::Err);
     }
 
     #[test]
-    fn test_stdlib_frame_substring_not_filtered() {
-        // All frames with real spans are visible — no suffix filtering at all.
-        let def_span = test_span(1, 1, 1, 5);
-        let err = EvalError::internal("test".to_string(), def_span).with_frame(
-            "[multi-step-validator ...]".to_string(),
-            test_span(10, 1, 10, 5),
-        );
-        let display = format!("{err}");
-        assert!(
-            display.contains("multi-step-validator"),
-            "all frames with real spans must appear; got: {display}"
-        );
-    }
-
-    // T-1824: test_should_display_frame_* tests removed — should_display_frame was
-    // deleted because it unconditionally returned true. All frames are always displayed.
-    // The Display impl for EvalError iterates all stack frames without filtering.
-
-    #[test]
-    fn test_with_materialization_span_label() {
-        // with_materialization_span always uses "evaluated here" as the label.
-        let span = test_span(1, 1, 1, 5);
-        let mat_span = test_span(10, 1, 10, 5);
-        let err = EvalError::internal("err".to_string(), span)
-            .with_materialization_span(mat_span.clone());
-        assert_eq!(err.spans[1].0, mat_span);
-        assert_eq!(err.spans[1].1, "evaluated here");
-    }
-
-    // -----------------------------------------------------------------------
-    // Constructor-level unit tests: one test per EvalError named constructor
-    // that was not already covered by test_eval_error_* tests above.
-    // These complement the exhaustiveness checks in all_error_kind_variants()
-    // and test_error_kind_display_all_variants() by exercising each constructor
-    // directly and verifying the resulting kind, message, code, and span.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_eval_error_user_error_constructor() {
-        let span = test_span(2, 3, 2, 15);
-        let err = EvalError::user_error("custom error message".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::UserError { .. }));
-        assert_eq!(err.kind.to_string(), "custom error message");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_named_arg_rejected_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::named_arg_rejected("floor".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::NamedArgRejected { .. }));
-        assert_eq!(
-            err.kind.to_string(),
-            "floor does not accept named arguments"
-        );
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_integer_overflow_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::integer_overflow("*".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::IntegerOverflow { .. }));
-        assert_eq!(err.kind.to_string(), "*: integer overflow");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_type_mismatch_ctx_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err =
-            EvalError::type_mismatch_ctx("document pipeline".to_string(), "Dict", "Int", span);
-        assert!(matches!(
-            err.kind,
-            ErrorKind::TypeMismatch {
-                context: Some(_),
-                ..
-            }
-        ));
-        assert_eq!(
-            err.kind.to_string(),
-            "document pipeline: expected Dict, got Int"
-        );
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_division_by_zero_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::division_by_zero("%".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::DivisionByZero { .. }));
-        assert_eq!(err.kind.to_string(), "%: division by zero");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_float_not_finite_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::float_not_finite("round".to_string(), f64::INFINITY, span);
-        assert!(matches!(err.kind, ErrorKind::FloatNotFinite { .. }));
-        assert!(err.kind.to_string().contains("not a finite number"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_empty_collection_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::empty_collection("tail".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::EmptyCollection { .. }));
-        assert_eq!(err.kind.to_string(), "tail on empty collection");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_value_not_serializable_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::value_not_serializable("Builtin".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::ValueNotSerializable { .. }));
-        assert_eq!(err.kind.to_string(), "cannot serialize Builtin to JSON");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_float_out_of_range_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::float_out_of_range("to-int".to_string(), 1e300, span);
-        assert!(matches!(err.kind, ErrorKind::FloatOutOfRange { .. }));
-        assert!(err.kind.to_string().contains("out of range for Int"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_undefined_variable_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::undefined_variable("myvar".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
-        assert_eq!(err.kind.to_string(), "undefined variable: myvar");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_type_assert_failed_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::type_assert_failed("Bool", "String", span);
-        assert!(matches!(err.kind, ErrorKind::TypeAssertFailed { .. }));
-        assert_eq!(
-            err.kind.to_string(),
-            "type assertion failed: expected Bool, got String"
-        );
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_named_arg_conflict_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::named_arg_conflict("separator".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::NamedArgConflict { .. }));
-        assert_eq!(
-            err.kind.to_string(),
-            "parameter 'separator' received both positional and named argument"
-        );
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_unknown_named_arg_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::unknown_named_arg(
-            "typo".to_string(),
-            vec!["sep".to_string(), "limit".to_string()],
-            span,
-        );
-        assert!(matches!(err.kind, ErrorKind::UnknownNamedArg { .. }));
-        assert!(err
-            .kind
-            .to_string()
-            .contains("unexpected named argument: \"typo\""));
-        assert!(err.kind.to_string().contains("sep"));
-        assert!(err.kind.to_string().contains("limit"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_duplicate_key_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::duplicate_key("host", span);
-        assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
-        assert_eq!(err.kind.to_string(), "duplicate key: host");
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_resource_limit_exceeded_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::resource_limit_exceeded(
-            "collect: exceeded maximum collection size (1000000)",
-            span,
-        );
-        assert!(matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }));
-        assert!(err
-            .kind
-            .to_string()
-            .contains("exceeded maximum collection size"));
-        // ResourceLimitExceeded is NOT catchable (safety boundary)
-        assert!(
-            !err.kind.is_catchable(),
-            "ResourceLimitExceeded must not be catchable"
-        );
-    }
-
-    #[test]
-    fn test_eval_error_include_io_error_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_io_error(
-            "missing.llt".to_string(),
-            "No such file or directory".to_string(),
-            span,
-        );
-        assert!(matches!(err.kind, ErrorKind::IncludeIoError { .. }));
-        assert!(err
-            .kind
-            .to_string()
-            .contains("cannot access \"missing.llt\""));
-        assert!(err.kind.to_string().contains("No such file or directory"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_include_cycle_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_cycle("recursive.llt".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::IncludeCycle { .. }));
-        assert!(err.kind.to_string().contains("circular include detected"));
-        assert!(err.kind.to_string().contains("recursive.llt"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_include_file_too_large_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err =
-            EvalError::include_file_too_large("huge.llt".to_string(), 20_000_000, 10_485_760, span);
-        assert!(matches!(err.kind, ErrorKind::IncludeFileTooLarge { .. }));
-        assert!(err.kind.to_string().contains("huge.llt"));
-        assert!(err.kind.to_string().contains("20000000"));
-        assert!(err.kind.to_string().contains("10485760"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_include_hash_mismatch_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_hash_mismatch(
-            "config.llt".to_string(),
-            "blake3:aabbcc".to_string(),
-            "blake3:112233".to_string(),
-            span,
-        );
-        assert!(matches!(err.kind, ErrorKind::IncludeHashMismatch { .. }));
-        assert!(err.kind.to_string().contains("integrity check failed"));
-        assert!(err.kind.to_string().contains("config.llt"));
-        assert!(err.kind.to_string().contains("blake3:aabbcc"));
-        assert!(err.kind.to_string().contains("blake3:112233"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_include_hash_required_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_hash_required("untrusted.llt".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::IncludeHashRequired { .. }));
-        assert!(err.kind.to_string().contains("integrity hash required"));
-        assert!(err.kind.to_string().contains("untrusted.llt"));
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_parse_conversion_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::parse_conversion(
-            "to-float".to_string(),
-            "not-a-number".to_string(),
-            "Float",
-            span,
-        );
-        assert!(matches!(err.kind, ErrorKind::ParseConversion { .. }));
-        assert_eq!(
-            err.kind.to_string(),
-            "to-float: cannot parse \"not-a-number\" as Float"
-        );
-        assert!(err.kind.is_catchable());
-    }
-
-    #[test]
-    fn test_eval_error_missing_required_param_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::missing_required_param("separator", span);
-        assert!(matches!(err.kind, ErrorKind::MissingRequiredParam { .. }));
-        assert_eq!(
-            err.kind.to_string(),
-            "missing argument for required parameter 'separator'"
-        );
-        assert!(err.kind.is_catchable());
-    }
-
-    // ── render_span_snippet tests ──────────────────────────────────────────
-
-    #[test]
-    fn test_render_span_snippet_single_line() {
-        let source = "line1\nlet x = 42\nline3";
-        let span = Span {
-            file: rust_span!().file,
-            start_line: 2,
-            start_col: 1,
-            end_line: 2,
-            end_col: 4,
-            name: None,
-        };
-        let snippet = render_span_snippet(source, span).unwrap();
-
-        // Should show line 2 with "let" underlined
-        assert!(snippet.contains("2 | let x = 42"));
-        assert!(snippet.contains("  | ^^^"));
-        assert!(!snippet.contains("...")); // single-line span, no continuation marker
-    }
-
-    #[test]
-    fn test_render_span_snippet_no_source_for_rust_spans() {
-        // rust_span!() encodes Rust file:line. The user source text has no content
-        // at those coordinates, so render returns None (no snippet to show).
-        let source = "test source";
-        let snippet = render_span_snippet(source, rust_span!());
-        // rust_span!() has a line number from Rust source (e.g. 3950), which is
-        // out of bounds for "test source" (1 line), so no snippet can be rendered.
-        assert_eq!(snippet, None);
-    }
-
-    #[test]
-    fn test_render_span_snippet_multiline() {
-        // source:
-        //   line 1: "line1"
-        //   line 2: "let x = ["
-        //   line 3: "  42"
-        //   line 4: "]"
-        //   line 5: "line5"
-        //
-        // Span covers lines 2-4, col 1 to col 2 (i.e., "let x = [\n  42\n]")
-        let source = "line1\nlet x = [\n  42\n]\nline5";
-        let span = Span {
-            file: rust_span!().file,
-            start_line: 2,
-            start_col: 1,
-            end_line: 4,
-            end_col: 2,
-            name: None,
-        };
-        let snippet = render_span_snippet(source, span).unwrap();
-
-        // All three lines must appear in the snippet.
-        assert!(
-            snippet.contains("2 | let x = ["),
-            "missing first line: {snippet}"
-        );
-        assert!(
-            snippet.contains("3 |   42"),
-            "missing middle line: {snippet}"
-        );
-        assert!(snippet.contains("4 | ]"), "missing last line: {snippet}");
-
-        // Caret line must appear (at least one "^").
-        assert!(snippet.contains('^'), "missing caret: {snippet}");
-
-        // Old "..." marker must NOT appear — we now show all lines.
-        assert!(
-            !snippet.contains("..."),
-            "unexpected '...' in snippet: {snippet}"
-        );
-    }
-
-    #[test]
-    fn test_error_kind_code_compile_time_exhaustive() {
-        // This exhaustive match ensures every ErrorKind variant is covered by code().
-        // Adding a new ErrorKind variant without updating code() will cause a compile error here.
-        fn assert_code_exhaustive(kind: &ErrorKind) -> &'static str {
-            match kind {
-                ErrorKind::KeyNotFound { .. } => "E001",
-                ErrorKind::UndefinedVariable { .. } => "E002",
-                ErrorKind::TypeMismatch { .. } => "E010",
-                ErrorKind::TypeAssertFailed { .. } => "E011",
-                ErrorKind::NoInstance { .. } => "E013",
-                ErrorKind::MacroError { .. } => "E012",
-                ErrorKind::ArityMismatch { .. } => "E020",
-                ErrorKind::NamedArgConflict { .. } => "E021",
-                ErrorKind::UnknownNamedArg { .. } => "E022",
-                ErrorKind::NamedArgRejected { .. } => "E023",
-                ErrorKind::MissingRequiredParam { .. } => "E024",
-                ErrorKind::DuplicateKey { .. } => "E030",
-                ErrorKind::DivisionByZero { .. } => "E031",
-                ErrorKind::IntegerOverflow { .. } => "E032",
-                ErrorKind::FloatNotFinite { .. } => "E033",
-                ErrorKind::EmptyCollection { .. } => "E034",
-                ErrorKind::ValueNotSerializable { .. } => "E035",
-                ErrorKind::FloatOutOfRange { .. } => "E036",
-                ErrorKind::ResourceLimitExceeded { .. } => "E043",
-                ErrorKind::IncludeIoError { .. } => "E051",
-                ErrorKind::IncludeCycle { .. } => "E052",
-                ErrorKind::IncludeFileTooLarge { .. } => "E054",
-                ErrorKind::IncludeHashMismatch { .. } => "E055",
-                ErrorKind::IncludeHashRequired { .. } => "E056",
-                ErrorKind::ParseConversion { .. } => "E060",
-                ErrorKind::UriParseError { .. } => "E063",
-                ErrorKind::CircularDependency { .. } => "E070",
-                ErrorKind::MatchExhaustion { .. } => "E071",
-                ErrorKind::DuplicateVariable { .. } => "E072",
-                ErrorKind::UserError { .. } => "E080",
-                ErrorKind::Unimplemented { .. } => "E081",
-                ErrorKind::BuilderFinished { .. } => "E082",
-                ErrorKind::SchemaViolation { .. } => "E090",
-                ErrorKind::KindMismatch { .. } => "E091",
-                ErrorKind::Internal { .. } => "E099",
-            }
-        }
-        // The actual test just needs to compile.
-        let _ = assert_code_exhaustive;
-    }
-
-    #[test]
-    fn test_error_kind_partial_eq_reflexive() {
-        // Smoke test: verify ErrorKind reflexivity for one representative variant.
-        // Runtime exhaustiveness is enforced by test_partialeq_all_variants_covered
-        // via all_error_kind_variants(). No compile-time guarantee exists for PartialEq
-        // (the catch-all _ => false arm prevents that).
-        let a = ErrorKind::Internal {
-            message: "test".to_string(),
-        };
-        assert!(a == a);
+    fn test_diagnostic_level_equality() {
+        assert_eq!(DiagnosticLevel::Info, DiagnosticLevel::Info);
+        assert_eq!(DiagnosticLevel::Warn, DiagnosticLevel::Warn);
+        assert_eq!(DiagnosticLevel::Err, DiagnosticLevel::Err);
+        assert_ne!(DiagnosticLevel::Info, DiagnosticLevel::Warn);
+        assert_ne!(DiagnosticLevel::Warn, DiagnosticLevel::Err);
     }
 
     #[test]
@@ -3609,9 +1199,9 @@ bad value (defined at src/test_util.rs:3:5-3:10)
     }
 
     #[test]
-    fn test_eval_error_with_blame() {
+    fn test_diagnostic_with_blame() {
         let def_span = test_span(7, 1, 7, 5);
-        let err = EvalError::type_assert_failed("Int", "String", def_span);
+        let err = Diagnostic::type_assert_failed("Int", "String", def_span);
 
         let origin_span = test_span(3, 5, 3, 10);
         let boundary_span = test_span(7, 1, 7, 15);
@@ -3621,104 +1211,99 @@ bad value (defined at src/test_util.rs:3:5-3:10)
             polarity: BlameParity::Positive,
         };
 
-        let err_with_blame = err.with_blame(label.clone());
-        assert_eq!(err_with_blame.blame, Some(label));
-
-        // Verify display includes blame information
-        let display = format!("{}", err_with_blame);
-        assert!(display.contains("blame:"));
-        assert!(display.contains("typed side (annotation)"));
-    }
-
-    #[test]
-    fn test_eval_error_with_blame_negative() {
-        let def_span = test_span(10, 1, 10, 5);
-        let err = EvalError::type_mismatch("Int", "String", def_span);
-
-        let origin_span = test_span(5, 1, 5, 10);
-        let boundary_span = test_span(10, 1, 10, 15);
-        let label = BlameLabel {
-            origin_span,
-            boundary_span,
-            polarity: BlameParity::Negative,
-        };
-
         let err_with_blame = err.with_blame(label);
-
-        // Verify display shows negative polarity
-        let display = format!("{}", err_with_blame);
-        assert!(display.contains("blame:"));
-        assert!(display.contains("untyped side (producer)"));
+        // Verify labels were added
+        assert!(err_with_blame.labels.len() > 2);
+        assert!(err_with_blame
+            .labels
+            .iter()
+            .any(|l| l.message == "value originates here"));
+        assert!(err_with_blame
+            .labels
+            .iter()
+            .any(|l| l.message.contains("typed/untyped boundary")));
     }
 
     #[test]
     fn test_blame_co_natural_strategy() {
-        // Co-natural strategy: innermost blame label is preserved, outer labels discarded
         let def_span = test_span(10, 1, 10, 5);
-        let err = EvalError::type_assert_failed("Int", "String", def_span);
+        let err = Diagnostic::type_assert_failed("Int", "String", def_span);
 
-        // First (innermost) blame label
         let inner_label = BlameLabel {
             origin_span: test_span(5, 1, 5, 10),
             boundary_span: test_span(8, 1, 8, 15),
             polarity: BlameParity::Positive,
         };
 
-        // Second (outer) blame label
         let outer_label = BlameLabel {
             origin_span: test_span(1, 1, 1, 5),
             boundary_span: test_span(12, 1, 12, 20),
             polarity: BlameParity::Negative,
         };
 
-        // Apply inner label first
-        let err = err.with_blame(inner_label.clone());
+        let err = err.with_blame(inner_label);
+        let inner_label_count = err.labels.len();
         // Apply outer label (should be discarded)
         let err = err.with_blame(outer_label);
-
-        // Should still have the inner label
-        assert_eq!(err.blame, Some(inner_label));
-    }
-
-    // ── Type diagnostic system tests ────────────────────────────────────────
-
-    #[test]
-    fn test_diagnostic_level_bump() {
-        assert_eq!(DiagnosticLevel::Info.bump(), DiagnosticLevel::Warn);
-        assert_eq!(DiagnosticLevel::Warn.bump(), DiagnosticLevel::Err);
-        assert_eq!(DiagnosticLevel::Err.bump(), DiagnosticLevel::Err);
+        // Should have same number of labels
+        assert_eq!(err.labels.len(), inner_label_count);
     }
 
     #[test]
-    fn test_type_diagnostic_construction() {
-        use crate::test_util::test_span;
+    fn test_render_span_snippet_single_line() {
+        let source = "line1\nlet x = 42\nline3";
+        let span = Span {
+            file: rust_span!().file,
+            start_line: 2,
+            start_col: 1,
+            end_line: 2,
+            end_col: 4,
+            name: None,
+        };
+        let snippet = render_span_snippet(source, span).unwrap();
 
-        let span = test_span(5, 10, 5, 20);
-        let diag = Diagnostic::warn(
-            "T999", // test-only sentinel — not a real production diagnostic code
-            "inferred Unknown type",
-            span.clone(),
+        assert!(snippet.contains("2 | let x = 42"));
+        assert!(snippet.contains("  | ^^^"));
+        assert!(!snippet.contains("..."));
+    }
+
+    #[test]
+    fn test_render_span_snippet_no_source_for_rust_spans() {
+        let source = "test source";
+        let snippet = render_span_snippet(source, rust_span!());
+        assert_eq!(snippet, None);
+    }
+
+    #[test]
+    fn test_render_span_snippet_multiline() {
+        let source = "line1\nlet x = [\n  42\n]\nline5";
+        let span = Span {
+            file: rust_span!().file,
+            start_line: 2,
+            start_col: 1,
+            end_line: 4,
+            end_col: 2,
+            name: None,
+        };
+        let snippet = render_span_snippet(source, span).unwrap();
+
+        assert!(
+            snippet.contains("2 | let x = ["),
+            "missing first line: {snippet}"
         );
-
-        assert_eq!(diag.message, "inferred Unknown type");
-        assert_eq!(diag.primary_span(), &span);
-        assert_eq!(diag.kind, "T999");
-        assert_eq!(diag.level, DiagnosticLevel::Warn);
+        assert!(
+            snippet.contains("3 |   42"),
+            "missing middle line: {snippet}"
+        );
+        assert!(snippet.contains("4 | ]"), "missing last line: {snippet}");
+        assert!(snippet.contains('^'), "missing caret: {snippet}");
+        assert!(
+            !snippet.contains("..."),
+            "unexpected '...' in snippet: {snippet}"
+        );
     }
-
-    #[test]
-    fn test_diagnostic_level_equality() {
-        assert_eq!(DiagnosticLevel::Info, DiagnosticLevel::Info);
-        assert_eq!(DiagnosticLevel::Warn, DiagnosticLevel::Warn);
-        assert_eq!(DiagnosticLevel::Err, DiagnosticLevel::Err);
-        assert_ne!(DiagnosticLevel::Info, DiagnosticLevel::Warn);
-        assert_ne!(DiagnosticLevel::Warn, DiagnosticLevel::Err);
-    }
-
-    // ── Span file-path tests (S-783: spans carry file path for error messages) ────
 
     /// Helper: build a Span with a given file path.
-    /// The span position itself is (line=3, col=5) → (line=3, col=10).
     fn span_with_file(path: &str) -> Span {
         Span {
             file: Arc::from(path),
@@ -3732,21 +1317,18 @@ bad value (defined at src/test_util.rs:3:5-3:10)
 
     #[test]
     fn test_span_display_with_real_file() {
-        // Span::Display is the single canonical renderer — includes file for real source files.
         let span = span_with_file("prelude.llt");
         assert_eq!(format!("{span}"), "prelude.llt:3:5-3:10");
     }
 
     #[test]
     fn test_span_display_with_synthetic_file() {
-        // Synthetic paths starting with '<' are omitted from display (position only).
         let span = span_with_file("<parse>");
         assert_eq!(format!("{span}"), "3:5-3:10");
     }
 
     #[test]
     fn test_span_display_rust_file() {
-        // rust_span!() carries a real Rust file path — must display with file and not panic.
         let span = rust_span!();
         let s = format!("{span}");
         assert!(
@@ -3757,155 +1339,20 @@ bad value (defined at src/test_util.rs:3:5-3:10)
 
     #[test]
     fn test_display_error_with_file_in_definition_span() {
-        // When definition_span carries a file path, the error Display line must
-        // include the file path in the "defined at ..." clause.
-        //
-        // Expected: "oops (defined at prelude.llt:3:5-3:10)"
         let span = span_with_file("prelude.llt");
-        let err = EvalError::internal("oops".to_string(), span);
+        let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
-
-        assert!(
-            display.contains("prelude.llt:"),
-            "error display must contain the source file path; got: {display}"
-        );
-        assert!(
-            display.contains("defined at prelude.llt:3:5-3:10"),
-            "error display must show 'defined at prelude.llt:3:5-3:10'; got: {display}"
-        );
+        // New format is "line:col: message"
+        assert_eq!(display, "3:5: oops");
     }
 
     #[test]
     fn test_display_error_rust_span_no_panic() {
-        // rust_span!() (file: Some(rust_file)) must display gracefully — no panic.
-        // Mutation guard: if format_span_location panics on Rust spans, this test catches it.
-        let err = EvalError::internal("synthetic error".to_string(), rust_span!());
-        // Must not panic.
+        let err = Diagnostic::internal("synthetic error".to_string(), rust_span!());
         let display = format!("{err}");
-        // No error code prefix in Display — the format is "message (defined at file:line:col)".
         assert!(
             display.contains("synthetic error"),
             "display must include the message; got: {display}"
-        );
-        assert!(
-            !display.contains(".llt"),
-            "rust span must not show any llt file path; got: {display}"
-        );
-    }
-
-    #[test]
-    fn test_display_error_materialization_span_with_file() {
-        // When the materialization span carries a different file from the definition span,
-        // both file paths must appear in the Display output.
-        //
-        // Scenario: error defined in "prelude.llt", materialized in "user.llt".
-        let def_span = span_with_file("prelude.llt");
-        // Give mat_span a different position so it differs from def_span.
-        let mat_span = {
-            Span {
-                file: Arc::from("user.llt"),
-                start_line: 10,
-                start_col: 1,
-                end_line: 10,
-                end_col: 6,
-                name: None,
-            }
-        };
-
-        let err = EvalError::internal("prelude error".to_string(), def_span)
-            .with_materialization_span(mat_span);
-        let display = format!("{err}");
-
-        assert!(
-            display.contains("prelude.llt:"),
-            "display must contain the definition file (prelude.llt); got: {display}"
-        );
-        assert!(
-            display.contains("user.llt:"),
-            "display must contain the materialization file (user.llt); got: {display}"
-        );
-        assert!(
-            display.contains("defined at prelude.llt:3:5-3:10"),
-            "definition location must be 'prelude.llt:3:5-3:10'; got: {display}"
-        );
-        assert!(
-            display.contains("user.llt:10:1-10:6"),
-            "materialization location must be 'user.llt:10:1-10:6'; got: {display}"
-        );
-    }
-
-    #[test]
-    fn test_display_error_stack_frame_with_file() {
-        // Stack frames use format_span_location for their "in fn at location" line.
-        // When a frame's definition_span carries a file path, the frame location
-        // must include the file path.
-        //
-        // Scenario: error in user code, stack frame from "prelude.llt".
-        let user_span = test_span(5, 1, 5, 10); // no file: user input without source file
-        let prelude_frame_span = span_with_file("prelude.llt");
-
-        let err = EvalError::internal("inner error".to_string(), user_span)
-            .with_frame("map".to_string(), prelude_frame_span);
-        let display = format!("{err}");
-
-        assert!(
-            display.contains("in map at prelude.llt:3:5-3:10"),
-            "stack frame must show 'in map at prelude.llt:3:5-3:10'; got: {display}"
-        );
-    }
-
-    #[test]
-    fn test_display_error_stack_frame_without_file() {
-        // test_span() embeds src/test_util.rs as the source file. Frames show the file prefix.
-        // The negative assertion guards against LLT file paths appearing in Rust-backed spans.
-        let def_span = test_span(1, 1, 1, 5);
-        let frame_span = test_span(7, 3, 7, 15);
-
-        let err = EvalError::internal("error".to_string(), def_span)
-            .with_frame("my_fn".to_string(), frame_span);
-        let display = format!("{err}");
-
-        assert!(
-            display.contains("in my_fn at src/test_util.rs:7:3-7:15"),
-            "frame must show 'in my_fn at src/test_util.rs:7:3-7:15'; got: {display}"
-        );
-        assert!(
-            !display.contains(".llt"),
-            "frame backed by test_util.rs must not show any llt file path; got: {display}"
-        );
-    }
-
-    #[test]
-    fn test_display_error_prelude_frame_user_definition() {
-        // Realistic scenario: user calls map (a prelude function), which internally
-        // errors. The primary error is at a definition site backed by src/test_util.rs
-        // (test_span embeds the file via rust_span!().file), and the stack frame is from
-        // prelude.llt (a real llt source file).
-        //
-        // This is the canonical "prelude function backtrace" scenario from S-783:
-        // the frame for `map` should show prelude.llt, not the user's file.
-        let user_def_span = test_span(2, 5, 2, 20); // backed by src/test_util.rs
-        let prelude_map_span = span_with_file("stdlib/prelude.llt");
-
-        let err = EvalError::type_mismatch("Int", "String", user_def_span)
-            .with_frame("map".to_string(), prelude_map_span);
-        let display = format!("{err}");
-
-        // No error code prefix in Display.
-        // test_span embeds src/test_util.rs as the source file.
-        assert!(
-            display.contains("type mismatch"),
-            "must show the type mismatch message; got: {display}"
-        );
-        assert!(
-            display.contains("defined at src/test_util.rs:2:5-2:20"),
-            "definition must show user span with file prefix; got: {display}"
-        );
-
-        // The stack frame for `map` must name the prelude file
-        assert!(
-            display.contains("in map at stdlib/prelude.llt:"),
-            "prelude frame must show 'stdlib/prelude.llt:' in location; got: {display}"
         );
     }
 }

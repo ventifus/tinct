@@ -121,8 +121,8 @@ pub use imports::{
 
 /// Error types with source spans and stack traces.
 pub use error::{
-    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel, ErrorKind,
-    EvalError, EvalResult, StackFrame,
+    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel,
+    EvalError, EvalResult, SpanLabel,
 };
 
 /// TypeValue: the Arc<Value>-based type representation used throughout the type checker.

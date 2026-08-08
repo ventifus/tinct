@@ -217,7 +217,7 @@ async fn eval_annotation_property_dict(
                 }
                 match eval_core_expr(&core_expr, &EvalFrame::empty(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
-                    Err(e) if matches!(&e.kind, crate::error::ErrorKind::Unimplemented { .. }) => {
+                    Err(e) if e.kind == "unimplemented" => {
                         // Placeholder from nested type expressions → skip this key.
                         continue;
                     }

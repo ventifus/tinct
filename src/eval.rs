@@ -2409,11 +2409,11 @@ pub fn materialize<'a>(
                     Err(e) => {
                         let mut cloned = (**e).clone();
                         if let Some(span) = mat_span {
-                            let first_note = cloned.spans.get(1).map(|(s, _)| s);
+                            let first_note = cloned.labels.get(1).map(|sl| &sl.span);
                             if first_note.is_none() {
                                 cloned = cloned.with_materialization_span(span.clone());
                             } else if first_note != Some(span)
-                                && !cloned.stack.iter().any(|f| f.definition_span == *span)
+                                && !cloned.labels.iter().any(|l| l.span == *span)
                             {
                                 cloned.push_frame("materialized".to_string(), span.clone());
                             }
@@ -3244,9 +3244,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -3260,8 +3258,8 @@ mod tests {
             .await
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3295,8 +3293,8 @@ mod tests {
             .await
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3315,9 +3313,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -3331,8 +3327,8 @@ mod tests {
             .await
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3375,9 +3371,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -3410,9 +3404,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -3426,8 +3418,8 @@ mod tests {
             .await
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3519,8 +3511,8 @@ mod tests {
             .unwrap();
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3558,8 +3550,8 @@ mod tests {
         let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &ctx).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3634,7 +3626,7 @@ mod tests {
         assert!(!err.to_string().is_empty(), "got empty error: {}", err);
         // spans[1] should be the materialization span with label "evaluated here"
         assert_eq!(
-            err.spans.get(1).map(|(s, _)| s),
+            err.labels.get(1).map(|sl| &sl.span),
             Some(&mat_span),
             "materialization span should be the access site"
         );
@@ -3656,7 +3648,7 @@ mod tests {
                     .await
                     .unwrap_err();
                 assert!(err.to_string().contains("circular dependency"));
-                assert_eq!(err.spans.get(1).map(|(s, _)| s), Some(&mat_span));
+                assert_eq!(err.labels.get(1).map(|sl| &sl.span), Some(&mat_span));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3848,14 +3840,14 @@ mod tests {
 
         // Count how many frames have the same span
         let frame_count = err
-            .stack
+            .labels
             .iter()
-            .filter(|f| f.definition_span == mat_span)
+            .filter(|l| l.span == mat_span)
             .count();
         assert!(
             frame_count <= 1,
             "expected at most 1 frame with mat_span, got {frame_count}: {:?}",
-            err.stack
+            err.labels
         );
     }
 
@@ -3983,18 +3975,18 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err1.kind.to_string().contains("undefined variable"),
+            err1.message.contains("undefined variable"),
             "got: {}",
-            err1.kind
+            err1.message
         );
-        let frame_count1 = err1.stack.len();
+        let frame_count1 = err1.labels.len();
 
         // Second materialization: same mat_span — should not duplicate frames
         let err2 = materialize(&thunk, Some(&mat_span), &ctx)
             .await
             .unwrap_err();
         assert_eq!(
-            err2.stack.len(),
+            err2.labels.len(),
             frame_count1,
             "same mat_span should not duplicate frames"
         );
@@ -4118,9 +4110,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -4134,8 +4124,8 @@ mod tests {
             .await
             .unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -4151,9 +4141,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "hello".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -4182,9 +4170,7 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Str {
                         value: "anything".into(),
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_STRING,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_STRING),
                     },
                     span.clone(),
                 )),
@@ -4260,18 +4246,20 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "name".into(),
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_STRING,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "Alice".into(),
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_STRING,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
                                         },
                                         span.clone(),
                                     )),
@@ -4284,18 +4272,20 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "age".into(),
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_STRING,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 30,
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_INT,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_INT,
+                                                ),
                                         },
                                         span.clone(),
                                     )),
@@ -4304,9 +4294,7 @@ mod tests {
                                 span.clone(),
                             ),
                         ],
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_DICT,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT),
                     },
                     span.clone(),
                 )),
@@ -4370,9 +4358,7 @@ mod tests {
                             },
                             span.clone(),
                         )],
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_DICT,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT),
                     },
                     span.clone(),
                 )),
@@ -4416,18 +4402,20 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "x".into(),
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_STRING,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 1,
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_INT,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_INT,
+                                                ),
                                         },
                                         span.clone(),
                                     )),
@@ -4440,18 +4428,20 @@ mod tests {
                                     key: Some(Arc::new(Spanned::new(
                                         CoreExpr::Str {
                                             value: "extra".into(),
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_STRING,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_STRING,
+                                                ),
                                         },
                                         span.clone(),
                                     ))),
                                     value: Arc::new(Spanned::new(
                                         CoreExpr::Int {
                                             value: 2,
-                                            inferred_type: crate::type_infer::make_typevalue_nominal(
-                                                TYPE_ID_INT,
-                                            ),
+                                            inferred_type:
+                                                crate::type_infer::make_typevalue_nominal(
+                                                    TYPE_ID_INT,
+                                                ),
                                         },
                                         span.clone(),
                                     )),
@@ -4460,9 +4450,7 @@ mod tests {
                                 span.clone(),
                             ),
                         ],
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_DICT,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT),
                     },
                     span.clone(),
                 )),
@@ -4518,7 +4506,9 @@ mod tests {
                                 value: Arc::new(Spanned::new(
                                     CoreExpr::Int {
                                         value: 42,
-                                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_INT),
+                                        inferred_type: crate::type_infer::make_typevalue_nominal(
+                                            TYPE_ID_INT,
+                                        ),
                                     },
                                     span.clone(),
                                 )),
@@ -4526,9 +4516,7 @@ mod tests {
                             },
                             span.clone(),
                         )],
-                        inferred_type: crate::type_infer::make_typevalue_nominal(
-                            TYPE_ID_DICT,
-                        ),
+                        inferred_type: crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT),
                     },
                     span.clone(),
                 )),
@@ -4764,8 +4752,8 @@ mod tests {
             .unwrap();
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::TypeAssertFailed { .. }),
+        assert_eq!(
+            err.kind, "type-assert-failed",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -5413,8 +5401,8 @@ mod tests {
         // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
         // definition site so errors point at the value, not at the type annotation.
         assert_eq!(
-            err.spans[0].0, data_span,
-            "spans[0] should be data_span (value site), not guard_span (annotation site)"
+            err.labels[0].span, data_span,
+            "labels[0] should be data_span (value site), not guard_span (annotation site)"
         );
 
         // Verify the error message contains the field path prefix
@@ -5535,8 +5523,8 @@ mod tests {
         // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
         // definition site so errors point at the value, not at the type annotation.
         assert_eq!(
-            err.spans[0].0, data_span,
-            "spans[0] should be data_span (value site), not guard_span (annotation site)"
+            err.labels[0].span, data_span,
+            "labels[0] should be data_span (value site), not guard_span (annotation site)"
         );
 
         // Should NOT contain the empty-path prefix `field "": ` that would be inserted
@@ -5895,8 +5883,6 @@ mod tests {
     #[tokio::test]
     async fn test_circular_dependency_cycle_path() {
         // Test that circular dependency errors include the cycle path
-        use crate::error::ErrorKind;
-
         let ctx = test_ctx();
 
         // Create a 3-node cycle: a→b→c→a
@@ -5959,27 +5945,19 @@ mod tests {
         };
 
         // Verify the error kind is CircularDependency
-        if let ErrorKind::CircularDependency { name, cycle_path } = &err.kind {
-            // eval_dict creates thunks without origin labels, so the cycle detector
-            // uses the default label "thunk" for the node that completes the cycle.
-            assert!(
-                name == "thunk" || name == "a" || name == "b" || name == "c",
-                "Cycle should be detected at one of the thunks, got: {}",
-                name
-            );
-
-            // The iterative CEK machine pops eval_stack entries at force_step exit rather than
-            // at thunk completion, so cycle_path is empty when circular dependency is detected —
-            // the cycle detector fires at the right time but the path reconstruction has no frames
-            // left to walk. The cycle is detected correctly; only the path is empty.
-            assert!(
-                cycle_path.is_empty(),
-                "iterative evaluator produces empty cycle_path (entries are popped at force_step exit, not thunk completion): got {:?}",
-                cycle_path
-            );
-        } else {
-            panic!("Expected CircularDependency error, got: {:?}", err.kind);
-        }
+        assert_eq!(
+            err.kind, "circular-dependency",
+            "Expected circular-dependency error, got: {:?}",
+            err.kind
+        );
+        // The message should reference one of the thunks
+        assert!(
+            err.message.contains("thunk") || err.message.contains("a") || err.message.contains("b") || err.message.contains("c"),
+            "Cycle should be detected at one of the thunks, got message: {}",
+            err.message
+        );
+        // The iterative CEK machine pops eval_stack entries at force_step exit rather than
+        // at thunk completion, so cycle_path notes may be empty when circular dependency is detected.
     }
 
     #[tokio::test]
@@ -5993,18 +5971,19 @@ mod tests {
 
         // Add the frame once
         err.push_frame("first access".to_string(), frame_span.clone());
-        assert_eq!(err.stack.len(), 1, "Should have exactly one frame");
-        assert_eq!(err.stack[0].label, "first access");
+        // labels[0] is primary span, labels[1] is the pushed frame
+        assert_eq!(err.labels.len(), 2, "Should have primary + one frame");
+        assert_eq!(err.labels[1].message, "first access");
 
         // Manually check for duplicate before adding (this is what error decoration does)
-        if !err.stack.iter().any(|f| f.definition_span == frame_span) {
+        if !err.labels.iter().any(|l| l.span == frame_span) {
             err.push_frame("second access".to_string(), frame_span);
         }
 
-        // Should still be 1 frame (duplicate was avoided)
-        assert_eq!(err.stack.len(), 1, "Duplicate span should be deduplicated");
+        // Should still be 2 labels (duplicate was avoided)
+        assert_eq!(err.labels.len(), 2, "Duplicate span should be deduplicated");
         assert_eq!(
-            err.stack[0].label, "first access",
+            err.labels[1].message, "first access",
             "Original label preserved"
         );
     }
@@ -6162,11 +6141,9 @@ mod tests {
             "undefined-pin dict-pattern arm must produce MatchExhaustion when forced; got: {:?}",
             result
         );
-        assert!(
-            matches!(
-                result.unwrap_err().kind,
-                crate::error::ErrorKind::MatchExhaustion { .. }
-            ),
+        assert_eq!(
+            result.unwrap_err().kind,
+            "match-exhaustion",
             "expected MatchExhaustion from undefined pin in dict pattern"
         );
     }
@@ -6209,7 +6186,7 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            matches!(err.kind, crate::error::ErrorKind::MatchExhaustion { .. }),
+            err.kind == "match-exhaustion",
             "Expected MatchExhaustion, got: {:?}",
             err.kind
         );

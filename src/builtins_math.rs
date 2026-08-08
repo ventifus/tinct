@@ -1935,7 +1935,7 @@ pub fn math_builtins() -> Vec<crate::value::BuiltinDef> {
 mod tests {
     use super::*;
     use crate::ast::Span;
-    use crate::error::ErrorKind;
+
     use crate::test_util::test_span;
     use crate::value::{BuiltinArgs, Thunk, Value};
     fn call_span() -> Span {
@@ -2135,7 +2135,7 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            matches!(&err.kind, ErrorKind::TypeMismatch { .. }),
+            err.kind == "type-mismatch",
             "expected TypeMismatch, got: {:?}",
             err.kind
         );

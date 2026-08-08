@@ -336,7 +336,7 @@ pub(crate) fn builtin_get(
                             map.keys().map(|k| k.to_string()).collect();
                         let mut err =
                             EvalError::key_not_found(&key_str, available_keys, target_span);
-                        err.spans.push((call_span, "accessed here".to_string()));
+                        err.labels.push(crate::error::SpanLabel { span: call_span, message: "accessed here".to_string() });
                         err.notes.push(format!("dict has {} entries", map.len(),));
                         Err(err.into())
                     }

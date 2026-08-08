@@ -1000,9 +1000,7 @@ mod tests {
         let expr = CoreExpr::Fn {
             clauses: vec![make_test_clause(sp(CoreExpr::Int {
                 value: 42,
-                inferred_type: crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                ),
+                inferred_type: crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
             }))],
             desugared: true,
             captures: std::sync::Arc::new(vec![]),
@@ -1024,9 +1022,7 @@ mod tests {
         let expr = CoreExpr::Fn {
             clauses: vec![make_test_clause(sp(CoreExpr::Int {
                 value: 42,
-                inferred_type: crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                ),
+                inferred_type: crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
             }))],
             desugared: false,
             captures: std::sync::Arc::new(vec![]),
