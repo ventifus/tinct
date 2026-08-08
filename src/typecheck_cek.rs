@@ -338,6 +338,12 @@ pub(crate) enum TypeCheckCont {
         saved_closure_captures: Vec<BindingId>,
     },
 
+    /// Identity continuation — returns the child type unchanged.
+    /// Pushed when infer_step redirects via Eval without a semantic continuation
+    /// (e.g., Field access desugaring to a synthetic call). The universal annotation
+    /// mechanism annotates the source node when this fires.
+    PassThrough,
+
     /// Inferred the inner expression of a TypeAssert — validate against expected TypeValue.
     TypeAssertInner {
         expected: TypeValue,
@@ -578,6 +584,7 @@ async fn infer_step(
                     },
                     span,
                 ));
+                stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
                 TypeCheckAction::Eval(call_node, Arc::clone(env))
             }
         },
@@ -625,9 +632,7 @@ async fn infer_step(
                 Err(e) => {
                     let e = e.with_note("in type assertion annotation");
                     errors.push(e);
-                    let fallback_ty = state.fresh_type_var(&node.span);
-                    let resolved = state.apply(&fallback_ty);
-                    node.inferred_type_decl_id.set(resolved);
+                    stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
                     TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
                 }
             }
@@ -945,9 +950,11 @@ async fn infer_step(
             TypeCheckAction::Done(tv)
         }
         SurfaceExpression::TypeDecl { inner, .. } => {
+            stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
             TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
         }
         SurfaceExpression::ReprDecl { inner, .. } => {
+            stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
             TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
         }
 
@@ -1613,6 +1620,9 @@ async fn apply_cont(
 
             TypeCheckAction::Done(expected)
         }
+
+        // ===== PassThrough =====
+        TypeCheckCont::PassThrough => TypeCheckAction::Done(child_ty),
 
         // ===== Unquote =====
         TypeCheckCont::Unquote => TypeCheckAction::Done(child_ty),
