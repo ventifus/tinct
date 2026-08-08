@@ -25,7 +25,9 @@ use crate::ast::{
 use crate::error::Diagnostic;
 use crate::eval_call::is_typevalue_unknown;
 use crate::rust_span;
-use crate::type_infer::{make_typevalue_fn_with_flags, make_typevalue_nominal, make_typevalue_unknown};
+use crate::type_infer::{
+    make_typevalue_fn_with_flags, make_typevalue_nominal, make_typevalue_unknown,
+};
 
 /// The tinct name of the dict-field accessor builtin.
 ///
@@ -312,11 +314,11 @@ fn lower_expr(
             let key_core = match field {
                 crate::ast::DotKey::Int(n) => CoreExpr::Int {
                     value: *n,
-                    inferred_type: make_typevalue_unknown(),
+                    inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_INT),
                 },
                 crate::ast::DotKey::Ident(s) => CoreExpr::Str {
                     value: s.clone(),
-                    inferred_type: make_typevalue_unknown(),
+                    inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_STRING),
                 },
             };
 
@@ -432,7 +434,7 @@ fn lower_expr(
                             ..
                         } => CoreExpr::Str {
                             value: name.clone(),
-                            inferred_type: make_typevalue_unknown(),
+                            inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_STRING),
                         },
                         _ => lower_expr(k, &k.expr, diagnostics, type_display_names),
                     };
@@ -1266,16 +1268,16 @@ fn lower_let_decl_binding(
         // Annotated VarRef (name@Type) is also lowered to Str — the annotation is stripped.
         SurfaceExpression::VarRef { name, .. } => CoreExpr::Str {
             value: name.clone(),
-            inferred_type: make_typevalue_unknown(),
+            inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         },
         SurfaceExpression::Placeholder(Some(name), _) => CoreExpr::Str {
             value: name.clone(),
-            inferred_type: make_typevalue_unknown(),
+            inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         },
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
         SurfaceExpression::Placeholder(None, _) => CoreExpr::Str {
             value: String::new(),
-            inferred_type: make_typevalue_unknown(),
+            inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_STRING),
         },
         // All other forms: lower normally (will produce Error if unresolvable).
         _ => lower_expr(arc, &arc.expr, diagnostics, type_display_names),
