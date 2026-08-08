@@ -51,6 +51,8 @@ pub(crate) mod type_normalize;
 // Type system façade (re-exports from all type modules)
 pub(crate) mod types;
 pub(crate) mod value;
+// Per-document bootstrap pipeline: resolve → typecheck → eval.
+pub(crate) mod pipeline;
 // Import resolution for type checker — seeds TypeEnv with prelude function types.
 pub(crate) mod imports;
 // Rust-native builtin functions (stdlib-1 sprint).

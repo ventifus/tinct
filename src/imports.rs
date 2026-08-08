@@ -11,8 +11,6 @@
 use std::sync::{Arc, RwLock};
 
 use crate::env::Env;
-use crate::type_tags::*;
-use crate::typecheck::typecheck_program_bootstrap;
 
 /// Parse and type-check `stdlib/builtin_core.llt`, returning the resulting
 /// `(Arc<RwLock<Env>>, TyConEnv)` pair so that callers receive both the type
@@ -149,17 +147,14 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     crate::type_infer::TypeStageData,
     std::collections::HashMap<String, u64>,
 )> {
-    // Embedded source — no libdir access needed at runtime.
     let source = include_str!("../stdlib/builtin_core.llt");
     let sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
 
-    // Parse — extract .program from ParseOutput.
-    // builtin_core.llt is embedded at compile time; parse failure is a programmer error.
     let program = crate::desugar::desugar_program_full(
         &crate::parser::parse(source, sf)
             .map_err(|e| {
                 Box::new(crate::error::EvalError::internal(
-                    format!("builtin_core.llt failed to parse — file is embedded at compile time and must be valid: {e}"),
+                    format!("builtin_core.llt parse failed: {e}"),
                     crate::rust_span!(),
                 ))
             })?
@@ -167,302 +162,18 @@ async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
     );
     let program = crate::expand::expand_program(&program);
 
-    // Empty parent — builtin_core.llt is the source of truth. Primitives are hardcoded
-    // in resolve_type_name; types declared within the file resolve via state.tycon_env.
-    let parent_env = Arc::new(RwLock::new(crate::env::Env::new()));
+    let ctx = crate::eval::EvalContext::new_empty();
+    let mut state = crate::pipeline::PipelineState::from_builtins(&ctx);
 
-    // Create EvalContext for type-stage evaluation. No filesystem access needed —
-    // type-stage eval only constructs TypeNode values in memory (no IO builtins).
-    let type_stage_eval_ctx = crate::eval::EvalContext::new_empty();
-
-    // ONE resolve pass on the FULL program with the eval root frame as the outer scope.
-    // This sets OnceLock coordinates on ALL nodes (including type-stage ones) relative to
-    // the EvalContext's root group, exactly as run_loader_pipeline does. The resulting
-    // scope frames are threaded into eval_ctx_with_frames so the evaluator can resolve
-    // VarRefs at any level — including unit constructor accesses like TypeNode.Int which
-    // require a working outer-frame lookup chain.
-    let eval_ctx_with_frames: std::sync::Arc<crate::eval::EvalContext> = {
-        let root_frame = type_stage_eval_ctx.root_group_resolver_map();
-        let (_table, new_frames_with_kind) = crate::resolve::resolve_surface_program_with_classes(
-            &program,
-            std::slice::from_ref(&root_frame),
-            std::collections::HashMap::new(),
-        );
-        let new_frames: Vec<indexmap::IndexMap<String, u32>> = new_frames_with_kind
-            .into_iter()
-            .map(|(frame, _kind)| frame)
-            .collect();
-        let all_frames: Vec<indexmap::IndexMap<String, u32>> =
-            std::iter::once(root_frame).chain(new_frames).collect();
-        type_stage_eval_ctx.with_scope_frames(std::sync::Arc::new(all_frames))
-    };
-
-    // Filter type-stage documents from the already-resolved full program.
-    // The OnceLocks are already set by the resolve above — no separate resolve needed.
-    let ts_docs: Vec<_> = program
-        .documents
-        .iter()
-        .filter(|d| {
-            d.node.header.get("stage").is_some_and(|stage_node| {
-                matches!(
-                    &stage_node.expr,
-                    crate::ast::SurfaceExpression::StringLiteral { content, .. }
-                    if content == "type"
-                )
-            })
-        })
-        .cloned()
-        .collect();
-
-    // Build type_stage_data by type-checking then evaluating the type-stage documents.
-    // The type checker runs first so every SurfaceNode gets its inferred_type — the
-    // evaluator carries it through to CoreExpr and Thunk. No seeding needed: the type
-    // checker infers types from primitives (Int, String, Dict) and discovers TYPE_IDs
-    // from [type repr: N] declarations in the tinct code.
-    let type_stage_data: crate::type_infer::TypeStageData = if ts_docs.is_empty() {
-        crate::type_infer::TypeStageData::new()
-    } else {
-        let ts_program = crate::ast::SurfaceProgram { documents: ts_docs };
-
-        let ts_thunk = crate::eval::eval_surface_file(&ts_program, &eval_ctx_with_frames)
-            .await
-            .map_err(|e| {
-                Box::new(crate::error::EvalError::internal(
-                    format!("builtin_core.llt type-stage eval failed — file is embedded at compile time and must be valid: {e}"),
-                    crate::rust_span!(),
-                ))
-            })?;
-        let ts_val = crate::eval::materialize(&ts_thunk, None, &eval_ctx_with_frames)
-            .await
-            .map_err(|e| {
-                Box::new(crate::error::EvalError::internal(
-                    format!("builtin_core.llt type-stage materialization failed — file is embedded at compile time and must be valid: {e}"),
-                    crate::rust_span!(),
-                ))
-            })?;
-        match ts_val {
-            crate::value::Value::Dict { entries, .. } => {
-                // scope_map accumulates the resolved TypeValues for already-processed entries.
-                // Used by typenode_value_to_type to resolve recursive TypeNode references.
-                let mut scope_map: std::collections::HashMap<String, crate::type_infer::TypeValue> =
-                    std::collections::HashMap::new();
-                let mut fns_map: std::collections::HashMap<
-                    String,
-                    std::sync::Arc<crate::value::Thunk>,
-                > = std::collections::HashMap::new();
-                let mut type_vars_map: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                for (key, thunk) in &entries {
-                    if let crate::value::HashableValue::Str(name) = key {
-                        let val = crate::eval::materialize(thunk, None, &eval_ctx_with_frames)
-                            .await
-                            .map_err(|e| {
-                                Box::new(crate::error::EvalError::internal(
-                                    format!("builtin_core.llt type-stage entry materialization failed — file is embedded at compile time and must be valid: {e}"),
-                                    crate::rust_span!(),
-                                ))
-                            })?;
-
-                        // scope_so_far is built incrementally: only entries already
-                        // processed are visible when classify_type_stage_entry runs.
-                        // This means type-stage entries that reference other type-stage
-                        // entries (e.g., ElementType referencing FieldType) must be
-                        // declared AFTER their dependencies in builtin_core.llt and
-                        // prelude.llt.  A future reordering of those declarations could
-                        // silently drop entries that can't resolve their references.
-                        let scope_so_far = vec![scope_map.clone()];
-                        // Derive a partial type_name_to_id from scope entries processed so far.
-                        let partial_name_to_id: std::collections::HashMap<String, u64> = scope_map
-                            .iter()
-                            .filter_map(|(n, tv)| {
-                                crate::type_infer::typevalue_nominal_id(tv)
-                                    .filter(|id| *id > 0)
-                                    .map(|id| (n.clone(), id))
-                            })
-                            .collect();
-                        let classified = classify_type_stage_entry(
-                            name,
-                            thunk,
-                            &val,
-                            &eval_ctx_with_frames,
-                            &scope_so_far,
-                            &partial_name_to_id,
-                        )
-                        .await?;
-                        if let Some((tv, opt_thunk, opt_kind)) = classified {
-                            scope_map.insert(name.to_string(), Arc::clone(&tv));
-                            if let Some(thunk_arc) = opt_thunk {
-                                fns_map.insert(name.to_string(), thunk_arc);
-                            }
-                            if let Some(kind_str) = opt_kind {
-                                type_vars_map.insert(name.to_string(), kind_str);
-                            }
-                        }
-                    }
-                }
-                crate::type_infer::TypeStageData {
-                    scope: vec![scope_map],
-                    fns: fns_map,
-                    type_vars: type_vars_map,
-                }
-            }
-            _ => {
-                return Err(Box::new(crate::error::EvalError::internal(
-                    format!(
-                        "builtin_core.llt type-stage produced non-Dict value: {:?}",
-                        ts_val
-                    ),
-                    crate::rust_span!(),
-                )));
-            }
-        }
-    };
-
-    // Derive a partial type_name_to_id from the type-stage scope entries.
-    // Each TypeValue.Nominal carries its type_decl_id; extract the mapping so that
-    // Function/TypeVar entries below can look up their ID without hardcoding prelude names.
-    let scope_type_name_to_id: std::collections::HashMap<String, u64> = type_stage_data
-        .scope
-        .iter()
-        .flat_map(|m| m.iter())
-        .filter_map(|(name, tv)| {
-            crate::type_infer::typevalue_nominal_id(tv)
-                .filter(|id| *id > 0)
-                .map(|id| (name.clone(), id))
-        })
-        .collect();
-
-    // Insert type-stage bindings into parent_env by name.
-    // This enables name-based lookup (get_scheme, resolve_type_head, etc.) from any
-    // child env frame. Slot-based insertion (for get_scheme_at) happens in
-    // typecheck_program_bootstrap after the resolver assigns the correct runtime slots.
-    // Type-stage names have no pre-assigned slots in parent_env at this point — append.
-    {
-        let mut env_write = parent_env.write().unwrap();
-        // Resolved entries: insert their TypeValue directly.
-        for (name, tv) in type_stage_data.scope.iter().flat_map(|m| m.iter()) {
-            let slot = env_write.slots.len();
-            env_write.insert_at_slot(slot, name.clone(), Arc::clone(tv), None);
-        }
-        // Function entries: insert make_typevalue_nominal placeholder.
-        for (name, _thunk) in &type_stage_data.fns {
-            let slot = env_write.slots.len();
-            env_write.insert_at_slot(
-                slot,
-                name.clone(),
-                crate::type_infer::make_typevalue_nominal(
-                    scope_type_name_to_id
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(0),
-                ),
-                None,
-            );
-        }
-        // TypeVar entries: insert make_typevalue_nominal placeholder.
-        for (name, _kind) in &type_stage_data.type_vars {
-            let slot = env_write.slots.len();
-            env_write.insert_at_slot(
-                slot,
-                name.clone(),
-                crate::type_infer::make_typevalue_nominal(
-                    scope_type_name_to_id
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(0),
-                ),
-                None,
-            );
-        }
+    for doc in &program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut state, &ctx).await?;
     }
 
-    // Collect opaque TyCon names from the resolved type-stage scope before passing to typecheck.
-    // Each TypeValue.Op in the resolved scope represents an opaque builtin type that needs a
-    // TyConDef so value_matches_type can dispatch on it. We scan here (before the move into
-    // typecheck_program_bootstrap) and register the TyConDefs after typecheck returns.
-    let opaque_tycon_names: Vec<String> = type_stage_data
-        .scope
-        .iter()
-        .flat_map(|scope_map| scope_map.iter())
-        .filter_map(|(_tname, tv)| {
-            // After S-1003: TypeValue.Op { name: String } replaces Type::TyCon(name).
-            if let crate::value::Value::Variant {
-                ctor,
-                payload: Some(payload_thunk),
-                ..
-            } = tv.as_ref()
-            {
-                if ctor.as_ref() == TV_NOMINAL {
-                    if let Some(Ok(crate::value::Value::Dict { entries, .. })) =
-                        payload_thunk.peek_result()
-                    {
-                        let key =
-                            crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_NAME));
-                        if let Some(Ok(crate::value::Value::String {
-                            source, start, end, ..
-                        })) = entries.get(&key).map(|t| t.peek_result()).flatten()
-                        {
-                            return Some(source[*start..*end].to_string());
-                        }
-                    }
-                }
-            }
-            None
-        })
-        .collect();
-
-    // Typecheck with builtins env as parent.
-    // Clone type_stage_data so it can be returned to callers that need it
-    // (e.g. get_builtin_core_type_stage_scope, which seeds type-checker entry points
-    // that do not have their own type-stage scope available).
-    let type_stage_data_for_return = type_stage_data.clone();
-    let (_tc_errors, final_env, mut tycon_env, type_name_to_id) = typecheck_program_bootstrap(
-        &program,
-        parent_env,
-        None,                             // eval_ctx: no EvalContext at bootstrap
-        std::collections::HashMap::new(), // seed_tycon_env: empty at bootstrap
-        type_stage_data,
-        std::collections::HashMap::new(),
-        None, // pre_resolved: re-resolve normally
-    )
-    .await;
-
-    // Auto-register TyConDefs for opaque builtin types derived from the type-stage scope.
-    // These types are declared as TypeNode leaf constructors in the type-stage (not as
-    // [type X] in the runtime dict), so the typecheck pass does not create their TyConDefs
-    // automatically. Identity-based type_decl_id enables value_matches_type dispatch.
-    // or_insert_with: if a [type X] declaration already registered an entry, keep it.
-    use crate::type_def::TyConDef;
-    for discriminant in opaque_tycon_names {
-        let type_decl_id = type_name_to_id
-            .get(discriminant.as_str())
-            .copied()
-            .unwrap_or(0);
-        if type_decl_id == 0 {
-            continue; // No id for this type name — cannot register without an identity.
-        }
-        tycon_env.entry(type_decl_id).or_insert_with(|| {
-            std::sync::Arc::new(TyConDef {
-                type_decl_id,
-                params: vec![],
-                body: crate::type_infer::make_typevalue_unknown(),
-                constraints: vec![],
-                variance: vec![],
-                constructors: vec![],
-                annotation: None,
-                field_annotations: indexmap::IndexMap::new(),
-                constructor_constants: indexmap::IndexMap::new(),
-                definition_span: None,
-            })
-        });
-    }
-
-    // `final_env` is the child Env containing parent bindings plus new type declarations.
     Ok((
-        final_env,
-        tycon_env,
-        type_stage_data_for_return,
-        type_name_to_id,
+        state.env,
+        state.tycon_env,
+        state.type_stage_data,
+        state.type_name_to_id,
     ))
 }
 
