@@ -10,6 +10,12 @@ use tinct::{
     EvalContext, HashableValue, Thunk, Value, TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP,
     TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP,
 };
+/// Create a CLI-level diagnostic error (for argument validation, file I/O, etc.).
+/// Uses `internal-error` kind with a synthetic Rust source span.
+fn cli_error(message: impl Into<String>) -> Box<tinct::Diagnostic> {
+    Box::new(tinct::Diagnostic::internal(message.into(), tinct::rust_span!()))
+}
+
 // Exit codes for llt eval
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
@@ -391,7 +397,7 @@ async fn async_main() -> i32 {
 fn open_cap_fs_entries(
     cap_fs: &[String],
     no_fs: bool,
-) -> Result<Vec<(String, Arc<cap_std::fs::Dir>, tinct::DirPerms)>, String> {
+) -> Result<Vec<(String, Arc<cap_std::fs::Dir>, tinct::DirPerms)>, Box<tinct::Diagnostic>> {
     if no_fs {
         return Ok(Vec::new());
     }
@@ -402,10 +408,10 @@ fn open_cap_fs_entries(
     for (name, cap_path, perms) in parsed_entries {
         let cap_dir = cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
             .map_err(|e| {
-            format!(
+            cli_error(format!(
                 "--cap-fs: cannot open directory {:?}: {e}",
                 cap_path.display()
-            )
+            ))
         })?;
         result.push((name, Arc::new(cap_dir), perms));
     }
@@ -415,7 +421,7 @@ fn open_cap_fs_entries(
 
 /// Parse a duration string like "5s", "500ms", "2m" into seconds (u32).
 /// Rounds up milliseconds to the nearest second (minimum 1).
-fn parse_duration(s: &str) -> Result<u32, String> {
+fn parse_duration(s: &str) -> Result<u32, Box<tinct::Diagnostic>> {
     let s = s.trim();
 
     // Try to parse with suffix
@@ -423,14 +429,14 @@ fn parse_duration(s: &str) -> Result<u32, String> {
         let ms: u64 = rest
             .trim()
             .parse()
-            .map_err(|_| format!("invalid duration: {s}"))?;
+            .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
         // Round up to nearest second, minimum 1
         let secs = ms
             .checked_add(999)
-            .ok_or_else(|| format!("duration out of range: {s}"))?
+            .ok_or_else(|| cli_error(format!("duration out of range: {s}")))?
             / 1000;
         if secs == 0 || secs > u32::MAX as u64 {
-            return Err(format!("duration out of range: {s}"));
+            return Err(cli_error(format!("duration out of range: {s}")));
         }
         return Ok(secs as u32);
     }
@@ -439,9 +445,9 @@ fn parse_duration(s: &str) -> Result<u32, String> {
         let secs: u32 = rest
             .trim()
             .parse()
-            .map_err(|_| format!("invalid duration: {s}"))?;
+            .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
         if secs == 0 {
-            return Err("timeout must be at least 1 second".to_string());
+            return Err(cli_error("timeout must be at least 1 second"));
         }
         return Ok(secs);
     }
@@ -450,20 +456,20 @@ fn parse_duration(s: &str) -> Result<u32, String> {
         let mins: u32 = rest
             .trim()
             .parse()
-            .map_err(|_| format!("invalid duration: {s}"))?;
+            .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
         if mins == 0 {
-            return Err("timeout must be at least 1 second".to_string());
+            return Err(cli_error("timeout must be at least 1 second"));
         }
         let secs = mins
             .checked_mul(60)
-            .ok_or_else(|| format!("duration out of range: {s}"))?;
+            .ok_or_else(|| cli_error(format!("duration out of range: {s}")))?;
         return Ok(secs);
     }
 
     // No suffix — assume seconds
-    let secs: u32 = s.parse().map_err(|_| format!("invalid duration: {s}"))?;
+    let secs: u32 = s.parse().map_err(|_| cli_error(format!("invalid duration: {s}")))?;
     if secs == 0 {
-        return Err("timeout must be at least 1 second".to_string());
+        return Err(cli_error("timeout must be at least 1 second"));
     }
     Ok(secs)
 }
@@ -507,7 +513,7 @@ extern "C" fn sigint_profile_handler(_sig: i32) {
 
 /// Install SIGALRM handler and start the alarm timer.
 #[cfg(unix)]
-fn install_timeout(duration_str: &str) -> Result<(), String> {
+fn install_timeout(duration_str: &str) -> tinct::EvalResult<()> {
     let seconds = parse_duration(duration_str)?;
 
     unsafe {
@@ -519,7 +525,7 @@ fn install_timeout(duration_str: &str) -> Result<(), String> {
         libc::sigemptyset(&mut sa.sa_mask);
 
         if libc::sigaction(libc::SIGALRM, &sa, std::ptr::null_mut()) != 0 {
-            return Err("failed to install SIGALRM handler".to_string());
+            return Err(cli_error("failed to install SIGALRM handler"));
         }
 
         // Start the alarm
@@ -536,7 +542,7 @@ fn install_timeout(duration_str: &str) -> Result<(), String> {
 /// after the final flush. Without this handler, Ctrl-C kills the process before
 /// the background thread can write the profile file.
 #[cfg(unix)]
-fn install_sigint_profile_handler() -> Result<(), String> {
+fn install_sigint_profile_handler() -> tinct::EvalResult<()> {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = sigint_profile_handler as *const () as libc::sighandler_t;
@@ -547,7 +553,7 @@ fn install_sigint_profile_handler() -> Result<(), String> {
         libc::sigemptyset(&mut sa.sa_mask);
 
         if libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut()) != 0 {
-            return Err("profiling: failed to install SIGINT handler".to_string());
+            return Err(cli_error("profiling: failed to install SIGINT handler"));
         }
     }
     Ok(())
@@ -571,7 +577,7 @@ fn setup_rlimits(
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
     max_fds: Option<u64>,
-) -> Result<(), String> {
+) -> tinct::EvalResult<()> {
     // Helper: apply a single rlimit. Must be called within an unsafe block.
     // resource: the POSIX constant (RLIMIT_AS, RLIMIT_CPU, etc.)
     // limit_val: soft and hard limit value (same for both — we set a hard cap).
@@ -579,19 +585,19 @@ fn setup_rlimits(
     let apply_rlimit = |resource: libc::__rlimit_resource_t,
                         limit_val: libc::rlim_t,
                         name: &str|
-     -> Result<(), String> {
+     -> Result<(), Box<tinct::Diagnostic>> {
         let rlim = libc::rlimit {
             rlim_cur: limit_val,
             rlim_max: limit_val,
         };
         let ret = unsafe { libc::setrlimit(resource, &rlim) };
         if ret != 0 {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "failed to set {} limit to {}: {}",
                 name,
                 limit_val,
                 std::io::Error::last_os_error()
-            ));
+            )));
         }
         Ok(())
     };
@@ -645,7 +651,7 @@ fn setup_rlimits(
 /// old or seccomp is disabled), the error is printed as a warning and evaluation
 /// continues. This matches the Landlock degradation model used above.
 #[cfg(target_os = "linux")]
-fn setup_seccomp(allow_network: bool) -> Result<(), String> {
+fn setup_seccomp(allow_network: bool) -> tinct::EvalResult<()> {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
     use std::collections::BTreeMap;
 
@@ -704,16 +710,16 @@ fn setup_seccomp(allow_network: bool) -> Result<(), String> {
         SeccompAction::Errno(libc::EPERM as u32),
         arch,
     )
-    .map_err(|e| format!("seccomp: failed to build filter: {e}"))?;
+    .map_err(|e| cli_error(format!("seccomp: failed to build filter: {e}")))?;
 
     let bpf_prog: BpfProgram = filter
         .try_into()
-        .map_err(|e| format!("seccomp: failed to compile filter: {e}"))?;
+        .map_err(|e| cli_error(format!("seccomp: failed to compile filter: {e}")))?;
 
     // Apply the filter to all threads via TSYNC (ensures child threads also
     // inherit the filter, not just the calling thread).
     seccompiler::apply_filter_all_threads(&bpf_prog)
-        .map_err(|e| format!("seccomp: failed to apply filter: {e}"))?;
+        .map_err(|e| cli_error(format!("seccomp: failed to apply filter: {e}")))?;
 
     Ok(())
 }
@@ -741,7 +747,7 @@ fn setup_seccomp(allow_network: bool) -> Result<(), String> {
 /// `extra_readable` — additional directories that must be readable for the process to
 ///   function (e.g., the directories containing the main input files). These are NOT
 ///   part of the --cap-fs allowlist; they only let the OS read the primary files.
-fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Result<(), String> {
+fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> tinct::EvalResult<()> {
     use landlock::{
         Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
     };
@@ -754,9 +760,9 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
     // Cap-fs paths get read+write; extra_readable paths get read-only.
     let mut ruleset_created = Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
-        .map_err(|e| format!("landlock: failed to configure ruleset: {e}"))?
+        .map_err(|e| cli_error(format!("landlock: failed to configure ruleset: {e}")))?
         .create()
-        .map_err(|e| format!("landlock: failed to create ruleset: {e}"))?;
+        .map_err(|e| cli_error(format!("landlock: failed to create ruleset: {e}")))?;
 
     // Grant read+write access to --cap-fs paths (full capability).
     for path in allowed_paths {
@@ -764,17 +770,17 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
             continue;
         }
         let fd = PathFd::new(path).map_err(|e| {
-            format!(
+            cli_error(format!(
                 "landlock: cannot open allowed path \"{}\": {e}",
                 path.display()
-            )
+            ))
         })?;
         let rule = PathBeneath::new(fd, AccessFs::from_all(abi));
         ruleset_created = ruleset_created.add_rule(rule).map_err(|e| {
-            format!(
+            cli_error(format!(
                 "landlock: failed to add rule for \"{}\": {e}",
                 path.display()
-            )
+            ))
         })?;
     }
 
@@ -784,17 +790,17 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
             continue;
         }
         let fd = PathFd::new(path).map_err(|e| {
-            format!(
+            cli_error(format!(
                 "landlock: cannot open readable path \"{}\": {e}",
                 path.display()
-            )
+            ))
         })?;
         let rule = PathBeneath::new(fd, AccessFs::from_read(abi));
         ruleset_created = ruleset_created.add_rule(rule).map_err(|e| {
-            format!(
+            cli_error(format!(
                 "landlock: failed to add rule for \"{}\": {e}",
                 path.display()
-            )
+            ))
         })?;
     }
 
@@ -803,7 +809,7 @@ fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> Resu
     // NotEnforced — the call does not fail, it just has no effect.
     ruleset_created
         .restrict_self()
-        .map_err(|e| format!("landlock: failed to restrict self: {e}"))?;
+        .map_err(|e| cli_error(format!("landlock: failed to restrict self: {e}")))?;
 
     Ok(())
 }
@@ -829,7 +835,7 @@ fn resolve_libdir_path(override_path: Option<&str>) -> Option<std::path::PathBuf
 ///
 /// Special value: `any` creates an unrestricted NetCap that allows all hosts/ports.
 /// This is the CLI equivalent of a wildcard allowlist, intended for trusted scripts.
-fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
+fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, Box<tinct::Diagnostic>> {
     use tinct::NetCapEntry;
 
     if s == "any" {
@@ -841,15 +847,15 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
         // addresses (e.g. 2001:db8::/32) as host:port.
         match s.parse::<ipnet::IpNet>() {
             Ok(net) => Ok(NetCapEntry::Cidr(net)),
-            Err(e) => Err(format!("--cap-net: invalid CIDR notation '{}': {}", s, e)),
+            Err(e) => Err(cli_error(format!("--cap-net: invalid CIDR notation '{}': {}", s, e))),
         }
     } else if s.contains('*') {
         // Glob pattern (prefix wildcard only)
         if !s.starts_with("*.") {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "--cap-net: only prefix wildcards are supported (e.g., '*.internal'), got '{}'",
                 s
-            ));
+            )));
         }
         Ok(NetCapEntry::HostnameGlob(s.to_string()))
     } else if let Some((host, port_str)) = s.rsplit_once(':') {
@@ -961,7 +967,7 @@ fn interleave_files_and_exprs(files: &[String], exprs: &[String]) -> Vec<Pipelin
 /// Returns an error if any entry is malformed or has invalid mode syntax.
 fn parse_cap_fs_entries(
     cap_fs: &[String],
-) -> Result<Vec<(String, PathBuf, tinct::DirPerms)>, String> {
+) -> Result<Vec<(String, PathBuf, tinct::DirPerms)>, Box<tinct::Diagnostic>> {
     use std::path::PathBuf;
     use tinct::DirPerms;
 
@@ -969,17 +975,17 @@ fn parse_cap_fs_entries(
 
     for cap_fs_entry in cap_fs {
         let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
-            format!(
+            cli_error(format!(
                 "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
                 cap_fs_entry
-            )
+            ))
         })?;
         let name = name.trim();
         if name.is_empty() {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "--cap-fs: NAME must not be empty in {:?}",
                 cap_fs_entry
-            ));
+            )));
         }
 
         // Split PATH:MODE on the last colon (rsplit_once handles Windows drive letters)
@@ -994,18 +1000,18 @@ fn parse_cap_fs_entries(
         let perms = if let Some(mode) = mode_str {
             let mode = mode.trim();
             if mode.is_empty() {
-                return Err(format!(
+                return Err(cli_error(format!(
                     "--cap-fs mode string is empty: NAME=PATH: (did you mean NAME=PATH:r?)\nGot: {:?}",
                     cap_fs_entry
-                ));
+                )));
             }
             if mode.starts_with('[') {
                 // Extended syntax: [Readable Writable ...]
                 if !mode.ends_with(']') {
-                    return Err(format!(
+                    return Err(cli_error(format!(
                         "--cap-fs: extended mode must end with ']', got {:?}",
                         mode
-                    ));
+                    )));
                 }
                 let caps_str = &mode[1..mode.len() - 1];
                 let mut perms = DirPerms {
@@ -1033,10 +1039,10 @@ fn parse_cap_fs_entries(
                         "PosixPermissions" => perms.posix_permissions = true,
                         "ExtendedAttributes" => perms.extended_attributes = true,
                         _ => {
-                            return Err(format!(
+                            return Err(cli_error(format!(
                                 "--cap-fs: unknown capability {:?} in extended mode",
                                 cap_name
-                            ))
+                            )))
                         }
                     }
                 }
@@ -1059,20 +1065,20 @@ fn parse_cap_fs_entries(
                     if let Some(letter_perms) = DirPerms::from_letter(c) {
                         perms = perms.union(&letter_perms);
                     } else {
-                        return Err(format!(
+                        return Err(cli_error(format!(
                             "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l/y)",
                             c
-                        ));
+                        )));
                     }
                 }
                 perms
             }
         } else {
             // No mode specified → error (mode is required)
-            return Err(format!(
+            return Err(cli_error(format!(
                 "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
                 cap_fs_entry
-            ));
+            )));
         };
 
         result.push((name.to_string(), cap_path, perms));
@@ -1198,7 +1204,7 @@ fn spawn_profile_flush_thread(
 
 // CLI entrypoint with all flags
 // AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
-async fn run_eval(args: RunArgs) -> Result<(), String> {
+async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
     #[cfg(target_os = "linux")]
     let no_landlock = args.no_landlock;
     let RunArgs {
@@ -1240,10 +1246,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-')
         {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "--input: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
                 input_format
-            ));
+            )));
         }
     }
     if let Some(ref output_format) = output {
@@ -1251,10 +1257,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-')
         {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "--output: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
                 output_format
-            ));
+            )));
         }
     }
 
@@ -1296,17 +1302,17 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     file_path.clone()
                 } else {
                     std::env::current_dir()
-                        .map_err(|e| format!("cannot determine working directory: {e}"))?
+                        .map_err(|e| cli_error(format!("cannot determine working directory: {e}")))?
                         .join(p)
                         .to_str()
-                        .ok_or_else(|| format!("file path is not valid UTF-8: {file_path}"))?
+                        .ok_or_else(|| cli_error(format!("file path is not valid UTF-8: {file_path}")))?
                         .to_string()
                 }
             };
             // Open file for reading. Must happen before Landlock.
             // AMBIENT-OK: CLI bootstrap — operator-specified file path opened pre-Landlock.
             let file_handle = std::fs::File::open(file_path.as_str())
-                .map_err(|e| format!("cannot open {:?}: {e}", file_path))?;
+                .map_err(|e| cli_error(format!("cannot open {:?}: {e}", file_path)))?;
             pre_opened_files.push((
                 file_path.clone(),
                 PreOpenedFile {
@@ -1322,7 +1328,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
     // AMBIENT-OK: CLI bootstrap — operator-specified --init file path, pre-Landlock.
     let init_source_owned: Option<String> = if let Some(ref path) = init {
         let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read --init file '{}': {e}", path))?;
+            .map_err(|e| cli_error(format!("cannot read --init file '{}': {e}", path)))?;
         Some(source)
     } else {
         None
@@ -1336,7 +1342,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         }
         #[cfg(not(unix))]
         {
-            return Err("--timeout is only supported on Unix platforms".to_string());
+            return Err(cli_error("--timeout is only supported on Unix platforms"));
         }
     }
 
@@ -1386,7 +1392,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 Some(d) => d.to_path_buf(),
                 None => std::env::current_dir()
-                    .map_err(|e| format!("cannot determine working directory: {e}"))?,
+                    .map_err(|e| cli_error(format!("cannot determine working directory: {e}")))?,
             };
             match dir.canonicalize() {
                 Ok(canon) => extra_readable.push(canon),
@@ -1394,10 +1400,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                     // Directory was removed between open and canonicalize — skip it.
                 }
                 Err(e) => {
-                    return Err(format!(
+                    return Err(cli_error(format!(
                         "cannot canonicalize input file directory '{}': {e}",
                         dir.display()
-                    ));
+                    )));
                 }
             }
         }
@@ -1437,9 +1443,9 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         use tinct::Value;
         // AMBIENT-OK: process CWD at startup
         let cwd_path = std::env::current_dir()
-            .map_err(|e| format!("cannot determine working directory for %cwd: {e}"))?;
+            .map_err(|e| cli_error(format!("cannot determine working directory for %cwd: {e}")))?;
         let cwd_dir = cap_std::fs::Dir::open_ambient_dir(&cwd_path, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open %cwd directory: {e}"))?;
+            .map_err(|e| cli_error(format!("cannot open %cwd directory: {e}")))?;
         let cwd_value = Value::DirCap {
             dir: cwd_dir,
             perms: tinct::DirPerms::full(),
@@ -1467,7 +1473,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let stdin_owned: std::fs::File = unsafe { std::fs::File::from_raw_fd(0) };
             let stdin_dup = stdin_owned
                 .try_clone()
-                .map_err(|e| format!("cannot duplicate stdin fd for %stdin: {e}"))?;
+                .map_err(|e| cli_error(format!("cannot duplicate stdin fd for %stdin: {e}")))?;
             // Prevent the original from being closed when stdin_owned drops.
             std::mem::forget(stdin_owned);
             let cap_file = cap_std::fs::File::from_std(stdin_dup);
@@ -1593,17 +1599,17 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
 
         for cap_net_entry in &cap_net {
             let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
-                format!(
+                cli_error(format!(
                     "--cap-net: expected NAME=ENTRY format, got {:?}",
                     cap_net_entry
-                )
+                ))
             })?;
             let name = name.trim();
             if name.is_empty() {
-                return Err(format!(
+                return Err(cli_error(format!(
                     "--cap-net: NAME must not be empty in {:?}",
                     cap_net_entry
-                ));
+                )));
             }
             let entry_str = entry_str.trim();
 
@@ -1639,17 +1645,17 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let cap_value = if let Some(timestamp_str) = &cap_clock_fixed {
             // Parse the RFC 3339 timestamp using jiff
             let timestamp = jiff::Timestamp::from_str(timestamp_str).map_err(|e| {
-                format!(
+                cli_error(format!(
                     "--cap-clock-fixed: invalid RFC 3339 timestamp '{}': {}",
                     timestamp_str, e
-                )
+                ))
             })?;
             // Convert to nanoseconds (i64)
             let nanos = i64::try_from(timestamp.as_nanosecond()).map_err(|_| {
-                format!(
+                cli_error(format!(
                     "--cap-clock-fixed: timestamp '{}' is out of i64 range",
                     timestamp_str
-                )
+                ))
             })?;
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
@@ -1681,17 +1687,17 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         for cap_file_entry in &cap_file {
             // Parse NAME=PATH[:MODE]
             let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
-                format!(
+                cli_error(format!(
                     "--cap-file: expected NAME=PATH[:MODE] format, got {:?}",
                     cap_file_entry
-                )
+                ))
             })?;
             let name = name.trim();
             if name.is_empty() {
-                return Err(format!(
+                return Err(cli_error(format!(
                     "--cap-file: NAME must not be empty in {:?}",
                     cap_file_entry
-                ));
+                )));
             }
 
             // Split PATH:MODE — mode is the suffix after the last ':'
@@ -1703,10 +1709,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             };
 
             if path_str.is_empty() {
-                return Err(format!(
+                return Err(cli_error(format!(
                     "--cap-file: PATH must not be empty in {:?}",
                     cap_file_entry
-                ));
+                )));
             }
 
             // Parse mode into capability flags
@@ -1714,10 +1720,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                 if mode.starts_with('[') {
                     // Extended syntax: [Readable Writable ...]
                     if !mode.ends_with(']') {
-                        return Err(format!(
+                        return Err(cli_error(format!(
                             "--cap-file: extended mode must end with ']', got {:?}",
                             mode
-                        ));
+                        )));
                     }
                     let caps_str = &mode[1..mode.len() - 1];
                     let mut readable = false;
@@ -1731,10 +1737,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                             "Appendable" => appendable = true,
                             "Binary" => binary = true,
                             _ => {
-                                return Err(format!(
+                                return Err(cli_error(format!(
                                     "--cap-file: unknown capability {:?} in extended mode (expected Readable, Writable, Appendable, Binary)",
                                     cap_name
-                                ))
+                                )))
                             }
                         }
                     }
@@ -1749,10 +1755,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
                         "a" => (false, false, true, false),
                         "ab" => (false, false, true, true),
                         other => {
-                            return Err(format!(
+                            return Err(cli_error(format!(
                                 "--cap-file: invalid mode {:?} in {:?}: must be r, rb, w, wb, a, ab, or [Readable Writable ...]",
                                 other, cap_file_entry
-                            ));
+                            )));
                         }
                     }
                 }
@@ -1763,10 +1769,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
 
             // Validate: at least one of readable/writable/appendable must be set
             if !readable && !writable && !appendable {
-                return Err(format!(
+                return Err(cli_error(format!(
                     "--cap-file: mode must specify at least one of Readable, Writable, or Appendable in {:?}",
                     cap_file_entry
-                ));
+                )));
             }
 
             // Resolve the file path and open its parent directory as a DirCap.
@@ -1785,10 +1791,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             let cap_dir =
                 cap_std::fs::Dir::open_ambient_dir(&abs_parent, cap_std::ambient_authority())
                     .map_err(|e| {
-                        format!(
+                        cli_error(format!(
                             "--cap-file: cannot open parent directory {:?} for {:?}: {e}",
                             abs_parent, cap_file_entry
-                        )
+                        ))
                     })?;
 
             let perms = DirPerms {
@@ -1931,8 +1937,8 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // record-subtype errors when @Dict annotations are used).
         // Accumulated further by builtin-typecheck-doc calls during loading.
         let (core_type_env, core_tycon_env, core_type_name_to_id) =
-            tinct::build_builtin_core_envs().await;
-        let core_ts_data = tinct::get_builtin_core_type_stage_scope().await;
+            tinct::build_builtin_core_envs().await?;
+        let core_ts_data = tinct::get_builtin_core_type_stage_scope().await?;
         ctx.init_type_context(tinct::TypeContextData {
             inference_env: core_type_env,
             tycon_env: core_tycon_env,
@@ -1962,10 +1968,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let named_thunk = match thunk.peek_result() {
             Some(Ok(val)) => std::sync::Arc::new(tinct::Thunk::value(val.clone(), span)),
             Some(Err(e)) => {
-                return Err(format!(
+                return Err(cli_error(format!(
                     "capability '{}' thunk settled with error: {}",
                     name, e
-                ))
+                )))
             }
             None => thunk, // not yet settled — keep original (name from span)
         };
@@ -2142,7 +2148,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
     // even when loader setup fails.
-    let eval_result: Result<(), String> = (async {
+    let eval_result: tinct::EvalResult<()> = (async {
         // ── Evaluate loader.llt (or --init override) ─────────────────────────
         //
         // loader.llt is the tinct "main function". It reads %programs, %args, %cwd,
@@ -2161,10 +2167,10 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         let libdir_for_loader = libdir_rc_for_ctx
             .as_ref()
             .ok_or_else(|| {
-                "cannot evaluate loader.llt: stdlib directory (--libdir) is required".to_string()
+                cli_error("cannot evaluate loader.llt: stdlib directory (--libdir) is required")
             })?
             .open_dir(".")
-            .map_err(|e| format!("cannot dup libdir for loader expansion: {e}"))?;
+            .map_err(|e| cli_error(format!("cannot dup libdir for loader expansion: {e}")))?;
 
         // Determine init program source and path.
         // init_source_owned was pre-read before Landlock fired (above).
@@ -2228,8 +2234,8 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
         // Re-fetch builtin_core envs for the loader pipeline.
         // build_builtin_core_envs is cached internally — no redundant re-parsing.
         let (loader_core_env, loader_core_tycon_env, loader_core_name_to_id) =
-            tinct::build_builtin_core_envs().await;
-        let loader_core_ts_data = tinct::get_builtin_core_type_stage_scope().await;
+            tinct::build_builtin_core_envs().await?;
+        let loader_core_ts_data = tinct::get_builtin_core_type_stage_scope().await?;
 
         tinct::run_loader_pipeline(
             &eval_ctx,
@@ -2243,6 +2249,7 @@ async fn run_eval(args: RunArgs) -> Result<(), String> {
             loader_core_name_to_id,
         )
         .await
+        .map_err(|e| cli_error(e))
     })
     .await; // end of eval_result async block
 
@@ -2333,7 +2340,7 @@ async fn run_fmt(
     in_place: bool,
     output_name: &str,
     strict: bool,
-) -> Result<(), String> {
+) -> tinct::EvalResult<()> {
     let (sf_path, source) = read_source(file_path)?;
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
@@ -2341,24 +2348,22 @@ async fn run_fmt(
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
         let output = parse(&source, Arc::clone(&sf_path))
-            .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+            .map_err(|e| cli_error(tinct::format_parse_error(&e, &source, file_path)))?;
 
         // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
         let program = tinct::expand::expand_program(&program);
 
         // Seed pipeline state from the already-built builtin core envs.
-        let (env_arc, tycon_env, type_name_to_id) = tinct::build_builtin_core_envs().await;
-        let ts_data = tinct::get_builtin_core_type_stage_scope().await;
+        let (env_arc, tycon_env, type_name_to_id) = tinct::build_builtin_core_envs().await?;
+        let ts_data = tinct::get_builtin_core_type_stage_scope().await?;
         let ctx = EvalContext::new_empty();
         let mut state =
             tinct::PipelineState::from_core_envs(env_arc, tycon_env, ts_data, type_name_to_id);
 
         // Process each document through the pipeline: resolve → typecheck → eval.
         for doc in &program.documents {
-            if let Err(e) = tinct::process_pipeline_document(doc, &mut state, &ctx).await {
-                return Err(e.to_string());
-            }
+            tinct::process_pipeline_document(doc, &mut state, &ctx).await?;
         }
 
         // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
@@ -2381,10 +2386,9 @@ async fn run_fmt(
                 eprintln!("{}", format_diagnostic(&effective, &source, file_path));
             }
             if strict && has_fatal_diag {
-                return Err(
-                    "type checking failed — type warnings escalated to errors by --strict"
-                        .to_string(),
-                );
+                return Err(cli_error(
+                    "type checking failed — type warnings escalated to errors by --strict",
+                ));
             }
         }
     }
@@ -2392,10 +2396,10 @@ async fn run_fmt(
     // Validate formatter name: only alphanumeric and hyphens allowed.
     // This prevents path traversal via -o ../../secret or similar.
     if !output_name.chars().all(|c| c.is_alphanumeric() || c == '-') {
-        return Err(format!(
+        return Err(cli_error(format!(
             "fmt: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
             output_name
-        ));
+        )));
     }
 
     // Resolve and read the formatter script from %libdir/cli/fmt/<name>.llt.
@@ -2403,17 +2407,17 @@ async fn run_fmt(
     // which is a trusted operator-controlled path resolved via find_libdir_path().
     let (script_source, script_name) = {
         let libdir = find_libdir_path().ok_or_else(|| {
-            format!("stdlib directory not found — cannot locate formatter script '{output_name}'")
+            cli_error(format!("stdlib directory not found — cannot locate formatter script '{output_name}'"))
         })?;
         let path = libdir
             .join("cli")
             .join("fmt")
             .join(format!("{output_name}.llt"));
         if !path.exists() {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "fmt: formatter script not found: {} (resolved from -o '{output_name}')",
                 path.display()
-            ));
+            )));
         }
         let name = path
             .file_name()
@@ -2422,31 +2426,33 @@ async fn run_fmt(
             .to_string();
         // AMBIENT-OK: CLI bootstrap — formatter script from operator-controlled stdlib path.
         let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("cannot read formatter script {}: {e}", path.display()))?;
+            .map_err(|e| cli_error(format!("cannot read formatter script {}: {e}", path.display())))?;
         (content, name)
     };
 
     let use_compact = output_name == "compact";
     let formatted =
-        tinct::format_source_tinct(&source, &script_source, &script_name, use_compact).await?;
+        tinct::format_source_tinct(&source, &script_source, &script_name, use_compact)
+            .await
+            .map_err(|e| cli_error(e))?;
 
     if check {
         if source != formatted {
             if file_path == "-" {
-                return Err("stdin: not formatted".to_string());
+                return Err(cli_error("stdin: not formatted"));
             }
-            return Err(format!("{file_path}: not formatted"));
+            return Err(cli_error(format!("{file_path}: not formatted")));
         }
         return Ok(());
     }
 
     if in_place {
         if file_path == "-" {
-            return Err("--in-place cannot be used with stdin".to_string());
+            return Err(cli_error("--in-place cannot be used with stdin"));
         }
         // AMBIENT-OK: CLI fmt --in-place writing to operator-specified file.
         std::fs::write(file_path, &formatted)
-            .map_err(|e| format!("error writing {file_path}: {e}"))?;
+            .map_err(|e| cli_error(format!("error writing {file_path}: {e}")))?;
         return Ok(());
     }
 
@@ -2459,12 +2465,12 @@ async fn run_fmt(
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.
 // AMBIENT-OK: CLI hash command on operator-specified file.
-fn run_hash(file_path: &str) -> Result<(), String> {
+fn run_hash(file_path: &str) -> tinct::EvalResult<()> {
     let mut buf = Vec::new();
     std::fs::File::open(file_path)
-        .map_err(|e| format!("error reading file: {e}"))?
+        .map_err(|e| cli_error(format!("error reading file: {e}")))?
         .read_to_end(&mut buf)
-        .map_err(|e| format!("error reading file: {e}"))?;
+        .map_err(|e| cli_error(format!("error reading file: {e}")))?;
     let hash = blake3::hash(&buf);
     println!("blake3:{}", hash.to_hex());
     Ok(())
@@ -2475,19 +2481,19 @@ fn run_hash(file_path: &str) -> Result<(), String> {
 /// Returns a `(Arc<str>, String)` pair of (file_path, source_content) ready to be
 /// threaded into `parse()` so that all spans in the parsed AST carry the file path.
 // AMBIENT-OK: CLI entry point reading operator-specified file.
-fn read_source(file_path: &str) -> Result<(Arc<str>, String), String> {
+fn read_source(file_path: &str) -> Result<(Arc<str>, String), Box<tinct::Diagnostic>> {
     if file_path == "-" {
         let mut buf = String::new();
         io::stdin()
             .read_to_string(&mut buf)
-            .map_err(|e| format!("error reading stdin: {e}"))?;
+            .map_err(|e| cli_error(format!("error reading stdin: {e}")))?;
         Ok((Arc::from("-"), buf))
     } else {
         let mut buf = String::new();
         std::fs::File::open(file_path)
-            .map_err(|e| format!("error reading file: {e}"))?
+            .map_err(|e| cli_error(format!("error reading file: {e}")))?
             .read_to_string(&mut buf)
-            .map_err(|e| format!("error reading file: {e}"))?;
+            .map_err(|e| cli_error(format!("error reading file: {e}")))?;
         Ok((Arc::from(file_path), buf))
     }
 }
@@ -2511,7 +2517,7 @@ struct LiterateConfig<'a> {
 ///
 /// - **`tangle`** — print the extracted blocks joined with `\n---\n`.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for evaluation
-async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
+async fn run_literate(config: &LiterateConfig<'_>) -> tinct::EvalResult<()> {
     let file_path = config.file_path;
     let (_, markdown) = read_source(file_path)?;
     let blocks = literate::extract_code_blocks(&markdown);
@@ -2553,7 +2559,7 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
 /// The output is the JSON representation of the final pipeline value.
 ///
 /// AMBIENT-OK: CLI literate-eval opening markdown file directory for evaluation.
-async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> Result<(), String> {
+async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> tinct::EvalResult<()> {
     let markdown_path = config.file_path;
 
     // Evaluate via run_eval with the tangled source as a single -e expression.
@@ -2585,7 +2591,7 @@ async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> Result
     .await
     .map_err(|e| {
         // Prefix errors with the markdown file path for context.
-        format!("{}: {}", markdown_path, e)
+        cli_error(format!("{}: {}", markdown_path, e))
     })?;
 
     // run_eval handles output formatting and writing to stdout.
@@ -2608,7 +2614,7 @@ async fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
     config: &LiterateConfig<'_>,
-) -> Result<(), String> {
+) -> tinct::EvalResult<()> {
     // Extract blocks with byte offset information for reinsertion.
     let lit_blocks = literate::extract_blocks(markdown);
 
@@ -2636,7 +2642,7 @@ async fn run_literate_weave(
         // Evaluate via a child tinct process to capture stdout.
         // Find the tinct binary path (current executable).
         let tinct_exe = std::env::current_exe()
-            .map_err(|e| format!("cannot determine tinct executable path: {e}"))?;
+            .map_err(|e| cli_error(format!("cannot determine tinct executable path: {e}")))?;
 
         let child_result = tokio::process::Command::new(&tinct_exe)
             .arg("run")
@@ -2644,7 +2650,7 @@ async fn run_literate_weave(
             .arg(&cumulative_source)
             .output()
             .await
-            .map_err(|e| format!("cannot spawn tinct for block {}: {e}", i + 1))?;
+            .map_err(|e| cli_error(format!("cannot spawn tinct for block {}: {e}", i + 1)))?;
 
         if child_result.status.success() {
             let stdout = String::from_utf8_lossy(&child_result.stdout);
@@ -2658,7 +2664,7 @@ async fn run_literate_weave(
             let stderr = String::from_utf8_lossy(&child_result.stderr);
             let error_msg = stderr.trim().to_string();
             if config.fail_on_errors {
-                return Err(format!("error in block {}: {}", i + 1, error_msg));
+                return Err(cli_error(format!("error in block {}: {}", i + 1, error_msg)));
             }
             block_outputs.push(Some(format!("ERROR: {error_msg}")));
         }
@@ -2691,9 +2697,9 @@ async fn run_literate_weave(
         // Write back to the source file atomically.
         let tmp_path = format!("{}.tmp", config.file_path);
         std::fs::write(&tmp_path, &result)
-            .map_err(|e| format!("cannot write temp file {tmp_path}: {e}"))?;
+            .map_err(|e| cli_error(format!("cannot write temp file {tmp_path}: {e}")))?;
         std::fs::rename(&tmp_path, config.file_path)
-            .map_err(|e| format!("cannot rename {tmp_path} → {}: {e}", config.file_path))?;
+            .map_err(|e| cli_error(format!("cannot rename {tmp_path} → {}: {e}", config.file_path)))?;
     } else {
         print!("{result}");
     }
@@ -2704,12 +2710,12 @@ async fn run_literate_weave(
             if let Some(ref expected) = lit_block.expectations.out {
                 if let Some(Some(ref actual)) = block_outputs.get(i) {
                     if actual.trim() != expected.trim() {
-                        return Err(format!(
+                        return Err(cli_error(format!(
                             "block {} output mismatch:\n  expected: {}\n  actual:   {}",
                             i + 1,
                             expected.trim(),
                             actual.trim()
-                        ));
+                        )));
                     }
                 }
             }
@@ -2721,7 +2727,7 @@ async fn run_literate_weave(
 
 /// Print a detailed explanation for the given error code string (e.g. "E001").
 /// The code is matched case-insensitively after stripping leading/trailing whitespace.
-fn run_explain(code: &str) -> Result<(), String> {
+fn run_explain(code: &str) -> tinct::EvalResult<()> {
     let code = code.trim().to_ascii_uppercase();
     let explanation = match code.as_str() {
         "E001" => {
@@ -3202,14 +3208,14 @@ Fix: use a valid variance annotation or a registered class name (e.g., @Covarian
         }
 
         _ => {
-            return Err(format!(
+            return Err(cli_error(format!(
                 "unknown error code: {code}\n\
                  Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
                  E043, E051-E056, E060, E063, E070, E080, E090, E099, \
                  T000, T001, T002, T003, T004, T017, \
                  match-pattern-mismatch, match-guard-failure, match-exhaustiveness, unknown-type-param."
-            ));
+            )));
         }
     };
     println!("{explanation}");
@@ -3279,8 +3285,8 @@ mod tests {
     fn parse_duration_large_minutes_overflow() {
         // 100000000 * 60 overflows u32::MAX, should return error
         assert!(parse_duration("100000000m").is_err());
-        let err_msg = parse_duration("100000000m").unwrap_err();
-        assert!(err_msg.contains("duration out of range"));
+        let err = parse_duration("100000000m").unwrap_err();
+        assert!(err.message.contains("duration out of range"));
     }
 
     #[test]
@@ -3288,8 +3294,8 @@ mod tests {
         // u32::MAX = 4294967295, so 4294967296 seconds should overflow
         // 4294967296000ms → (4294967296000 + 999) / 1000 = 4294967296 > u32::MAX
         assert!(parse_duration("4294967296000ms").is_err());
-        let err_msg = parse_duration("4294967296000ms").unwrap_err();
-        assert!(err_msg.contains("duration out of range"));
+        let err = parse_duration("4294967296000ms").unwrap_err();
+        assert!(err.message.contains("duration out of range"));
     }
 
     #[test]
@@ -3300,8 +3306,8 @@ mod tests {
         // When we call checked_add(999), we get: 18446744073709550617 + 999 = 18446744073709551616
         // This exceeds u64::MAX, so checked_add returns None.
         assert!(parse_duration("18446744073709550617ms").is_err());
-        let err_msg = parse_duration("18446744073709550617ms").unwrap_err();
-        assert!(err_msg.contains("duration out of range"));
+        let err = parse_duration("18446744073709550617ms").unwrap_err();
+        assert!(err.message.contains("duration out of range"));
     }
 
     #[test]

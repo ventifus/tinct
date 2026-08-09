@@ -2975,9 +2975,9 @@ pub(crate) fn builtin_make_type_ctx(
         // @Dict annotations then incorrectly resolve to Op("Dict") or worse, to whatever type
         // was produced by an unrelated type_stage_scope[0] entry that happened to win the
         // or_insert ordering contest.
-        let type_stage_data = crate::imports::get_builtin_core_type_stage_scope().await;
+        let type_stage_data = crate::imports::get_builtin_core_type_stage_scope().await?;
         let tc = TypeContextData {
-            inference_env: crate::imports::get_builtin_core_type_env().await,
+            inference_env: crate::imports::get_builtin_core_type_env().await?,
             tycon_env: std::collections::HashMap::new(),
             type_stage_scope: type_stage_data.scope,
             type_stage_fns: type_stage_data.fns,

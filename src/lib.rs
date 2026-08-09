@@ -121,8 +121,8 @@ pub use imports::{
 
 /// Error types with source spans and stack traces.
 pub use error::{
-    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel,
-    EvalError, EvalResult, SpanLabel,
+    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel, EvalError,
+    EvalResult, SpanLabel,
 };
 
 /// TypeValue: the Arc<Value>-based type representation used throughout the type checker.
@@ -259,8 +259,10 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
-    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await;
-    let ts_data = imports::get_builtin_core_type_stage_scope().await;
+    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await
+        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
+    let ts_data = imports::get_builtin_core_type_stage_scope().await
+        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
     let mut state =
         crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
     let mut diagnostics = Vec::new();
@@ -294,8 +296,10 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
     // Type check the surface program using the per-document pipeline.
-    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await;
-    let ts_data = imports::get_builtin_core_type_stage_scope().await;
+    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await
+        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
+    let ts_data = imports::get_builtin_core_type_stage_scope().await
+        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
     let mut state =
         crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
     let mut diagnostics = Vec::new();

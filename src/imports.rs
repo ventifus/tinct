@@ -18,15 +18,13 @@ use crate::env::Env;
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
-pub async fn build_builtin_core_envs() -> (
+pub async fn build_builtin_core_envs() -> crate::error::EvalResult<(
     Arc<RwLock<Env>>,
     crate::type_def::TyConEnv,
     std::collections::HashMap<String, u64>,
-) {
-    let (env, tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner()
-        .await
-        .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
-    (env, tycon_env, type_name_to_id)
+)> {
+    let (env, tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner().await?;
+    Ok((env, tycon_env, type_name_to_id))
 }
 
 /// Evaluate the type-stage section of `stdlib/builtin_core.llt` and return the resulting
@@ -35,11 +33,9 @@ pub async fn build_builtin_core_envs() -> (
 ///
 /// This is the authoritative source of the type-stage scope; no Rust code should manually
 /// construct this mapping by hardcoding tinct-side type names.
-pub async fn get_builtin_core_type_stage_scope() -> crate::type_infer::TypeStageData {
-    let (_, _, data, _) = build_builtin_core_envs_inner()
-        .await
-        .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
-    data
+pub async fn get_builtin_core_type_stage_scope() -> crate::error::EvalResult<crate::type_infer::TypeStageData> {
+    let (_, _, data, _) = build_builtin_core_envs_inner().await?;
+    Ok(data)
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TypeEnv` so that
@@ -48,20 +44,16 @@ pub async fn get_builtin_core_type_stage_scope() -> crate::type_infer::TypeStage
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
-pub async fn get_builtin_core_type_env() -> Arc<RwLock<Env>> {
-    let (env, _, _, _) = build_builtin_core_envs_inner()
-        .await
-        .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
-    env
+pub async fn get_builtin_core_type_env() -> crate::error::EvalResult<Arc<RwLock<Env>>> {
+    let (env, _, _, _) = build_builtin_core_envs_inner().await?;
+    Ok(env)
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TyConEnv` containing
 /// opaque type definitions (e.g. `BuilderHandle`, `DirCap`).
-pub async fn get_builtin_core_tycon_env() -> crate::type_def::TyConEnv {
-    let (_, tycon_env, _, _) = build_builtin_core_envs_inner()
-        .await
-        .expect("builtin_core.llt is embedded at compile time — failure is a programmer error");
-    tycon_env
+pub async fn get_builtin_core_tycon_env() -> crate::error::EvalResult<crate::type_def::TyConEnv> {
+    let (_, tycon_env, _, _) = build_builtin_core_envs_inner().await?;
+    Ok(tycon_env)
 }
 
 /// Classify a single materialized type-stage value.
