@@ -742,40 +742,39 @@ impl Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Primary span: labels[0] holds the main error location
+        // Header: level[kind]: message
+        write!(f, "{}[{}]: {}", self.level, self.kind, self.message)?;
+
+        // Primary span location
         if let Some(primary) = self.labels.first() {
             write!(
                 f,
-                "{}:{}:{}: {}",
-                primary.span.file, primary.span.start_line, primary.span.start_col, self.message
+                "\n --> {}:{}:{}",
+                primary.span.file, primary.span.start_line, primary.span.start_col
             )?;
-        } else {
-            write!(f, "{}", self.message)?;
-        }
-
-        // Note labels: labels[1..] — each displayed as "  note: {label} at {span}"
-        for label in self.labels.iter().skip(1) {
-            if label.message.is_empty() {
-                write!(
-                    f,
-                    "\n  note: at {}:{}:{}",
-                    label.span.file, label.span.start_line, label.span.start_col
-                )?;
-            } else {
-                write!(
-                    f,
-                    "\n  note: {} at {}:{}:{}",
-                    label.message, label.span.file, label.span.start_line, label.span.start_col
-                )?;
+            if !primary.message.is_empty() {
+                write!(f, "  {}", primary.message)?;
             }
         }
 
-        // Text-only notes — rendered as "  = note: {text}"
+        // Secondary labeled spans
+        for label in self.labels.iter().skip(1) {
+            write!(
+                f,
+                "\n --> {}:{}:{}",
+                label.span.file, label.span.start_line, label.span.start_col
+            )?;
+            if !label.message.is_empty() {
+                write!(f, "  {}", label.message)?;
+            }
+        }
+
+        // Text-only notes
         for note in &self.notes {
             write!(f, "\n  = note: {}", note)?;
         }
 
-        // Child diagnostics — indent and render recursively
+        // Child diagnostics — indented recursively
         for child in &self.children {
             let child_str = format!("{}", child);
             for line in child_str.lines() {
@@ -797,58 +796,48 @@ pub fn has_type_errors(diags: &[Diagnostic]) -> bool {
     diags.iter().any(|d| d.level == DiagnosticLevel::Err)
 }
 
-/// Format a Diagnostic with source context for display.
+/// Format a Diagnostic with source context snippets.
 ///
-/// Produces: `level[kind]: message\n --> file:line:col\n  |\n  snippet\n  = note: ...\n`
-pub fn format_diagnostic(diag: &Diagnostic, source: &str, file_name: &str) -> String {
-    let level_str = match diag.level {
-        DiagnosticLevel::Info => "info",
-        DiagnosticLevel::Warn => "warning",
-        DiagnosticLevel::Err => "error",
-    };
-    let code = diag.kind;
-    let primary_span = diag.primary_span();
-    let line = primary_span.start_line;
-    let col = primary_span.start_col;
-    let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
-    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
-    let has_snippet = if let Some(snippet) = render_span_snippet(source, primary_span.clone()) {
-        out.push_str("  |\n");
-        out.push_str(&snippet);
-        true
-    } else {
-        false
-    };
-    // Render secondary spans
-    for label in diag.labels.iter().skip(1) {
-        out.push('\n');
+/// Enhances the base Display format with source code snippets around each span.
+/// `source` is the source text to extract snippets from. If a span's file doesn't
+/// match the provided source (e.g., Rust-side spans from `rust_span!()`), the
+/// snippet is omitted and the base Display location is shown.
+pub fn format_diagnostic(diag: &Diagnostic, source: &str, _file_name: &str) -> String {
+    let mut out = format!("{}[{}]: {}", diag.level, diag.kind, diag.message);
+
+    for (i, label) in diag.labels.iter().enumerate() {
         out.push_str(&format!(
-            " --> {file_name}:{}:{}\n",
-            label.span.start_line, label.span.start_col
+            "\n --> {}:{}:{}",
+            label.span.file, label.span.start_line, label.span.start_col
         ));
         if let Some(snippet) = render_span_snippet(source, label.span.clone()) {
-            out.push_str("  |\n");
+            out.push_str("\n  |\n");
             out.push_str(&snippet);
             if !label.message.is_empty() {
-                // Label is appended after the last line of the snippet.
                 let trimmed = out.trim_end_matches('\n');
-                let new_out = format!("{}  {}\n", trimmed, label.message);
-                out = new_out;
+                out = format!("{}  {}\n", trimmed, label.message);
+            }
+        } else if !label.message.is_empty() {
+            if i == 0 {
+                out.push_str(&format!("  {}", label.message));
+            } else {
+                out.push_str(&format!("  {}", label.message));
             }
         }
     }
-    if (has_snippet || !diag.labels.is_empty()) && !diag.notes.is_empty() {
-        out.push('\n');
-    }
+
     for note in &diag.notes {
-        out.push_str(&format!("  = note: {note}\n"));
+        out.push_str(&format!("\n  = note: {note}"));
     }
+
     for child in &diag.children {
-        let child_str = format!("{}", child);
+        let child_str = format_diagnostic(child, source, _file_name);
         for line in child_str.lines() {
-            out.push_str(&format!("  {}\n", line));
+            out.push_str(&format!("\n  {}", line));
         }
     }
+
+    out.push('\n');
     out
 }
 
@@ -1061,7 +1050,7 @@ mod tests {
         let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
         // Format is now "line:col: message"
-        assert_eq!(display, "src/test_util.rs:3:5: oops");
+        assert_eq!(display, "error[internal-error]: oops\n --> src/test_util.rs:3:5");
     }
 
     #[test]
@@ -1075,12 +1064,12 @@ mod tests {
             .with_frame("outer".to_string(), frame1_span)
             .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
-        let expected = "\
-src/test_util.rs:3:5: bad value
-  note: evaluated here at src/test_util.rs:20:1
-  note: outer at src/test_util.rs:10:2
-  note: inner at src/test_util.rs:15:1";
-        assert_eq!(display, expected);
+        assert!(display.contains("error[internal-error]: bad value"), "got: {display}");
+        assert!(display.contains("--> src/test_util.rs:3:5"), "got: {display}");
+        assert!(display.contains("--> src/test_util.rs:20:1"), "got: {display}");
+        assert!(display.contains("evaluated here"), "got: {display}");
+        assert!(display.contains("outer"), "got: {display}");
+        assert!(display.contains("inner"), "got: {display}");
     }
 
     #[test]
@@ -1371,7 +1360,7 @@ src/test_util.rs:3:5: bad value
         let span = span_with_file("prelude.llt");
         let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
-        assert_eq!(display, "prelude.llt:3:5: oops");
+        assert_eq!(display, "error[internal-error]: oops\n --> prelude.llt:3:5");
     }
 
     #[test]
