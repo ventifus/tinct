@@ -90,7 +90,10 @@ fn serialize_diagnostic(
     for (j, sl) in diag.labels.iter().skip(1).enumerate() {
         let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         ss.insert(HashableValue::Str("span".into()), mk_span(&sl.span));
-        ss.insert(HashableValue::Str("label".into()), mk(string_val(&sl.message)));
+        ss.insert(
+            HashableValue::Str("label".into()),
+            mk(string_val(&sl.message)),
+        );
         secondary.insert(
             HashableValue::Int(j as i64),
             mk(crate::value::Value::Dict {
@@ -392,10 +395,7 @@ pub(crate) fn builtin_try(
                 // Unified diagnostic protocol fields:
                 let error_msg = e.message.clone();
                 w.insert(HashableValue::Str("level".into()), mk(string_val("error")));
-                w.insert(
-                    HashableValue::Str("kind".into()),
-                    mk(string_val(e.kind)),
-                );
+                w.insert(HashableValue::Str("kind".into()), mk(string_val(e.kind)));
                 w.insert(
                     HashableValue::Str("message".into()),
                     mk(string_val(&error_msg)),
@@ -406,7 +406,10 @@ pub(crate) fn builtin_try(
                 for (j, sl) in e.labels.iter().skip(1).enumerate() {
                     let mut ss: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                     ss.insert(HashableValue::Str("span".into()), mk_span(&sl.span));
-                    ss.insert(HashableValue::Str("label".into()), mk(string_val(&sl.message)));
+                    ss.insert(
+                        HashableValue::Str("label".into()),
+                        mk(string_val(&sl.message)),
+                    );
                     secondary.insert(
                         HashableValue::Int(j as i64),
                         mk(Value::Dict {
@@ -464,26 +467,33 @@ pub(crate) fn builtin_try(
                         )),
                     }),
                 );
-                let macro_val = if let Some(child) = e.children.iter().find(|c| c.kind == "macro-expansion") {
-                    let mut me: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                    me.insert(HashableValue::Str("name".into()), mk(string_val(&child.message)));
-                    me.insert(HashableValue::Str("span".into()), mk_span(child.primary_span()));
-                    Value::Dict {
-                        entries: me,
-                        type_decl_id: TYPE_ID_DICT,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(
-                            crate::value::TYPE_ID_DICT,
-                        )),
-                    }
-                } else {
-                    Value::Dict {
-                        entries: IndexMap::new(),
-                        type_decl_id: TYPE_ID_DICT,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(
-                            crate::value::TYPE_ID_DICT,
-                        )),
-                    }
-                };
+                let macro_val =
+                    if let Some(child) = e.children.iter().find(|c| c.kind == "macro-expansion") {
+                        let mut me: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                        me.insert(
+                            HashableValue::Str("name".into()),
+                            mk(string_val(&child.message)),
+                        );
+                        me.insert(
+                            HashableValue::Str("span".into()),
+                            mk_span(child.primary_span()),
+                        );
+                        Value::Dict {
+                            entries: me,
+                            type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
+                        }
+                    } else {
+                        Value::Dict {
+                            entries: IndexMap::new(),
+                            type_decl_id: TYPE_ID_DICT,
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                crate::value::TYPE_ID_DICT,
+                            )),
+                        }
+                    };
                 w.insert(HashableValue::Str("macro-expand".into()), mk(macro_val));
                 w.insert(
                     HashableValue::Str("blame".into()),
@@ -1004,7 +1014,7 @@ pub(crate) fn builtin_ast_of(
             entries.insert(
                 crate::value::HashableValue::Str("error".into()),
                 Arc::new(crate::value::Thunk::value(
-                    string_val(&err.kind.to_string()),
+                    string_val(err.kind),
                     call_span.clone(),
                 )),
             );

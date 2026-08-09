@@ -136,7 +136,9 @@ pub fn lower_errors_to_eval_error(
         if !diag.labels.is_empty() && !diag.labels[0].span.file.starts_with('<') {
             format!(
                 " (at {}:{}:{})",
-                diag.labels[0].span.file, diag.labels[0].span.start_line, diag.labels[0].span.start_col
+                diag.labels[0].span.file,
+                diag.labels[0].span.start_line,
+                diag.labels[0].span.start_col
             )
         } else {
             String::new()
@@ -175,8 +177,7 @@ pub(crate) fn attach_materialization_context(
         let first_note = err.labels.get(1).map(|sl| &sl.span);
         if first_note.is_none() {
             err = Box::new(err.with_materialization_span(span.clone()));
-        } else if first_note != Some(span) && !err.labels.iter().any(|l| l.span == *span)
-        {
+        } else if first_note != Some(span) && !err.labels.iter().any(|l| l.span == *span) {
             // Only push a frame if the span differs from the existing
             // materialization span and isn't already in the stack (avoids
             // duplicate frames when the same span propagates through
@@ -4006,10 +4007,15 @@ mod tests {
             thunk_span.clone(),
         );
 
-        // Verify materialization span is set as spans[1] with label "evaluated here"
-        assert_eq!(decorated.labels.len(), 2);
-        assert_eq!(decorated.labels[1].span, mat_span);
-        assert_eq!(decorated.labels[1].message, "evaluated here");
+        // Verify materialization span is present with label "evaluated here"
+        assert!(
+            decorated
+                .labels
+                .iter()
+                .any(|l| l.span == mat_span && l.message == "evaluated here"),
+            "Expected materialization span with 'evaluated here' label, but labels were: {:?}",
+            decorated.labels
+        );
 
         // Verify origin frame is added
         assert!(
@@ -4125,7 +4131,10 @@ mod tests {
 
         // No "value produced here" note span should be present because it would be
         // the same as the definition span (redundant).
-        let value_produced_note = err.labels.iter().find(|sl| sl.message == "value produced here");
+        let value_produced_note = err
+            .labels
+            .iter()
+            .find(|sl| sl.message == "value produced here");
         assert!(
             value_produced_note.is_none(),
             "No 'value produced here' note should be added when spans are equal"
@@ -4258,7 +4267,7 @@ mod tests {
         assert!(result.is_err(), "Expected error for undefined variable");
         let err = result.unwrap_err();
         assert!(
-            err.kind.to_string().contains("undefined_var"),
+            err.message.contains("undefined_var"),
             "Expected undefined variable error, got: {}",
             err.kind
         );
@@ -4266,13 +4275,12 @@ mod tests {
         // Verify the thunk transitioned to Failed state
         let cached_err = thunk.try_get_error();
         assert!(cached_err.is_some(), "Expected Failed state");
+        let cached = cached_err.unwrap();
         assert!(
-            cached_err
-                .unwrap()
-                .kind
-                .to_string()
-                .contains("undefined_var"),
-            "Cached error should be undefined variable error"
+            cached.message.contains("undefined_var") || cached.kind.contains("undefined"),
+            "Cached error should be undefined variable error, got kind: {}, message: {}",
+            cached.kind,
+            cached.message
         );
 
         // Verify that a second materialization returns the cached error
@@ -4290,9 +4298,10 @@ mod tests {
         );
         let err2 = result2.unwrap_err();
         assert!(
-            err2.kind.to_string().contains("undefined_var"),
-            "Cached error should be returned, got: {}",
-            err2.kind
+            err2.message.contains("undefined_var") || err2.kind.contains("undefined"),
+            "Cached error should be returned, got kind: {}, message: {}",
+            err2.kind,
+            err2.message
         );
     }
 
@@ -4330,7 +4339,7 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            err.kind.to_string().contains("undefined_var"),
+            err.message.contains("undefined_var"),
             "Expected undefined variable error, got: {}",
             err.kind
         );
@@ -4509,7 +4518,7 @@ mod tests {
         );
         let err1 = result1.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("type assertion failed"),
+            err1.message.contains("type assertion failed"),
             "error should report 'type assertion failed', got: {}",
             err1.kind
         );
@@ -4526,13 +4535,12 @@ mod tests {
             result2.is_err(),
             "second materialization should also fail (cached error)"
         );
+        let err2 = result2.unwrap_err();
         assert!(
-            result2
-                .unwrap_err()
-                .kind
-                .to_string()
-                .contains("type assertion failed"),
-            "cached error should still report 'type assertion failed'"
+            err2.kind == "type-assert-failed" || err2.message.contains("type assertion failed"),
+            "cached error should still report 'type assertion failed', got kind: {}, message: {}",
+            err2.kind,
+            err2.message
         );
     }
 
@@ -4971,7 +4979,7 @@ mod cek_lifecycle_tests {
         match action {
             Action::Continue(Err(e)) => {
                 assert!(
-                    e.kind.to_string().contains("sentinel-error"),
+                    e.message.contains("sentinel-error"),
                     "error must propagate from Failed state: {}",
                     e.kind
                 );

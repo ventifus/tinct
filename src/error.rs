@@ -338,6 +338,8 @@ impl Diagnostic {
                     label.boundary_span,
                     format!("typed/untyped boundary ({})", party),
                 );
+            self.notes
+                .push(format!("blame: {} responsible", party));
         }
         self
     }
@@ -346,13 +348,8 @@ impl Diagnostic {
     /// Identifies the producing stage (positive party) and consuming stage (negative party).
     pub fn with_pipeline_blame(mut self, blame: PipelineBlame) -> Self {
         // Only attach if not already present
-        if !self
-            .notes
-            .iter()
-            .any(|n| n.starts_with("produced by:"))
-        {
-            self.notes
-                .push(format!("produced by: {}", blame.producer));
+        if !self.notes.iter().any(|n| n.starts_with("produced by:")) {
+            self.notes.push(format!("produced by: {}", blame.producer));
             if let Some(consumer) = blame.consumer {
                 self.notes.push(format!("consumed by: {}", consumer));
             }
@@ -496,7 +493,11 @@ impl Diagnostic {
     }
 
     pub fn macro_error(message: String, span: Span) -> Self {
-        Self::error("macro-error", format!("macro expansion error: {}", message), span)
+        Self::error(
+            "macro-error",
+            format!("macro expansion error: {}", message),
+            span,
+        )
     }
 
     pub fn unimplemented(message: String, span: Span) -> Self {
@@ -506,7 +507,10 @@ impl Diagnostic {
     pub fn schema_violation(violations: Vec<(String, String)>, span: Span) -> Self {
         let mut diag = Self::error(
             "schema-violation",
-            format!("schema validation failed with {} error(s)", violations.len()),
+            format!(
+                "schema validation failed with {} error(s)",
+                violations.len()
+            ),
             span,
         );
         for (field, msg) in violations {
@@ -532,7 +536,11 @@ impl Diagnostic {
     }
 
     pub fn integer_overflow(op: String, span: Span) -> Self {
-        Self::error("integer-overflow", format!("{}: integer overflow", op), span)
+        Self::error(
+            "integer-overflow",
+            format!("{}: integer overflow", op),
+            span,
+        )
     }
 
     pub fn type_mismatch_ctx(
@@ -554,7 +562,11 @@ impl Diagnostic {
     }
 
     pub fn division_by_zero(op: String, span: Span) -> Self {
-        Self::error("division-by-zero", format!("{}: division by zero", op), span)
+        Self::error(
+            "division-by-zero",
+            format!("{}: division by zero", op),
+            span,
+        )
     }
 
     pub fn float_not_finite(builtin: String, value: f64, span: Span) -> Self {
@@ -590,7 +602,11 @@ impl Diagnostic {
     }
 
     pub fn undefined_variable(name: String, span: Span) -> Self {
-        Self::error("undefined-variable", format!("undefined variable: {}", name), span)
+        Self::error(
+            "undefined-variable",
+            format!("undefined variable: {}", name),
+            span,
+        )
     }
 
     pub fn type_assert_failed(expected: &str, got: &str, span: Span) -> Self {
@@ -708,16 +724,17 @@ impl Diagnostic {
     }
 
     pub fn uri_parse_error(detail: String, span: Span) -> Self {
-        Self::error("uri-parse-error", format!("URI parse error: {}", detail), span)
+        Self::error(
+            "uri-parse-error",
+            format!("URI parse error: {}", detail),
+            span,
+        )
     }
 
     pub fn missing_required_param(param: impl Into<String>, span: Span) -> Self {
         Self::error(
             "missing-required-param",
-            format!(
-                "missing argument for required parameter '{}'",
-                param.into()
-            ),
+            format!("missing argument for required parameter '{}'", param.into()),
             span,
         )
     }
@@ -727,7 +744,11 @@ impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Primary span: labels[0] holds the main error location
         if let Some(primary) = self.labels.first() {
-            write!(f, "{}:{}: {}", primary.span.start_line, primary.span.start_col, self.message)?;
+            write!(
+                f,
+                "{}:{}:{}: {}",
+                primary.span.file, primary.span.start_line, primary.span.start_col, self.message
+            )?;
         } else {
             write!(f, "{}", self.message)?;
         }
@@ -735,9 +756,17 @@ impl fmt::Display for Diagnostic {
         // Note labels: labels[1..] — each displayed as "  note: {label} at {span}"
         for label in self.labels.iter().skip(1) {
             if label.message.is_empty() {
-                write!(f, "\n  note: at {}", label.span)?;
+                write!(
+                    f,
+                    "\n  note: at {}:{}:{}",
+                    label.span.file, label.span.start_line, label.span.start_col
+                )?;
             } else {
-                write!(f, "\n  note: {} at {}", label.message, label.span)?;
+                write!(
+                    f,
+                    "\n  note: {} at {}:{}:{}",
+                    label.message, label.span.file, label.span.start_line, label.span.start_col
+                )?;
             }
         }
 
@@ -1032,7 +1061,7 @@ mod tests {
         let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
         // Format is now "line:col: message"
-        assert_eq!(display, "3:5: oops");
+        assert_eq!(display, "src/test_util.rs:3:5: oops");
     }
 
     #[test]
@@ -1047,10 +1076,10 @@ mod tests {
             .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
         let expected = "\
-3:5: bad value
-  note: evaluated here at src/test_util.rs:20:1-20:5
-  note: outer at src/test_util.rs:10:2-10:8
-  note: inner at src/test_util.rs:15:1-15:12";
+src/test_util.rs:3:5: bad value
+  note: evaluated here at src/test_util.rs:20:1
+  note: outer at src/test_util.rs:10:2
+  note: inner at src/test_util.rs:15:1";
         assert_eq!(display, expected);
     }
 
@@ -1093,8 +1122,8 @@ mod tests {
     fn test_with_materialization_span_label() {
         let span = test_span(1, 1, 1, 5);
         let mat_span = test_span(10, 1, 10, 5);
-        let err =
-            Diagnostic::internal("err".to_string(), span).with_materialization_span(mat_span.clone());
+        let err = Diagnostic::internal("err".to_string(), span)
+            .with_materialization_span(mat_span.clone());
         assert_eq!(err.labels[1].span, mat_span);
         assert_eq!(err.labels[1].message, "evaluated here");
     }
@@ -1114,11 +1143,7 @@ mod tests {
     fn test_key_not_found_with_available_keys() {
         let err = Diagnostic::key_not_found(
             "xyz",
-            vec![
-                "name".to_string(),
-                "age".to_string(),
-                "address".to_string(),
-            ],
+            vec!["name".to_string(), "age".to_string(), "address".to_string()],
             test_span(1, 1, 1, 5),
         );
         assert!(err.message.contains("key not found: xyz"));
@@ -1143,7 +1168,11 @@ mod tests {
             ],
             test_span(1, 1, 1, 5),
         );
-        let note = err.notes.iter().find(|n| n.contains("available keys:")).unwrap();
+        let note = err
+            .notes
+            .iter()
+            .find(|n| n.contains("available keys:"))
+            .unwrap();
         assert!(note.contains("..."));
         assert!(note.contains("a, b, c, d, e"));
         assert!(!note.contains(", f"));
@@ -1342,8 +1371,7 @@ mod tests {
         let span = span_with_file("prelude.llt");
         let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
-        // New format is "line:col: message"
-        assert_eq!(display, "3:5: oops");
+        assert_eq!(display, "prelude.llt:3:5: oops");
     }
 
     #[test]

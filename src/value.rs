@@ -2859,7 +2859,7 @@ mod tests {
 
         let cached = thunk.try_get_error();
         assert!(cached.is_some(), "try_get_error should return Some");
-        assert_eq!(cached.unwrap().kind.to_string(), error.kind.to_string());
+        assert_eq!(cached.unwrap().kind, error.kind);
     }
 
     // =========================================================================

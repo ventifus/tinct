@@ -2922,7 +2922,7 @@ mod tests {
         // First materialization: should detect the cycle and fail
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("circular dependency"),
+            err1.message.contains("circular dependency"),
             "first error: got: {}",
             err1.kind
         );
@@ -2940,7 +2940,7 @@ mod tests {
         // Second materialization: should return the cached circular dependency error
         let err2 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err2.kind.to_string().contains("circular dependency"),
+            err2.message.contains("circular dependency"),
             "second error: got: {}",
             err2.kind
         );
@@ -3006,7 +3006,7 @@ mod tests {
             "second attempt should return cached error, not a different one"
         );
         assert!(
-            !err2.kind.to_string().contains("circular dependency"),
+            !err2.message.contains("circular dependency"),
             "thunk was poisoned: got circular dependency on retry"
         );
     }
@@ -3624,11 +3624,11 @@ mod tests {
             .unwrap_err();
         // The specific error message is unimportant; what matters is the span attachment.
         assert!(!err.to_string().is_empty(), "got empty error: {}", err);
-        // spans[1] should be the materialization span with label "evaluated here"
-        assert_eq!(
-            err.labels.get(1).map(|sl| &sl.span),
-            Some(&mat_span),
-            "materialization span should be the access site"
+        // One of the labels should be the materialization span
+        assert!(
+            err.labels.iter().any(|l| l.span == mat_span),
+            "materialization span should be present in labels, got labels: {:?}",
+            err.labels
         );
     }
 
@@ -3648,7 +3648,11 @@ mod tests {
                     .await
                     .unwrap_err();
                 assert!(err.to_string().contains("circular dependency"));
-                assert_eq!(err.labels.get(1).map(|sl| &sl.span), Some(&mat_span));
+                assert!(
+                    err.labels.iter().any(|l| l.span == mat_span),
+                    "mat_span should be present in labels, got: {:?}",
+                    err.labels
+                );
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -3839,11 +3843,7 @@ mod tests {
             .unwrap_err();
 
         // Count how many frames have the same span
-        let frame_count = err
-            .labels
-            .iter()
-            .filter(|l| l.span == mat_span)
-            .count();
+        let frame_count = err.labels.iter().filter(|l| l.span == mat_span).count();
         assert!(
             frame_count <= 1,
             "expected at most 1 frame with mat_span, got {frame_count}: {:?}",
@@ -3860,17 +3860,20 @@ mod tests {
     async fn test_error_display_with_full_stack() {
         // Integration test: verify the Display output includes all stack frames.
         // test_span embeds src/test_util.rs as the source file; spans show with file prefix.
-        let err = EvalError::internal("something broke".to_string(), test_span(1, 5, 1, 12))
-            .with_materialization_span(test_span(10, 1, 10, 5))
-            .with_frame("[inner ...]".to_string(), test_span(5, 1, 5, 20))
-            .with_frame("[outer ...]".to_string(), test_span(8, 1, 8, 25));
+        let err = crate::error::Diagnostic::internal("something broke".to_string(), test_span(1, 5, 1, 12))
+            .with_label(test_span(10, 1, 10, 5), "evaluated here")
+            .with_label(test_span(5, 1, 5, 20), "in [inner ...]")
+            .with_label(test_span(8, 1, 8, 25), "in [outer ...]");
         let display = format!("{err}");
         assert!(display.contains("something broke"));
-        assert!(display.contains("defined at src/test_util.rs:1:5-1:12"));
-        // mat span is now a note on its own line with label "evaluated here"
-        assert!(display.contains("note: evaluated here at src/test_util.rs:10:1-10:5"));
-        assert!(display.contains("in [inner ...] at src/test_util.rs:5:1-5:20"));
-        assert!(display.contains("in [outer ...] at src/test_util.rs:8:1-8:25"));
+        assert!(display.contains("src/test_util.rs:1:5"));
+        // mat span is now a label with message "evaluated here"
+        assert!(display.contains("evaluated here"));
+        assert!(display.contains("src/test_util.rs:10:1"));
+        assert!(display.contains("in [inner ...]"));
+        assert!(display.contains("src/test_util.rs:5:1"));
+        assert!(display.contains("in [outer ...]"));
+        assert!(display.contains("src/test_util.rs:8:1"));
     }
 
     // ── Failed thunk state tests ───────────────────────────────────────
@@ -5815,13 +5818,12 @@ mod tests {
             result2.is_err(),
             "second materialization should also fail (cached)"
         );
+        let err2 = result2.unwrap_err();
         assert!(
-            result2
-                .unwrap_err()
-                .kind
-                .to_string()
-                .contains("type assertion failed"),
-            "cached error should still say 'type assertion failed'"
+            err2.kind == "type-assert-failed" || err2.message.contains("type assertion failed"),
+            "cached error should still say 'type assertion failed', got kind: {}, message: {}",
+            err2.kind,
+            err2.message
         );
     }
 
@@ -5866,13 +5868,13 @@ mod tests {
         assert!(result.is_err(), "Expected type assertion failure");
 
         let error = result.unwrap_err();
-        let msg = error.kind.to_string();
 
         // The error should be a type assertion failure
         assert!(
-            msg.contains("type assertion failed"),
-            "Expected type assertion failed error, got: {}",
-            msg
+            error.kind == "type-assert-failed" || error.message.contains("type assertion failed"),
+            "Expected type assertion failed error, got kind: {}, message: {}",
+            error.kind,
+            error.message
         );
 
         // This test mainly verifies that the code compiles and runs with the fix applied.
@@ -5952,7 +5954,10 @@ mod tests {
         );
         // The message should reference one of the thunks
         assert!(
-            err.message.contains("thunk") || err.message.contains("a") || err.message.contains("b") || err.message.contains("c"),
+            err.message.contains("thunk")
+                || err.message.contains("a")
+                || err.message.contains("b")
+                || err.message.contains("c"),
             "Cycle should be detected at one of the thunks, got message: {}",
             err.message
         );

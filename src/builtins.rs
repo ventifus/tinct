@@ -956,7 +956,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.kind.to_string().contains("NaN"), "got: {}", err.kind);
+        assert!(err.message.contains("NaN"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -981,7 +981,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -1009,7 +1009,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -1029,7 +1029,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected Int or Float"),
+            err.message.contains("expected Int or Float"),
             "got: {}",
             err.kind
         );
@@ -1049,7 +1049,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected Int or Float"),
+            err.message.contains("expected Int or Float"),
             "got: {}",
             err.kind
         );
@@ -1078,7 +1078,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected Int or Float"),
+            err.message.contains("expected Int or Float"),
             "got: {}",
             err.kind
         );
@@ -1097,11 +1097,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1136,11 +1132,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1177,11 +1169,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1206,7 +1194,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("out of range for Int"),
+            err.message.contains("out of range for Int"),
             "got: {}",
             err.kind
         );
@@ -1234,7 +1222,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("out of range for Int"),
+            err.message.contains("out of range for Int"),
             "got: {}",
             err.kind
         );
@@ -1606,7 +1594,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.kind.to_string().contains("NaN"), "got: {}", err.kind);
+        assert!(err.message.contains("NaN"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1631,7 +1619,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -1659,7 +1647,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -1679,7 +1667,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected Int or Float"),
+            err.message.contains("expected Int or Float"),
             "got: {}",
             err.kind
         );
@@ -1699,7 +1687,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("expected Int or Float"),
+            err.message.contains("expected Int or Float"),
             "got: {}",
             err.kind
         );
@@ -1718,11 +1706,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1757,11 +1741,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1786,7 +1766,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("out of range for Int"),
+            err.message.contains("out of range for Int"),
             "got: {}",
             err.kind
         );
@@ -1814,7 +1794,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("out of range for Int"),
+            err.message.contains("out of range for Int"),
             "got: {}",
             err.kind
         );
@@ -1925,11 +1905,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1945,11 +1921,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1965,11 +1937,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1985,11 +1953,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2041,11 +2005,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("expected String"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2069,11 +2029,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("expected String"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2098,11 +2054,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("expected String"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2118,11 +2070,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2138,11 +2086,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2321,11 +2265,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2341,11 +2281,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2362,7 +2298,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -2382,7 +2318,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -2402,7 +2338,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -2422,7 +2358,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("is not a finite number"),
+            err.message.contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -2449,11 +2385,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("expected String"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2477,11 +2409,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("expected String"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2506,11 +2434,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("expected String"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2526,11 +2450,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2549,11 +2469,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2571,11 +2487,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2592,11 +2504,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("cannot parse"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2617,7 +2525,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert_eq!(err.kind.to_string(), "boom");
+        assert_eq!(err.message, "boom");
     }
 
     #[tokio::test]
@@ -2638,7 +2546,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert_eq!(err.kind.to_string(), "division by zero");
+        assert_eq!(err.message, "division by zero");
     }
 
     #[tokio::test]
@@ -2663,7 +2571,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.kind.to_string().contains("Dict"), "got: {}", err.kind);
+        assert!(err.message.contains("Dict"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2685,11 +2593,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("message"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("message"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2724,7 +2628,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert_eq!(err.kind.to_string(), "oops");
+        assert_eq!(err.message, "oops");
         assert_eq!(err.notes.len(), 2);
         assert_eq!(err.notes[0], "note one");
         assert_eq!(err.notes[1], "note two");
@@ -2743,11 +2647,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2854,11 +2754,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -3008,7 +2904,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("exceeded resource limit"),
+            err.message.contains("exceeded resource limit"),
             "expected resource limit error to propagate, got: {}",
             err.kind
         );
@@ -3287,11 +3183,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -3653,11 +3545,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -3674,11 +3562,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -3694,11 +3578,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -3715,11 +3595,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4101,16 +3977,8 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("expected 3"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
+        assert!(err.message.contains("expected 3"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4126,11 +3994,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4273,11 +4137,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4311,11 +4171,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4352,11 +4208,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4385,11 +4237,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4422,11 +4270,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4474,11 +4318,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4526,11 +4366,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4578,11 +4414,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4630,11 +4462,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4682,11 +4510,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4734,11 +4558,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4783,11 +4603,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4826,11 +4642,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -4860,11 +4672,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("named arguments"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5159,11 +4967,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("arity mismatch"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -5199,7 +5003,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("integer overflow"),
+            err.message.contains("integer overflow"),
             "got: {}",
             err.kind
         );
@@ -5238,7 +5042,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("integer overflow"),
+            err.message.contains("integer overflow"),
             "got: {}",
             err.kind
         );
@@ -5425,11 +5229,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("arity mismatch"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -5453,11 +5253,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("arity mismatch"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -5735,7 +5531,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind.to_string().contains("integer overflow"),
+            err.message.contains("integer overflow"),
             "got: {}",
             err.kind
         );
@@ -5773,11 +5569,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("is not a finite"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5813,11 +5605,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("is not a finite"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5852,11 +5640,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("is not a finite"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5895,11 +5679,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("is not a finite"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -6137,7 +5917,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind.to_string().contains("is not a finite number"),
+            e.message.contains("is not a finite number"),
             "got: {}",
             e.kind
         );
@@ -6177,7 +5957,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind.to_string().contains("is not a finite number"),
+            e.message.contains("is not a finite number"),
             "got: {}",
             e.kind
         );
@@ -6552,11 +6332,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("arity mismatch"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -7149,7 +6925,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(e.kind.to_string().contains("expected"), "got: {}", e.kind);
+        assert!(e.message.contains("expected"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -7173,11 +6949,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("arity mismatch"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -8067,11 +7839,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
 
         // Two args
         let err = run(builtin_proxy(BuiltinArgs {
@@ -8103,11 +7871,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
 
         // Three args
         let err = run(builtin_proxy(BuiltinArgs {
@@ -8148,11 +7912,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("arity mismatch"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -8183,9 +7943,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind
-                .to_string()
-                .contains("does not accept named arguments"),
+            err.message.contains("does not accept named arguments"),
             "got: {}",
             err.kind
         );
