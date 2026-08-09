@@ -1726,10 +1726,10 @@ pub(crate) async fn apply_cont(
                         }
                         // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
                         // When a unit Variant (payload: None) is called with exactly one positional
-                        // arg and no named args, treat it as constructing Variant(type_val, ctor, payload).
+                        // arg and no named args, treat it as constructing Variant(type_val, ctor_index, payload).
                         Value::Variant {
                             type_decl_id,
-                            ctor,
+                            ctor_index,
                             payload: None,
                             ..
                         } if args.as_ref().is_some_and(|v| v.len() == 1)
@@ -1741,7 +1741,7 @@ pub(crate) async fn apply_cont(
                                 Arc::clone(&args.as_ref().expect("args set above")[0]);
                             let result_val = Value::Variant {
                                 type_decl_id,
-                                ctor,
+                                ctor_index,
                                 payload: Some(payload_thunk),
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     type_decl_id,
@@ -2772,7 +2772,7 @@ pub(crate) async fn apply_cont(
                             //   a Builtin value. The guard path in eval_structural_pattern_inner
                             //   then evaluates the full call expression using pctx.frame (the parent
                             //   frame passed here) so that `Color` is in scope. The result is a
-                            //   Variant or constructor Function, which is matched via ctor_tag_opt.
+                            //   Variant or constructor Function, which is matched via ctor_id_opt.
                             let empty_binding_map: IndexMap<String, u32> = IndexMap::new();
                             match eval_case_arm_structural_pattern(
                                 lowered_pat,
@@ -3449,34 +3449,71 @@ fn eval_structural_pattern_inner<'a>(
                 ));
                 let func_val = materialize(&func_thunk, Some(match_span), ctx).await?;
 
-                // Extract the constructor tag if func_val is either:
-                //   (a) a unit Variant (payload: None) — the old unit-constructor form
-                //   (b) a Function with return_ann annotation (named-field ctor)
-                let ctor_tag_opt: Option<String> = match &func_val {
-                    Value::Variant { ctor, .. } => Some(ctor.as_ref().to_string()),
-                    Value::Function { annotation, .. } => annotation.as_deref().and_then(|ann| {
-                        ann.return_ann.as_ref().and_then(|ret_ann| {
-                            if let crate::ast::Annotation::Simple(tag) = ret_ann {
-                                Some(tag.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    }),
-                    _ => None,
-                };
+                // Check if func_val is a constructor (Variant or annotated Function).
+                // Extract the scrutinee's identity and verify the match.
+                //
+                // For Variant patterns: compare numeric (type_decl_id, ctor_index) directly.
+                // For Function constructors: the annotation carries a display tag string;
+                // compare via ctor_display_name against the scrutinee's numeric identity.
+                let is_ctor = matches!(
+                    &func_val,
+                    Value::Variant { .. }
+                        | Value::Function {
+                            annotation: Some(_),
+                            ..
+                        }
+                );
+                let is_ctor = is_ctor
+                    && match &func_val {
+                        Value::Variant { .. } => true,
+                        Value::Function { annotation, .. } => {
+                            annotation.as_deref().is_some_and(|ann| {
+                                matches!(
+                                    ann.return_ann.as_ref(),
+                                    Some(crate::ast::Annotation::Simple(_))
+                                )
+                            })
+                        }
+                        _ => false,
+                    };
 
-                if let Some(ctor_tag) = ctor_tag_opt {
-                    // Constructor pattern: match scrutinee tag, bind payload.
+                if is_ctor {
+                    // Constructor pattern: match scrutinee identity, bind payload.
                     let Value::Variant {
-                        ctor: scrutinee_ctor,
+                        type_decl_id: scrutinee_tdid,
+                        ctor_index: scrutinee_idx,
                         payload,
                         ..
                     } = scrutinee_value
                     else {
                         return Ok(false);
                     };
-                    if scrutinee_ctor.as_ref() != ctor_tag {
+                    let ctor_matches = match &func_val {
+                        Value::Variant {
+                            type_decl_id,
+                            ctor_index,
+                            ..
+                        } => *scrutinee_tdid == *type_decl_id && *scrutinee_idx == *ctor_index,
+                        Value::Function { annotation, .. } => annotation
+                            .as_deref()
+                            .and_then(|ann| {
+                                if let Some(crate::ast::Annotation::Simple(tag)) =
+                                    ann.return_ann.as_ref()
+                                {
+                                    Some(
+                                        crate::type_tags::ctor_display_name(
+                                            *scrutinee_tdid,
+                                            *scrutinee_idx,
+                                        ) == tag.as_str(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if !ctor_matches {
                         return Ok(false);
                     }
 
@@ -3602,50 +3639,66 @@ fn eval_structural_pattern_inner<'a>(
                                 materialize(&call_thunk, Some(match_span), ctx).await?;
 
                             // Re-dispatch on the call result: check if it's a constructor
-                            // value (tag-only match) or something else (guard semantics).
-                            let result_ctor_tag: Option<String> = match &call_result {
-                                Value::Variant {
-                                    ctor,
-                                    payload: None,
-                                    ..
-                                } => {
-                                    // Unit constructor: `Color.Red` → tag-only match.
-                                    Some(ctor.as_ref().to_string())
-                                }
-                                Value::Variant {
-                                    ctor,
-                                    payload: Some(_),
-                                    ..
-                                } => {
-                                    // Payload variant used directly as a pattern value →
-                                    // treat as tag-only match per D-1 rule.
-                                    Some(ctor.as_ref().to_string())
-                                }
+                            // value (identity match) or something else (guard semantics).
+                            let is_ctor_result = matches!(
+                                &call_result,
+                                Value::Variant { .. }
+                                    | Value::Function {
+                                        annotation: Some(_),
+                                        ..
+                                    }
+                            ) && match &call_result {
+                                Value::Variant { .. } => true,
                                 Value::Function { annotation, .. } => {
-                                    // Payload constructor function: extract tag from return_ann.
-                                    annotation.as_deref().and_then(|ann| {
-                                        ann.return_ann.as_ref().and_then(|ret| {
-                                            if let crate::ast::Annotation::Simple(tag) = ret {
-                                                Some(tag.clone())
-                                            } else {
-                                                None
-                                            }
-                                        })
+                                    annotation.as_deref().is_some_and(|ann| {
+                                        matches!(
+                                            ann.return_ann.as_ref(),
+                                            Some(crate::ast::Annotation::Simple(_))
+                                        )
                                     })
                                 }
-                                _ => None,
+                                _ => false,
                             };
 
-                            if let Some(ctor_tag) = result_ctor_tag {
-                                // Constructor tag match: scrutinee must be a Variant with same tag.
+                            if is_ctor_result {
+                                // Constructor identity match: scrutinee must be a Variant with same identity.
                                 // args is empty for bare keyed patterns like `Color.Red:` (no payload
                                 // binding in the keyed arm context).
                                 if let Value::Variant {
-                                    ctor: scrutinee_ctor,
+                                    type_decl_id: scrutinee_tdid,
+                                    ctor_index: scrutinee_idx,
                                     ..
                                 } = scrutinee_value
                                 {
-                                    Ok(scrutinee_ctor.as_ref() == ctor_tag)
+                                    let ctor_matches = match &call_result {
+                                        Value::Variant {
+                                            type_decl_id,
+                                            ctor_index,
+                                            ..
+                                        } => {
+                                            *scrutinee_tdid == *type_decl_id
+                                                && *scrutinee_idx == *ctor_index
+                                        }
+                                        Value::Function { annotation, .. } => annotation
+                                            .as_deref()
+                                            .and_then(|ann| {
+                                                if let Some(crate::ast::Annotation::Simple(tag)) =
+                                                    ann.return_ann.as_ref()
+                                                {
+                                                    Some(
+                                                        crate::type_tags::ctor_display_name(
+                                                            *scrutinee_tdid,
+                                                            *scrutinee_idx,
+                                                        ) == tag.as_str(),
+                                                    )
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .unwrap_or(false),
+                                        _ => false,
+                                    };
+                                    Ok(ctor_matches)
                                 } else {
                                     Ok(false)
                                 }
@@ -5176,7 +5229,7 @@ fn force_dict_tree_impl<'a>(
             }
             Value::Variant {
                 type_decl_id,
-                ctor,
+                ctor_index,
                 payload,
                 ..
             } => {
@@ -5193,7 +5246,7 @@ fn force_dict_tree_impl<'a>(
                         Arc::new(Thunk::value(deep_payload, payload_thunk.span.clone()));
                     Ok(Value::Variant {
                         type_decl_id: *type_decl_id,
-                        ctor: ctor.clone(),
+                        ctor_index: *ctor_index,
                         payload: Some(deep_thunk),
                         type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                     })

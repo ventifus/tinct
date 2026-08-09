@@ -24,7 +24,7 @@ use crate::type_tags::*;
 use crate::types::InferState;
 // Constraint is now Vec<Arc<Value>> — no Constraint type import needed.
 // Kind is deleted — kind names are now plain strings ("Type", "Operator", "Label").
-use crate::value::{HashableValue, Thunk, Value};
+use crate::value::{HashableValue, Thunk, Value, TYPE_ID_TYPE_NODE, TYPE_ID_TYPE_VALUE};
 
 /// Protocol name for the type-stage TypeNode dispatch function (Axiom 1 / D-7).
 ///
@@ -1347,10 +1347,15 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
 fn extract_constraint_class_name_tv(cv: &TypeValue) -> Option<String> {
     let payload_thunk = match cv.as_ref() {
         Value::Variant {
-            ctor,
+            type_decl_id,
+            ctor_index,
             payload: Some(t),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => t,
+        } if *type_decl_id == crate::value::TYPE_ID_CONSTRAINT_DECL
+            && *ctor_index == CD_CONSTRAINT_DECL =>
+        {
+            t
+        }
         _ => return None,
     };
     let dict = match payload_thunk.peek_result()? {
@@ -1360,10 +1365,10 @@ fn extract_constraint_class_name_tv(cv: &TypeValue) -> Option<String> {
     let class_thunk = dict.get(&HashableValue::Str(Arc::from(FIELD_CLASS)))?;
     match class_thunk.peek_result()? {
         Ok(Value::Variant {
-            ctor: c_ctor,
+            ctor_index: c_idx,
             payload: Some(inner_thunk),
             ..
-        }) if c_ctor.as_ref() == TV_NOMINAL => match inner_thunk.peek_result()? {
+        }) if *c_idx == TV_NOMINAL => match inner_thunk.peek_result()? {
             Ok(Value::Dict { entries: inner, .. }) => {
                 let name_thunk = inner.get(&HashableValue::Str(Arc::from(FIELD_NAME)))?;
                 match name_thunk.peek_result()? {
@@ -1387,10 +1392,15 @@ fn extract_constraint_class_name_tv(cv: &TypeValue) -> Option<String> {
 fn extract_constraint_args_tv(cv: &TypeValue) -> Vec<TypeValue> {
     let payload_thunk = match cv.as_ref() {
         Value::Variant {
-            ctor,
+            type_decl_id,
+            ctor_index,
             payload: Some(t),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => t,
+        } if *type_decl_id == crate::value::TYPE_ID_CONSTRAINT_DECL
+            && *ctor_index == CD_CONSTRAINT_DECL =>
+        {
+            t
+        }
         _ => return Vec::new(),
     };
     let dict = match payload_thunk.peek_result() {
@@ -1626,7 +1636,7 @@ async fn resolve_type_head(
                 ));
             }
             let a_type = Arc::clone(&args[0]);
-            if crate::type_infer::typevalue_ctor(&a_type) == Some(crate::type_tags::TV_NOMINAL) {
+            if crate::type_tags::typevalue_ctor_index(&a_type) == Some(TV_NOMINAL) {
                 let op_id = crate::type_infer::typevalue_nominal_id(&a_type)
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string());
@@ -1696,7 +1706,10 @@ async fn resolve_type_head(
         format!("undefined type: {name}"),
         span.clone(),
     );
-    diag.spans = vec![(span, format!("type `{name}` not found in scope"))];
+    diag.labels = vec![crate::error::SpanLabel {
+        span,
+        message: format!("type `{name}` not found in scope"),
+    }];
     Err(diag)
 }
 
@@ -2351,16 +2364,17 @@ pub(crate) async fn resolve_type_expr(
 
 /// Reverse-lookup: given a bare constructor name (e.g. `"Red"`), find the tycon name
 /// (e.g. `"Color"`) by scanning `state.tycon_env` for any tycon whose `constructors` vec
-/// contains an entry whose qualified tag (`"Color.Red"`) ends with `".CtorName"`.
+/// contains an entry whose display name (e.g. `"Color.Red"`) has a bare part matching
+/// `ctor_name` (the part after the `.`).
 ///
 /// Returns the tycon name (e.g. `"Color"`) if found, or an empty string if not.
 /// Used by `resolve_type_expr` to populate `NominalVariant.tycon` when only the ctor
 /// name is available (e.g. bare uppercase VarRef fallback, implied-call constructor).
 fn lookup_tycon_for_ctor(state: &InferState, ctor_name: &str) -> String {
     for (tycon_id, def) in &state.tycon_env {
-        for (qualified_tag, _arity) in &def.constructors {
-            // Qualified tag format: "TyConName.CtorName"
-            if let Some((_, bare_ctor)) = qualified_tag.split_once('.') {
+        for (display_name, _arity) in &def.constructors {
+            // Display name format: "TyConName.CtorName"
+            if let Some((_, bare_ctor)) = display_name.split_once('.') {
                 if bare_ctor == ctor_name {
                     return state
                         .type_display_names
@@ -3197,50 +3211,38 @@ pub(crate) async fn typenode_value_to_type(
     Box::pin(async move {
         match val {
             // TypeValue.* variants — already in TypeValue form: return as-is.
-            // After S-1003, TypeValues (IntLit, StrLit, FloatLit, Record, Repr, etc.)
-            // ARE their own TypeNode representation. The roundtrip is identity.
-            Value::Variant { ctor, .. }
-                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == TYCON_TYPEVALUE =>
-            {
+            Value::Variant { type_decl_id, .. } if *type_decl_id == TYPE_ID_TYPE_VALUE => {
                 Ok(Some(Arc::new(val.clone())))
             }
 
-            Value::Variant { ctor, .. }
-                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == TYCON_TYPENODE =>
-            {
-                // NOTE: ctor holds the FULLY QUALIFIED constructor name (e.g., "TypeNode.Unknown").
-                // Strip the "TypeNode." prefix to get the bare constructor name for dispatch.
-                let bare_ctor = ctor
-                    .as_ref()
-                    .split_once('.')
-                    .map(|(_, c)| c)
-                    .unwrap_or(ctor.as_ref());
-                match bare_ctor {
-                    TN_BARE_UNKNOWN => Ok(Some(make_typevalue_unknown())),
+            // TypeNode.* variants — convert to TypeValue.
+            Value::Variant {
+                ctor_index,
+                type_decl_id: variant_tdid,
+                ..
+            } if *variant_tdid == TYPE_ID_TYPE_NODE => {
+                match *ctor_index {
+                    TN_UNKNOWN => Ok(Some(make_typevalue_unknown())),
                     // Top is the sound lattice top (τ <: Top for all τ).
-                    TN_BARE_TOP => Ok(Some(make_typevalue_top())),
-                    TN_BARE_NEVER => Ok(Some(make_typevalue_never())),
+                    TN_TOP => Ok(Some(make_typevalue_top())),
+                    TN_NEVER => Ok(Some(make_typevalue_never())),
                     // Absent: the empty closed dict type — the Rust-protocol encoding of the absent/null sentinel.
                     // The empty dict `[]` is Value::Dict({}) at runtime; @Absent is its static type.
-                    TN_BARE_ABSENT => {
-                        Ok(Some(make_typevalue_record(indexmap::IndexMap::new(), None)))
-                    }
+                    TN_ABSENT => Ok(Some(make_typevalue_record(indexmap::IndexMap::new(), None))),
                     // Primitive leaf types — no payload, direct mapping to TypeValue.Repr variants.
                     // These appear as field values in TypeNode.Dict payloads (e.g., the
                     // "fields" dict of a Dict TypeNode) and as union/intersection members.
-                    TN_BARE_INT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_INT))),
-                    TN_BARE_FLOAT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))),
-                    TN_BARE_STRING => {
-                        Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING)))
-                    }
-                    TN_BARE_BYTES => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES))),
-                    TN_BARE_PROXY => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_PROXY))),
+                    TN_INT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_INT))),
+                    TN_FLOAT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))),
+                    TN_STRING => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))),
+                    TN_BYTES => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES))),
+                    TN_PROXY => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_PROXY))),
                     // Any callable — variadic function with zero required fixed params and unknown
                     // return type. Variadic=true means any number of arguments is accepted; the
                     // arity check skips the "too many arguments" path for variadic functions.
                     // This is DISTINCT from TypeValue.Unknown: Callable asserts the value IS a
                     // function; Unknown means we know nothing about the value at all.
-                    TN_BARE_CALLABLE => Ok(Some(make_typevalue_fn_with_flags(
+                    TN_CALLABLE => Ok(Some(make_typevalue_fn_with_flags(
                         vec![],
                         make_typevalue_unknown(),
                         Some(0), // required_count — no fixed params
@@ -3250,7 +3252,7 @@ pub(crate) async fn typenode_value_to_type(
 
                     // ── Union ─────────────────────────────────────────────────────────────
                     // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
-                    TN_BARE_UNION => {
+                    TN_UNION => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3278,7 +3280,7 @@ pub(crate) async fn typenode_value_to_type(
 
                     // ── Intersect ────────────────────────────────────────────────────────
                     // TypeNode.Intersect { types: [Seq TypeNode] } → typevalue_normalize_intersection(members)
-                    TN_BARE_INTERSECT => {
+                    TN_INTERSECT => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3306,7 +3308,7 @@ pub(crate) async fn typenode_value_to_type(
 
                     // ── Negation ─────────────────────────────────────────────────────────
                     // TypeNode.Negation { inner: TypeNode } → make_typevalue_negation(inner)
-                    TN_BARE_NEGATION => {
+                    TN_NEGATION => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3338,7 +3340,7 @@ pub(crate) async fn typenode_value_to_type(
                     //   key-type present → Uniform { key: Some(K), value: V }  (typed Map[K:V])
                     //   open: 1, no key-type → Uniform { key: None, value: Any } (open record)
                     //   open: 0, no key-type → Empty                            (closed / Null)
-                    TN_BARE_DICT => {
+                    TN_DICT => {
                         let payload_fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3432,7 +3434,7 @@ pub(crate) async fn typenode_value_to_type(
                     // ── Arrow ─────────────────────────────────────────────────────────────
                     // TypeNode.Arrow { params: [Seq TypeNode], result: TypeNode }
                     // → Type::Function { params: Vec<(None, Type)>, ret: Box<Type>, variadic: false }
-                    TN_BARE_ARROW => {
+                    TN_ARROW => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3478,7 +3480,7 @@ pub(crate) async fn typenode_value_to_type(
                     // TypeNode.TypeConstructor { name: String }
                     // Bare (transient): name without '.' → Type::TyCon(name) for expansion
                     // Qualified (leaf): name with '.' → Type::NominalVariant or TyCon leaf
-                    TN_BARE_TYPE_CONSTRUCTOR => {
+                    TN_TYPE_CONSTRUCTOR => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3511,7 +3513,7 @@ pub(crate) async fn typenode_value_to_type(
                     // ── TypeApplication ───────────────────────────────────────────────────
                     // TypeNode.TypeApplication { ctor: TypeNode, args: [Seq TypeNode] }
                     // → left-associative Type::App chain: App(App(ctor, args[0]), args[1])...
-                    TN_BARE_TYPE_APPLICATION => {
+                    TN_TYPE_APPLICATION => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3564,7 +3566,7 @@ pub(crate) async fn typenode_value_to_type(
                     // ── TypeVar ───────────────────────────────────────────────────────────
                     // TypeNode.TypeVar { name: String, kind: String }
                     // → TypeValue.Var { name }  (level lives in InferenceContext, not in TypeValue)
-                    TN_BARE_TYPE_VAR => {
+                    TN_TYPE_VAR => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3590,7 +3592,7 @@ pub(crate) async fn typenode_value_to_type(
                     // is the named-variable approach rather than de Bruijn RecursiveRef. The var
                     // is treated as a non-generalizable TypeVar during inference (never added to
                     // ctx.levels for generalization).
-                    TN_BARE_RECURSIVE => {
+                    TN_RECURSIVE => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3627,7 +3629,7 @@ pub(crate) async fn typenode_value_to_type(
                     // TypeNode.Recursive binder. In the TypeValue representation, this is
                     // TypeValue.Var with the same binder name — the InferenceContext tracks
                     // that this var is a recursive self-reference (never generalized).
-                    TN_BARE_RECURSIVE_REF => {
+                    TN_RECURSIVE_REF => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3649,7 +3651,7 @@ pub(crate) async fn typenode_value_to_type(
                     // TypeNode.IntLiteral { n: Int } → Type::IntLiteral(n)
                     // Produced by union/or when a raw integer value is normalized via
                     // _wrap-typenode-value in the type-stage prelude (e.g. `[or 0 1]`).
-                    TN_BARE_INT_LITERAL => {
+                    TN_INT_LITERAL => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3666,7 +3668,7 @@ pub(crate) async fn typenode_value_to_type(
 
                     // ── FloatLiteral ──────────────────────────────────────────────────────
                     // TypeNode.FloatLiteral { value: Float } → TypeValue.FloatLit
-                    TN_BARE_FLOAT_LIT => {
+                    TN_FLOAT_LITERAL => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3683,7 +3685,7 @@ pub(crate) async fn typenode_value_to_type(
 
                     // ── StringLiteral ─────────────────────────────────────────────────────
                     // TypeNode.StringLiteral { s: String } → TypeValue.StrLit
-                    TN_BARE_STRING_LITERAL => {
+                    TN_STRING_LITERAL => {
                         let fields = match variant_payload_dict(val, ctx).await? {
                             Some(f) => f,
                             None => return Ok(None),
@@ -3726,26 +3728,20 @@ pub(crate) async fn typenode_value_to_type(
             // (TypeValue.Repr{repr:"Value::Dict"}) rather than returning Ok(None) which causes
             // downstream callers to interpret the dict's entries as record field types.
             Value::Dict { entries, .. } if !entries.is_empty() => {
-                let mut prefix: Option<String> = None;
+                let mut shared_type_decl_id: Option<u64> = None;
                 let mut all_match = true;
                 for (_key, thunk) in entries {
                     match thunk.peek_result() {
                         Some(Ok(val)) => {
                             match val {
-                                Value::Variant { ref ctor, .. } => {
-                                    let tycon_name =
-                                        crate::value::tycon_name_from_ctor(ctor.as_ref())
-                                            .to_string();
-                                    match &prefix {
-                                        None => prefix = Some(tycon_name),
-                                        Some(existing)
-                                            if existing.as_str() == tycon_name.as_str() => {}
-                                        _ => {
-                                            all_match = false;
-                                            break;
-                                        }
+                                Value::Variant { type_decl_id, .. } => match shared_type_decl_id {
+                                    None => shared_type_decl_id = Some(*type_decl_id),
+                                    Some(existing) if existing == *type_decl_id => {}
+                                    _ => {
+                                        all_match = false;
+                                        break;
                                     }
-                                }
+                                },
                                 // Function entries (payload constructors) — still count as the same ADT
                                 Value::Function { .. } | Value::Builtin { .. } => {}
                                 _ => {
@@ -3763,19 +3759,9 @@ pub(crate) async fn typenode_value_to_type(
                     }
                 }
                 if all_match {
-                    match prefix {
-                        Some(name) => Ok(Some(make_typevalue_nominal(
-                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
-                        ))),
-                        None => {
-                            // all_match = true but no Variant entries — all entries are
-                            // Functions/Builtins (payload constructors). This is an ADT
-                            // constructor dict whose tycon name cannot be determined from
-                            // settled entries. Treat as the plain Dict type rather than
-                            // returning Ok(None) which would fall through to as_type_dispatch
-                            // and produce a confusing "unrecognized value" error.
-                            Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT)))
-                        }
+                    match shared_type_decl_id {
+                        Some(id) => Ok(Some(make_typevalue_nominal(id))),
+                        None => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))),
                     }
                 } else {
                     // Not an ADT-constructor dict — this is a plain dict value in TypeNode

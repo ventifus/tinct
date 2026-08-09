@@ -2935,9 +2935,9 @@ mod tests {
         .await;
         // value.type_decl_id_of() for Int → TYPE_ID_INT, wrapped as TypeValue.Nominal(TYPE_ID_INT) — a Variant.
         match &result {
-            Value::Variant { ctor, .. } => {
+            Value::Variant { ctor_index, .. } => {
                 assert_eq!(
-                    ctor.as_ref(),
+                    *ctor_index,
                     crate::type_tags::TV_NOMINAL,
                     "type_of_int: ctor must be TypeValue.Repr"
                 );
@@ -2971,9 +2971,9 @@ mod tests {
         }))
         .await;
         match &result {
-            Value::Variant { ctor, .. } => {
+            Value::Variant { ctor_index, .. } => {
                 assert_eq!(
-                    ctor.as_ref(),
+                    *ctor_index,
                     crate::type_tags::TV_NOMINAL,
                     "type_of_float: ctor must be TypeValue.Repr"
                 );
@@ -2999,9 +2999,9 @@ mod tests {
         }))
         .await;
         match &result {
-            Value::Variant { ctor, .. } => {
+            Value::Variant { ctor_index, .. } => {
                 assert_eq!(
-                    ctor.as_ref(),
+                    *ctor_index,
                     crate::type_tags::TV_NOMINAL,
                     "type_of_string: ctor must be TypeValue.Repr"
                 );
@@ -3036,9 +3036,9 @@ mod tests {
         }))
         .await;
         match &result {
-            Value::Variant { ctor, .. } => {
+            Value::Variant { ctor_index, .. } => {
                 assert_eq!(
-                    ctor.as_ref(),
+                    *ctor_index,
                     crate::type_tags::TV_NOMINAL,
                     "type_of_dict: ctor must be TypeValue.Nominal"
                 );
@@ -3118,9 +3118,9 @@ mod tests {
         .await;
         // builtin_type_of(Builtin) → TypeValue.Nominal(TYPE_ID_BUILTIN).
         match &result {
-            Value::Variant { ctor, .. } => {
+            Value::Variant { ctor_index, .. } => {
                 assert_eq!(
-                    ctor.as_ref(),
+                    *ctor_index,
                     crate::type_tags::TV_NOMINAL,
                     "type_of_builtin: ctor must be TypeValue.Nominal"
                 );
@@ -3139,7 +3139,7 @@ mod tests {
         let variant = alloc(
             Value::Variant {
                 type_decl_id: TEST_ID_COLOR,
-                ctor: Arc::from("Color.Red"),
+                ctor_index: 0,
                 payload: None,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
             },
@@ -3156,9 +3156,9 @@ mod tests {
         .await;
         // builtin_type_of(Variant) → TypeValue.Nominal(type_decl_id) — a Variant with ctor=TV_NOMINAL.
         match &result {
-            Value::Variant { ctor, .. } => {
+            Value::Variant { ctor_index, .. } => {
                 assert_eq!(
-                    ctor.as_ref(),
+                    *ctor_index,
                     crate::type_tags::TV_NOMINAL,
                     "test_type_of_variant: ctor must be TypeValue.Nominal"
                 );
@@ -7592,7 +7592,7 @@ mod tests {
         let xs = alloc(
             Value::Variant {
                 type_decl_id: 0,
-                ctor: Arc::from("Color.Red"),
+                ctor_index: 0,
                 payload: None,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(0)),
             },

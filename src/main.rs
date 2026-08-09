@@ -5,15 +5,19 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use tinct::type_tags::{PI_EXPR, PI_FILE};
 use tinct::{
     build_core_env, format_diagnostic, literate, make_typevalue_nominal, parse, string_val,
     EvalContext, HashableValue, Thunk, Value, TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP,
-    TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP,
+    TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP, TYPE_ID_PROGRAM_ITEM,
 };
 /// Create a CLI-level diagnostic error (for argument validation, file I/O, etc.).
 /// Uses `internal-error` kind with a synthetic Rust source span.
 fn cli_error(message: impl Into<String>) -> Box<tinct::Diagnostic> {
-    Box::new(tinct::Diagnostic::internal(message.into(), tinct::rust_span!()))
+    Box::new(tinct::Diagnostic::internal(
+        message.into(),
+        tinct::rust_span!(),
+    ))
 }
 
 // Exit codes for llt eval
@@ -467,7 +471,9 @@ fn parse_duration(s: &str) -> Result<u32, Box<tinct::Diagnostic>> {
     }
 
     // No suffix — assume seconds
-    let secs: u32 = s.parse().map_err(|_| cli_error(format!("invalid duration: {s}")))?;
+    let secs: u32 = s
+        .parse()
+        .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
     if secs == 0 {
         return Err(cli_error("timeout must be at least 1 second"));
     }
@@ -847,7 +853,10 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, Box<tinct::Dia
         // addresses (e.g. 2001:db8::/32) as host:port.
         match s.parse::<ipnet::IpNet>() {
             Ok(net) => Ok(NetCapEntry::Cidr(net)),
-            Err(e) => Err(cli_error(format!("--cap-net: invalid CIDR notation '{}': {}", s, e))),
+            Err(e) => Err(cli_error(format!(
+                "--cap-net: invalid CIDR notation '{}': {}",
+                s, e
+            ))),
         }
     } else if s.contains('*') {
         // Glob pattern (prefix wildcard only)
@@ -1305,7 +1314,9 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                         .map_err(|e| cli_error(format!("cannot determine working directory: {e}")))?
                         .join(p)
                         .to_str()
-                        .ok_or_else(|| cli_error(format!("file path is not valid UTF-8: {file_path}")))?
+                        .ok_or_else(|| {
+                            cli_error(format!("file path is not valid UTF-8: {file_path}"))
+                        })?
                         .to_string()
                 }
             };
@@ -2011,10 +2022,10 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                             type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                         });
                         Value::Variant {
-                            type_decl_id: TYPE_ID_DICT,
-                            ctor: Arc::from("ProgramItem.File"),
+                            type_decl_id: TYPE_ID_PROGRAM_ITEM,
+                            ctor_index: PI_FILE,
                             payload: Some(payload_id),
-                            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_PROGRAM_ITEM)),
                         }
                     } else {
                         // Regular file: consume the next pre-opened handle.
@@ -2048,10 +2059,10 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                             type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                         });
                         Value::Variant {
-                            type_decl_id: TYPE_ID_DICT,
-                            ctor: Arc::from("ProgramItem.File"),
+                            type_decl_id: TYPE_ID_PROGRAM_ITEM,
+                            ctor_index: PI_FILE,
                             payload: Some(payload_id),
-                            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+                            type_val: Some(make_typevalue_nominal(TYPE_ID_PROGRAM_ITEM)),
                         }
                     }
                 }
@@ -2068,10 +2079,10 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                         type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
                     });
                     Value::Variant {
-                        type_decl_id: TYPE_ID_DICT,
-                        ctor: Arc::from("ProgramItem.Expr"),
+                        type_decl_id: TYPE_ID_PROGRAM_ITEM,
+                        ctor_index: PI_EXPR,
                         payload: Some(payload_id),
-                        type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+                        type_val: Some(make_typevalue_nominal(TYPE_ID_PROGRAM_ITEM)),
                     }
                 }
             };
@@ -2407,7 +2418,9 @@ async fn run_fmt(
     // which is a trusted operator-controlled path resolved via find_libdir_path().
     let (script_source, script_name) = {
         let libdir = find_libdir_path().ok_or_else(|| {
-            cli_error(format!("stdlib directory not found — cannot locate formatter script '{output_name}'"))
+            cli_error(format!(
+                "stdlib directory not found — cannot locate formatter script '{output_name}'"
+            ))
         })?;
         let path = libdir
             .join("cli")
@@ -2425,16 +2438,19 @@ async fn run_fmt(
             .unwrap_or("formatter.llt")
             .to_string();
         // AMBIENT-OK: CLI bootstrap — formatter script from operator-controlled stdlib path.
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| cli_error(format!("cannot read formatter script {}: {e}", path.display())))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            cli_error(format!(
+                "cannot read formatter script {}: {e}",
+                path.display()
+            ))
+        })?;
         (content, name)
     };
 
     let use_compact = output_name == "compact";
-    let formatted =
-        tinct::format_source_tinct(&source, &script_source, &script_name, use_compact)
-            .await
-            .map_err(|e| cli_error(e))?;
+    let formatted = tinct::format_source_tinct(&source, &script_source, &script_name, use_compact)
+        .await
+        .map_err(|e| cli_error(e))?;
 
     if check {
         if source != formatted {
@@ -2664,7 +2680,11 @@ async fn run_literate_weave(
             let stderr = String::from_utf8_lossy(&child_result.stderr);
             let error_msg = stderr.trim().to_string();
             if config.fail_on_errors {
-                return Err(cli_error(format!("error in block {}: {}", i + 1, error_msg)));
+                return Err(cli_error(format!(
+                    "error in block {}: {}",
+                    i + 1,
+                    error_msg
+                )));
             }
             block_outputs.push(Some(format!("ERROR: {error_msg}")));
         }
@@ -2698,8 +2718,12 @@ async fn run_literate_weave(
         let tmp_path = format!("{}.tmp", config.file_path);
         std::fs::write(&tmp_path, &result)
             .map_err(|e| cli_error(format!("cannot write temp file {tmp_path}: {e}")))?;
-        std::fs::rename(&tmp_path, config.file_path)
-            .map_err(|e| cli_error(format!("cannot rename {tmp_path} → {}: {e}", config.file_path)))?;
+        std::fs::rename(&tmp_path, config.file_path).map_err(|e| {
+            cli_error(format!(
+                "cannot rename {tmp_path} → {}: {e}",
+                config.file_path
+            ))
+        })?;
     } else {
         print!("{result}");
     }

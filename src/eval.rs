@@ -1312,7 +1312,7 @@ pub(crate) fn resolve_type_closure(
         return Arc::clone(inferred_type);
     }
 
-    let ctor = crate::type_infer::typevalue_ctor(inferred_type);
+    let ctor = crate::type_tags::typevalue_ctor_index(inferred_type);
 
     // TypeValue.Var(name) → look up in type_inst
     if ctor == Some(crate::type_tags::TV_VAR) {
@@ -1342,7 +1342,7 @@ pub(crate) fn resolve_type_closure(
 
     // Structural types: recursively resolve payload fields
     let Value::Variant {
-        ctor: ctor_arc,
+        ctor_index: ctor_index_val,
         payload: Some(ref payload_thunk),
         ..
     } = inferred_type.as_ref()
@@ -1360,7 +1360,7 @@ pub(crate) fn resolve_type_closure(
     for (key, thunk) in entries.iter() {
         if let Some(Ok(val)) = thunk.peek_result() {
             let val_arc = Arc::new(val.clone());
-            if crate::type_infer::typevalue_ctor(&val_arc).is_some() {
+            if crate::type_tags::typevalue_ctor_index(&val_arc).is_some() {
                 let resolved = resolve_type_closure(&val_arc, type_inst);
                 if !Arc::ptr_eq(&resolved, &val_arc) {
                     new_entries.insert(
@@ -1394,7 +1394,7 @@ pub(crate) fn resolve_type_closure(
     }
 
     Arc::new(Value::Variant {
-        ctor: Arc::clone(ctor_arc),
+        ctor_index: *ctor_index_val,
         payload: Some(Arc::new(crate::value::Thunk::value(
             Value::Dict {
                 entries: new_entries,
@@ -1422,7 +1422,7 @@ fn resolve_dict_type_closure(
     for (key, thunk) in entries.iter() {
         if let Some(Ok(val)) = thunk.peek_result() {
             let val_arc = Arc::new(val.clone());
-            if crate::type_infer::typevalue_ctor(&val_arc).is_some() {
+            if crate::type_tags::typevalue_ctor_index(&val_arc).is_some() {
                 let resolved = resolve_type_closure(&val_arc, type_inst);
                 if !Arc::ptr_eq(&resolved, &val_arc) {
                     new_entries.insert(
@@ -1466,16 +1466,16 @@ pub(crate) fn thunk_matches_nominal_type(
     ctx: &EvalContext,
 ) -> Option<bool> {
     // Unknown/non-variant TypeValues match everything.
-    let Value::Variant { ctor, .. } = expected.as_ref() else {
+    let Value::Variant { ctor_index, .. } = expected.as_ref() else {
         return Some(true);
     };
 
     // TypeValue.Unknown / Top / Var → wildcard match.
-    if matches!(ctor.as_ref(), TV_UNKNOWN | TV_TOP | TV_VAR) {
+    if matches!(*ctor_index, TV_UNKNOWN | TV_TOP | TV_VAR) {
         return Some(true);
     }
     // TypeValue.Never → matches nothing.
-    if ctor.as_ref() == TV_NEVER {
+    if *ctor_index == TV_NEVER {
         return Some(false);
     }
 
@@ -1515,7 +1515,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
 
     // TypeValue.Fn: any Function or Builtin value matches a Fn type guard.
     // Parameter/return type checking is done at call time, not at the guard.
-    if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN) {
+    if matches!(expected.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_FN) {
         return matches!(value, Value::Function { .. } | Value::Builtin { .. });
     }
 
@@ -1528,7 +1528,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     //
     // Note: field TYPE checking is deferred to guard thunks (validate_and_wrap_record in
     // Cont::TypeAssertCheck / Cont::GuardedValidate). This arm only performs the shape check.
-    if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD) {
+    if matches!(expected.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD) {
         let Value::Dict { ref entries, .. } = value else {
             return false;
         };
@@ -1558,7 +1558,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Arc<Value>, ctx: &Eva
     // TypeValue.Record, which requires concrete value access (see Record arm above).
     // BAS's is_consistent_subtype handles Union on sup, but uses value.type_decl_id_of()
     // which erases field structure, making Record members always fail.
-    if matches!(expected.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNION) {
+    if matches!(expected.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_UNION) {
         if let Value::Variant {
             payload: Some(payload_thunk),
             ..
@@ -1669,8 +1669,12 @@ pub(crate) fn format_type_with_names(
 ) -> String {
     // Extract the TypeValue ctor tag and payload for display.
     match ty.as_ref() {
-        Value::Variant { ctor, payload, .. } => {
-            match ctor.as_ref() {
+        Value::Variant {
+            ctor_index,
+            payload,
+            ..
+        } => {
+            match *ctor_index {
                 TV_NOMINAL => {
                     if let Some(id) = crate::type_infer::typevalue_nominal_id(ty) {
                         return display_names
@@ -1678,7 +1682,7 @@ pub(crate) fn format_type_with_names(
                             .cloned()
                             .unwrap_or_else(|| format!("Nominal({})", id));
                     }
-                    TV_NOMINAL.to_string()
+                    "Nominal".to_string()
                 }
                 TV_UNKNOWN => "?".to_string(),
                 TV_TOP => "Top".to_string(),
@@ -1700,11 +1704,7 @@ pub(crate) fn format_type_with_names(
                     "TypeVar".to_string()
                 }
                 TV_UNION | TV_INTER => {
-                    let keyword = if ctor.as_ref() == TV_UNION {
-                        "or"
-                    } else {
-                        "and"
-                    };
+                    let keyword = if *ctor_index == TV_UNION { "or" } else { "and" };
                     if let Some(Ok(Value::Dict {
                         entries: payload_entries,
                         ..
@@ -1736,7 +1736,7 @@ pub(crate) fn format_type_with_names(
                             }
                         }
                     }
-                    ctor.to_string()
+                    format!("TypeValue({})", ctor_index)
                 }
                 TV_NEG => {
                     if let Some(Ok(Value::Dict { entries, .. })) =
@@ -1796,8 +1796,8 @@ pub(crate) fn format_type_with_names(
                                 .get(&HashableValue::Str(Arc::from(FIELD_TAIL)))
                                 .and_then(|t| t.peek_result())
                                 .map(|tail_result| {
-                                    if let Ok(Value::Variant { ctor, payload: tail_payload, .. }) = tail_result {
-                                        match ctor.as_ref() {
+                                    if let Ok(Value::Variant { type_decl_id: tail_tdid, ctor_index: tail_cidx, payload: tail_payload, .. }) = tail_result {
+                                        match crate::type_tags::ctor_display_name(*tail_tdid, *tail_cidx) {
                                             "RowTail.Closed" => Err(String::new()),
                                             "RowTail.Uniform" => {
                                                 if let Some(Ok(Value::Dict { entries: u_entries, .. })) =
@@ -1806,12 +1806,12 @@ pub(crate) fn format_type_with_names(
                                                     let vt = u_entries
                                                         .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_VALUE_TYPE)))
                                                         .and_then(|t| t.peek_result())
-                                                        .and_then(|r| r.ok())
+                                                        .and_then(|r| match r { Ok(v) => Some(v), Err(_) => None })
                                                         .map(|v| format_type_with_names(&Arc::new(v.clone()), display_names));
                                                     let kt = u_entries
                                                         .get(&HashableValue::Str(Arc::from(crate::type_tags::RT_FIELD_KEY_TYPE)))
                                                         .and_then(|t| t.peek_result())
-                                                        .and_then(|r| r.ok())
+                                                        .and_then(|r| match r { Ok(v) => Some(v), Err(_) => None })
                                                         .map(|v| format_type_with_names(&Arc::new(v.clone()), display_names));
                                                     let kt_str = kt.as_deref().unwrap_or("?");
                                                     let vt_str = vt.as_deref().unwrap_or("?");
@@ -1925,7 +1925,7 @@ pub(crate) fn format_type_with_names(
                     }
                     "<Fn: display failed>".to_string()
                 }
-                other => other.to_string(),
+                _ => format!("TypeValue({})", ctor_index),
             }
         }
         _ => "?".to_string(), // Non-variant (bootstrap unknown_type_val) → gradual
@@ -1943,10 +1943,10 @@ pub(crate) fn format_type_with_names(
 fn extract_typevalue_record_fields(expected: &Arc<Value>) -> Option<IndexMap<String, Arc<Value>>> {
     match expected.as_ref() {
         Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(payload_thunk),
             ..
-        } if ctor.as_ref() == TV_RECORD => match payload_thunk.peek_result()? {
+        } if *ctor_index == TV_RECORD => match payload_thunk.peek_result()? {
             Ok(Value::Dict { entries, .. }) => {
                 let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
                 let fields_thunk = entries.get(&fields_key)?;
@@ -1997,12 +1997,12 @@ pub(crate) fn as_record_typevalue_merged(
 
     // Check for an Intersection of Records.
     if let Value::Variant {
-        ctor,
+        ctor_index,
         payload: Some(payload_thunk),
         ..
     } = expected.as_ref()
     {
-        if ctor.as_ref() == TV_INTER {
+        if *ctor_index == TV_INTER {
             if let Some(Ok(Value::Dict { entries, .. })) = payload_thunk.peek_result() {
                 let members_key = HashableValue::Str(Arc::from(FIELD_MEMBERS));
                 if let Some(members_thunk) = entries.get(&members_key) {
@@ -2506,19 +2506,21 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
                 ..
             },
         ) => s1[*start1..*end1] == s2[*start2..*end2],
-        // Nullary variants: tag equality (covers unit constructors)
+        // Nullary variants: numeric identity equality (covers unit constructors)
         (
             Value::Variant {
-                ctor: ctor1,
+                type_decl_id: type_decl_id1,
+                ctor_index: ctor_index1,
                 payload: None,
                 ..
             },
             Value::Variant {
-                ctor: ctor2,
+                type_decl_id: type_decl_id2,
+                ctor_index: ctor_index2,
                 payload: None,
                 ..
             },
-        ) => ctor1 == ctor2,
+        ) => type_decl_id1 == type_decl_id2 && ctor_index1 == ctor_index2,
         // Dict shallow equality: same keys and same thunk Arc pointers (no value materialization).
         // This covers null equality ([] == []) and self-equality for Dicts,
         // without deep structural comparison of values.
@@ -3860,10 +3862,13 @@ mod tests {
     async fn test_error_display_with_full_stack() {
         // Integration test: verify the Display output includes all stack frames.
         // test_span embeds src/test_util.rs as the source file; spans show with file prefix.
-        let err = crate::error::Diagnostic::internal("something broke".to_string(), test_span(1, 5, 1, 12))
-            .with_label(test_span(10, 1, 10, 5), "evaluated here")
-            .with_label(test_span(5, 1, 5, 20), "in [inner ...]")
-            .with_label(test_span(8, 1, 8, 25), "in [outer ...]");
+        let err = crate::error::Diagnostic::internal(
+            "something broke".to_string(),
+            test_span(1, 5, 1, 12),
+        )
+        .with_label(test_span(10, 1, 10, 5), "evaluated here")
+        .with_label(test_span(5, 1, 5, 20), "in [inner ...]")
+        .with_label(test_span(8, 1, 8, 25), "in [outer ...]");
         let display = format!("{err}");
         assert!(display.contains("something broke"));
         assert!(display.contains("src/test_util.rs:1:5"));
@@ -5136,7 +5141,7 @@ mod tests {
         // Variant with matching type_decl_id matches
         let red = Value::Variant {
             type_decl_id: TEST_ID_COLOR,
-            ctor: Arc::from("Color.Red"),
+            ctor_index: 0,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
@@ -5144,7 +5149,7 @@ mod tests {
         // Variant with different type_decl_id does not match
         let wrong = Value::Variant {
             type_decl_id: TEST_ID_SHAPE,
-            ctor: Arc::from("Shape.Circle"),
+            ctor_index: 0,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_SHAPE)),
         };
@@ -5210,7 +5215,7 @@ mod tests {
         assert!(value_matches_type(
             &Value::Variant {
                 type_decl_id: TEST_ID_MY_SEQ,
-                ctor: Arc::from("MySeq.Cons"),
+                ctor_index: 0,
                 payload: None,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_MY_SEQ)),
             },
@@ -5264,7 +5269,7 @@ mod tests {
 
         let color_red = Value::Variant {
             type_decl_id: TEST_ID_COLOR,
-            ctor: Arc::from("Color.Red"),
+            ctor_index: 0,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
@@ -5275,7 +5280,7 @@ mod tests {
 
         let color_green = Value::Variant {
             type_decl_id: TEST_ID_COLOR,
-            ctor: Arc::from("Color.Green"),
+            ctor_index: 1,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
@@ -5286,7 +5291,7 @@ mod tests {
 
         let other = Value::Variant {
             type_decl_id: TEST_ID_SHAPE,
-            ctor: Arc::from("Shape.Circle"),
+            ctor_index: 0,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_SHAPE)),
         };
@@ -5332,7 +5337,7 @@ mod tests {
         );
         let color_variant = Value::Variant {
             type_decl_id: TEST_ID_COLOR,
-            ctor: Arc::from("Color.Red"),
+            ctor_index: 0,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };

@@ -5,8 +5,8 @@
 //!
 //! ## TypeValue representation
 //!
-//! A TypeValue is a `Value::Variant { ctor, payload }` where `ctor` is a tag like
-//! `"TypeValue.Union"`, `"TypeValue.Repr"`, etc. See the ctor tag table in
+//! A TypeValue is a `Value::Variant { ctor_index, payload }` where `ctor_index` is a
+//! numeric tag (e.g., `TV_UNION`, `TV_NOMINAL`). See the ctor tag table in
 //! doc/06-type-inference.md for the complete mapping.
 //!
 //! ## Algorithm Overview
@@ -35,7 +35,7 @@ use crate::ast::Span;
 use crate::type_def::Variance;
 use crate::type_infer::InferenceContext;
 use crate::type_tags::*;
-use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT, TYPE_ID_TYPE_VALUE};
 
 /// Maximum depth for atom subtype checking (coinductive Recursive type comparison).
 const MAX_ATOM_SUBTYPE_DEPTH: usize = 256;
@@ -128,17 +128,17 @@ fn payload_float_field_bits(payload: &Value, field: &str) -> Option<u64> {
 
 /// Extract a boolean field from a TypeValue payload dict.
 ///
-/// Tinct booleans are `Variant { ctor: "true" | "false" }`. Returns `Some(true)` when
-/// the field value is the `"true"` unit variant, `Some(false)` when it is `"false"`, and
-/// `None` when the field is absent or has a non-boolean value.
+/// Tinct booleans are `Variant { ctor_index: BOOL_TRUE_IDX | BOOL_FALSE_IDX }`. Returns
+/// `Some(true)` when the field value is the true unit variant, `Some(false)` when it is
+/// false, and `None` when the field is absent or has a non-boolean value.
 fn payload_bool_field(payload: &Value, field: &str) -> Option<bool> {
     if let Value::Dict { entries, .. } = payload {
         let key = HashableValue::Str(Arc::from(field));
         if let Some(thunk) = entries.get(&key) {
-            if let Some(Value::Variant { ctor, .. }) = peek_value(thunk) {
-                return match ctor.as_ref() {
-                    BOOL_TRUE => Some(true),
-                    BOOL_FALSE => Some(false),
+            if let Some(Value::Variant { ctor_index, .. }) = peek_value(thunk) {
+                return match *ctor_index {
+                    BOOL_TRUE_IDX => Some(true),
+                    BOOL_FALSE_IDX => Some(false),
                     _ => None,
                 };
             }
@@ -245,11 +245,15 @@ fn bas_span() -> Span {
 }
 
 /// Create a TypeValue variant with a payload dict.
-fn make_payload_typevalue(ctor: &str, payload_thunk: Arc<Thunk>) -> Arc<Value> {
+fn make_payload_typevalue(
+    type_decl_id: u64,
+    ctor_index: u32,
+    payload_thunk: Arc<Thunk>,
+) -> Arc<Value> {
     Arc::new(Value::Variant {
-        ctor: Arc::from(ctor),
+        ctor_index,
         payload: Some(payload_thunk),
-        type_decl_id: TYPE_ID_DICT,
+        type_decl_id,
         type_val: None,
     })
 }
@@ -324,7 +328,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         return "…".to_string();
     }
 
-    let ctor = match typevalue_ctor(tv) {
+    let ctor = match typevalue_ctor_index(tv) {
         Some(c) => c,
         None => return "?".to_string(), // non-Variant (e.g., unknown_type_val empty Dict)
     };
@@ -465,7 +469,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
                 .and_then(|p| payload_typevalue_field(p, FIELD_TAIL))
                 .map(|t| match t.as_ref() {
                     Value::Dict { entries, .. } if entries.is_empty() => "[]".to_string(),
-                    Value::Variant { ctor, .. } if ctor.as_ref() == RT_CLOSED => {
+                    Value::Variant { ctor_index, .. } if *ctor_index == RT_CLOSED => {
                         "closed".to_string()
                     }
                     _ => typevalue_structural_fingerprint(&t, depth + 1),
@@ -487,19 +491,29 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
             format!("App({op_fp},{arg_fp})")
         }
 
-        // NominalVariant: fingerprint tycon and ctor names
+        // NominalVariant: fingerprint tycon and ctor numerically
         TV_NOMINAL_VARIANT => {
-            let tycon = payload
-                .and_then(|p| payload_string_field(p, FIELD_TYCON))
-                .unwrap_or("?");
-            let ctor_name = payload
-                .and_then(|p| payload_string_field(p, FIELD_CTOR))
-                .unwrap_or("?");
-            format!("NV({tycon}.{ctor_name})")
+            let tycon_id = payload
+                .and_then(|p| payload_int_field(p, FIELD_TYCON))
+                .map(|id| id as u64)
+                .unwrap_or(0);
+            let ctor_idx = payload
+                .and_then(|p| payload_int_field(p, FIELD_CTOR))
+                .map(|id| id as u32)
+                .unwrap_or(0);
+            let display = crate::type_tags::ctor_display_name(tycon_id, ctor_idx);
+            format!("NV({display})")
         }
 
         // Unit variants (Top, Never, Unknown, etc.)
-        _ => ctor.to_string(),
+        // Use the type_decl_id from the TypeValue to produce a stable display name.
+        _ => {
+            if let Value::Variant { type_decl_id, .. } = tv.as_ref() {
+                crate::type_tags::ctor_display_name(*type_decl_id, ctor).to_string()
+            } else {
+                ctor.to_string()
+            }
+        }
     }
 }
 
@@ -521,7 +535,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
 /// - Neg(of) → negate_rdnf(to_rdnf(of))
 /// - Atoms (Repr, Var, Fn, Record, etc.) → `vec![vec![Pos(atom)]]`
 pub fn to_rdnf(tv: &Arc<Value>) -> Rdnf {
-    match typevalue_ctor(tv) {
+    match typevalue_ctor_index(tv) {
         Some(TV_TOP) => vec![vec![]],
         Some(TV_NEVER) => vec![],
         Some(TV_UNKNOWN) => vec![vec![]], // conservative: Unknown = Top in RDNF
@@ -644,8 +658,8 @@ pub fn is_atom_subtype(
         return false;
     }
 
-    let sub_ctor = typevalue_ctor(sub);
-    let sup_ctor = typevalue_ctor(sup);
+    let sub_ctor = typevalue_ctor_index(sub);
+    let sup_ctor = typevalue_ctor_index(sup);
 
     match (sub_ctor, sup_ctor) {
         // Same ctor tag — simple structural equality for unit-like types.
@@ -719,16 +733,16 @@ pub fn is_atom_subtype(
         // If the TyCon is not found (empty env or unknown name), fall back to tycon-name
         // string comparison, which is correct when the variant was constructed from that TyCon.
         (Some(TV_NOMINAL_VARIANT), Some(TV_NOMINAL)) => {
-            let sub_tycon = typevalue_payload(sub)
-                .and_then(|p| payload_string_field(p, FIELD_TYCON).map(String::from));
+            let sub_tycon_id = typevalue_payload(sub)
+                .and_then(|p| payload_int_field(p, FIELD_TYCON))
+                .map(|id| id as u64);
             let sup_id = crate::type_infer::typevalue_nominal_id(sup);
             match sup_id {
                 Some(id) => match ctx.tycon_env.get(&id) {
                     Some(def) => is_subtype_bas_with_sigma(sub, &def.body, ctx, sigma, depth + 1),
                     None => {
-                        // Fallback: compare NominalVariant's tycon string against display name
-                        let sup_name = ctx.type_display_names.get(&id);
-                        sub_tycon.as_deref() == sup_name.map(|s| s.as_str())
+                        // Fallback: compare type_decl_ids directly
+                        sub_tycon_id == Some(id)
                     }
                 },
                 None => false,
@@ -767,7 +781,7 @@ pub fn is_atom_subtype(
             // determined by the root TyCon, not the argument. Extract op (must be TV_NOMINAL).
             let op_tv = typevalue_payload(sup).and_then(|p| payload_typevalue_field(p, FIELD_OP));
             match op_tv {
-                Some(op) if typevalue_ctor(&op) == Some(TV_NOMINAL) => {
+                Some(op) if typevalue_ctor_index(&op) == Some(TV_NOMINAL) => {
                     is_atom_subtype(sub, &op, ctx, depth + 1, sigma)
                 }
                 _ => false,
@@ -795,7 +809,7 @@ fn typevalue_structurally_equal(
         (None, None) => true, // Both unit variants with same ctor
         (Some(sp), Some(pp)) => {
             // Compare string fields only (simple equality for Repr, Op, IntLit, StrLit, Var)
-            match (typevalue_ctor(sub), typevalue_ctor(sup)) {
+            match (typevalue_ctor_index(sub), typevalue_ctor_index(sup)) {
                 (Some(TV_NOMINAL), _) => {
                     crate::type_infer::typevalue_nominal_id(sub)
                         == crate::type_infer::typevalue_nominal_id(sup)
@@ -929,7 +943,7 @@ fn is_fn_subtype(
 fn is_closed_tail(tail: &Arc<Value>) -> bool {
     match tail.as_ref() {
         Value::Dict { entries, .. } => entries.is_empty(),
-        Value::Variant { ctor, .. } => ctor.as_ref() == RT_CLOSED,
+        Value::Variant { ctor_index, .. } => *ctor_index == RT_CLOSED,
         _ => false,
     }
 }
@@ -1090,7 +1104,7 @@ fn is_record_subtype(
             true
         }
         (_, Some(sup_t)) => {
-            let sup_tail_ctor = typevalue_ctor(sup_t);
+            let sup_tail_ctor = typevalue_ctor_index(sup_t);
             if sup_tail_ctor == Some(RT_VAR) {
                 // sup is open with a row variable — sub can have any tail (conservative).
                 true
@@ -1103,7 +1117,7 @@ fn is_record_subtype(
                         payload_typevalue_field(sup_t_val, RT_FIELD_VALUE_TYPE)
                     {
                         if let Some(sub_t) = &sub_tail {
-                            if typevalue_ctor(sub_t) == Some(RT_UNIFORM) {
+                            if typevalue_ctor_index(sub_t) == Some(RT_UNIFORM) {
                                 // sub also has RT_UNIFORM: check value type covariance.
                                 if let Some(sub_t_val) = typevalue_payload(sub_t) {
                                     if let Some(sub_val_type) =
@@ -1186,7 +1200,7 @@ fn is_record_subtype(
 /// polymorphism (e.g., Rémy 1994, Leijen 2005): multi-parameter TyCons are encoded
 /// as left-spine curried applications, and the n-th parameter is applied at depth n.
 fn app_spine_root_and_depth(op: &Arc<Value>) -> Option<(u64, usize)> {
-    match typevalue_ctor(op) {
+    match typevalue_ctor_index(op) {
         Some(TV_NOMINAL) => {
             // Root of the spine: this is the TyCon itself.
             let id = crate::type_infer::typevalue_nominal_id(op)?;
@@ -1321,7 +1335,7 @@ fn is_recursive_subtype(
 ///
 /// If `tv` is not a `TypeValue.Recursive`, returns it unchanged.
 pub fn unfold_recursive_typevalue(tv: &Arc<Value>) -> Arc<Value> {
-    if typevalue_ctor(tv) != Some(TV_RECURSIVE) {
+    if typevalue_ctor_index(tv) != Some(TV_RECURSIVE) {
         return Arc::clone(tv);
     }
 
@@ -1341,7 +1355,7 @@ pub(crate) fn substitute_recursive_ref(
     target: u32,
     replacement: &Arc<Value>,
 ) -> Arc<Value> {
-    match typevalue_ctor(tv) {
+    match typevalue_ctor_index(tv) {
         Some(TV_RECURSIVE_REF) => {
             if let Some(payload) = typevalue_payload(tv) {
                 if let Some(idx_val) = payload_int_field(payload, FIELD_DEPTH) {
@@ -1364,7 +1378,7 @@ pub(crate) fn substitute_recursive_ref(
                     let mut fields = IndexMap::new();
                     fields.insert(FIELD_BODY.to_string(), new_body);
                     let new_payload = make_payload_thunk(fields, span);
-                    return make_payload_typevalue(TV_RECURSIVE, new_payload);
+                    return make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_RECURSIVE, new_payload);
                 }
             }
             Arc::clone(tv)
@@ -1383,9 +1397,9 @@ pub(crate) fn substitute_recursive_ref(
                 if !changed {
                     return Arc::clone(tv);
                 }
-                let ctor = typevalue_ctor(tv)
+                let ctor = typevalue_ctor_index(tv)
                     .expect("invariant: tv ctor matched TV_UNION | TV_INTER above");
-                return build_members_typevalue(ctor, new_members);
+                return build_members_typevalue(TYPE_ID_TYPE_VALUE, ctor, new_members);
             }
             Arc::clone(tv)
         }
@@ -1400,7 +1414,7 @@ pub(crate) fn substitute_recursive_ref(
                     let mut fields = IndexMap::new();
                     fields.insert(FIELD_OF.to_string(), new_inner);
                     let new_payload = make_payload_thunk(fields, span);
-                    return make_payload_typevalue(TV_NEG, new_payload);
+                    return make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_NEG, new_payload);
                 }
             }
             Arc::clone(tv)
@@ -1490,7 +1504,7 @@ pub(crate) fn substitute_recursive_ref(
                         fields.insert(FIELD_PARAMS.to_string(), p);
                     }
                     let new_payload = make_payload_thunk(fields, span);
-                    return make_payload_typevalue(TV_FN, new_payload);
+                    return make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_FN, new_payload);
                 }
             }
             Arc::clone(tv)
@@ -1572,7 +1586,7 @@ pub(crate) fn substitute_recursive_ref(
                         payload_fields.insert(FIELD_TAIL.to_string(), t);
                     }
                     let new_payload = make_payload_thunk(payload_fields, span);
-                    return make_payload_typevalue(TV_RECORD, new_payload);
+                    return make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_RECORD, new_payload);
                 }
             }
             Arc::clone(tv)
@@ -1624,7 +1638,7 @@ pub(crate) fn substitute_recursive_ref(
                         fields.insert(FIELD_ARG.to_string(), a);
                     }
                     let new_payload = make_payload_thunk(fields, span);
-                    return make_payload_typevalue(TV_APP, new_payload);
+                    return make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_APP, new_payload);
                 }
             }
             Arc::clone(tv)
@@ -1663,7 +1677,11 @@ pub(crate) fn substitute_recursive_ref(
                         payload_fields.insert(FIELD_FIELDS.to_string(), f);
                     }
                     let new_payload = make_payload_thunk(payload_fields, span);
-                    return make_payload_typevalue(TV_NOMINAL_VARIANT, new_payload);
+                    return make_payload_typevalue(
+                        TYPE_ID_TYPE_VALUE,
+                        TV_NOMINAL_VARIANT,
+                        new_payload,
+                    );
                 }
             }
             Arc::clone(tv)
@@ -1682,7 +1700,11 @@ pub(crate) fn substitute_recursive_ref(
 /// The payload structure must match what `payload_members` expects:
 /// `{ members: { 0: m0, 1: m1, ... } }` — an outer dict with a "members" key
 /// whose value is the integer-indexed inner dict.
-fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
+fn build_members_typevalue(
+    type_decl_id: u64,
+    ctor_index: u32,
+    members: Vec<Arc<Value>>,
+) -> Arc<Value> {
     let span = bas_span();
     // Inner dict: integer-keyed { 0: m0, 1: m1, ... }
     let mut inner_entries = IndexMap::new();
@@ -1710,7 +1732,7 @@ fn build_members_typevalue(ctor: &str, members: Vec<Arc<Value>>) -> Arc<Value> {
         },
         span,
     ));
-    make_payload_typevalue(ctor, payload_thunk)
+    make_payload_typevalue(type_decl_id, ctor_index, payload_thunk)
 }
 
 /// Collect indexed TypeValues from an Arc<Value> Dict (used for params lists, member lists).
@@ -1809,8 +1831,8 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
         return false; // Same atom → not disjoint
     }
 
-    let a_ctor = typevalue_ctor(a);
-    let b_ctor = typevalue_ctor(b);
+    let a_ctor = typevalue_ctor_index(a);
+    let b_ctor = typevalue_ctor_index(b);
 
     match (a_ctor, b_ctor) {
         // TypeValue.Var: conservative — not disjoint from anything (unresolved)
@@ -1894,15 +1916,19 @@ pub(crate) fn atoms_are_disjoint(a: &Arc<Value>, b: &Arc<Value>, ctx: &Inference
 
         // NominalVariant with different tags: disjoint
         (Some(TV_NOMINAL_VARIANT), Some(TV_NOMINAL_VARIANT)) => {
-            let a_tycon = typevalue_payload(a)
-                .and_then(|p| payload_string_field(p, FIELD_TYCON).map(String::from));
-            let b_tycon = typevalue_payload(b)
-                .and_then(|p| payload_string_field(p, FIELD_TYCON).map(String::from));
-            let a_ctor_f = typevalue_payload(a)
-                .and_then(|p| payload_string_field(p, FIELD_CTOR).map(String::from));
-            let b_ctor_f = typevalue_payload(b)
-                .and_then(|p| payload_string_field(p, FIELD_CTOR).map(String::from));
-            match (a_tycon, b_tycon, a_ctor_f, b_ctor_f) {
+            let a_tycon_id = typevalue_payload(a)
+                .and_then(|p| payload_int_field(p, FIELD_TYCON))
+                .map(|id| id as u64);
+            let b_tycon_id = typevalue_payload(b)
+                .and_then(|p| payload_int_field(p, FIELD_TYCON))
+                .map(|id| id as u64);
+            let a_ctor_idx = typevalue_payload(a)
+                .and_then(|p| payload_int_field(p, FIELD_CTOR))
+                .map(|id| id as u32);
+            let b_ctor_idx = typevalue_payload(b)
+                .and_then(|p| payload_int_field(p, FIELD_CTOR))
+                .map(|id| id as u32);
+            match (a_tycon_id, b_tycon_id, a_ctor_idx, b_ctor_idx) {
                 (Some(at), Some(bt), Some(ac), Some(bc)) => at != bt || ac != bc,
                 _ => false,
             }
@@ -1976,8 +2002,8 @@ fn is_subtype_bas_with_sigma(
         return true;
     }
 
-    let sub_ctor = typevalue_ctor(sub);
-    let sup_ctor = typevalue_ctor(sup);
+    let sub_ctor = typevalue_ctor_index(sub);
+    let sup_ctor = typevalue_ctor_index(sup);
 
     // Error: not a subtype of anything (cascade sentinel)
     if matches!(sub_ctor, Some(TV_ERROR)) || matches!(sup_ctor, Some(TV_ERROR)) {
@@ -2005,13 +2031,14 @@ fn is_subtype_bas_with_sigma(
     }
 
     // BAS: A <: B iff A & ~B is uninhabited
-    let sup_neg = make_payload_typevalue(TV_NEG, {
+    let sup_neg = make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_NEG, {
         let span = bas_span();
         let mut fields = IndexMap::new();
         fields.insert(FIELD_OF.to_string(), Arc::clone(sup));
         make_payload_thunk(fields, span)
     });
-    let diff = build_members_typevalue(TV_INTER, vec![Arc::clone(sub), sup_neg]);
+    let diff =
+        build_members_typevalue(TYPE_ID_TYPE_VALUE, TV_INTER, vec![Arc::clone(sub), sup_neg]);
     let rdnf = to_rdnf(&diff);
     is_rdnf_empty(&rdnf, ctx, sigma, depth)
 }
@@ -2101,7 +2128,7 @@ fn is_record_consistent_subtype(
     match (sub_tail.as_ref(), sup_tail.as_ref()) {
         (_, None) => true,
         (_, Some(sup_t)) => {
-            let sup_tail_ctor = typevalue_ctor(sup_t);
+            let sup_tail_ctor = typevalue_ctor_index(sup_t);
             if sup_tail_ctor == Some(RT_VAR) {
                 true
             } else if sup_tail_ctor == Some(RT_UNIFORM) {
@@ -2110,7 +2137,7 @@ fn is_record_consistent_subtype(
                         payload_typevalue_field(sup_t_val, RT_FIELD_VALUE_TYPE)
                     {
                         if let Some(sub_t) = &sub_tail {
-                            if typevalue_ctor(sub_t) == Some(RT_UNIFORM) {
+                            if typevalue_ctor_index(sub_t) == Some(RT_UNIFORM) {
                                 if let Some(sub_t_val) = typevalue_payload(sub_t) {
                                     if let Some(sub_val_type) =
                                         payload_typevalue_field(sub_t_val, RT_FIELD_VALUE_TYPE)
@@ -2197,8 +2224,8 @@ fn check_sub_fields_against_uniform_consistent(
 /// Used for runtime TypeAssert: value type (which may have Unknown at erased positions)
 /// must be consistent with the expected annotation.
 pub fn is_consistent_subtype(sub: &Arc<Value>, sup: &Arc<Value>, ctx: &InferenceContext) -> bool {
-    let sub_ctor = typevalue_ctor(sub);
-    let sup_ctor = typevalue_ctor(sup);
+    let sub_ctor = typevalue_ctor_index(sub);
+    let sup_ctor = typevalue_ctor_index(sup);
 
     // Unknown or Top on sub side: consistent with everything
     if matches!(sub_ctor, Some(TV_UNKNOWN) | Some(TV_TOP)) {
@@ -2459,7 +2486,7 @@ mod tests {
 
     fn make_top() -> Arc<Value> {
         Arc::new(Value::Variant {
-            ctor: Arc::from(TV_TOP),
+            ctor_index: TV_TOP,
             payload: None,
             type_decl_id: TYPE_ID_DICT,
             type_val: None,
@@ -2468,7 +2495,7 @@ mod tests {
 
     fn make_never() -> Arc<Value> {
         Arc::new(Value::Variant {
-            ctor: Arc::from(TV_NEVER),
+            ctor_index: TV_NEVER,
             payload: None,
             type_decl_id: TYPE_ID_DICT,
             type_val: None,
@@ -2477,7 +2504,7 @@ mod tests {
 
     fn make_unknown() -> Arc<Value> {
         Arc::new(Value::Variant {
-            ctor: Arc::from(TV_UNKNOWN),
+            ctor_index: TV_UNKNOWN,
             payload: None,
             type_decl_id: TYPE_ID_DICT,
             type_val: None,
@@ -2537,7 +2564,7 @@ mod tests {
             Arc::new(Value::Int { n, type_val: None }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_INT_LIT, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_INT_LIT, payload_thunk)
     }
 
     fn make_str_lit(s: &str) -> Arc<Value> {
@@ -2553,7 +2580,7 @@ mod tests {
             }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_STR_LIT, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_STR_LIT, payload_thunk)
     }
 
     fn make_float_lit(f: f64) -> Arc<Value> {
@@ -2567,7 +2594,7 @@ mod tests {
             }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_FLOAT_LIT, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_FLOAT_LIT, payload_thunk)
     }
 
     /// Build a TypeValue.Fn with positional params and a return type.
@@ -2588,7 +2615,7 @@ mod tests {
         fields.insert(FIELD_PARAMS.to_string(), params_dict);
         fields.insert(FIELD_RETURN.to_string(), ret);
         let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_FN, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_FN, payload_thunk)
     }
 
     /// Build a TypeValue.Record with named string-keyed fields and a closed tail (empty dict).
@@ -2615,17 +2642,17 @@ mod tests {
         payload_fields.insert(FIELD_FIELDS.to_string(), fields_dict);
         payload_fields.insert(FIELD_TAIL.to_string(), tail_dict);
         let payload_thunk = make_payload_thunk(payload_fields, span);
-        make_payload_typevalue(TV_RECORD, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_RECORD, payload_thunk)
     }
 
     /// Build a TypeValue.Union of the given members.
     fn make_union(members: Vec<Arc<Value>>) -> Arc<Value> {
-        build_members_typevalue(TV_UNION, members)
+        build_members_typevalue(TYPE_ID_TYPE_VALUE, TV_UNION, members)
     }
 
     /// Build a TypeValue.Inter of the given members.
     fn make_inter(members: Vec<Arc<Value>>) -> Arc<Value> {
-        build_members_typevalue(TV_INTER, members)
+        build_members_typevalue(TYPE_ID_TYPE_VALUE, TV_INTER, members)
     }
 
     /// Build a TypeValue.Recursive wrapping the given body.
@@ -2634,7 +2661,7 @@ mod tests {
         let mut fields = IndexMap::new();
         fields.insert(FIELD_BODY.to_string(), body);
         let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_RECURSIVE, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_RECURSIVE, payload_thunk)
     }
 
     /// Build a TypeValue.RecursiveRef with the given de Bruijn depth.
@@ -2649,7 +2676,7 @@ mod tests {
             }),
         );
         let payload_thunk = make_payload_thunk(fields, span);
-        make_payload_typevalue(TV_RECURSIVE_REF, payload_thunk)
+        make_payload_typevalue(TYPE_ID_TYPE_VALUE, TV_RECURSIVE_REF, payload_thunk)
     }
 
     // -------------------------------------------------------------------------
@@ -3560,7 +3587,7 @@ mod tests {
         // is RecursiveRef(0) which gets replaced by mu_type itself).
         // We verify by checking it's a TV_RECURSIVE (the substituted mu_type).
         assert_eq!(
-            typevalue_ctor(&unfolded),
+            typevalue_ctor_index(&unfolded),
             Some(TV_RECURSIVE),
             "unfold_recursive_typevalue must substitute RecursiveRef{{depth:0}} with the recursive type"
         );
@@ -3589,7 +3616,7 @@ mod tests {
 
         // Result must still be TV_APP
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_APP),
             "result must be TV_APP"
         );
@@ -3599,7 +3626,7 @@ mod tests {
         let got_arg = payload_typevalue_field(payload, FIELD_ARG)
             .expect("result TV_APP payload must have 'arg' field");
         assert_eq!(
-            typevalue_ctor(&got_arg),
+            typevalue_ctor_index(&got_arg),
             Some(TV_NOMINAL),
             "substituted arg must be TV_NOMINAL (the replacement), not RecursiveRef"
         );
@@ -3628,7 +3655,7 @@ mod tests {
 
         // Result must still be TV_NOMINAL_VARIANT
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_NOMINAL_VARIANT),
             "result must be TV_NOMINAL_VARIANT"
         );
@@ -3650,7 +3677,7 @@ mod tests {
             .expect("fields Record must contain 'r' field")
             .clone();
         assert_eq!(
-            typevalue_ctor(&got_r),
+            typevalue_ctor_index(&got_r),
             Some(TV_NOMINAL),
             "substituted 'r' field must be TV_NOMINAL (int_repr), not RecursiveRef"
         );

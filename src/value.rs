@@ -217,7 +217,8 @@ pub enum HashableValue {
     /// Pairs in insertion order. Equality is order-insensitive.
     Dict(Vec<(HashableValue, HashableValue)>),
     Variant {
-        tag: Arc<str>,
+        type_decl_id: u64,
+        ctor_index: u32,
         payload: Option<Box<HashableValue>>,
     },
 }
@@ -262,14 +263,16 @@ impl PartialEq for HashableValue {
             }
             (
                 HashableValue::Variant {
-                    tag: t1,
+                    type_decl_id: d1,
+                    ctor_index: i1,
                     payload: p1,
                 },
                 HashableValue::Variant {
-                    tag: t2,
+                    type_decl_id: d2,
+                    ctor_index: i2,
                     payload: p2,
                 },
-            ) => t1 == t2 && p1 == p2,
+            ) => d1 == d2 && i1 == i2 && p1 == p2,
             _ => false, // different variants or cross-type
         }
     }
@@ -326,9 +329,14 @@ impl Hash for HashableValue {
                 }
                 sum.hash(state);
             }
-            HashableValue::Variant { tag, payload } => {
+            HashableValue::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+            } => {
                 4u8.hash(state);
-                tag.hash(state);
+                type_decl_id.hash(state);
+                ctor_index.hash(state);
                 match payload {
                     None => 0u8.hash(state),
                     Some(v) => {
@@ -357,10 +365,17 @@ impl fmt::Display for HashableValue {
                 }
                 write!(f, "]")
             }
-            HashableValue::Variant { tag, payload } => match payload {
-                None => write!(f, "{tag}"),
-                Some(p) => write!(f, "[{tag} {p}]"),
-            },
+            HashableValue::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+            } => {
+                let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+                match payload {
+                    None => write!(f, "{name}"),
+                    Some(p) => write!(f, "[{name} {p}]"),
+                }
+            }
         }
     }
 }
@@ -711,17 +726,6 @@ impl Clone for Builder {
     }
 }
 
-/// Extract the type constructor name from a qualified constructor name.
-///
-/// Given a `ctor` field like `"Color.Red"`, returns `"Color"`.
-/// Given an unqualified name like `"Red"`, returns `"Red"` unchanged.
-///
-/// Used wherever code previously read `variant.tycon` to determine the type
-/// constructor name for type checking or display purposes.
-pub fn tycon_name_from_ctor(ctor: &str) -> &str {
-    ctor.split('.').next().unwrap_or(ctor)
-}
-
 // ─── Primitive Type ID Constants ──────────────────────────────────────────────
 
 /// Reserved type ID range for primitive Value variants (1..=99).
@@ -765,6 +769,18 @@ pub const TYPE_ID_REACTIVE_CELL: u64 = 35;
 pub const TYPE_ID_TYPE_CONTEXT: u64 = 37;
 pub const TYPE_ID_CORE_DOCUMENT: u64 = 38;
 pub const TYPE_ID_SCOPE: u64 = 39;
+pub const TYPE_ID_EXPR: u64 = 40;
+pub const TYPE_ID_ENTRY: u64 = 41;
+pub const TYPE_ID_ANNOTATION: u64 = 42;
+
+pub const TYPE_ID_TYPE_VALUE: u64 = 50;
+pub const TYPE_ID_ROW_TAIL: u64 = 51;
+pub const TYPE_ID_TYPE_NODE: u64 = 52;
+pub const TYPE_ID_CONSTRAINT_DECL: u64 = 53;
+pub const TYPE_ID_VAR_DECL: u64 = 54;
+pub const TYPE_ID_BOOL: u64 = 55;
+pub const TYPE_ID_PROGRAM_ITEM: u64 = 56;
+pub const TYPE_ID_DOT_KEY: u64 = 57;
 
 /// Maximum reserved type ID for primitive types.
 /// User-defined variant `type_decl_id` values start at `TYPE_ID_RESERVED_MAX + 1` (100).
@@ -872,16 +888,15 @@ pub enum Value {
     },
     /// Nominal variant (enum-like value)
     Variant {
-        /// The runtime TypeValue for this variant's type constructor.
-        /// Set to `crate::type_infer::make_typevalue_unknown()` at construction sites that do not yet have
-        /// a resolved TypeValue; wired up by the repr: protocol when it runs.
-
         /// Stable numeric type declaration ID from the expand stage (T-2135).
         /// Same as `expand::next_type_decl_id()` assigned to the enclosing `[type ...]` declaration.
         /// 0 means "unknown" (construction sites without type_decl_id wiring, e.g. identity sentinel).
         /// Enables O(1) type identity checks in `type_id()` without traversing `type_val`.
         type_decl_id: u64,
-        ctor: Arc<str>,
+        /// Zero-based position of this constructor within the type declaration.
+        /// Full identity is `(type_decl_id, ctor_index)`. Display names are derived
+        /// via `crate::type_tags::ctor_display_name()`.
+        ctor_index: u32,
         payload: Option<std::sync::Arc<Thunk>>,
         type_val: Option<std::sync::Arc<Value>>,
     },
@@ -1173,12 +1188,12 @@ impl Clone for Value {
             },
             Value::Variant {
                 type_decl_id,
-                ctor,
+                ctor_index,
                 payload,
                 type_val,
             } => Value::Variant {
                 type_decl_id: *type_decl_id,
-                ctor: Arc::clone(ctor),
+                ctor_index: *ctor_index,
                 payload: payload.as_ref().map(std::sync::Arc::clone),
                 type_val: type_val.clone(),
             },
@@ -1619,11 +1634,17 @@ impl fmt::Debug for Value {
                     write!(f, "DirCap(revocable)")
                 }
             }
-            Value::Variant { ctor, payload, .. } => {
+            Value::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+                ..
+            } => {
+                let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
                 if payload.is_some() {
-                    write!(f, "Variant({}, <payload>)", ctor)
+                    write!(f, "Variant({}, <payload>)", name)
                 } else {
-                    write!(f, "Variant({})", ctor)
+                    write!(f, "Variant({})", name)
                 }
             }
             Value::Decimal { n, .. } => write!(f, "Decimal({n})"),
@@ -1727,11 +1748,17 @@ impl fmt::Display for Value {
                     write!(f, "<DirCap (revocable)>")
                 }
             }
-            Value::Variant { ctor, payload, .. } => {
+            Value::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+                ..
+            } => {
+                let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
                 if payload.is_some() {
-                    write!(f, "{}(<payload>)", ctor)
+                    write!(f, "{}(<payload>)", name)
                 } else {
-                    write!(f, "{}", ctor)
+                    write!(f, "{}", name)
                 }
             }
             Value::Decimal { n, .. } => write!(f, "{n}"),
@@ -2986,18 +3013,21 @@ mod tests {
     #[test]
     fn hashable_value_variant_eq_and_hash() {
         let v1 = HashableValue::Variant {
-            tag: "Color.Red".into(),
+            type_decl_id: 200,
+            ctor_index: 0,
             payload: None,
         };
         let v2 = HashableValue::Variant {
-            tag: "Color.Red".into(),
+            type_decl_id: 200,
+            ctor_index: 0,
             payload: None,
         };
         assert_eq!(v1, v2);
         assert_eq!(compute_hash(&v1), compute_hash(&v2));
 
         let v3 = HashableValue::Variant {
-            tag: "Color.Blue".into(),
+            type_decl_id: 200,
+            ctor_index: 2,
             payload: None,
         };
         assert_ne!(v1, v3);
@@ -3006,18 +3036,21 @@ mod tests {
     #[test]
     fn hashable_value_variant_with_payload() {
         let v1 = HashableValue::Variant {
-            tag: "Option.Some".into(),
+            type_decl_id: 201,
+            ctor_index: 0,
             payload: Some(Box::new(HashableValue::Int(42))),
         };
         let v2 = HashableValue::Variant {
-            tag: "Option.Some".into(),
+            type_decl_id: 201,
+            ctor_index: 0,
             payload: Some(Box::new(HashableValue::Int(42))),
         };
         assert_eq!(v1, v2);
         assert_eq!(compute_hash(&v1), compute_hash(&v2));
 
         let v3 = HashableValue::Variant {
-            tag: "Option.Some".into(),
+            type_decl_id: 201,
+            ctor_index: 0,
             payload: Some(Box::new(HashableValue::Int(99))),
         };
         assert_ne!(v1, v3);
@@ -3026,7 +3059,8 @@ mod tests {
     #[test]
     fn hashable_value_variant_cross_type() {
         let variant = HashableValue::Variant {
-            tag: "Color.Red".into(),
+            type_decl_id: 200,
+            ctor_index: 0,
             payload: None,
         };
         let str_val = HashableValue::Str("Color.Red".into());
@@ -3163,7 +3197,7 @@ mod tests {
     fn test_type_decl_id_of_variant_returns_field() {
         let variant = Value::Variant {
             type_decl_id: 200,
-            ctor: Arc::from("MyType.Ctor"),
+            ctor_index: 0,
             payload: None,
             type_val: Some(crate::type_infer::make_typevalue_nominal(200)),
         };

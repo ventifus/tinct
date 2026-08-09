@@ -14,7 +14,7 @@
 //!
 //! A class constraint `Sortable a` becomes:
 //! ```
-//! Value::Variant { ctor: "ConstraintDecl", payload: Dict { class: <Sortable TypeValue>, args: { "0": TypeValue.Var "a" } } }
+//! Value::Variant { type_decl_id: TYPE_ID_CONSTRAINT_DECL, ctor_index: CD_CONSTRAINT_DECL, payload: Dict { class: <Sortable TypeValue>, args: { "0": TypeValue.Var "a" } } }
 //! ```
 
 use std::collections::HashMap;
@@ -26,7 +26,9 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::type_tags::*;
-use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{
+    HashableValue, Thunk, Value, TYPE_ID_CONSTRAINT_DECL, TYPE_ID_DICT, TYPE_ID_TYPE_VALUE,
+};
 
 /// Global counter for unique class declaration IDs.
 /// Shared between the resolver's Phase 1b scan (which pre-assigns IDs before type-checking)
@@ -56,8 +58,8 @@ pub enum StructuralDischarge {
 }
 
 /// A TypeValue is an `Arc<Value>` where the Value is a `Value::Variant` with
-/// a constructor tag like `"TypeValue.Int"`, `"TypeValue.Var"`, `"TypeValue.Fn"`, etc.
-/// as declared in stdlib/builtin_core.llt.
+/// a numeric constructor identity `(type_decl_id, ctor_index)` — e.g. `(TYPE_ID_TYPE_VALUE, TV_VAR)`.
+/// Constructor ordering is declared in stdlib/builtin_core.llt.
 pub type TypeValue = Arc<Value>;
 
 // ─── Internal span helper ─────────────────────────────────────────────────────
@@ -117,12 +119,11 @@ fn two_field_dict(key1: &str, val1: Value, key2: &str, val2: Value) -> Value {
 }
 
 /// Construct a `Value::Variant` (the fundamental building block of TypeValues).
-fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
+fn make_variant(type_decl_id: u64, ctor_index: u32, payload: Option<Value>) -> Value {
     Value::Variant {
-        ctor: Arc::from(ctor),
+        ctor_index,
         payload: payload.map(|p| settled_thunk(p)),
-
-        type_decl_id: TYPE_ID_DICT,
+        type_decl_id,
         type_val: None,
     }
 }
@@ -133,7 +134,7 @@ fn make_variant(ctor: &str, payload: Option<Value>) -> Value {
 pub fn make_type_op(name: impl Into<String>) -> TypeValue {
     let name_str: String = name.into();
     let payload = single_field_dict("name", string_value(&name_str));
-    Arc::new(make_variant(TV_NOMINAL, Some(payload)))
+    Arc::new(make_variant(TYPE_ID_TYPE_VALUE, TV_NOMINAL, Some(payload)))
 }
 
 /// Extract the inner `Value` from an `Arc<Value>`, cloning if there are multiple owners.
@@ -154,7 +155,7 @@ pub(crate) fn arc_into_value(arc: Arc<Value>) -> Value {
 ///
 /// The resulting value is:
 /// ```
-/// Value::Variant { ctor: "ConstraintDecl", payload: { class: class_tv, args: { 0: arg0, 1: arg1, ... } } }
+/// Value::Variant { type_decl_id: TYPE_ID_CONSTRAINT_DECL, ctor_index: CD_CONSTRAINT_DECL, payload: { class: class_tv, args: { 0: arg0, 1: arg1, ... } } }
 /// ```
 pub fn make_constraint_decl(class_tv: TypeValue, args: Vec<TypeValue>) -> TypeValue {
     // Build args dict (auto-indexed by integer position)
@@ -173,18 +174,14 @@ pub fn make_constraint_decl(class_tv: TypeValue, args: Vec<TypeValue>) -> TypeVa
 
     let class_val = arc_into_value(class_tv);
     let payload = two_field_dict("class", class_val, "args", args_dict);
-    Arc::new(make_variant(TV_CONSTRAINT_DECL, Some(payload)))
+    Arc::new(make_variant(
+        TYPE_ID_CONSTRAINT_DECL,
+        CD_CONSTRAINT_DECL,
+        Some(payload),
+    ))
 }
 
 // ─── TypeValue inspection helpers ─────────────────────────────────────────────
-
-/// Extract the constructor tag from a TypeValue (Value::Variant).
-/// Returns `None` if the value is not a Variant.
-///
-/// Delegates to the canonical definition in `crate::type_tags::typevalue_ctor`.
-pub fn typevalue_ctor(tv: &Arc<Value>) -> Option<&str> {
-    crate::type_tags::typevalue_ctor(tv)
-}
 
 /// Create a TypeValue.App (type application) — `op` applied to `arg`.
 ///
@@ -296,10 +293,10 @@ pub struct InstanceDecl {
 fn extract_fd_constraint_parts(cv: &Arc<Value>) -> Option<(String, Vec<Arc<Value>>)> {
     match cv.as_ref() {
         Value::Variant {
-            ctor,
+            type_decl_id,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => {
+        } if *type_decl_id == TYPE_ID_CONSTRAINT_DECL => {
             let payload_val = thunk.peek_result()?;
             let payload_dict = match payload_val {
                 Ok(Value::Dict { entries, .. }) => entries,
@@ -310,10 +307,10 @@ fn extract_fd_constraint_parts(cv: &Arc<Value>) -> Option<(String, Vec<Arc<Value
             let class_thunk = payload_dict.get(&class_key)?;
             let class_name = match class_thunk.peek_result()? {
                 Ok(Value::Variant {
-                    ctor: c_ctor,
+                    ctor_index: c_ctor_idx,
                     payload: Some(class_payload),
                     ..
-                }) if c_ctor.as_ref() == TV_NOMINAL => {
+                }) if *c_ctor_idx == TV_NOMINAL => {
                     let class_payload_val = class_payload.peek_result()?;
                     match class_payload_val {
                         Ok(Value::Dict { entries: inner, .. }) => {
@@ -370,7 +367,11 @@ fn has_free_type_vars_inner(
     visited: &mut std::collections::HashSet<String>,
 ) -> bool {
     match tv.as_ref() {
-        Value::Variant { ctor, payload, .. } => match ctor.as_ref() {
+        Value::Variant {
+            ctor_index,
+            payload,
+            ..
+        } => match *ctor_index {
             TV_VAR => {
                 // Extract var name from payload dict.
                 let name = match payload {
@@ -506,10 +507,10 @@ fn extract_instance_record_fields(tv: &Arc<Value>) -> HashMap<i64, Arc<Value>> {
     let mut result = HashMap::new();
     match tv.as_ref() {
         Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_RECORD => {
+        } if *ctor_index == TV_RECORD => {
             if let Some(Ok(Value::Dict { entries, .. })) = thunk.peek_result() {
                 let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
                 if let Some(fields_thunk) = entries.get(&fields_key) {
@@ -544,24 +545,29 @@ fn extract_instance_record_fields(tv: &Arc<Value>) -> HashMap<i64, Arc<Value>> {
 fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
     match (pattern.as_ref(), target.as_ref()) {
         // Var in pattern = polymorphic wildcard — matches anything.
-        (Value::Variant { ctor, .. }, _) if ctor.as_ref() == TV_VAR => true,
+        (Value::Variant { ctor_index, .. }, _) if *ctor_index == TV_VAR => true,
         // Both unit variants with same ctor — equal.
         (
             Value::Variant {
-                ctor: ca,
+                ctor_index: ca_idx,
                 payload: None,
                 ..
             },
             Value::Variant {
-                ctor: cb,
+                ctor_index: cb_idx,
                 payload: None,
                 ..
             },
-        ) => ca.as_ref() == cb.as_ref(),
+        ) => ca_idx == cb_idx,
         // TypeValue.Nominal: match by id.
-        (Value::Variant { ctor: ca, .. }, Value::Variant { ctor: cb, .. })
-            if ca.as_ref() == TV_NOMINAL && cb.as_ref() == TV_NOMINAL =>
-        {
+        (
+            Value::Variant {
+                ctor_index: ca_idx, ..
+            },
+            Value::Variant {
+                ctor_index: cb_idx, ..
+            },
+        ) if *ca_idx == TV_NOMINAL && *cb_idx == TV_NOMINAL => {
             crate::type_infer::typevalue_nominal_id(pattern)
                 == crate::type_infer::typevalue_nominal_id(target)
         }
@@ -571,9 +577,14 @@ fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
         // performed — parametric types whose ctor tags match but payloads differ
         // (e.g. Seq[Int] vs Seq[Str]) are treated as matching here. Callers that
         // need structural comparison must use full TypeValue unification.
-        (Value::Variant { ctor: ca, .. }, Value::Variant { ctor: cb, .. }) => {
-            ca.as_ref() == cb.as_ref()
-        }
+        (
+            Value::Variant {
+                ctor_index: ca_idx, ..
+            },
+            Value::Variant {
+                ctor_index: cb_idx, ..
+            },
+        ) => ca_idx == cb_idx,
         _ => false,
     }
 }
@@ -711,8 +722,8 @@ pub(crate) async fn try_fd_improvement(
 
                 // Skip if the computed type is uninformative (Unknown or free TypeVar).
                 match computed_ty.as_ref() {
-                    Value::Variant { ctor, .. }
-                        if ctor.as_ref() == TV_UNKNOWN || ctor.as_ref() == TV_VAR =>
+                    Value::Variant { ctor_index, .. }
+                        if *ctor_index == TV_UNKNOWN || *ctor_index == TV_VAR =>
                     {
                         continue;
                     }
@@ -763,8 +774,8 @@ pub(crate) async fn try_fd_improvement(
                 };
                 // Skip if the computed type is itself Unknown or a TypeVar (uninformative).
                 match computed_ty.as_ref() {
-                    Value::Variant { ctor, .. }
-                        if ctor.as_ref() == TV_UNKNOWN || ctor.as_ref() == TV_VAR =>
+                    Value::Variant { ctor_index, .. }
+                        if *ctor_index == TV_UNKNOWN || *ctor_index == TV_VAR =>
                     {
                         continue;
                     }
@@ -798,74 +809,114 @@ pub(crate) async fn try_fd_improvement(
 /// Returns `None` for TypeValues that have no direct TypeNode equivalent (compound types
 /// like Fn, Record, Union, etc. are not yet converted — extend as needed).
 pub(crate) fn typevalue_to_typenode(tv: &Arc<Value>) -> Option<Arc<Value>> {
-    use crate::type_infer::typevalue_ctor;
+    use crate::type_tags::typevalue_ctor_index;
 
     use crate::value::*;
-    match typevalue_ctor(tv) {
+    match typevalue_ctor_index(tv) {
         Some(TV_NOMINAL) => {
             let id = crate::type_infer::typevalue_nominal_id(tv)?;
-            let tn_ctor = match id {
-                TYPE_ID_INT | TYPE_ID_U64 => TN_INT,
-                TYPE_ID_FLOAT => TN_FLOAT,
-                TYPE_ID_STRING => TN_STRING,
-                TYPE_ID_BYTES => TN_BYTES,
-                TYPE_ID_DECIMAL => TN_DECIMAL,
-                TYPE_ID_BIGINT => TN_BIG_INT,
-                TYPE_ID_DIRCAP | TYPE_ID_REVOCABLE_DIRCAP => TN_DIR_CAP,
-                TYPE_ID_NETCAP => TN_NET_CAP,
-                TYPE_ID_FILE => TN_FILE,
-                TYPE_ID_TASK => TN_TASK,
-                TYPE_ID_CHANNEL => TN_CHANNEL,
-                TYPE_ID_CONTEXT => TN_CONTEXT,
-                TYPE_ID_REACTIVE_CELL => TN_REACTIVE_CELL,
-                TYPE_ID_CLOCKCAP => TN_CLOCK_CAP,
-                TYPE_ID_TIMEZONE => TN_TIMEZONE,
-                TYPE_ID_TIMESTAMP => TN_TIMESTAMP,
-                TYPE_ID_DURATION => TN_DURATION,
-                TYPE_ID_PROXY => TN_PROXY,
-                TYPE_ID_QUIC_SESSION => TN_QUIC_SESSION,
-                TYPE_ID_QUIC_DATAGRAM_HANDLE => TN_QUIC_DATAGRAM_HANDLE,
-                TYPE_ID_HTTP2_SESSION => TN_HTTP2_SESSION,
-                TYPE_ID_HTTP3_SESSION => TN_HTTP3_SESSION,
-                TYPE_ID_URI => TN_URI,
-                TYPE_ID_PROGRAM => TN_PROGRAM,
-                TYPE_ID_DOCUMENT => TN_DOCUMENT,
-                TYPE_ID_CORE_DOCUMENT => TN_CORE_DOCUMENT,
-                TYPE_ID_TYPE_CONTEXT => TN_TYPE_CONTEXT,
+            // Types with dedicated TypeNode constructors
+            match id {
+                TYPE_ID_INT | TYPE_ID_U64 => {
+                    return Some(Arc::new(Value::Variant {
+                        ctor_index: TN_INT,
+                        payload: None,
+                        type_decl_id: TYPE_ID_TYPE_NODE,
+                        type_val: None,
+                    }))
+                }
+                TYPE_ID_FLOAT => {
+                    return Some(Arc::new(Value::Variant {
+                        ctor_index: TN_FLOAT,
+                        payload: None,
+                        type_decl_id: TYPE_ID_TYPE_NODE,
+                        type_val: None,
+                    }))
+                }
+                TYPE_ID_STRING => {
+                    return Some(Arc::new(Value::Variant {
+                        ctor_index: TN_STRING,
+                        payload: None,
+                        type_decl_id: TYPE_ID_TYPE_NODE,
+                        type_val: None,
+                    }))
+                }
+                TYPE_ID_BYTES => {
+                    return Some(Arc::new(Value::Variant {
+                        ctor_index: TN_BYTES,
+                        payload: None,
+                        type_decl_id: TYPE_ID_TYPE_NODE,
+                        type_val: None,
+                    }))
+                }
+                TYPE_ID_PROXY => {
+                    return Some(Arc::new(Value::Variant {
+                        ctor_index: TN_PROXY,
+                        payload: None,
+                        type_decl_id: TYPE_ID_TYPE_NODE,
+                        type_val: None,
+                    }))
+                }
+                _ => {}
+            }
+            // Opaque types: map to TypeNode.TypeConstructor with the type name
+            let opaque_name = match id {
+                TYPE_ID_DECIMAL => OP_DECIMAL,
+                TYPE_ID_BIGINT => OP_BIG_INT,
+                TYPE_ID_DIRCAP | TYPE_ID_REVOCABLE_DIRCAP => OP_DIR_CAP,
+                TYPE_ID_NETCAP => OP_NET_CAP,
+                TYPE_ID_FILE => OP_FILE,
+                TYPE_ID_TASK => OP_TASK,
+                TYPE_ID_CHANNEL => OP_CHANNEL,
+                TYPE_ID_CONTEXT => OP_CONTEXT,
+                TYPE_ID_REACTIVE_CELL => OP_REACTIVE_CELL,
+                TYPE_ID_CLOCKCAP => OP_CLOCK_CAP,
+                TYPE_ID_TIMEZONE => OP_TIMEZONE,
+                TYPE_ID_TIMESTAMP => OP_TIMESTAMP,
+                TYPE_ID_DURATION => OP_DURATION,
+                TYPE_ID_QUIC_SESSION => OP_QUIC_SESSION,
+                TYPE_ID_QUIC_DATAGRAM_HANDLE => OP_QUIC_DATAGRAM_HANDLE,
+                TYPE_ID_HTTP2_SESSION => OP_HTTP2_SESSION,
+                TYPE_ID_HTTP3_SESSION => OP_HTTP3_SESSION,
+                TYPE_ID_URI => OP_URI,
+                TYPE_ID_PROGRAM => OP_PROGRAM,
+                TYPE_ID_DOCUMENT => OP_DOCUMENT,
+                TYPE_ID_CORE_DOCUMENT => OP_CORE_DOCUMENT,
+                TYPE_ID_TYPE_CONTEXT => OP_TYPE_CONTEXT,
                 _ => return None,
             };
-            Some(Arc::new(Value::Variant {
-                ctor: Arc::from(tn_ctor),
-                payload: None,
-
-                type_decl_id: TYPE_ID_DICT,
-                type_val: None,
-            }))
+            let payload = single_field_dict(TN_FIELD_CTOR, string_value(opaque_name));
+            Some(Arc::new(make_variant(
+                TYPE_ID_TYPE_NODE,
+                TN_TYPE_CONSTRUCTOR,
+                Some(payload),
+            )))
         }
         Some(TV_VAR) => {
             let name = crate::type_infer::typevalue_var_name(tv)?;
             let payload = single_field_dict(TN_FIELD_NAME, string_value(&name));
-            Some(Arc::new(make_variant(TN_TYPE_VAR, Some(payload))))
+            Some(Arc::new(make_variant(
+                TYPE_ID_TYPE_NODE,
+                TN_TYPE_VAR,
+                Some(payload),
+            )))
         }
         Some(TV_UNKNOWN) => Some(Arc::new(Value::Variant {
-            ctor: Arc::from(TN_UNKNOWN),
+            ctor_index: TN_UNKNOWN,
             payload: None,
-
-            type_decl_id: TYPE_ID_DICT,
+            type_decl_id: TYPE_ID_TYPE_NODE,
             type_val: None,
         })),
         Some(TV_TOP) => Some(Arc::new(Value::Variant {
-            ctor: Arc::from(TN_TOP),
+            ctor_index: TN_TOP,
             payload: None,
-
-            type_decl_id: TYPE_ID_DICT,
+            type_decl_id: TYPE_ID_TYPE_NODE,
             type_val: None,
         })),
         Some(TV_NEVER) => Some(Arc::new(Value::Variant {
-            ctor: Arc::from(TN_NEVER),
+            ctor_index: TN_NEVER,
             payload: None,
-
-            type_decl_id: TYPE_ID_DICT,
+            type_decl_id: TYPE_ID_TYPE_NODE,
             type_val: None,
         })),
         _ => None, // Compound types not yet converted — extend as needed.
@@ -878,7 +929,7 @@ mod tests {
 
     fn make_typevar_local(name: &str) -> Arc<Value> {
         let payload = single_field_dict("name", string_value(name));
-        Arc::new(make_variant(TV_VAR, Some(payload)))
+        Arc::new(make_variant(TYPE_ID_TYPE_VALUE, TV_VAR, Some(payload)))
     }
 
     /// make_constraint_decl produces a ConstraintDecl Variant.
@@ -889,8 +940,13 @@ mod tests {
         let constraint = make_constraint_decl(class_tv, vec![arg_tv]);
 
         match constraint.as_ref() {
-            Value::Variant { ctor, .. } => {
-                assert_eq!(ctor.as_ref(), TV_CONSTRAINT_DECL);
+            Value::Variant {
+                type_decl_id,
+                ctor_index,
+                ..
+            } => {
+                assert_eq!(*type_decl_id, TYPE_ID_CONSTRAINT_DECL);
+                assert_eq!(*ctor_index, CD_CONSTRAINT_DECL);
             }
             _ => panic!("expected Value::Variant for ConstraintDecl"),
         }

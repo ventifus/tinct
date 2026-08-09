@@ -17,7 +17,7 @@ use crate::type_tags::*;
 // The definition lives in type_class.rs — re-export it here so callers can import
 // TypeValue from type_infer without reaching into type_class directly.
 pub use crate::type_class::TypeValue;
-use crate::value::TYPE_ID_DICT;
+use crate::value::{TYPE_ID_BOOL, TYPE_ID_DICT, TYPE_ID_ROW_TAIL, TYPE_ID_TYPE_VALUE};
 
 // ── TypeValue helper functions ────────────────────────────────────────────────
 
@@ -29,8 +29,8 @@ pub fn make_typevar_value(name: &str) -> TypeValue {
     // Payload: a settled Dict with { name: String }
     let payload = make_dict_typevalue(&[(FIELD_NAME, make_string_typevalue(name))]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_VAR),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_VAR,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -42,8 +42,8 @@ pub fn make_typevar_value(name: &str) -> TypeValue {
 /// Create a TypeValue.Unknown Arc<Value> (the gradual `?` escape hatch).
 pub fn make_typevalue_unknown() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_UNKNOWN),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_UNKNOWN,
         payload: None,
         type_val: None,
     })
@@ -52,8 +52,8 @@ pub fn make_typevalue_unknown() -> TypeValue {
 /// Create a TypeValue.Never Arc<Value> (the bottom type ⊥).
 pub fn make_typevalue_never() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_NEVER),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_NEVER,
         payload: None,
         type_val: None,
     })
@@ -62,8 +62,8 @@ pub fn make_typevalue_never() -> TypeValue {
 /// Create a TypeValue.Top Arc<Value> (the top type ⊤).
 pub fn make_typevalue_top() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_TOP),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_TOP,
         payload: None,
         type_val: None,
     })
@@ -82,8 +82,8 @@ pub fn make_typevalue_nominal(id: u64) -> TypeValue {
         },
     )]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_NOMINAL),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_NOMINAL,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -93,7 +93,7 @@ pub fn make_typevalue_nominal(id: u64) -> TypeValue {
 }
 
 pub fn typevalue_nominal_id(v: &TypeValue) -> Option<u64> {
-    if typevalue_ctor(v) != Some(TV_NOMINAL) {
+    if typevalue_ctor_index(v) != Some(TV_NOMINAL) {
         return None;
     }
     match v.as_ref() {
@@ -121,8 +121,8 @@ pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
     let payload =
         make_dict_typevalue(&[(FIELD_VALUE, crate::value::Value::Int { n, type_val: None })]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_INT_LIT),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_INT_LIT,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -135,8 +135,8 @@ pub fn make_typevalue_int_lit(n: i64) -> TypeValue {
 pub fn make_typevalue_str_lit(s: &str) -> TypeValue {
     let payload = make_dict_typevalue(&[(FIELD_VALUE, make_string_typevalue(s))]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_STR_LIT),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_STR_LIT,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -155,8 +155,8 @@ pub fn make_typevalue_float_lit(f: f64) -> TypeValue {
         },
     )]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_FLOAT_LIT),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_FLOAT_LIT,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -271,8 +271,8 @@ pub fn make_typevalue_fn_with_flags(
     if variadic {
         // Store "variadic: true" as a unit Variant with ctor BOOL_TRUE ("true").
         let true_variant = crate::value::Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(BOOL_TRUE),
+            type_decl_id: TYPE_ID_BOOL,
+            ctor_index: BOOL_TRUE_IDX,
             payload: None,
             type_val: None,
         };
@@ -321,8 +321,8 @@ pub fn make_typevalue_fn_with_flags(
         type_val: None,
     };
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_FN),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_FN,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload_dict,
             crate::rust_span!(),
@@ -334,8 +334,8 @@ pub fn make_typevalue_fn_with_flags(
 /// Create a RowTail.Closed Arc<Value> — the tail for a closed (fully-specified) record.
 pub fn make_rowtail_closed() -> TypeValue {
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(RT_CLOSED),
+        type_decl_id: TYPE_ID_ROW_TAIL,
+        ctor_index: RT_CLOSED,
         payload: None,
         type_val: None,
     })
@@ -352,8 +352,8 @@ pub fn make_rowtail_closed() -> TypeValue {
 pub fn make_rowtail_var(name: &str) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_NAME, make_string_typevalue(name))]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(RT_VAR),
+        type_decl_id: TYPE_ID_ROW_TAIL,
+        ctor_index: RT_VAR,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -369,10 +369,10 @@ pub fn make_rowtail_var(name: &str) -> TypeValue {
 pub fn extract_rowtail_var_name(tv: &TypeValue) -> Option<String> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == RT_VAR => match thunk.peek_result() {
+        } if *ctor_index == RT_VAR => match thunk.peek_result() {
             Some(Ok(crate::value::Value::Dict { entries, .. })) => {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
                 let name_thunk = entries.get(&key)?;
@@ -413,8 +413,8 @@ pub fn make_rowtail_uniform_with_key_type(
     }
     let payload = make_dict_typevalue_from_value(&fields);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(RT_UNIFORM),
+        type_decl_id: TYPE_ID_ROW_TAIL,
+        ctor_index: RT_UNIFORM,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -442,7 +442,7 @@ pub fn make_typevalue_record(
 
     // Validate tail is a RowTail Variant (Closed/Var/Uniform).
     if let Some(ref t) = tail {
-        let ctor = typevalue_ctor(t);
+        let ctor = typevalue_ctor_index(t);
         assert!(
             matches!(ctor, Some(RT_CLOSED) | Some(RT_VAR) | Some(RT_UNIFORM)),
             "make_typevalue_record: tail must be a RowTail Variant (Closed/Var/Uniform), got {:?}",
@@ -486,8 +486,8 @@ pub fn make_typevalue_record(
         type_val: None,
     };
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_RECORD),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_RECORD,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload_dict,
             crate::rust_span!(),
@@ -536,8 +536,8 @@ pub fn make_typevalue_union(members: Vec<TypeValue>) -> TypeValue {
     };
     let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_UNION),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_UNION,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -566,8 +566,8 @@ pub fn make_typevalue_intersection(members: Vec<TypeValue>) -> TypeValue {
     };
     let payload = make_dict_typevalue_from_value(&[(FIELD_MEMBERS, members_dict)]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_INTER),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_INTER,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -580,8 +580,8 @@ pub fn make_typevalue_intersection(members: Vec<TypeValue>) -> TypeValue {
 pub fn make_typevalue_negation(inner: TypeValue) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_OF, inner.as_ref().clone())]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_NEG),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_NEG,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -597,8 +597,8 @@ pub fn make_typevalue_app(op: TypeValue, arg: TypeValue) -> TypeValue {
         (FIELD_ARG, arg.as_ref().clone()),
     ]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_APP),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_APP,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -619,8 +619,52 @@ pub fn make_typevalue_nominal_variant(tycon: &str, ctor: &str, fields: TypeValue
         (FIELD_FIELDS, fields.as_ref().clone()),
     ]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_NOMINAL_VARIANT),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_NOMINAL_VARIANT,
+        payload: Some(Arc::new(crate::value::Thunk::value(
+            payload,
+            crate::rust_span!(),
+        ))),
+        type_val: None,
+    })
+}
+
+/// Create a TypeValue.NominalVariant Arc<Value> using numeric constructor identity.
+///
+/// This is the numeric-identity variant of `make_typevalue_nominal_variant`. The payload
+/// stores `type_decl_id` and `ctor_index` as integers (u64 and i64) instead of string names.
+/// Used by match-arm narrowing and other type inference contexts where the constructor
+/// identity is already resolved to numeric form.
+///
+/// **Parameters:**
+/// - `type_decl_id`: The type declaration ID (e.g., from `state.type_name_to_id`)
+/// - `ctor_index`: The constructor index (position in `TyConDef.constructors`)
+/// - `fields`: The payload fields TypeValue (typically a Record)
+pub fn make_typevalue_nominal_variant_by_id(
+    type_decl_id: u64,
+    ctor_index: u32,
+    fields: TypeValue,
+) -> TypeValue {
+    let payload = make_dict_typevalue_from_value(&[
+        (
+            FIELD_TYCON,
+            crate::value::Value::Int {
+                n: type_decl_id as i64,
+                type_val: None,
+            },
+        ),
+        (
+            FIELD_CTOR,
+            crate::value::Value::Int {
+                n: ctor_index as i64,
+                type_val: None,
+            },
+        ),
+        (FIELD_FIELDS, fields.as_ref().clone()),
+    ]);
+    Arc::new(crate::value::Value::Variant {
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_NOMINAL_VARIANT,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -649,8 +693,8 @@ pub fn make_typevalue_nominal_variant(tycon: &str, ctor: &str, fields: TypeValue
 pub fn make_typevalue_recursive(body: TypeValue) -> TypeValue {
     let payload = make_dict_typevalue_from_value(&[(FIELD_BODY, body.as_ref().clone())]);
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_RECURSIVE),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_RECURSIVE,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -681,8 +725,8 @@ pub fn make_typevalue_recursive_ref(depth: i64) -> TypeValue {
         type_val: None,
     };
     Arc::new(crate::value::Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_RECURSIVE_REF),
+        type_decl_id: TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_RECURSIVE_REF,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -711,7 +755,7 @@ pub fn typevalue_normalize_union_ctx(
     // Flatten nested unions
     let mut flat: Vec<TypeValue> = Vec::with_capacity(members.len());
     while let Some(m) = members.pop() {
-        if let Some(TV_UNION) = typevalue_ctor(&m) {
+        if let Some(TV_UNION) = typevalue_ctor_index(&m) {
             // Flatten — extract members from payload dict
             if let Some(inner) = typevalue_extract_list_members(&m) {
                 for im in inner {
@@ -773,7 +817,7 @@ pub fn typevalue_normalize_union_ctx(
 pub fn typevalue_normalize_intersection(mut members: Vec<TypeValue>) -> TypeValue {
     let mut flat: Vec<TypeValue> = Vec::with_capacity(members.len());
     while let Some(m) = members.pop() {
-        if let Some(TV_INTER) = typevalue_ctor(&m) {
+        if let Some(TV_INTER) = typevalue_ctor_index(&m) {
             if let Some(inner) = typevalue_extract_list_members(&m) {
                 for im in inner {
                     flat.push(im);
@@ -808,10 +852,10 @@ pub fn typevalue_record_fields_pub(tv: &TypeValue) -> indexmap::IndexMap<String,
     let mut result = indexmap::IndexMap::new();
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_RECORD => thunk,
+        } if *ctor_index == TV_RECORD => thunk,
         _ => return result,
     };
     let fields_thunk = match payload_thunk.peek_result() {
@@ -846,10 +890,10 @@ pub fn typevalue_fn_params_and_ret(tv: &TypeValue) -> Option<(Vec<TypeValue>, Ty
     use crate::value::HashableValue;
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => thunk,
+        } if *ctor_index == TV_FN => thunk,
         _ => return None,
     };
     match payload_thunk.peek_result()? {
@@ -906,10 +950,10 @@ pub fn typevalue_fn_param_names(tv: &TypeValue, count: usize) -> Vec<Option<Stri
     use crate::value::HashableValue;
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => thunk,
+        } if *ctor_index == TV_FN => thunk,
         _ => return vec![None; count],
     };
     let payload_val = match payload_thunk.peek_result() {
@@ -955,10 +999,10 @@ pub fn typevalue_fn_is_variadic(tv: &TypeValue) -> bool {
     use crate::value::HashableValue;
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => thunk,
+        } if *ctor_index == TV_FN => thunk,
         _ => return false,
     };
     let payload_val = match payload_thunk.peek_result() {
@@ -971,7 +1015,7 @@ pub fn typevalue_fn_is_variadic(tv: &TypeValue) -> bool {
     };
     let key = HashableValue::Str(Arc::from(FIELD_VARIADIC));
     match entries.get(&key).and_then(|t| t.peek_result()) {
-        Some(Ok(crate::value::Value::Variant { ctor, .. })) => ctor.as_ref() == BOOL_TRUE,
+        Some(Ok(crate::value::Value::Variant { ctor_index, .. })) => *ctor_index == BOOL_TRUE_IDX,
         _ => false,
     }
 }
@@ -989,10 +1033,10 @@ pub fn typevalue_fn_typed_variadics(tv: &TypeValue) -> Vec<(String, TypeValue)> 
     use crate::value::HashableValue;
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => thunk,
+        } if *ctor_index == TV_FN => thunk,
         _ => return Vec::new(),
     };
     let payload_val = match payload_thunk.peek_result() {
@@ -1053,10 +1097,10 @@ pub fn typevalue_fn_required_count(tv: &TypeValue) -> Option<usize> {
     use crate::value::HashableValue;
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => thunk,
+        } if *ctor_index == TV_FN => thunk,
         _ => return None,
     };
     let payload_val = match payload_thunk.peek_result() {
@@ -1192,10 +1236,10 @@ fn make_dict_typevalue(fields: &[(&str, crate::value::Value)]) -> crate::value::
 pub fn typevalue_var_name(v: &TypeValue) -> Option<String> {
     match v.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_VAR => {
+        } if *ctor_index == TV_VAR => {
             // Inspect the settled payload dict to extract `name`.
             // peek_result returns Option<Result<&Value, &Arc<EvalError>>>.
             match thunk.peek_result() {
@@ -1240,18 +1284,18 @@ pub fn typevalue_payload_field(tv: &TypeValue, field: &str) -> Option<TypeValue>
     }
 }
 
-/// Return the constructor tag string of a TypeValue.
+/// Return the constructor index of a TypeValue.
 ///
 /// Returns `None` if the value is not a `Value::Variant`.
-/// Delegates to `crate::type_class::typevalue_ctor` — canonical implementation lives there.
-pub fn typevalue_ctor(v: &TypeValue) -> Option<&str> {
-    crate::type_class::typevalue_ctor(v)
+/// Delegates to `crate::type_tags::typevalue_ctor_index` — canonical implementation lives there.
+pub fn typevalue_ctor_index(v: &TypeValue) -> Option<u32> {
+    crate::type_tags::typevalue_ctor_index(v)
 }
 
 /// Extract (tycon, ctor) strings from a TypeValue.NominalVariant payload.
 /// Returns None if not a NominalVariant or payload unreadable.
 pub fn typevalue_nominal_variant_tag(v: &TypeValue) -> Option<(String, String)> {
-    if typevalue_ctor(v) != Some(TV_NOMINAL_VARIANT) {
+    if typevalue_ctor_index(v) != Some(TV_NOMINAL_VARIANT) {
         return None;
     }
     match v.as_ref() {
@@ -1298,7 +1342,7 @@ pub fn typevalue_nominal_variant_tag(v: &TypeValue) -> Option<(String, String)> 
 
 /// Check if a TypeValue.NominalVariant has a non-empty fields record.
 pub fn typevalue_nominal_variant_has_fields(v: &TypeValue) -> bool {
-    if typevalue_ctor(v) != Some(TV_NOMINAL_VARIANT) {
+    if typevalue_ctor_index(v) != Some(TV_NOMINAL_VARIANT) {
         return false;
     }
     match v.as_ref() {
@@ -1358,9 +1402,9 @@ fn values_structurally_eq(a: &crate::value::Value, b: &crate::value::Value) -> b
             },
         ) => sa[*s1..*e1] == sb[*s2..*e2],
         (
-            crate::value::Value::Variant { ctor: ca, .. },
-            crate::value::Value::Variant { ctor: cb, .. },
-        ) => ca.as_ref() == cb.as_ref() && typevalue_eq(&Arc::new(a.clone()), &Arc::new(b.clone())),
+            crate::value::Value::Variant { ctor_index: ca, .. },
+            crate::value::Value::Variant { ctor_index: cb, .. },
+        ) => ca == cb && typevalue_eq(&Arc::new(a.clone()), &Arc::new(b.clone())),
         (
             crate::value::Value::Dict { entries: ea, .. },
             crate::value::Value::Dict { entries: eb, .. },
@@ -1387,29 +1431,29 @@ pub(crate) fn typevalue_eq(a: &TypeValue, b: &TypeValue) -> bool {
         // Unit variants: no payload — equality by constructor tag.
         (
             crate::value::Value::Variant {
-                ctor: ca,
+                ctor_index: ca,
                 payload: None,
                 ..
             },
             crate::value::Value::Variant {
-                ctor: cb,
+                ctor_index: cb,
                 payload: None,
                 ..
             },
-        ) => ca.as_ref() == cb.as_ref(),
+        ) => ca == cb,
         // Payload variants: same ctor tag + structurally equal payloads.
         (
             crate::value::Value::Variant {
-                ctor: ca,
+                ctor_index: ca,
                 payload: Some(pa),
                 ..
             },
             crate::value::Value::Variant {
-                ctor: cb,
+                ctor_index: cb,
                 payload: Some(pb),
                 ..
             },
-        ) if ca.as_ref() == cb.as_ref() => {
+        ) if ca == cb => {
             // Recursively compare payload dicts.
             match (pa.peek_result(), pb.peek_result()) {
                 (
@@ -1789,11 +1833,11 @@ impl InferenceContext {
         // Special case: TypeValue.Record with RowTail.Uniform tail.
         // The Uniform tail contains value-type and optional key-type fields that may
         // contain TypeVars. We must recursively apply substitution to those fields.
-        if let Some(TV_RECORD) = typevalue_ctor(ty) {
+        if let Some(TV_RECORD) = typevalue_ctor_index(ty) {
             // Extract the tail field from the Record payload.
             let tail_opt = self.extract_tail_for_subst(ty);
             if let Some(tail) = tail_opt {
-                if let Some(RT_UNIFORM) = typevalue_ctor(&tail) {
+                if let Some(RT_UNIFORM) = typevalue_ctor_index(&tail) {
                     // Extract value-type and key-type from the Uniform payload.
                     let (value_type_opt, key_type_opt) = self.extract_uniform_fields(&tail);
 
@@ -1866,10 +1910,10 @@ impl InferenceContext {
         use crate::value::HashableValue;
         match tail.as_ref() {
             crate::value::Value::Variant {
-                ctor,
+                ctor_index,
                 payload: Some(thunk),
                 ..
-            } if ctor.as_ref() == RT_UNIFORM => match thunk.peek_result() {
+            } if *ctor_index == RT_UNIFORM => match thunk.peek_result() {
                 Some(Ok(crate::value::Value::Dict { entries, .. })) => {
                     let value_type_key = HashableValue::Str(Arc::from(RT_FIELD_VALUE_TYPE));
                     let key_type_key = HashableValue::Str(Arc::from(RT_FIELD_KEY_TYPE));
@@ -1982,8 +2026,8 @@ impl InferenceContext {
         };
 
         Arc::new(crate::value::Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_RECORD),
+            type_decl_id: TYPE_ID_TYPE_VALUE,
+            ctor_index: TV_RECORD,
             payload: Some(Arc::new(crate::value::Thunk::value(
                 payload_dict,
                 crate::rust_span!(),
@@ -2038,8 +2082,12 @@ impl InferenceContext {
         visited: &mut HashSet<String>,
     ) {
         match ty.as_ref() {
-            crate::value::Value::Variant { ctor, payload, .. } => {
-                match ctor.as_ref() {
+            crate::value::Value::Variant {
+                ctor_index,
+                payload,
+                ..
+            } => {
+                match *ctor_index {
                     TV_VAR => {
                         if let Some(name) = typevalue_var_name(ty) {
                             if visited.insert(name.clone()) {
@@ -2597,7 +2645,7 @@ mod tests {
         // apply_subst on α should follow α → β → Unknown and return Unknown
         let result = ctx.apply_subst(&alpha);
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_UNKNOWN),
             "apply_subst must follow binding chains to fixpoint"
         );
@@ -2637,17 +2685,17 @@ mod tests {
         let top = make_typevalue_top();
 
         assert_eq!(
-            typevalue_ctor(&unknown),
+            typevalue_ctor_index(&unknown),
             Some(TV_UNKNOWN),
             "unknown must have ctor TypeValue.Unknown"
         );
         assert_eq!(
-            typevalue_ctor(&never),
+            typevalue_ctor_index(&never),
             Some(TV_NEVER),
             "never must have ctor TypeValue.Never"
         );
         assert_eq!(
-            typevalue_ctor(&top),
+            typevalue_ctor_index(&top),
             Some(TV_TOP),
             "top must have ctor TypeValue.Top"
         );
@@ -2694,7 +2742,7 @@ mod tests {
     fn test_make_typevalue_repr() {
         let repr = make_typevalue_nominal(crate::value::TYPE_ID_INT);
         assert_eq!(
-            typevalue_ctor(&repr),
+            typevalue_ctor_index(&repr),
             Some(TV_NOMINAL),
             "repr must have ctor TypeValue.Repr"
         );
@@ -2711,7 +2759,7 @@ mod tests {
     #[test]
     fn test_make_typevalue_int_lit() {
         let lit = make_typevalue_int_lit(42);
-        assert_eq!(typevalue_ctor(&lit), Some(TV_INT_LIT));
+        assert_eq!(typevalue_ctor_index(&lit), Some(TV_INT_LIT));
         match lit.as_ref() {
             crate::value::Value::Variant {
                 payload: Some(thunk),

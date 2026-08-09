@@ -99,6 +99,47 @@ struct FieldAttrs {
 }
 
 // ============================================================================
+// Tag name to constant name mapping
+// ============================================================================
+
+/// Convert a tag name (e.g., "VarRef", "DotAccess") to its EXPR_* constant name.
+/// Uses an explicit lookup table to match the constants defined in type_tags.rs.
+fn tag_name_to_const(tag: &str) -> String {
+    match tag {
+        "Literal" => "EXPR_LITERAL",
+        "VarRef" => "EXPR_VARREF",
+        "DotAccess" => "EXPR_DOT_ACCESS",
+        "Pipe" => "EXPR_PIPE",
+        "Sequential" => "EXPR_SEQUENTIAL",
+        "Dict" => "EXPR_DICT",
+        "Call" => "EXPR_CALL",
+        "Fn" => "EXPR_FN",
+        "TypeAlias" => "EXPR_TYPE_ALIAS",
+        "TypeAssert" => "EXPR_TYPE_ASSERT",
+        "Annotated" => "EXPR_ANNOTATED",
+        "Rest" => "EXPR_REST",
+        "Match" => "EXPR_MATCH",
+        "LetDecl" => "EXPR_LET_DECL",
+        "CaseArm" => "EXPR_CASE_ARM",
+        "Quote" => "EXPR_QUOTE",
+        "Unquote" => "EXPR_UNQUOTE",
+        "UnquoteSplice" => "EXPR_UNQUOTE_SPLICE",
+        "Splice" => "EXPR_SPLICE",
+        "SyntaxClass" => "EXPR_SYNTAX_CLASS",
+        "ClassDecl" => "EXPR_CLASS_DECL",
+        "InstanceDecl" => "EXPR_INSTANCE_DECL",
+        "PatternDecl" => "EXPR_PATTERN_DECL",
+        "Placeholder" => "EXPR_PLACEHOLDER",
+        "AstError" | "ExprError" | "Error" => "EXPR_ERROR",
+        "Entry" => "EXPR_ENTRY",
+        "NamedArg" => "EXPR_NAMED_ARG",
+        "Parameter" => "EXPR_PARAMETER",
+        other => panic!("tag_name_to_const: unknown Expr tag: {other}"),
+    }
+    .to_string()
+}
+
+// ============================================================================
 // Attribute parsing helpers
 // ============================================================================
 
@@ -343,7 +384,7 @@ fn derive_impl(input: DeriveInput) -> Result<TokenStream2, syn::Error> {
             };
             let arm = quote! {
                 #enum_name::#variant_ident #skip_pat => {
-                    #helpers_path::make_unit_variant("Expr.AstError")
+                    #helpers_path::make_unit_variant(crate::value::TYPE_ID_EXPR, crate::type_tags::EXPR_ERROR)
                 }
             };
             to_expr_arms.push(arm);
@@ -356,11 +397,12 @@ fn derive_impl(input: DeriveInput) -> Result<TokenStream2, syn::Error> {
                 .tag
                 .clone()
                 .unwrap_or_else(|| variant_ident.to_string());
-            let qualified_tag = format!("{}.{}", prefix, tag_name);
+            let const_name = tag_name_to_const(&tag_name);
+            let const_ident = Ident::new(&const_name, proc_macro2::Span::call_site());
 
             let arm = quote! {
                 #enum_name::#variant_ident => {
-                    #helpers_path::make_unit_variant(#qualified_tag)
+                    #helpers_path::make_unit_variant(crate::value::TYPE_ID_EXPR, crate::type_tags::#const_ident)
                 }
             };
             to_expr_arms.push(arm);
@@ -431,11 +473,11 @@ fn derive_impl(input: DeriveInput) -> Result<TokenStream2, syn::Error> {
                 val: &crate::value::Value,
                 ctx: &::std::sync::Arc<crate::eval::EvalContext>,
             ) -> ::std::result::Result<::std::sync::Arc<crate::ast::SurfaceNode>, crate::surface_convert::AstError> {
-                let (tag, dict) = #helpers_path::extract_tag_and_dict(val, ctx)?;
-                match tag.as_str() {
+                let (_type_decl_id, ctor_index, dict) = #helpers_path::extract_tag_and_dict(val, ctx)?;
+                match ctor_index {
                     #from_expr_match
                     _ => Err(crate::surface_convert::AstError {
-                        message: format!("unknown Expr tag: {}", tag),
+                        message: format!("unknown Expr ctor_index: {}", ctor_index),
                         field_path: vec![],
                     }),
                 }
@@ -559,11 +601,19 @@ fn build_to_expr_arm(
     let (destructure_pat, insert_stmts) =
         build_to_expr_body(fields, descs, qualified_tag, vattrs, helpers)?;
 
+    // Extract the bare tag (after "Expr.") to map to EXPR_* constant
+    let tag_name = vattrs
+        .tag
+        .clone()
+        .unwrap_or_else(|| variant_ident.to_string());
+    let const_name = tag_name_to_const(&tag_name);
+    let const_ident = Ident::new(&const_name, proc_macro2::Span::call_site());
+
     let arm = quote! {
         #enum_name::#variant_ident #destructure_pat => {
             let mut __payload: ::indexmap::IndexMap<crate::value::HashableValue, ::std::sync::Arc<crate::value::Thunk>> = ::indexmap::IndexMap::new();
             #insert_stmts
-            #helpers::make_variant_with_payload(#qualified_tag, __payload, __span, ctx)
+            #helpers::make_variant_with_payload(crate::value::TYPE_ID_EXPR, crate::type_tags::#const_ident, __payload, __span, ctx)
         }
     };
     Ok(arm)
@@ -778,14 +828,16 @@ fn build_from_expr_match(
 
     for tag in &ordered_tags {
         let variants = &by_tag[tag];
-        let tag_str = tag.as_str();
+        // Convert tag name to EXPR_* constant
+        let const_name = tag_name_to_const(tag);
+        let const_ident = Ident::new(&const_name, proc_macro2::Span::call_site());
 
         if variants.len() == 1 && variants[0].kind.is_none() {
             // Single variant for this tag — no kind discrimination
             let entry = variants[0];
             let arm_body = build_from_expr_arm_body(entry, helpers)?;
             match_arms.push(quote! {
-                #tag_str => { #arm_body }
+                crate::type_tags::#const_ident => { #arm_body }
             });
         } else {
             // Multiple variants sharing a tag (grouped by kind) — or single with kind
@@ -811,12 +863,12 @@ fn build_from_expr_match(
 
             if has_kind {
                 match_arms.push(quote! {
-                    #tag_str => {
+                    crate::type_tags::#const_ident => {
                         let __kind = #helpers::get_string_field_with_aliases(&dict, "kind", &[], ctx)?;
                         match __kind.as_str() {
                             #(#kind_arms)*
                             _ => Err(crate::surface_convert::AstError {
-                                message: format!("unknown {} kind: {}", #tag_str, __kind),
+                                message: format!("unknown tag kind: {}", __kind),
                                 field_path: vec![],
                             }),
                         }
@@ -827,7 +879,7 @@ fn build_from_expr_match(
                 let entry = variants[0];
                 let arm_body = build_from_expr_arm_body(entry, helpers)?;
                 match_arms.push(quote! {
-                    #tag_str => { #arm_body }
+                    crate::type_tags::#const_ident => { #arm_body }
                 });
             }
         }

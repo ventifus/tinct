@@ -91,7 +91,7 @@ fn make_fn_tv(param_types: Vec<Arc<Value>>, ret: Arc<Value>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_FN),
+        ctor_index: TV_FN,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -138,7 +138,7 @@ fn make_record_tv(fields: Vec<(&str, Arc<Value>)>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_RECORD),
+        ctor_index: TV_RECORD,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -181,7 +181,7 @@ fn make_record_with_tail(fields: Vec<(&str, Arc<Value>)>, tail: Arc<Value>) -> A
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_RECORD),
+        ctor_index: TV_RECORD,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -217,7 +217,7 @@ fn make_union_tv(members: Vec<Arc<Value>>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_UNION),
+        ctor_index: TV_UNION,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -240,11 +240,11 @@ async fn test_types_are_disjoint_single_field_records() {
     let rec2 = make_record_tv(vec![("y", str_tv)]);
 
     assert!(
-        matches!(rec1.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(rec1.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "expected TypeValue.Record for rec1"
     );
     assert!(
-        matches!(rec2.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(rec2.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "expected TypeValue.Record for rec2"
     );
     // Verify fields are distinct: rec1 has "x", rec2 has "y".
@@ -274,11 +274,11 @@ async fn test_types_are_not_disjoint_same_key_records() {
     let rec1 = make_record_tv(vec![("x", int_tv)]);
     let rec2 = make_record_tv(vec![("x", str_tv)]);
     assert!(
-        matches!(rec1.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(rec1.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "expected TypeValue.Record for rec1"
     );
     assert!(
-        matches!(rec2.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(rec2.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "expected TypeValue.Record for rec2"
     );
     // constrain(Repr(Int) ≤ Repr(String)) should fail — different primitive reprs are disjoint.
@@ -302,11 +302,11 @@ async fn test_types_are_not_disjoint_multi_field_records() {
     let rec1 = make_record_tv(vec![("x", int_tv), ("a", bool_tv)]);
     let rec2 = make_record_tv(vec![("y", str_tv), ("b", float_tv)]);
     assert!(
-        matches!(rec1.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(rec1.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "expected TypeValue.Record for rec1"
     );
     assert!(
-        matches!(rec2.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(rec2.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "expected TypeValue.Record for rec2"
     );
     // constrain(rec1 ≤ rec2): rec2 requires "y" and "b"; rec1 has "x" and "a" — all different.
@@ -655,11 +655,11 @@ async fn test_is_consistent_any_function_with_concrete() {
         make_typevalue_nominal(TEST_ID_BOOL),
     );
     assert!(
-        matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "any_fn must be TypeValue.Fn"
     );
     assert!(
-        matches!(concrete_fn.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        matches!(concrete_fn.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "concrete_fn must be TypeValue.Fn"
     );
     // constrain(any_fn ≤ concrete_fn): arity 0 vs 1, both non-variadic → Err.
@@ -685,7 +685,7 @@ async fn test_is_consistent_any_function_with_multi_param() {
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     let zero_fn = make_fn_tv(vec![], make_typevalue_unknown());
     assert!(
-        matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "any_fn must be TypeValue.Fn"
     );
     // Two identical zero-param fns are consistent.
@@ -710,7 +710,7 @@ async fn test_is_consistent_any_function_with_zero_param_non_variadic() {
     // Fn(0 params, Unknown return) is consistent with itself.
     let any_fn = make_fn_tv(vec![], make_typevalue_unknown());
     assert!(
-        matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        matches!(any_fn.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "any_fn must be TypeValue.Fn"
     );
     let any_fn2 = make_fn_tv(vec![], make_typevalue_unknown());
@@ -740,11 +740,11 @@ async fn test_types_are_disjoint_function_vs_int() {
     );
     let int_tv = make_typevalue_nominal(crate::value::TYPE_ID_INT);
     assert!(
-        matches!(fn_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        matches!(fn_tv.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "fn_tv must be TypeValue.Fn"
     );
     assert!(
-        matches!(int_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_NOMINAL),
+        matches!(int_tv.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_NOMINAL),
         "int_tv must be TypeValue.Repr"
     );
     let mut state = InferState::new();
@@ -767,7 +767,7 @@ async fn test_types_are_disjoint_function_vs_primitives() {
     // A Fn type is disjoint from primitive Repr types.
     let fn_tv = make_fn_tv(vec![], make_typevalue_unknown());
     assert!(
-        matches!(fn_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        matches!(fn_tv.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "fn_tv must be TypeValue.Fn"
     );
     // Fn vs String Repr: disjoint.
@@ -792,7 +792,7 @@ async fn test_types_are_disjoint_function_vs_literals() {
     // A Fn type is disjoint from literal types.
     let int_lit = crate::type_infer::make_typevalue_int_lit(42);
     assert!(
-        matches!(int_lit.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_INT_LIT),
+        matches!(int_lit.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_INT_LIT),
         "int_lit must be TypeValue.IntLit"
     );
     let fn_tv = make_fn_tv(vec![], make_typevalue_unknown());
@@ -819,7 +819,7 @@ async fn test_types_are_disjoint_function_vs_record() {
         make_typevalue_nominal(crate::value::TYPE_ID_INT),
     )]);
     assert!(
-        matches!(record_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECORD),
+        matches!(record_tv.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_RECORD),
         "record_tv must be TypeValue.Record"
     );
     let fn_tv = make_fn_tv(vec![], make_typevalue_unknown());
@@ -1674,7 +1674,7 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     );
 
     // The recorded lower bound must be Int (Repr(Int)).
-    let lb_ctor = crate::type_infer::typevalue_ctor(&lbs[0]);
+    let lb_ctor = crate::type_tags::typevalue_ctor_index(&lbs[0]);
     assert_eq!(
         lb_ctor,
         Some(crate::type_tags::TV_NOMINAL),
@@ -1821,7 +1821,7 @@ async fn test_constrain_typevar_lower_bound_added() {
     );
 
     // The recorded lower bound must be Int (Repr(Int)).
-    let lb_ctor = crate::type_infer::typevalue_ctor(&lbs[0]);
+    let lb_ctor = crate::type_tags::typevalue_ctor_index(&lbs[0]);
     assert_eq!(
         lb_ctor,
         Some(crate::type_tags::TV_NOMINAL),
@@ -2464,9 +2464,9 @@ async fn test_unify_typevar_binds_to_recursive_type() {
     // The binding must be the Recursive type (TV_RECURSIVE ctor).
     let bound_tv = bound.unwrap();
     assert!(
-        matches!(bound_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECURSIVE),
+        matches!(bound_tv.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_RECURSIVE),
         "TypeVar 'a' must be bound to a TypeValue.Recursive, got ctor: {:?}",
-        crate::type_infer::typevalue_ctor(&bound_tv)
+        crate::type_tags::typevalue_ctor_index(&bound_tv)
     );
 }
 
@@ -2507,9 +2507,9 @@ async fn test_unify_recursive_left_with_typevar_right() {
     );
     let bound_tv = bound.unwrap();
     assert!(
-        matches!(bound_tv.as_ref(), crate::value::Value::Variant { ctor, .. } if ctor.as_ref() == TV_RECURSIVE),
+        matches!(bound_tv.as_ref(), crate::value::Value::Variant { ctor_index, .. } if *ctor_index == TV_RECURSIVE),
         "TypeVar 'a' must be bound to a TypeValue.Recursive, got ctor: {:?}",
-        crate::type_infer::typevalue_ctor(&bound_tv)
+        crate::type_tags::typevalue_ctor_index(&bound_tv)
     );
 }
 
@@ -3200,7 +3200,7 @@ async fn test_rowvar_occurs_check() {
         };
         Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_RECORD),
+            ctor_index: TV_RECORD,
             payload: Some(Arc::new(Thunk::value(payload, rust_span!()))),
             type_val: None,
         })
@@ -3412,7 +3412,7 @@ fn test_apply_subst_traverses_uniform_tail() {
 
     // The value-type should now be Int, not TypeVar α.
     let value_type = value_type_opt.unwrap();
-    let value_type_ctor = crate::type_infer::typevalue_ctor(&value_type);
+    let value_type_ctor = crate::type_tags::typevalue_ctor_index(&value_type);
     assert_eq!(
         value_type_ctor,
         Some(TV_NOMINAL),
@@ -3456,7 +3456,7 @@ fn make_uniform_tail(value_type: Arc<Value>, key_type: Option<Arc<Value>>) -> Ar
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(RT_UNIFORM),
+        ctor_index: RT_UNIFORM,
         payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
         type_val: None,
     })

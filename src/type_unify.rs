@@ -1,7 +1,7 @@
 //! Unification, constraint solving, and subtype checking for TypeValue-based HM inference.
 //!
-//! All types are represented as `Arc<Value>` (TypeValue) with constructor tags like
-//! `"TypeValue.Var"`, `"TypeValue.Fn"`, `"TypeValue.Record"`, etc.
+//! All types are represented as `Arc<Value>` (TypeValue) with numeric constructor
+//! identity `(type_decl_id, ctor_index)` — e.g. `(TYPE_ID_TYPE_VALUE, TV_VAR)`.
 //!
 //! TypeVar bindings and levels are stored in `InferenceContext` (type_infer.rs).
 //! Constraints are `Arc<Value>` ConstraintDecl variants (constructed via type_class.rs helpers).
@@ -13,8 +13,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::error::Diagnostic;
 use crate::type_infer::{
-    extract_rowtail_var_name, typevalue_ctor, typevalue_nominal_id, typevalue_var_name,
-    InferenceContext, TypeValue,
+    extract_rowtail_var_name, typevalue_nominal_id, typevalue_var_name, InferenceContext, TypeValue,
 };
 use crate::type_tags::*;
 
@@ -24,9 +23,9 @@ const MAX_UNIFY_DEPTH: usize = 512;
 
 // ── TypeValue inspection helpers ──────────────────────────────────────────────
 
-/// Extract the ctor tag from a TypeValue. Returns None if not a Variant.
-fn tv_ctor(tv: &TypeValue) -> Option<&str> {
-    typevalue_ctor(tv)
+/// Extract the ctor index from a TypeValue. Returns None if not a Variant.
+fn tv_ctor(tv: &TypeValue) -> Option<u32> {
+    crate::type_tags::typevalue_ctor_index(tv)
 }
 
 /// Check if a TypeValue is "TypeValue.Unknown" (the gradual ? type).
@@ -85,19 +84,19 @@ fn collect_free_vars(tv: &TypeValue, ctx: &InferenceContext) -> Vec<String> {
 fn extract_constraint_class_name(cv: &Arc<crate::value::Value>) -> Option<String> {
     match cv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            type_decl_id,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => match thunk.peek_result()? {
+        } if *type_decl_id == crate::value::TYPE_ID_CONSTRAINT_DECL => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let class_key = crate::value::HashableValue::Str(Arc::from(FIELD_CLASS));
                 let class_thunk = entries.get(&class_key)?;
                 match class_thunk.peek_result()? {
                     Ok(crate::value::Value::Variant {
-                        ctor: c_ctor,
+                        ctor_index: c_ctor_idx,
                         payload: Some(payload),
                         ..
-                    }) if c_ctor.as_ref() == TV_NOMINAL => match payload.peek_result()? {
+                    }) if *c_ctor_idx == TV_NOMINAL => match payload.peek_result()? {
                         Ok(crate::value::Value::Dict { entries: inner, .. }) => {
                             let name_key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
                             let name_thunk = inner.get(&name_key)?;
@@ -124,10 +123,10 @@ fn extract_constraint_class_name(cv: &Arc<crate::value::Value>) -> Option<String
 fn extract_single_param_constraint_var(cv: &Arc<crate::value::Value>) -> Option<String> {
     match cv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            type_decl_id,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => {
+        } if *type_decl_id == crate::value::TYPE_ID_CONSTRAINT_DECL => {
             match thunk.peek_result()? {
                 Ok(crate::value::Value::Dict { entries, .. }) => {
                     let args_key = crate::value::HashableValue::Str(Arc::from(FIELD_ARGS));
@@ -174,13 +173,13 @@ fn extract_intersection_members(tv: &TypeValue) -> Option<Vec<TypeValue>> {
 }
 
 /// Extract indexed dict members from a TypeValue variant with a given field name.
-fn extract_indexed_members(tv: &TypeValue, ctor_tag: &str, field: &str) -> Option<Vec<TypeValue>> {
+fn extract_indexed_members(tv: &TypeValue, ctor_tag: u32, field: &str) -> Option<Vec<TypeValue>> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == ctor_tag => {
+        } if *ctor_index == ctor_tag => {
             match thunk.peek_result()? {
                 Ok(crate::value::Value::Dict { entries, .. }) => {
                     let field_key = crate::value::HashableValue::Str(Arc::from(field));
@@ -330,7 +329,7 @@ pub(crate) fn lower_levels_check_occurs_tv(
                 // Level lowering for the RowVar.
                 ctx.lower_var_level(&row_var_name, cap_level);
                 found
-            } else if tv_ctor(&tail).as_deref() == Some(RT_UNIFORM) {
+            } else if tv_ctor(&tail) == Some(RT_UNIFORM) {
                 // Tail is a Uniform tail — recursively check its value-type AND key-type for
                 // TypeVar occurrences and perform level lowering on any TypeVars found inside.
                 let value_occurs = if let Some(value_type) = extract_uniform_value_type(&tail) {
@@ -1277,10 +1276,10 @@ pub(crate) fn rowvar_occurs_in_tail(name: &str, tail: &TypeValue) -> bool {
         return true;
     }
     // Indirect reference: ρ occurs inside a Uniform value-type or key-type's nested Record tail.
-    if tv_ctor(tail).as_deref() == Some(RT_UNIFORM) {
+    if tv_ctor(tail) == Some(RT_UNIFORM) {
         // Check value-type field.
         if let Some(value_type) = extract_uniform_value_type(tail) {
-            if tv_ctor(&value_type).as_deref() == Some(TV_RECORD) {
+            if tv_ctor(&value_type) == Some(TV_RECORD) {
                 if let Some(nested_tail) = extract_record_tail(&value_type) {
                     if rowvar_occurs_in_tail(name, &nested_tail) {
                         return true;
@@ -1290,7 +1289,7 @@ pub(crate) fn rowvar_occurs_in_tail(name: &str, tail: &TypeValue) -> bool {
         }
         // Also check key-type field (key-type could be a Record with RowVar tail).
         if let Some(key_type) = extract_uniform_key_type(tail) {
-            if tv_ctor(&key_type).as_deref() == Some(TV_RECORD) {
+            if tv_ctor(&key_type) == Some(TV_RECORD) {
                 if let Some(nested_tail) = extract_record_tail(&key_type) {
                     if rowvar_occurs_in_tail(name, &nested_tail) {
                         return true;
@@ -1898,10 +1897,10 @@ async fn constrain_record(
 fn extract_fn_parts(tv: &TypeValue) -> Option<(Vec<TypeValue>, TypeValue)> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => {
+        } if *ctor_index == TV_FN => {
             match thunk.peek_result()? {
                 Ok(crate::value::Value::Dict { entries, .. }) => {
                     // Extract `params` dict
@@ -1950,17 +1949,18 @@ fn extract_fn_parts(tv: &TypeValue) -> Option<(Vec<TypeValue>, TypeValue)> {
 fn is_fn_variadic(tv: &TypeValue) -> bool {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => {
+        } if *ctor_index == TV_FN => {
             if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_VARIADIC));
                 if let Some(vt) = entries.get(&key) {
-                    if let Some(Ok(crate::value::Value::Variant { ctor: b_ctor, .. })) =
-                        vt.peek_result()
+                    if let Some(Ok(crate::value::Value::Variant {
+                        ctor_index: b_idx, ..
+                    })) = vt.peek_result()
                     {
-                        return b_ctor.as_ref() == BOOL_TRUE;
+                        return *b_idx == BOOL_TRUE_IDX;
                     }
                 }
             }
@@ -1976,10 +1976,10 @@ fn is_fn_variadic(tv: &TypeValue) -> bool {
 fn extract_record_fields(tv: &TypeValue) -> Option<IndexMap<String, TypeValue>> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_RECORD => match thunk.peek_result()? {
+        } if *ctor_index == TV_RECORD => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let fields_key = crate::value::HashableValue::Str(Arc::from(FIELD_FIELDS));
                 let fields_thunk = entries.get(&fields_key)?;
@@ -2014,10 +2014,10 @@ fn extract_record_fields(tv: &TypeValue) -> Option<IndexMap<String, TypeValue>> 
 fn extract_record_tail(tv: &TypeValue) -> Option<TypeValue> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_RECORD => match thunk.peek_result()? {
+        } if *ctor_index == TV_RECORD => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let tail_key = crate::value::HashableValue::Str(Arc::from(FIELD_TAIL));
                 let tail_thunk = entries.get(&tail_key)?;
@@ -2039,10 +2039,10 @@ fn extract_record_tail(tv: &TypeValue) -> Option<TypeValue> {
 fn extract_uniform_value_type(tail: &TypeValue) -> Option<TypeValue> {
     match tail.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == RT_UNIFORM => match thunk.peek_result()? {
+        } if *ctor_index == RT_UNIFORM => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let value_type_key =
                     crate::value::HashableValue::Str(Arc::from(RT_FIELD_VALUE_TYPE));
@@ -2065,10 +2065,10 @@ fn extract_uniform_value_type(tail: &TypeValue) -> Option<TypeValue> {
 fn extract_uniform_key_type(tail: &TypeValue) -> Option<TypeValue> {
     match tail.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == RT_UNIFORM => match thunk.peek_result()? {
+        } if *ctor_index == RT_UNIFORM => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let key_type_key = crate::value::HashableValue::Str(Arc::from(RT_FIELD_KEY_TYPE));
                 let key_type_thunk = entries.get(&key_type_key)?;
@@ -2089,10 +2089,10 @@ fn extract_uniform_key_type(tail: &TypeValue) -> Option<TypeValue> {
 fn extract_app_parts(tv: &TypeValue) -> Option<(TypeValue, TypeValue)> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_APP => match thunk.peek_result()? {
+        } if *ctor_index == TV_APP => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let op_key = crate::value::HashableValue::Str(Arc::from(FIELD_OP));
                 let arg_key = crate::value::HashableValue::Str(Arc::from(FIELD_ARG));
@@ -2118,10 +2118,10 @@ fn extract_app_parts(tv: &TypeValue) -> Option<(TypeValue, TypeValue)> {
 fn extract_recursive_body(tv: &TypeValue) -> Option<TypeValue> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_RECURSIVE => match thunk.peek_result()? {
+        } if *ctor_index == TV_RECURSIVE => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let body_key = crate::value::HashableValue::Str(Arc::from(FIELD_BODY));
                 let body_thunk = entries.get(&body_key)?;
@@ -2140,10 +2140,10 @@ fn extract_recursive_body(tv: &TypeValue) -> Option<TypeValue> {
 fn extract_neg_inner(tv: &TypeValue) -> Option<TypeValue> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_NEG => match thunk.peek_result()? {
+        } if *ctor_index == TV_NEG => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let of_key = crate::value::HashableValue::Str(Arc::from(FIELD_OF));
                 let of_thunk = entries.get(&of_key)?;
@@ -2162,10 +2162,10 @@ fn extract_neg_inner(tv: &TypeValue) -> Option<TypeValue> {
 fn extract_int_lit(tv: &TypeValue) -> Option<i64> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_INT_LIT => match thunk.peek_result()? {
+        } if *ctor_index == TV_INT_LIT => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_VALUE));
                 let v_thunk = entries.get(&key)?;
@@ -2184,10 +2184,10 @@ fn extract_int_lit(tv: &TypeValue) -> Option<i64> {
 fn extract_float_lit(tv: &TypeValue) -> Option<f64> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FLOAT_LIT => match thunk.peek_result()? {
+        } if *ctor_index == TV_FLOAT_LIT => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_VALUE));
                 let v_thunk = entries.get(&key)?;
@@ -2206,10 +2206,10 @@ fn extract_float_lit(tv: &TypeValue) -> Option<f64> {
 fn extract_str_lit(tv: &TypeValue) -> Option<String> {
     match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_STR_LIT => match thunk.peek_result()? {
+        } if *ctor_index == TV_STR_LIT => match thunk.peek_result()? {
             Ok(crate::value::Value::Dict { entries, .. }) => {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_VALUE));
                 let v_thunk = entries.get(&key)?;
@@ -2313,10 +2313,10 @@ fn transfer_class_constraints_tv(
 fn constraint_has_var_arg(cv: &Arc<crate::value::Value>, var_name: &str) -> bool {
     match cv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            type_decl_id,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => {
+        } if *type_decl_id == crate::value::TYPE_ID_CONSTRAINT_DECL => {
             if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
                 let args_key = crate::value::HashableValue::Str(Arc::from(FIELD_ARGS));
                 if let Some(args_thunk) = entries.get(&args_key) {
@@ -2364,10 +2364,10 @@ fn rename_constraint_var(
 
     match cv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            type_decl_id,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_CONSTRAINT_DECL => {
+        } if *type_decl_id == crate::value::TYPE_ID_CONSTRAINT_DECL => {
             if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
                 let class_key = crate::value::HashableValue::Str(Arc::from(FIELD_CLASS));
                 let args_key = crate::value::HashableValue::Str(Arc::from(FIELD_ARGS));

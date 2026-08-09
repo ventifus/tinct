@@ -60,10 +60,10 @@ fn extract_scheme_narrowings_first(
     // The scheme must be a TypeValue.Scheme variant.
     let payload = match scheme.as_ref() {
         Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_SCHEME => match thunk.peek_result() {
+        } if *ctor_index == TV_SCHEME => match thunk.peek_result() {
             Some(Ok(v)) => v,
             _ => return None,
         },

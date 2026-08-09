@@ -1274,7 +1274,18 @@ pub(crate) fn builtin_tag_of(
         };
         match peeled {
             // Expr.* variants return their full qualified tag (e.g. "Expr.Call", "Expr.VarRef").
-            Value::Variant { ctor, .. } => ok_val(string_val(ctor.as_ref()), call_span),
+            Value::Variant {
+                type_decl_id,
+                ctor_index,
+                ..
+            } => ok_val(
+                string_val(&crate::type_tags::ctor_display_name_full(
+                    *type_decl_id,
+                    *ctor_index,
+                    ctx.tycon_env.get().map(|e| e.as_ref()),
+                )),
+                call_span,
+            ),
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
                 ctx.type_display_name(peeled.type_decl_id_of()),
@@ -1329,12 +1340,12 @@ pub(crate) fn builtin_span_of(
 
         // Extract span from Expr.* variant payload.
         if let Value::Variant {
-            ref ctor,
+            ref type_decl_id,
             payload: Some(payload_id),
             ..
         } = val
         {
-            if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" {
+            if *type_decl_id == crate::value::TYPE_ID_EXPR {
                 let payload_thunk = Arc::clone(&payload_id);
                 let payload_val = match payload_thunk.peek_result() {
                     Some(Ok(v)) => Some(v.clone()),
@@ -4095,9 +4106,9 @@ pub(crate) fn builtin_eval_macro_ast(
         let expr_val = args[0].require_value()?.clone();
 
         let expr_node = match expr_val {
-            Value::Variant { ref ctor, .. }
-                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
-            {
+            Value::Variant {
+                ref type_decl_id, ..
+            } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
                 crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
                     |e| {
                         EvalError::internal(
@@ -4221,9 +4232,9 @@ pub(crate) fn builtin_eval_types(
         for (_key, val_thunk) in &input_map {
             let val = materialize(val_thunk, Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref ctor, .. }
-                    if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
-                {
+                Value::Variant {
+                    ref type_decl_id, ..
+                } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4740,23 +4751,21 @@ fn is_contractive_value<'a>(
             other => other,
         };
 
-        // Helper to extract the bare constructor name from a potentially qualified ctor.
-        // e.g. "TypeNode.RecursiveRef" → "RecursiveRef", "RecursiveRef" → "RecursiveRef"
-        let bare = |ctor: &Arc<str>| {
-            ctor.as_ref()
-                .split_once('.')
-                .map(|(_, c)| c)
-                .unwrap_or(ctor.as_ref())
-                .to_string()
-        };
-
         match val {
             // Case 1: bare RecursiveRef — non-contractive.
-            Value::Variant { ctor, .. } if bare(ctor) == "RecursiveRef" => Ok(false),
+            Value::Variant { ctor_index, .. }
+                if *ctor_index == crate::type_tags::TV_RECURSIVE_REF =>
+            {
+                Ok(false)
+            }
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
-            Value::Variant { ctor, payload, .. }
-                if bare(ctor) == "Union" || bare(ctor) == "Intersect" =>
+            Value::Variant {
+                ctor_index,
+                payload,
+                ..
+            } if *ctor_index == crate::type_tags::TV_UNION
+                || *ctor_index == crate::type_tags::TV_INTER =>
             {
                 let payload_thunk = match payload {
                     Some(id) => id.clone(),
@@ -4855,9 +4864,9 @@ pub(crate) fn builtin_sequential(
         for (_key, thunk) in exprs_dict.iter() {
             let val = materialize(thunk, Some(&call_span), &ctx).await?;
             match val {
-                Value::Variant { ref ctor, .. }
-                    if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
-                {
+                Value::Variant {
+                    ref type_decl_id, ..
+                } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             EvalError::internal(
@@ -4975,9 +4984,9 @@ pub(crate) fn builtin_ast_to_program(
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
-            Value::Variant { ref ctor, .. }
-                if crate::value::tycon_name_from_ctor(ctor.as_ref()) == "Expr" =>
-            {
+            Value::Variant {
+                ref type_decl_id, ..
+            } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
                 crate::surface_convert::dict_to_surface_node(
                     &expr_val,
                     &call_site_span_actual,
@@ -5460,6 +5469,10 @@ mod tests {
     use crate::test_util::test_span;
     use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
+    const TEST_ID_COLOR: u64 = 400;
+    const TEST_ID_SIMPLE_TYPE: u64 = 401;
+    const TEST_ID_SHAPE: u64 = 402;
+
     fn thunk(val: Value) -> Arc<Thunk> {
         Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
@@ -5478,7 +5491,59 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        crate::eval::EvalContext::new_empty()
+        let ctx = crate::eval::EvalContext::new_empty();
+        let mut tycon_env = std::collections::HashMap::new();
+        tycon_env.insert(
+            TEST_ID_COLOR,
+            std::sync::Arc::new(crate::type_def::TyConDef {
+                type_decl_id: TEST_ID_COLOR,
+                params: vec![],
+                body: crate::type_infer::make_typevalue_unknown(),
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![
+                    ("Color.Red".to_string(), 0),
+                    ("Color.Green".to_string(), 0),
+                    ("Color.Blue".to_string(), 0),
+                ],
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+                definition_span: None,
+            }),
+        );
+        tycon_env.insert(
+            TEST_ID_SIMPLE_TYPE,
+            std::sync::Arc::new(crate::type_def::TyConDef {
+                type_decl_id: TEST_ID_SIMPLE_TYPE,
+                params: vec![],
+                body: crate::type_infer::make_typevalue_unknown(),
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![("SimpleType.Leaf".to_string(), 0)],
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+                definition_span: None,
+            }),
+        );
+        tycon_env.insert(
+            TEST_ID_SHAPE,
+            std::sync::Arc::new(crate::type_def::TyConDef {
+                type_decl_id: TEST_ID_SHAPE,
+                params: vec![],
+                body: crate::type_infer::make_typevalue_unknown(),
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![("Shape.Circle".to_string(), 1)],
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+                definition_span: None,
+            }),
+        );
+        let _ = ctx.tycon_env.set(std::sync::Arc::new(tycon_env));
+        ctx
     }
 
     fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
@@ -5502,10 +5567,10 @@ mod tests {
     #[tokio::test]
     async fn tag_of_bare_variant() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Color.Red"),
+            type_decl_id: TEST_ID_COLOR,
+            ctor_index: 0,
             payload: None,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_COLOR)),
         };
         let ctx = test_ctx();
         let result = run(builtin_tag_of(BuiltinArgs {
@@ -5527,10 +5592,12 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_single_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("SimpleType.Leaf"),
+            type_decl_id: TEST_ID_SIMPLE_TYPE,
+            ctor_index: 0,
             payload: None,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                TEST_ID_SIMPLE_TYPE,
+            )),
         };
         let annotation = Value::Dict {
             entries: IndexMap::new(),
@@ -5564,10 +5631,10 @@ mod tests {
     #[tokio::test]
     async fn tag_of_annotated_variant_double_wrap() -> EvalResult<()> {
         let variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Shape.Circle"),
+            type_decl_id: TEST_ID_SHAPE,
+            ctor_index: 0,
             payload: None,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TEST_ID_SHAPE)),
         };
         let inner_annotated = Value::Annotated {
             inner: Box::new(variant),

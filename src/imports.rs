@@ -33,7 +33,8 @@ pub async fn build_builtin_core_envs() -> crate::error::EvalResult<(
 ///
 /// This is the authoritative source of the type-stage scope; no Rust code should manually
 /// construct this mapping by hardcoding tinct-side type names.
-pub async fn get_builtin_core_type_stage_scope() -> crate::error::EvalResult<crate::type_infer::TypeStageData> {
+pub async fn get_builtin_core_type_stage_scope(
+) -> crate::error::EvalResult<crate::type_infer::TypeStageData> {
     let (_, _, data, _) = build_builtin_core_envs_inner().await?;
     Ok(data)
 }

@@ -65,9 +65,13 @@ fn value_to_hashable_key(
             let s = &source[*start..*end];
             Ok(HashableValue::Str(s.into()))
         }
-        Value::Variant { ctor, payload, .. } => {
-            let tag = ctor.as_ref();
-            // General variant key
+        Value::Variant {
+            type_decl_id,
+            ctor_index,
+            payload,
+            ..
+        } => {
+            // General variant key — use numeric (type_decl_id, ctor_index) identity
             let hv_payload = match payload {
                 None => None,
                 Some(p) => {
@@ -91,7 +95,8 @@ fn value_to_hashable_key(
                 }
             };
             Ok(HashableValue::Variant {
-                tag: tag.into(),
+                type_decl_id: *type_decl_id,
+                ctor_index: *ctor_index,
                 payload: hv_payload,
             })
         }
@@ -135,17 +140,20 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
                 )),
             }
         }
-        HashableValue::Variant { tag, payload } => {
-            // Split tag on '.' to get tycon and ctor
+        HashableValue::Variant {
+            type_decl_id,
+            ctor_index,
+            payload,
+        } => {
             let payload_thunk = payload.as_ref().map(|p| {
                 let val = hashable_value_to_value(p);
                 Arc::new(Thunk::value(val, rust_span!()))
             });
             Value::Variant {
-                type_decl_id: 0,
-                ctor: tag.clone(),
+                type_decl_id: *type_decl_id,
+                ctor_index: *ctor_index,
                 payload: payload_thunk,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(0)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
             }
         }
     }
@@ -336,7 +344,10 @@ pub(crate) fn builtin_get(
                             map.keys().map(|k| k.to_string()).collect();
                         let mut err =
                             EvalError::key_not_found(&key_str, available_keys, target_span);
-                        err.labels.push(crate::error::SpanLabel { span: call_span, message: "accessed here".to_string() });
+                        err.labels.push(crate::error::SpanLabel {
+                            span: call_span,
+                            message: "accessed here".to_string(),
+                        });
                         err.notes.push(format!("dict has {} entries", map.len(),));
                         Err(err.into())
                     }
@@ -1589,22 +1600,18 @@ pub(crate) fn builtin_get_by_field(
             .into());
         }
 
-        // Infer the type name from the first variant tag in the dict.
-        // e.g. dict entry "ServFail" → Variant("DnsRcode.ServFail") → type_name = "DnsRcode".
-        // Each entry thunk is a CoreExpr::Variant — force via materialize.
-        let mut type_name: Option<String> = None;
+        // Get the type_decl_id from the first Variant in the dict.
+        let mut variant_type_id: Option<u64> = None;
         for (_name, entry_thunk) in &dict_entries {
             let entry_val = materialize(entry_thunk, Some(&call_span), &ctx).await?;
-            if let Value::Variant { ref ctor, .. } = entry_val {
-                // Extract the tycon name (prefix before '.') from the qualified ctor tag.
-                let prefix = crate::value::tycon_name_from_ctor(ctor.as_ref());
-                type_name = Some(prefix.to_string());
+            if let Value::Variant { type_decl_id, .. } = entry_val {
+                variant_type_id = Some(type_decl_id);
                 break;
             }
         }
 
-        let type_name = match type_name {
-            Some(n) => n,
+        let variant_type_id = match variant_type_id {
+            Some(id) => id,
             None => {
                 return Err(EvalError::user_error(
                     "builtin-get-by-field: type dict contains no Variant values".to_string(),
@@ -1614,14 +1621,14 @@ pub(crate) fn builtin_get_by_field(
             }
         };
 
-        // Look up TyConDef to scan constructor_constants.
         let tycon_env = match ctx.tycon_env.get() {
             Some(env) => env,
             None => {
                 return Err(EvalError::user_error(
                     format!(
-                        "builtin-get-by-field: type info not available for type {type_name} \
-                         (--no-typecheck mode)"
+                        "builtin-get-by-field: type info not available for type {} \
+                         (--no-typecheck mode)",
+                        ctx.type_display_name(variant_type_id)
                     ),
                     call_span,
                 )
@@ -1629,19 +1636,14 @@ pub(crate) fn builtin_get_by_field(
             }
         };
 
-        // Bridge type name → u64 id via TypeContextData.type_name_to_id,
-        // then look up the TyConDef by id in the u64-keyed tycon_env.
-        let type_id = ctx
-            .type_context
-            .lock()
-            .expect("type_context lock poisoned")
-            .as_ref()
-            .and_then(|tc| tc.type_name_to_id.get(type_name.as_str()).copied());
-        let def = match type_id.and_then(|id| tycon_env.get(&id)) {
+        let def = match tycon_env.get(&variant_type_id) {
             Some(d) => d,
             None => {
                 return Err(EvalError::user_error(
-                    format!("builtin-get-by-field: type {type_name} not found in type environment"),
+                    format!(
+                        "builtin-get-by-field: type {} not found in type environment",
+                        ctx.type_display_name(variant_type_id)
+                    ),
                     call_span,
                 )
                 .into())
@@ -1650,18 +1652,19 @@ pub(crate) fn builtin_get_by_field(
 
         // Scan constructor_constants for the first variant where
         // constants[field_name] == field_value.
-        // constructor_constants: IndexMap<String (qualified tag), IndexMap<String (field), Value>>
-        for (qualified_tag, constants) in &def.constructor_constants {
+        // constructor_constants: IndexMap<u32 (ctor_index), IndexMap<String (field), Value>>
+        for (ctor_idx, constants) in &def.constructor_constants {
             if let Some(constant_val) = constants.get(field_name.as_ref() as &str) {
                 if *constant_val == field_value {
-                    // Found a match. qualified_tag is e.g. "DnsRcode.ServFail".
-                    // The dict_entries key is the unqualified name "ServFail".
-                    let unqualified = qualified_tag
-                        .strip_prefix(&format!("{}.", type_name))
-                        .unwrap_or(qualified_tag.as_str());
+                    // Found a match. Look up the unqualified ctor name from the ctor_index.
+                    let unqualified =
+                        crate::type_tags::ctor_display_name(variant_type_id, *ctor_idx);
+                    let bare_name = unqualified
+                        .split_once('.')
+                        .map(|(_, c)| c)
+                        .unwrap_or(unqualified);
                     // Find the matching ThunkId in our pre-collected dict_entries.
-                    if let Some((_name, thunk)) =
-                        dict_entries.iter().find(|(n, _)| n == unqualified)
+                    if let Some((_name, thunk)) = dict_entries.iter().find(|(n, _)| n == bare_name)
                     {
                         return Ok(Arc::clone(thunk));
                     }
@@ -1672,8 +1675,9 @@ pub(crate) fn builtin_get_by_field(
         // No match found — error
         Err(EvalError::user_error(
             format!(
-                "builtin-get-by-field: no constructor of {type_name} has field \"{field_name}\" \
-                 matching the given value"
+                "builtin-get-by-field: no constructor of {} has field \"{field_name}\" \
+                 matching the given value",
+                ctx.type_display_name(variant_type_id)
             ),
             call_span,
         )

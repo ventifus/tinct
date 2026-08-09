@@ -18,7 +18,7 @@ use std::sync::Arc;
 /// All other TypeValues are returned unchanged.
 pub(crate) fn widen_literal_types(tv: Arc<Value>) -> Arc<Value> {
     match tv.as_ref() {
-        Value::Variant { ctor, .. } => match ctor.as_ref() {
+        Value::Variant { ctor_index, .. } => match *ctor_index {
             TV_INT_LIT => crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
             TV_FLOAT_LIT => crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_FLOAT),
             TV_STR_LIT => crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_STRING),
@@ -33,8 +33,8 @@ pub(crate) fn widen_literal_types(tv: Arc<Value>) -> Arc<Value> {
 /// not concrete — they admit any value and do not constrain the callee.
 pub(crate) fn is_concrete_type(tv: &Arc<Value>) -> bool {
     match tv.as_ref() {
-        Value::Variant { ctor, .. } => {
-            let c = ctor.as_ref();
+        Value::Variant { ctor_index, .. } => {
+            let c = *ctor_index;
             c != TV_UNKNOWN && c != TV_TOP && c != TV_VAR
         }
         // Bootstrap sentinel (empty dict = Unknown) → not concrete

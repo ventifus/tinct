@@ -27,8 +27,12 @@ fn value_to_key(value: &Value, span: &Span, ctx: &Arc<EvalContext>) -> EvalResul
         } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
         Value::Int { n, .. } => Ok(HashableValue::Int(*n)),
         Value::Float { n, .. } => Ok(HashableValue::Float(n.to_bits())),
-        Value::Variant { ctor, payload, .. } => {
-            let tag = ctor.as_ref();
+        Value::Variant {
+            type_decl_id,
+            ctor_index,
+            payload,
+            ..
+        } => {
             let hv_payload = match payload {
                 None => None,
                 Some(p) => {
@@ -47,7 +51,8 @@ fn value_to_key(value: &Value, span: &Span, ctx: &Arc<EvalContext>) -> EvalResul
                 }
             };
             Ok(HashableValue::Variant {
-                tag: tag.into(),
+                type_decl_id: *type_decl_id,
+                ctor_index: *ctor_index,
                 payload: hv_payload,
             })
         }

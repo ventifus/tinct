@@ -414,10 +414,26 @@ impl fmt::Display for SurfaceExpression {
                 // Delegate to SurfaceDeclaration Display.
                 write!(f, "{}", decl)
             }
-            SurfaceExpression::UnitVariant { tycon, ctor, .. } => write!(f, "{tycon}.{ctor}"),
+            SurfaceExpression::UnitVariant {
+                type_decl_id,
+                ctor_index,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{}",
+                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index)
+                )
+            }
             SurfaceExpression::MakeVariant {
-                tycon, ctor_name, ..
-            } => write!(f, "MakeVariant({tycon}.{ctor_name})"),
+                type_decl_id,
+                ctor_index,
+                ..
+            } => write!(
+                f,
+                "MakeVariant({})",
+                crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index)
+            ),
             SurfaceExpression::TypeDecl {
                 type_name, params, ..
             } => {
@@ -837,18 +853,13 @@ pub enum SurfaceExpression {
     /// Expanded unit variant value (produced by the expand stage, never by the parser).
     /// Lowered 1:1 to CoreExpr::UnitVariant.
     #[expr(skip)]
-    UnitVariant {
-        tycon: String,
-        ctor: String,
-        type_decl_id: u64,
-    },
+    UnitVariant { ctor_index: u32, type_decl_id: u64 },
 
     /// Expanded payload variant constructor (produced by the expand stage, never by the parser).
     /// Lowered 1:1 to CoreExpr::Variant.
     #[expr(skip)]
     MakeVariant {
-        tycon: String,
-        ctor_name: String,
+        ctor_index: u32,
         payload: Arc<SurfaceNode>,
         type_decl_id: u64,
     },
@@ -1548,8 +1559,7 @@ pub enum CoreExpr {
     /// First-class variant constructor. Produced by lower.rs for type declarations.
     /// Encoded directly in CoreExpr — no runtime function call needed.
     Variant {
-        tycon: String,
-        ctor_name: String,
+        ctor_index: u32,
         payload: Option<Arc<Spanned<CoreExpr>>>,
         /// Unique ID of the parent TypeDecl. Used to look up the type's identity Arc
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
@@ -1559,8 +1569,7 @@ pub enum CoreExpr {
     },
 
     UnitVariant {
-        tycon: String,
-        ctor: String,
+        ctor_index: u32,
         /// Unique ID of the parent TypeDecl. Used to look up the type's identity Arc
         /// in `ctx.type_identity_registry` at variant construction time. Prevents same-name
         /// types in nested scopes from sharing identities (B-714).
@@ -1680,8 +1689,8 @@ pub enum CoreExpr {
     ///   3. Evaluate `inner` to obtain the constructor dict.
     ///   4. Stamp `type_id` as the `type_val` on the returned `Value::Dict`.
     ///
-    /// `CoreExpr::UnitVariant { tycon, .. }` and `CoreExpr::Variant { tag, .. }` arms in
-    /// `eval_core_expr` look up `ctx.type_identity_registry[tycon]` when constructing
+    /// `CoreExpr::UnitVariant { type_decl_id, .. }` and `CoreExpr::Variant { type_decl_id, .. }` arms in
+    /// `eval_core_expr` look up `ctx.type_identity_registry[type_decl_id]` when constructing
     /// `Value::Variant` so that every variant produced by this type's constructors carries
     /// the same `Arc` as the constructor dict. `Arc::ptr_eq` in `match_pattern` then
     /// correctly identifies whether a scrutinee belongs to a given type.

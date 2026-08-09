@@ -19,10 +19,10 @@ use crate::eval::{call_to_match, materialize, value_matches_type, EvalContext};
 use crate::eval_core::eval_core_expr;
 
 /// Return `true` if `tv` is a TypeValue.Unknown — either the bootstrap sentinel (empty dict)
-/// or a proper `Value::Variant { ctor: "TypeValue.Unknown" }` after the repr protocol runs.
+/// or a proper `Value::Variant { ctor_index: TV_UNKNOWN }` after the repr protocol runs.
 pub(crate) fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
     match tv.as_ref() {
-        Value::Variant { ctor, .. } => ctor.as_ref() == TV_UNKNOWN,
+        Value::Variant { ctor_index, .. } => *ctor_index == TV_UNKNOWN,
         // Bootstrap sentinel: crate::type_infer::make_typevalue_unknown() is an empty dict before repr protocol runs.
         Value::Dict { entries, .. } => entries.is_empty(),
         _ => false,

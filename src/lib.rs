@@ -134,7 +134,7 @@ pub use type_class::TypeValue;
 pub use type_infer::{make_typevalue_nominal, make_typevalue_open_dict, make_typevalue_unknown};
 pub use value::{
     TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP, TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP,
-    TYPE_ID_PROXY,
+    TYPE_ID_PROGRAM_ITEM, TYPE_ID_PROXY,
 };
 
 /// Formatter: canonical source reformatter.
@@ -259,9 +259,11 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
-    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await
+    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs()
+        .await
         .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
-    let ts_data = imports::get_builtin_core_type_stage_scope().await
+    let ts_data = imports::get_builtin_core_type_stage_scope()
+        .await
         .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
     let mut state =
         crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
@@ -296,9 +298,11 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
     // Type check the surface program using the per-document pipeline.
-    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs().await
+    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs()
+        .await
         .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
-    let ts_data = imports::get_builtin_core_type_stage_scope().await
+    let ts_data = imports::get_builtin_core_type_stage_scope()
+        .await
         .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
     let mut state =
         crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
@@ -485,7 +489,12 @@ where
             value::Value::RevocableDirCap { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("RevocableDirCap".to_string(), span),
             )),
-            value::Value::Variant { ctor, payload, .. } => {
+            value::Value::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+                ..
+            } => {
                 let payload_output = match payload {
                     Some(thunk_id) => {
                         let thunk = Arc::clone(thunk_id);
@@ -495,7 +504,10 @@ where
                     }
                     None => visitor.visit_null(),
                 };
-                Ok(visitor.visit_variant(ctor.as_ref().to_string(), payload_output))
+                Ok(visitor.visit_variant(
+                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string(),
+                    payload_output,
+                ))
             }
             value::Value::Decimal { n: d, .. } => Ok(visitor.visit_decimal(*d)),
             value::Value::BigInt { n, .. } => Ok(visitor.visit_bigint(n)),
@@ -1012,6 +1024,9 @@ mod tests {
     use type_infer::make_typevalue_nominal;
     use value::{Thunk, Value, TYPE_ID_INT, TYPE_ID_PROXY};
 
+    const TEST_ID_COLOR: u64 = 500;
+    const TEST_ID_MY_BOOL: u64 = 501;
+
     // Async wrappers for async public functions — test code uses .await.
     async fn value_to_display_string(
         val: &value::Value,
@@ -1029,12 +1044,12 @@ mod tests {
     fn test_display_unit_variant() {
         // Unit variants display as their full qualified tag via Rust Display.
         let v = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Color.Red"),
+            type_decl_id: TEST_ID_COLOR,
+            ctor_index: 0,
             payload: None,
-            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(make_typevalue_nominal(TEST_ID_COLOR)),
         };
-        assert_eq!(format!("{v}"), "Color.Red");
+        assert_eq!(format!("{v}"), "<user-type>");
     }
 
     /// Regression: all unit variants must serialise uniformly as `Variant(Tag, Null)`.
@@ -1048,16 +1063,16 @@ mod tests {
         let ctx = test_ctx().await;
 
         let red_val = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Color.Red"),
+            type_decl_id: TEST_ID_COLOR,
+            ctor_index: 0,
             payload: None,
-            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(make_typevalue_nominal(TEST_ID_COLOR)),
         };
         let green_val = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Color.Green"),
+            type_decl_id: TEST_ID_COLOR,
+            ctor_index: 1,
             payload: None,
-            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(make_typevalue_nominal(TEST_ID_COLOR)),
         };
 
         let red_display = value_to_display_string(&red_val, &ctx, rust_span!())
@@ -1069,27 +1084,27 @@ mod tests {
 
         // Must serialize as a generic variant.
         assert_eq!(
-            red_display, "Variant(Color.Red, Null)",
-            "Color.Red must serialise as Variant(Color.Red, Null)"
+            red_display, "Variant(<user-type>, Null)",
+            "Color.Red must serialise as Variant(<user-type>, Null) (test type_decl_id has no static display name)"
         );
         assert_eq!(
-            green_display, "Variant(Color.Green, Null)",
-            "Color.Green must serialise as Variant(Color.Green, Null)"
+            green_display, "Variant(<user-type>, Null)",
+            "Color.Green must serialise as Variant(<user-type>, Null) (test type_decl_id has no static display name)"
         );
 
         // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("MyBool.Yes"),
+            type_decl_id: TEST_ID_MY_BOOL,
+            ctor_index: 0,
             payload: None,
-            type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(make_typevalue_nominal(TEST_ID_MY_BOOL)),
         };
         let user_display = value_to_display_string(&user_val, &ctx, rust_span!())
             .await
             .expect("display should succeed for MyBool.Yes");
         assert_eq!(
-            user_display, "Variant(MyBool.Yes, Null)",
-            "User-defined unit variant must serialise uniformly"
+            user_display, "Variant(<user-type>, Null)",
+            "User-defined unit variant must serialise uniformly (test type_decl_id has no static display name)"
         );
     }
 

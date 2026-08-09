@@ -61,7 +61,10 @@ pub enum ConstructorTag {
     /// Nominal variant constructor (e.g., `Some`, `None`, `IntLiteral`).
     /// Distinct from `DictKey` — nominal variants use their declared constructor name,
     /// not their field names.
-    Variant(String),
+    Variant {
+        type_decl_id: u64,
+        ctor_index: u32,
+    },
     /// Bottom (⊥) — represents a diverging computation.
     /// Wildcards match ⊥; constructors do not.
     Bottom,
@@ -73,7 +76,16 @@ impl fmt::Display for ConstructorTag {
             ConstructorTag::DictKey(k) => write!(f, "[{k}: _]"), // Used only in isolation; CoveragePattern::Display handles structured output
             ConstructorTag::LiteralInt(n) => write!(f, "{n}"),
             ConstructorTag::LiteralStr(s) => write!(f, "\"{s}\""),
-            ConstructorTag::Variant(tag) => write!(f, "{tag}"),
+            ConstructorTag::Variant {
+                type_decl_id,
+                ctor_index,
+            } => {
+                write!(
+                    f,
+                    "{}",
+                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index)
+                )
+            }
             ConstructorTag::Bottom => write!(f, "⊥"),
         }
     }
@@ -117,8 +129,12 @@ impl fmt::Display for CoveragePattern {
                             write!(f, "]")
                         }
                     }
-                    ConstructorTag::Variant(name) => {
+                    ConstructorTag::Variant {
+                        type_decl_id,
+                        ctor_index,
+                    } => {
                         // Nominal variant: display as [Tag payload]
+                        let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
                         if sub_patterns.is_empty() {
                             write!(f, "{name}")
                         } else if sub_patterns.len() == 1 {
@@ -186,20 +202,24 @@ impl ConstructorSignature {
     pub fn from_union(
         members: &[Arc<crate::value::Value>],
         _tycon_env: &crate::type_def::TyConEnv,
-        display_names: &std::collections::HashMap<u64, String>,
+        _display_names: &std::collections::HashMap<u64, String>,
     ) -> Option<Self> {
-        use crate::type_infer::typevalue_ctor;
+        use crate::type_tags::typevalue_ctor_index;
         let mut constructors: Vec<(ConstructorTag, usize)> = Vec::with_capacity(members.len());
         for member in members {
-            let ctor_tag = typevalue_ctor(member)?;
+            let ctor_tag = typevalue_ctor_index(member)?;
             let entry = match ctor_tag {
                 TV_NOMINAL => {
-                    let id = crate::type_infer::typevalue_nominal_id(member)?;
-                    let name = display_names
-                        .get(&id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("Type({})", id));
-                    (ConstructorTag::Variant(name), 0)
+                    let type_decl_id = crate::type_infer::typevalue_nominal_id(member)?;
+                    // TV_NOMINAL is the type-level constructor, not a variant-level constructor.
+                    // For type-level constructors, ctor_index is always 0.
+                    (
+                        ConstructorTag::Variant {
+                            type_decl_id,
+                            ctor_index: 0,
+                        },
+                        0,
+                    )
                 }
                 TV_STR_LIT => {
                     let s = extract_string_payload_field(member, FIELD_VALUE)?;
@@ -395,16 +415,30 @@ pub fn ast_pattern_to_coverage(
         }
 
         // Field access — flatten to tag string (e.g., `Color.Red`)
+        // TODO(S-1042): After expansion, all constructor patterns should be UnitVariant/MakeVariant.
+        // This arm is a fallback for unexpanded patterns (tests, development). Use synthetic identity.
         SurfaceExpression::Field { .. } => match crate::ast::flatten_dot_access_to_tag_node(node) {
-            Some(tag) => CoveragePattern::Constructor {
-                tag: ConstructorTag::Variant(tag),
-                sub_patterns: vec![],
-            },
+            Some(tag) => {
+                // Synthetic identity: type_decl_id=0, ctor_index=hash(tag)
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                tag.hash(&mut hasher);
+                let ctor_index = (hasher.finish() as u32) % 10000; // Keep it small for readability
+                CoveragePattern::Constructor {
+                    tag: ConstructorTag::Variant {
+                        type_decl_id: 0,
+                        ctor_index,
+                    },
+                    sub_patterns: vec![],
+                }
+            }
             None => CoveragePattern::Wildcard,
         },
 
         // Call with Field head and single arg → Constructor(tag, [sub])
         // (e.g., `[Color.Red payload]`)
+        // TODO(S-1042): After expansion, should be MakeVariant. This is fallback for unexpanded patterns.
         SurfaceExpression::Call {
             func,
             args,
@@ -417,8 +451,17 @@ pub fn ast_pattern_to_coverage(
             match crate::ast::flatten_dot_access_to_tag_node(func) {
                 Some(tag) => {
                     let sub = ast_pattern_to_coverage(&args[0], tycon_env);
+                    // Synthetic identity: type_decl_id=0, ctor_index=hash(tag)
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    tag.hash(&mut hasher);
+                    let ctor_index = (hasher.finish() as u32) % 10000;
                     CoveragePattern::Constructor {
-                        tag: ConstructorTag::Variant(tag),
+                        tag: ConstructorTag::Variant {
+                            type_decl_id: 0,
+                            ctor_index,
+                        },
                         sub_patterns: vec![sub],
                     }
                 }
@@ -486,51 +529,94 @@ pub fn ast_pattern_to_coverage(
 
             let inner_sub = vec![ast_pattern_to_coverage(expr, tycon_env)];
 
-            // Determine the constructor tag from the TypeValue's ctor string.
-            let tag_opt: Option<&str> = match resolved_tv.as_ref() {
-                Value::Variant { ctor, .. } => match ctor.as_ref() {
-                    TV_INT_LIT => Some("Int"),
-                    TV_FLOAT_LIT => Some("Float"),
-                    TV_STR_LIT => Some("String"),
+            // Determine the constructor tag from the TypeValue's ctor.
+            // For literal TypeValues, use TYPE_ID_TYPE_VALUE with the appropriate TV_* ctor_index.
+            match resolved_tv.as_ref() {
+                Value::Variant { ctor_index, .. } => match *ctor_index {
+                    TV_INT_LIT => {
+                        return CoveragePattern::Constructor {
+                            tag: ConstructorTag::Variant {
+                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+                                ctor_index: TV_INT_LIT,
+                            },
+                            sub_patterns: inner_sub,
+                        }
+                    }
+                    TV_FLOAT_LIT => {
+                        return CoveragePattern::Constructor {
+                            tag: ConstructorTag::Variant {
+                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+                                ctor_index: TV_FLOAT_LIT,
+                            },
+                            sub_patterns: inner_sub,
+                        }
+                    }
+                    TV_STR_LIT => {
+                        return CoveragePattern::Constructor {
+                            tag: ConstructorTag::Variant {
+                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+                                ctor_index: TV_STR_LIT,
+                            },
+                            sub_patterns: inner_sub,
+                        }
+                    }
                     TV_NOMINAL => {
                         // Check for primitive types by id first.
                         let nominal_id = crate::type_infer::typevalue_nominal_id(&resolved_tv);
                         match nominal_id {
                             Some(crate::value::TYPE_ID_INT) => {
                                 return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant("Int".into()),
+                                    tag: ConstructorTag::Variant {
+                                        type_decl_id: crate::value::TYPE_ID_INT,
+                                        ctor_index: 0,
+                                    },
                                     sub_patterns: inner_sub.clone(),
                                 }
                             }
                             Some(crate::value::TYPE_ID_FLOAT) => {
                                 return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant("Float".into()),
+                                    tag: ConstructorTag::Variant {
+                                        type_decl_id: crate::value::TYPE_ID_FLOAT,
+                                        ctor_index: 0,
+                                    },
                                     sub_patterns: inner_sub.clone(),
                                 }
                             }
                             Some(crate::value::TYPE_ID_STRING) => {
                                 return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant("String".into()),
+                                    tag: ConstructorTag::Variant {
+                                        type_decl_id: crate::value::TYPE_ID_STRING,
+                                        ctor_index: 0,
+                                    },
                                     sub_patterns: inner_sub.clone(),
                                 }
                             }
                             Some(crate::value::TYPE_ID_BYTES) => {
                                 return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant("Bytes".into()),
+                                    tag: ConstructorTag::Variant {
+                                        type_decl_id: crate::value::TYPE_ID_BYTES,
+                                        ctor_index: 0,
+                                    },
                                     sub_patterns: inner_sub.clone(),
                                 }
                             }
                             _ => {}
                         }
-                        if let (Some(id), Some(env)) = (nominal_id, tycon_env) {
-                            if let Some(def) = env.get(&id) {
+                        if let (Some(type_decl_id), Some(env)) = (nominal_id, tycon_env) {
+                            if let Some(def) = env.get(&type_decl_id) {
                                 if !def.constructors.is_empty() {
                                     let branches: Vec<CoveragePattern> = def
                                         .constructors
                                         .iter()
-                                        .map(|(ctor, _arity)| CoveragePattern::Constructor {
-                                            tag: ConstructorTag::Variant(ctor.clone()),
-                                            sub_patterns: inner_sub.clone(),
+                                        .enumerate()
+                                        .map(|(idx, (_ctor_name, _arity))| {
+                                            CoveragePattern::Constructor {
+                                                tag: ConstructorTag::Variant {
+                                                    type_decl_id,
+                                                    ctor_index: idx as u32,
+                                                },
+                                                sub_patterns: inner_sub.clone(),
+                                            }
                                         })
                                         .collect();
                                     if branches.len() == 1 {
@@ -540,30 +626,55 @@ pub fn ast_pattern_to_coverage(
                                 }
                             }
                         }
-                        None
+                        // Unresolved nominal type — conservative wildcard
+                        CoveragePattern::Wildcard
                     }
-                    _ => None,
+                    _ => {
+                        // Unknown TypeValue ctor — conservative wildcard
+                        CoveragePattern::Wildcard
+                    }
                 },
-                _ => None,
-            };
-            if let Some(tag_str) = tag_opt {
-                CoveragePattern::Constructor {
-                    tag: ConstructorTag::Variant(tag_str.into()),
-                    sub_patterns: inner_sub,
+                _ => {
+                    // Not a Variant TypeValue — conservative wildcard
+                    CoveragePattern::Wildcard
                 }
-            } else {
-                CoveragePattern::Wildcard
             }
         }
 
-        // Expansion-produced variants: not valid in pattern position.
-        // TypeDecl/ReprDecl wrap an inner expression; MakeVariant constructs a
-        // variant value; UnitVariant is a unit constructor. None of these appear
-        // as user-written match patterns — treat as wildcard for coverage safety.
-        SurfaceExpression::UnitVariant { .. }
-        | SurfaceExpression::MakeVariant { .. }
-        | SurfaceExpression::TypeDecl { .. }
-        | SurfaceExpression::ReprDecl { .. } => CoveragePattern::Wildcard,
+        // UnitVariant and MakeVariant are expansion-produced but can appear in patterns
+        // after macro expansion. Extract their numeric identity directly.
+        SurfaceExpression::UnitVariant {
+            type_decl_id,
+            ctor_index,
+            ..
+        } => CoveragePattern::Constructor {
+            tag: ConstructorTag::Variant {
+                type_decl_id: *type_decl_id,
+                ctor_index: *ctor_index,
+            },
+            sub_patterns: vec![],
+        },
+        SurfaceExpression::MakeVariant {
+            type_decl_id,
+            ctor_index,
+            payload,
+            ..
+        } => {
+            let sub = ast_pattern_to_coverage(payload, tycon_env);
+            CoveragePattern::Constructor {
+                tag: ConstructorTag::Variant {
+                    type_decl_id: *type_decl_id,
+                    ctor_index: *ctor_index,
+                },
+                sub_patterns: vec![sub],
+            }
+        }
+
+        // TypeDecl/ReprDecl wrap an inner expression — not valid in pattern position.
+        // Treat as wildcard for coverage safety.
+        SurfaceExpression::TypeDecl { .. } | SurfaceExpression::ReprDecl { .. } => {
+            CoveragePattern::Wildcard
+        }
 
         // All other forms: Wildcard
         _ => CoveragePattern::Wildcard,
@@ -594,7 +705,11 @@ fn normalize_constructor_arities(
 ) -> CoveragePattern {
     match pat {
         CoveragePattern::Constructor { tag, sub_patterns } => {
-            if let ConstructorTag::Variant(name) = tag {
+            if let ConstructorTag::Variant {
+                type_decl_id,
+                ctor_index,
+            } = tag
+            {
                 let sig_arity = sig.arity(tag);
                 let pat_arity = sub_patterns.len();
 
@@ -615,8 +730,19 @@ fn normalize_constructor_arities(
                     // Payload-binding pattern ([Tag n]:) for a unit variant — dead pattern.
                     // Unit variants have no payload, so this can never match. Use a synthetic
                     // tag not present in the sig so specialize always drops this row.
+                    // Use type_decl_id=1 (reserved for synthetic) with a derived ctor_index.
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    type_decl_id.hash(&mut hasher);
+                    ctor_index.hash(&mut hasher);
+                    "__dead__".hash(&mut hasher);
+                    let dead_ctor_index = (hasher.finish() as u32) % 10000 + 50000; // High range to avoid collision
                     CoveragePattern::Constructor {
-                        tag: ConstructorTag::Variant(format!("__dead_{name}__")),
+                        tag: ConstructorTag::Variant {
+                            type_decl_id: 1, // Reserved synthetic type_decl_id
+                            ctor_index: dead_ctor_index,
+                        },
                         sub_patterns: sub_patterns
                             .iter()
                             .map(|sp| normalize_constructor_arities(sp, sig))
@@ -1011,10 +1137,23 @@ mod tests {
     }
 
     // Helper: two-constructor signature (e.g. Coin.Heads | Coin.Tails)
+    // Use synthetic type_decl_id=100 for test types
     fn bool_sig() -> ConstructorSignature {
         sig(&[
-            (ConstructorTag::Variant("Coin.Heads".into()), 0),
-            (ConstructorTag::Variant("Coin.Tails".into()), 0),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 100,
+                    ctor_index: 0,
+                },
+                0,
+            ),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 100,
+                    ctor_index: 1,
+                },
+                0,
+            ),
         ])
     }
 
@@ -1205,8 +1344,20 @@ mod tests {
     fn test_coverage_two_ctor_exhaustive() {
         let sig = bool_sig();
         let patterns = vec![
-            con(ConstructorTag::Variant("Coin.Heads".into()), vec![]),
-            con(ConstructorTag::Variant("Coin.Tails".into()), vec![]),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 100,
+                    ctor_index: 0,
+                },
+                vec![],
+            ),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 100,
+                    ctor_index: 1,
+                },
+                vec![],
+            ),
         ];
         let guards = vec![false, false];
         let result = check_coverage(&patterns, &sig, &guards);
@@ -1216,7 +1367,13 @@ mod tests {
     #[test]
     fn test_coverage_two_ctor_missing_one() {
         let sig = bool_sig();
-        let patterns = vec![con(ConstructorTag::Variant("Coin.Heads".into()), vec![])];
+        let patterns = vec![con(
+            ConstructorTag::Variant {
+                type_decl_id: 100,
+                ctor_index: 0,
+            },
+            vec![],
+        )];
         let guards = vec![false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(!result.exhaustive);
@@ -1325,12 +1482,36 @@ mod tests {
     fn test_nominal_variant_coverage() {
         // Maybe: Maybe.Some(_) | Maybe.None
         let sig = sig(&[
-            (ConstructorTag::Variant("Maybe.Some".into()), 1),
-            (ConstructorTag::Variant("Maybe.None".into()), 0),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 0,
+                },
+                1,
+            ),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 1,
+                },
+                0,
+            ),
         ]);
         let patterns = vec![
-            con(ConstructorTag::Variant("Maybe.Some".into()), vec![wc()]),
-            con(ConstructorTag::Variant("Maybe.None".into()), vec![]),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 0,
+                },
+                vec![wc()],
+            ),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 1,
+                },
+                vec![],
+            ),
         ];
         let guards = vec![false, false];
         let result = check_coverage(&patterns, &sig, &guards);
@@ -1340,11 +1521,26 @@ mod tests {
     #[test]
     fn test_nominal_variant_missing() {
         let sig = sig(&[
-            (ConstructorTag::Variant("Maybe.Some".into()), 1),
-            (ConstructorTag::Variant("Maybe.None".into()), 0),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 0,
+                },
+                1,
+            ),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 1,
+                },
+                0,
+            ),
         ]);
         let patterns = vec![con(
-            ConstructorTag::Variant("Maybe.Some".into()),
+            ConstructorTag::Variant {
+                type_decl_id: 101,
+                ctor_index: 0,
+            },
             vec![wc()],
         )];
         let guards = vec![false];
@@ -1353,7 +1549,13 @@ mod tests {
         assert_eq!(result.uncovered.len(), 1);
         assert_eq!(
             result.uncovered[0],
-            con(ConstructorTag::Variant("Maybe.None".into()), vec![])
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 1
+                },
+                vec![]
+            )
         );
     }
 
@@ -1362,12 +1564,36 @@ mod tests {
     #[test]
     fn test_type_tag_int_str_coverage() {
         let sig = sig(&[
-            (ConstructorTag::Variant("Int".into()), 0),
-            (ConstructorTag::Variant("String".into()), 0),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: crate::value::TYPE_ID_INT,
+                    ctor_index: 0,
+                },
+                0,
+            ),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: crate::value::TYPE_ID_STRING,
+                    ctor_index: 0,
+                },
+                0,
+            ),
         ]);
         let patterns = vec![
-            con(ConstructorTag::Variant("Int".into()), vec![]),
-            con(ConstructorTag::Variant("String".into()), vec![]),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: crate::value::TYPE_ID_INT,
+                    ctor_index: 0,
+                },
+                vec![],
+            ),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: crate::value::TYPE_ID_STRING,
+                    ctor_index: 0,
+                },
+                vec![],
+            ),
         ];
         let guards = vec![false, false];
         let result = check_coverage(&patterns, &sig, &guards);
@@ -1377,10 +1603,28 @@ mod tests {
     #[test]
     fn test_type_tag_missing() {
         let sig = sig(&[
-            (ConstructorTag::Variant("Int".into()), 0),
-            (ConstructorTag::Variant("String".into()), 0),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: crate::value::TYPE_ID_INT,
+                    ctor_index: 0,
+                },
+                0,
+            ),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: crate::value::TYPE_ID_STRING,
+                    ctor_index: 0,
+                },
+                0,
+            ),
         ]);
-        let patterns = vec![con(ConstructorTag::Variant("Int".into()), vec![])];
+        let patterns = vec![con(
+            ConstructorTag::Variant {
+                type_decl_id: crate::value::TYPE_ID_INT,
+                ctor_index: 0,
+            },
+            vec![],
+        )];
         let guards = vec![false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(!result.exhaustive);
@@ -1428,7 +1672,7 @@ mod tests {
         };
         Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_RECORD),
+            ctor_index: TV_RECORD,
             payload: Some(Arc::new(crate::value::Thunk::value(
                 payload,
                 crate::rust_span!(),
@@ -1478,8 +1722,14 @@ mod tests {
         .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
-        assert!(tags.contains(&ConstructorTag::Variant("Int".to_string())));
-        assert!(tags.contains(&ConstructorTag::Variant("String".to_string())));
+        assert!(tags.contains(&ConstructorTag::Variant {
+            type_decl_id: crate::value::TYPE_ID_INT,
+            ctor_index: 0,
+        }));
+        assert!(tags.contains(&ConstructorTag::Variant {
+            type_decl_id: crate::value::TYPE_ID_STRING,
+            ctor_index: 0,
+        }));
     }
 
     #[test]
@@ -1501,7 +1751,7 @@ mod tests {
         // from_union must return None rather than a partial (unsound) signature.
         let fn_tv = Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_FN),
+            ctor_index: TV_FN,
             payload: None,
             type_val: None,
         });
@@ -1543,8 +1793,20 @@ mod tests {
     // Sig helper: Maybe-like Union (Maybe.Some=arity-1, Maybe.None=arity-0)
     fn option_variant_sig() -> ConstructorSignature {
         sig(&[
-            (ConstructorTag::Variant("Maybe.Some".into()), 1),
-            (ConstructorTag::Variant("Maybe.None".into()), 0),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 0,
+                },
+                1,
+            ),
+            (
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 1,
+                },
+                0,
+            ),
         ])
     }
 
@@ -1554,11 +1816,23 @@ mod tests {
         // normalize_constructor_arities must expand it to sub_patterns=[Wildcard],
         // matching like [Maybe.Some _]:
         let sig = option_variant_sig();
-        let bare_some = con(ConstructorTag::Variant("Maybe.Some".into()), vec![]);
+        let bare_some = con(
+            ConstructorTag::Variant {
+                type_decl_id: 101,
+                ctor_index: 0,
+            },
+            vec![],
+        );
         let normalized = normalize_constructor_arities(&bare_some, &sig);
         assert_eq!(
             normalized,
-            con(ConstructorTag::Variant("Maybe.Some".into()), vec![wc()]),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 0
+                },
+                vec![wc()]
+            ),
             "bare-tag [Maybe.Some]: on arity-1 variant must normalize to [Maybe.Some _]:"
         );
     }
@@ -1568,11 +1842,23 @@ mod tests {
         // binding:None on a unit variant (arity 0): bare [Maybe.None]: with sub_patterns=[]
         // normalize_constructor_arities must keep sub_patterns=[] (unit — no payload slot)
         let sig = option_variant_sig();
-        let bare_none = con(ConstructorTag::Variant("Maybe.None".into()), vec![]);
+        let bare_none = con(
+            ConstructorTag::Variant {
+                type_decl_id: 101,
+                ctor_index: 1,
+            },
+            vec![],
+        );
         let normalized = normalize_constructor_arities(&bare_none, &sig);
         assert_eq!(
             normalized,
-            con(ConstructorTag::Variant("Maybe.None".into()), vec![]),
+            con(
+                ConstructorTag::Variant {
+                    type_decl_id: 101,
+                    ctor_index: 1
+                },
+                vec![]
+            ),
             "bare-tag [Maybe.None]: on arity-0 variant must normalize to [] sub-patterns"
         );
     }
@@ -1583,15 +1869,25 @@ mod tests {
         // normalize_constructor_arities must convert to a __dead_Maybe.None__ tag so specialize
         // always drops this row — the pattern can never match (unit variants have no payload).
         let sig = option_variant_sig();
-        let payload_none = con(ConstructorTag::Variant("Maybe.None".into()), vec![wc()]);
+        let payload_none = con(
+            ConstructorTag::Variant {
+                type_decl_id: 101,
+                ctor_index: 1,
+            },
+            vec![wc()],
+        );
         let normalized = normalize_constructor_arities(&payload_none, &sig);
         match &normalized {
             CoveragePattern::Constructor { tag, .. } => {
-                assert_eq!(
-                    *tag,
-                    ConstructorTag::Variant("__dead_Maybe.None__".into()),
-                    "binding on unit variant must produce a __dead__ synthetic tag"
-                );
+                // Dead pattern uses synthetic type_decl_id=1
+                if let ConstructorTag::Variant { type_decl_id, .. } = tag {
+                    assert_eq!(
+                        *type_decl_id, 1,
+                        "binding on unit variant must produce a synthetic dead tag with type_decl_id=1"
+                    );
+                } else {
+                    panic!("expected Variant tag, got {tag:?}");
+                }
             }
             other => panic!("expected Constructor, got {other}"),
         }
@@ -1720,16 +2016,24 @@ mod tests {
     #[test]
     fn test_ast_pattern_field_dot_access_is_variant_constructor() {
         // Color.Red (Field { expr: Some(VarRef("Color")), field: Ident("Red") })
-        // → Constructor(Variant("Color.Red"), [])
+        // → Constructor(Variant { type_decl_id: 0 (synthetic), ctor_index: hash }, [])
         let node = mknode(field_dot("Color", "Red"));
         let result = ast_pattern_to_coverage(&node, None);
-        assert_eq!(
-            result,
-            CoveragePattern::Constructor {
-                tag: ConstructorTag::Variant("Color.Red".to_string()),
-                sub_patterns: vec![],
+        match result {
+            CoveragePattern::Constructor { tag, sub_patterns } => {
+                match tag {
+                    ConstructorTag::Variant { type_decl_id, .. } => {
+                        assert_eq!(
+                            type_decl_id, 0,
+                            "Field pattern should use synthetic type_decl_id=0"
+                        );
+                    }
+                    _ => panic!("expected Variant tag, got {tag:?}"),
+                }
+                assert!(sub_patterns.is_empty());
             }
-        );
+            _ => panic!("expected Constructor, got {result:?}"),
+        }
     }
 
     #[test]

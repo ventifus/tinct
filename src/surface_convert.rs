@@ -3,7 +3,7 @@
 //! Bidirectional conversion between AST nodes and tinct `Value::Variant` (Expr nodes) or `Value::Dict`
 //! (structural nodes) matching the canonical schema in `doc/feature/ast-schema.md`.
 //!
-//! The canonical runtime representation of AST nodes is `Value::Variant { tag: "Expr.<Tag>", .. }`.
+//! The canonical runtime representation of AST nodes is `Value::Variant { type_decl_id: TYPE_ID_EXPR, ctor_index, .. }`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,8 +17,15 @@ use crate::ast::{
 };
 use crate::error::EvalResult;
 use crate::rust_span;
+use crate::type_tags::{
+    EXPR_CALL, EXPR_CLASS_DECL, EXPR_DICT, EXPR_ENTRY, EXPR_ERROR, EXPR_FN, EXPR_INSTANCE_DECL,
+    EXPR_LET_DECL, EXPR_LITERAL, EXPR_MATCH, EXPR_NAMED_ARG, EXPR_PARAMETER, EXPR_PATTERN_DECL,
+    EXPR_PLACEHOLDER, EXPR_QUOTE, EXPR_REST, EXPR_SEQUENTIAL, EXPR_SPLICE, EXPR_SYNTAX_CLASS,
+    EXPR_TYPE_ALIAS, EXPR_TYPE_ASSERT, EXPR_UNQUOTE, EXPR_UNQUOTE_SPLICE, EXPR_VARREF,
+};
 use crate::value::{
-    string_val, HashableValue, Thunk, Value, TYPE_ID_DICT, TYPE_ID_FLOAT, TYPE_ID_INT, TYPE_ID_U64,
+    string_val, HashableValue, Thunk, Value, TYPE_ID_DICT, TYPE_ID_EXPR, TYPE_ID_FLOAT,
+    TYPE_ID_INT, TYPE_ID_U64,
 };
 
 /// Error type for AST dict validation failures during dict-to-AST conversion.
@@ -47,10 +54,10 @@ impl fmt::Display for AstError {
 
 impl std::error::Error for AstError {}
 
-/// Convert a `SurfaceNode` to a `Value::Variant { tag: "Expr.<Tag>", payload: Some(..) }`.
+/// Convert a `SurfaceNode` to a `Value::Variant { type_decl_id: TYPE_ID_EXPR, ctor_index, payload: Some(..) }`.
 ///
-/// This is the canonical runtime representation of AST nodes. The tag is qualified
-/// (e.g. `"Expr.VarRef"`) so that pattern matching against `Expr.*` constructors works.
+/// This is the canonical runtime representation of AST nodes. Identity uses numeric
+/// `(type_decl_id, ctor_index)` pairs — no string manipulation.
 /// The payload is a materialized dict with the node's fields.
 ///
 /// Delegates to the `ExprConvert`-generated `to_expr_variant` method on `SurfaceExpression`.
@@ -119,7 +126,7 @@ fn inject_span_into_expr_variant(
     match val {
         Value::Variant {
             type_decl_id,
-            ctor,
+            ctor_index,
             payload: Some(payload_thunk),
             ..
         } => {
@@ -144,16 +151,16 @@ fn inject_span_into_expr_variant(
                 ));
                 Value::Variant {
                     type_decl_id,
-                    ctor,
+                    ctor_index,
                     payload: Some(new_payload),
                     type_val: Some(crate::type_infer::make_typevalue_nominal(type_decl_id)),
                 }
             } else {
                 Value::Variant {
-                    type_decl_id: TYPE_ID_DICT,
-                    ctor,
+                    type_decl_id,
+                    ctor_index,
                     payload: Some(payload_thunk),
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(type_decl_id)),
                 }
             }
         }
@@ -164,9 +171,9 @@ fn inject_span_into_expr_variant(
 
 /// Convert a dict representation back to a SurfaceNode.
 ///
-/// Reads the Variant tag or `type:` field and dispatches to the native `SurfaceExpression`
-/// constructor. All variants are handled natively. Unknown tags return a hard `AstError`;
-/// there is no Expr-based fallback path.
+/// Reads the Variant (type_decl_id, ctor_index) or `type:` field and dispatches to the native
+/// `SurfaceExpression` constructor. All variants are handled natively. Unknown constructors
+/// return a hard `AstError`; there is no Expr-based fallback path.
 ///
 /// `call_site_span` is used as the fallback span when the dict representation has no
 /// embedded span information (e.g., for AstError nodes).
@@ -190,12 +197,13 @@ fn dict_to_surface_node_inner(
     // AstError is a skip variant — to_expr_variant produces a unit Expr.AstError (no payload).
     // Handle it here before from_expr_variant tries to read a non-existent payload.
     if let Value::Variant {
-        ctor,
+        type_decl_id,
+        ctor_index,
         payload: None,
         ..
     } = val
     {
-        if ctor.as_ref() == "Expr.AstError" {
+        if *type_decl_id == TYPE_ID_EXPR && *ctor_index == EXPR_ERROR {
             return Ok(Arc::new(SurfaceNode::new(
                 SurfaceExpression::Error(call_site_span.clone()),
                 call_site_span.clone(),
@@ -212,7 +220,8 @@ fn dict_to_surface_node_inner(
     // resulting VarRef so the type checker can dispatch on the flag instead of inspecting
     // the gensym name prefix.
     if let Value::Variant {
-        ctor,
+        type_decl_id,
+        ctor_index,
         payload: Some(ref payload_thunk),
         ..
     } = val
@@ -221,7 +230,7 @@ fn dict_to_surface_node_inner(
         let payload_val = thunk_value_or_ast_error(payload_thunk, "Expr variant payload", vec![])?;
         if let Value::Dict { entries: dict, .. } = payload_val {
             let span_opt = extract_span(&dict, ctx);
-            let is_do_infer_placeholder = ctor.as_ref() == "Expr.VarRef"
+            let is_do_infer_placeholder = *type_decl_id == TYPE_ID_EXPR && *ctor_index == EXPR_VARREF
                 && dict
                     .get(&crate::value::HashableValue::Str(
                         "do-infer-placeholder".into(),
@@ -308,8 +317,8 @@ pub fn core_expr_to_expr_value(
     };
 
     // Helper to build an Expr.* variant with a payload dict
-    let make_variant = |tag: &str, fields: IndexMap<HashableValue, Arc<Thunk>>| -> Value {
-        make_variant_with_payload(&format!("Expr.{}", tag), fields, &core.span, ctx)
+    let make_variant = |ctor_index: u32, fields: IndexMap<HashableValue, Arc<Thunk>>| -> Value {
+        make_variant_with_payload(TYPE_ID_EXPR, ctor_index, fields, &core.span, ctx)
     };
 
     // Helper: build a Dict-typed Arc<Thunk> from a map (for inner nested dicts)
@@ -348,7 +357,7 @@ pub fn core_expr_to_expr_value(
                 }),
             );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
-            make_variant("Literal", payload)
+            make_variant(EXPR_LITERAL, payload)
         }
 
         CoreExpr::U64 { value: n, .. } => {
@@ -362,7 +371,7 @@ pub fn core_expr_to_expr_value(
                 }),
             );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
-            make_variant("Literal", payload)
+            make_variant(EXPR_LITERAL, payload)
         }
 
         CoreExpr::Float { value: f, .. } => {
@@ -376,7 +385,7 @@ pub fn core_expr_to_expr_value(
                 }),
             );
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
-            make_variant("Literal", payload)
+            make_variant(EXPR_LITERAL, payload)
         }
 
         CoreExpr::Str { value: s, .. } => {
@@ -384,7 +393,7 @@ pub fn core_expr_to_expr_value(
             payload.insert(HashableValue::Str("kind".into()), mk(string_val("str")));
             payload.insert(HashableValue::Str("value".into()), mk(string_val(s)));
             payload.insert(HashableValue::Str("bare".into()), null_thunk());
-            make_variant("Literal", payload)
+            make_variant(EXPR_LITERAL, payload)
         }
 
         // ── Variables ────────────────────────────────────────────────────────────
@@ -392,7 +401,7 @@ pub fn core_expr_to_expr_value(
         CoreExpr::Var { name, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("name".into()), mk(string_val(name)));
-            make_variant("VarRef", payload)
+            make_variant(EXPR_VARREF, payload)
         }
 
         // ── Call ─────────────────────────────────────────────────────────────────
@@ -435,7 +444,7 @@ pub fn core_expr_to_expr_value(
                     type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
                 }),
             );
-            make_variant("Call", payload)
+            make_variant(EXPR_CALL, payload)
         }
 
         // ── Dict ─────────────────────────────────────────────────────────────────
@@ -464,7 +473,7 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("entries".into()),
                 mk_dict(entries_dict, synth.clone()),
             );
-            make_variant("Dict", payload)
+            make_variant(EXPR_DICT, payload)
         }
 
         // ── Fn ───────────────────────────────────────────────────────────────────
@@ -507,14 +516,14 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("return-ann".into()),
                 alloc_annotation_opt(None, ctx),
             );
-            make_variant("Fn", payload)
+            make_variant(EXPR_FN, payload)
         }
 
         // ── Sequential ───────────────────────────────────────────────────────────
         CoreExpr::Sequential { exprs, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("exprs".into()), recurse_vec(exprs));
-            make_variant("Sequential", payload)
+            make_variant(EXPR_SEQUENTIAL, payload)
         }
 
         // ── Match ────────────────────────────────────────────────────────────────
@@ -552,26 +561,26 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("arms".into()),
                 mk_dict(arms_dict, synth.clone()),
             );
-            make_variant("Match", payload)
+            make_variant(EXPR_MATCH, payload)
         }
 
         // ── Quote / Unquote / UnquoteSplice ──────────────────────────────────────
         CoreExpr::Quote { expr: e, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("expr".into()), recurse(e));
-            make_variant("Quote", payload)
+            make_variant(EXPR_QUOTE, payload)
         }
 
         CoreExpr::Unquote { expr: e, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("expr".into()), recurse(e));
-            make_variant("Unquote", payload)
+            make_variant(EXPR_UNQUOTE, payload)
         }
 
         CoreExpr::UnquoteSplice { expr: e, .. } => {
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("expr".into()), recurse(e));
-            make_variant("UnquoteSplice", payload)
+            make_variant(EXPR_UNQUOTE_SPLICE, payload)
         }
 
         // ── TypeAssert ───────────────────────────────────────────────────────────
@@ -586,7 +595,7 @@ pub fn core_expr_to_expr_value(
                 alloc_annotation_opt(annotation_opt, ctx),
             );
             payload.insert(HashableValue::Str("expr".into()), recurse(expr));
-            make_variant("TypeAssert", payload)
+            make_variant(EXPR_TYPE_ASSERT, payload)
         }
 
         // ── Rest ─────────────────────────────────────────────────────────────────
@@ -596,7 +605,7 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("name".into()),
                 alloc_string_opt(name_opt.as_deref(), ctx),
             );
-            make_variant("Rest", payload)
+            make_variant(EXPR_REST, payload)
         }
 
         // ── LetDecl / PatternDecl ────────────────────────────────────────────────
@@ -608,7 +617,7 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("bindings".into()),
                 recurse_vec(&arc_bindings),
             );
-            make_variant("LetDecl", payload)
+            make_variant(EXPR_LET_DECL, payload)
         }
 
         CoreExpr::PatternDecl { bindings, .. } => {
@@ -619,26 +628,23 @@ pub fn core_expr_to_expr_value(
                 HashableValue::Str("bindings".into()),
                 recurse_vec(&arc_bindings),
             );
-            make_variant("PatternDecl", payload)
+            make_variant(EXPR_PATTERN_DECL, payload)
         }
 
         // ── Variant ──────────────────────────────────────────────────────────────
-        // This is AST variant construction (Expr.Variant), NOT Value::Variant itself
+        // This is AST variant construction (Expr.Variant), NOT Value::Variant itself.
+        // Read (type_decl_id, ctor_index) from the CoreExpr numeric fields.
         CoreExpr::Variant {
-            tycon,
-            ctor_name,
+            ctor_index: ci,
+            type_decl_id: tdid,
             payload,
             ..
         } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            let qualified_tag = if tycon.is_empty() {
-                ctor_name.clone()
-            } else {
-                format!("{}.{}", tycon, ctor_name)
-            };
+            let display_name = crate::type_tags::ctor_display_name(*tdid, *ci);
             fields.insert(
                 HashableValue::Str("tag".into()),
-                mk(string_val(&qualified_tag)),
+                mk(string_val(display_name)),
             );
             fields.insert(
                 HashableValue::Str("payload".into()),
@@ -647,18 +653,25 @@ pub fn core_expr_to_expr_value(
                     None => null_thunk(),
                 },
             );
-            make_variant("Variant", fields)
+            make_variant_with_payload(*tdid, *ci, fields, &core.span, ctx)
         }
 
-        CoreExpr::UnitVariant { tycon, ctor, .. } => {
+        CoreExpr::UnitVariant {
+            ctor_index: ci,
+            type_decl_id: tdid,
+            ..
+        } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            fields.insert(HashableValue::Str("tycon".into()), mk(string_val(tycon)));
-            fields.insert(HashableValue::Str("ctor".into()), mk(string_val(ctor)));
-            make_variant("UnitVariant", fields)
+            let display_name = crate::type_tags::ctor_display_name(*tdid, *ci);
+            fields.insert(
+                HashableValue::Str("tag".into()),
+                mk(string_val(display_name)),
+            );
+            make_variant_with_payload(*tdid, *ci, fields, &core.span, ctx)
         }
 
         // ── Placeholder ──────────────────────────────────────────────────────────
-        CoreExpr::Placeholder { .. } => make_unit_variant("Expr.Placeholder"),
+        CoreExpr::Placeholder { .. } => make_unit_variant(TYPE_ID_EXPR, EXPR_PLACEHOLDER),
 
         // ── ReprDecl ─────────────────────────────────────────────────────────────
         // Transparent in AST representation — the quoted form is the inner dict.
@@ -730,68 +743,62 @@ fn dict_to_annotation(
     // Handle the Variant format produced by annotation_to_value / annotation_inner_to_value.
     // Tags: "Annotation.Simple", "Annotation.PropertyDict", "Annotation.Annotated", "Annotation.Unknown"
     if let Value::Variant {
-        ctor,
+        type_decl_id,
+        ctor_index,
         payload: Some(payload_thunk),
         ..
     } = val
     {
-        if crate::value::tycon_name_from_ctor(ctor.as_ref()) != "Annotation" {
-            return Err(AstError {
-                message: format!("expected Annotation variant, got {}", ctor),
-                field_path: path.iter().map(|s| s.to_string()).collect(),
-            });
-        }
         let payload_val = thunk_value_or_ast_error(
             payload_thunk,
             "annotation payload",
             path.iter().map(|s| s.to_string()).collect(),
         )?;
-        // Strip "Annotation." prefix to get bare constructor name for dispatch.
-        let bare_ctor = ctor
-            .as_ref()
-            .split_once('.')
-            .map(|(_, c)| c)
-            .unwrap_or(ctor.as_ref());
-        let ann = match bare_ctor {
-            "Quote" => Annotation::Quote,
-            "Simple" => match &payload_val {
-                Value::Dict { entries: d, .. } => {
-                    // Try "name" first (canonical field); fall back to "text" if absent.
-                    // If both are absent, propagate the "text" field error.
-                    let name = get_string_field(d, "name", path, ctx)
-                        .or_else(|_| get_string_field(d, "text", path, ctx))?;
-                    Annotation::Simple(name)
-                }
-                _ => Annotation::Simple(String::new()),
-            },
-            "PropertyDict" | "Unknown" => {
-                // Reconstruct as a simple annotation using the text field
-                match &payload_val {
+        // Dispatch on (type_decl_id, ctor_index) for annotation variants.
+        // ANN_NULL maps to Quote (the quoting sentinel annotation).
+        let ann = if *type_decl_id == crate::value::TYPE_ID_ANNOTATION {
+            match *ctor_index {
+                crate::type_tags::ANN_NULL => Annotation::Quote,
+                crate::type_tags::ANN_SIMPLE => match &payload_val {
                     Value::Dict { entries: d, .. } => {
-                        let text = get_string_field(d, "text", path, ctx)?;
-                        Annotation::Simple(text)
+                        // Try "name" first (canonical field); fall back to "text" if absent.
+                        let name = get_string_field(d, "name", path, ctx)
+                            .or_else(|_| get_string_field(d, "text", path, ctx))?;
+                        Annotation::Simple(name)
                     }
                     _ => Annotation::Simple(String::new()),
+                },
+                crate::type_tags::ANN_PROP_DICT | crate::type_tags::ANN_UNKNOWN => {
+                    // Reconstruct as a simple annotation using the text field
+                    match &payload_val {
+                        Value::Dict { entries: d, .. } => {
+                            let text = get_string_field(d, "text", path, ctx)?;
+                            Annotation::Simple(text)
+                        }
+                        _ => Annotation::Simple(String::new()),
+                    }
                 }
-            }
-            "Annotated" => match &payload_val {
-                Value::Dict { entries: d, .. } => {
-                    // Deserialize outer: non-Simple outer is stored as a nested "outer" Annotation
-                    // value; Simple outer uses the flat "name" string for backward compatibility.
-                    let outer_ann = if let Ok(outer_val) = get_field(d, "outer", path, ctx) {
-                        dict_to_annotation(&outer_val, path, ctx)?.node
-                    } else {
-                        let name = get_string_field(d, "name", path, ctx)?;
-                        Annotation::Simple(name)
-                    };
-                    // Deserialize inner from "inner-ann" (structured recursive Annotation value).
-                    let inner_ann_val = get_field(d, "inner-ann", path, ctx)?;
-                    let inner_ann = dict_to_annotation(&inner_ann_val, path, ctx)?.node;
-                    Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann))
-                }
+                crate::type_tags::ANN_ANNOTATED => match &payload_val {
+                    Value::Dict { entries: d, .. } => {
+                        // Deserialize outer: non-Simple outer is stored as a nested "outer" Annotation
+                        // value; Simple outer uses the flat "name" string for backward compatibility.
+                        let outer_ann = if let Ok(outer_val) = get_field(d, "outer", path, ctx) {
+                            dict_to_annotation(&outer_val, path, ctx)?.node
+                        } else {
+                            let name = get_string_field(d, "name", path, ctx)?;
+                            Annotation::Simple(name)
+                        };
+                        // Deserialize inner from "inner-ann" (structured recursive Annotation value).
+                        let inner_ann_val = get_field(d, "inner-ann", path, ctx)?;
+                        let inner_ann = dict_to_annotation(&inner_ann_val, path, ctx)?.node;
+                        Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann))
+                    }
+                    _ => Annotation::Simple(String::new()),
+                },
                 _ => Annotation::Simple(String::new()),
-            },
-            _ => Annotation::Simple(String::new()),
+            }
+        } else {
+            Annotation::Simple(String::new())
         };
         return Ok(Spanned::new(ann, rust_span!()));
     }
@@ -1229,10 +1236,10 @@ pub(crate) fn alloc_entry_list(
         ));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Expr.Entry"),
+            type_decl_id: TYPE_ID_EXPR,
+            ctor_index: EXPR_ENTRY,
             payload: Some(payload_thunk),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
@@ -1275,10 +1282,10 @@ pub(crate) fn alloc_named_arg_list(
         ));
         let na_thunk = Arc::new(Thunk::value(
             Value::Variant {
-                type_decl_id: TYPE_ID_DICT,
-                ctor: Arc::from("Expr.NamedArg"),
+                type_decl_id: TYPE_ID_EXPR,
+                ctor_index: EXPR_NAMED_ARG,
                 payload: Some(payload_thunk),
-                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
             },
             na.span.clone(),
         ));
@@ -1331,10 +1338,10 @@ pub(crate) fn alloc_param_list(
         ));
         let p_thunk = Arc::new(Thunk::value(
             Value::Variant {
-                type_decl_id: TYPE_ID_DICT,
-                ctor: Arc::from("Expr.Param"),
+                type_decl_id: TYPE_ID_EXPR,
+                ctor_index: EXPR_PARAMETER,
                 payload: Some(param_payload_thunk),
-                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
             },
             p.span.clone(),
         ));
@@ -1407,7 +1414,8 @@ pub(crate) fn alloc_span(span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> Ar
 }
 
 pub(crate) fn make_variant_with_payload(
-    tag: &str,
+    type_decl_id: u64,
+    ctor_index: u32,
     payload: IndexMap<HashableValue, Arc<Thunk>>,
     span: &Span,
     _ctx: &Arc<crate::eval::EvalContext>,
@@ -1419,19 +1427,19 @@ pub(crate) fn make_variant_with_payload(
     };
     let payload_thunk = Arc::new(Thunk::value(payload_val, span.clone()));
     Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(tag),
+        type_decl_id,
+        ctor_index,
         payload: Some(payload_thunk),
-        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+        type_val: Some(crate::type_infer::make_typevalue_nominal(type_decl_id)),
     }
 }
 
-pub(crate) fn make_unit_variant(tag: &str) -> Value {
+pub(crate) fn make_unit_variant(type_decl_id: u64, ctor_index: u32) -> Value {
     Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(tag),
+        type_decl_id,
+        ctor_index,
         payload: None,
-        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+        type_val: Some(crate::type_infer::make_typevalue_nominal(type_decl_id)),
     }
 }
 
@@ -1439,33 +1447,39 @@ pub(crate) fn make_surface_node(expr: SurfaceExpression, span: Span) -> Arc<Surf
     Arc::new(SurfaceNode::new(expr, span))
 }
 
+// ---- Bridge functions for ExprConvert derive macro (string → numeric identity) ----
+
+/// Bridge for the ExprConvert derive macro: creates a unit variant from a
+/// qualified tag string like "Expr.Placeholder". Maps the string to numeric
+/// (type_decl_id, ctor_index) via `tag_name_to_ctor_id`, then delegates to
+/// the canonical `make_unit_variant`.
+
 // ---- Extract helpers (from-expr direction, called by generated from_expr_variant) ----
 
-/// Extract a (stripped_tag, dict) pair from a Value::Variant with an "Expr." prefix.
+/// Extract a (type_decl_id, ctor_index, dict) triple from a Value::Variant.
 ///
-/// Strips the "Expr." prefix from the tag (e.g., "Expr.Sequential" → "Sequential"),
-/// materializes the payload dict, and returns both. Used as the first step in
-/// generated `from_expr_variant` implementations.
+/// Materializes the payload dict and returns the numeric identity along with it.
+/// The `extract_tag_and_dict_by_name` wrapper converts this to a (String, dict)
+/// pair for the derive macro's string-based match arms.
 pub(crate) fn extract_tag_and_dict(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<(String, IndexMap<HashableValue, Arc<Thunk>>), AstError> {
+) -> Result<(u64, u32, IndexMap<HashableValue, Arc<Thunk>>), AstError> {
     match val {
-        Value::Variant { ctor, payload, .. } => {
+        Value::Variant {
+            type_decl_id,
+            ctor_index,
+            payload,
+            ..
+        } => {
+            let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
             let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
-                message: format!("Expr variant {} has no payload", ctor),
+                message: format!("Expr variant {} has no payload", display),
                 field_path: vec![],
             })?;
             let payload_val = thunk_value_or_ast_error(payload_thunk, "variant payload", vec![])?;
-            // Return the bare constructor name (strip tycon prefix) for dispatch in callers.
-            let bare_ctor = ctor
-                .as_ref()
-                .split_once('.')
-                .map(|(_, c)| c)
-                .unwrap_or(ctor.as_ref())
-                .to_string();
             match payload_val {
-                Value::Dict { entries: d, .. } => Ok((bare_ctor, d)),
+                Value::Dict { entries: d, .. } => Ok((*type_decl_id, *ctor_index, d)),
                 _ => Err(AstError {
                     message: format!(
                         "Expr variant payload must be Dict, got {}",
@@ -1657,14 +1671,16 @@ pub(crate) fn get_entry_list_field_with_aliases(
     let mut entries = Vec::with_capacity(list.len());
     for (i, element_val) in list.into_iter().enumerate() {
         let i_str = i.to_string();
-        let (tag, payload_dict) = extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
-            e.field_path.insert(0, i_str.clone());
-            e.field_path.insert(0, key.to_string());
-            e
-        })?;
-        if tag != "Entry" {
+        let (_tdid, ci, payload_dict) =
+            extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
+                e.field_path.insert(0, i_str.clone());
+                e.field_path.insert(0, key.to_string());
+                e
+            })?;
+        if ci != EXPR_ENTRY {
+            let display = crate::type_tags::ctor_display_name(_tdid, ci);
             return Err(AstError {
-                message: format!("expected Expr.Entry, got Expr.{}", tag),
+                message: format!("expected Expr.Entry, got {}", display),
                 field_path: vec![key.to_string(), i_str],
             });
         }
@@ -1733,14 +1749,16 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
     let mut named_args = Vec::with_capacity(list.len());
     for (i, element_val) in list.into_iter().enumerate() {
         let i_str = i.to_string();
-        let (tag, payload_dict) = extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
-            e.field_path.insert(0, i_str.clone());
-            e.field_path.insert(0, key.to_string());
-            e
-        })?;
-        if tag != "NamedArg" {
+        let (_tdid, ci, payload_dict) =
+            extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
+                e.field_path.insert(0, i_str.clone());
+                e.field_path.insert(0, key.to_string());
+                e
+            })?;
+        if ci != EXPR_NAMED_ARG {
+            let display = crate::type_tags::ctor_display_name(_tdid, ci);
             return Err(AstError {
-                message: format!("expected Expr.NamedArg, got Expr.{}", tag),
+                message: format!("expected Expr.NamedArg, got {}", display),
                 field_path: vec![key.to_string(), i_str],
             });
         }
@@ -1789,14 +1807,16 @@ pub(crate) fn get_param_list_field_with_aliases(
     let mut params = Vec::with_capacity(list.len());
     for (i, element_val) in list.into_iter().enumerate() {
         let i_str = i.to_string();
-        let (tag, payload_dict) = extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
-            e.field_path.insert(0, i_str.clone());
-            e.field_path.insert(0, key.to_string());
-            e
-        })?;
-        if tag != "Param" {
+        let (_tdid, ci, payload_dict) =
+            extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
+                e.field_path.insert(0, i_str.clone());
+                e.field_path.insert(0, key.to_string());
+                e
+            })?;
+        if ci != EXPR_PARAMETER {
+            let display = crate::type_tags::ctor_display_name(_tdid, ci);
             return Err(AstError {
-                message: format!("expected Expr.Param, got Expr.{}", tag),
+                message: format!("expected Expr.Parameter, got {}", display),
                 field_path: vec![key.to_string(), i_str],
             });
         }
@@ -2258,11 +2278,11 @@ fn surface_decl_to_thunk_id(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let mut dict = IndexMap::new();
-    let variant_tag: &str;
+    let variant_idx: u32;
 
     match decl {
         SurfaceDeclaration::TypeAlias { params, body } => {
-            variant_tag = "TypeAlias";
+            variant_idx = EXPR_TYPE_ALIAS;
             if !params.is_empty() {
                 let params_arcs: Vec<Arc<Thunk>> = params
                     .iter()
@@ -2290,7 +2310,7 @@ fn surface_decl_to_thunk_id(
             structural: _,
             pre_assigned_class_decl_id: _,
         } => {
-            variant_tag = "ClassDecl";
+            variant_idx = EXPR_CLASS_DECL;
             dict.insert(
                 HashableValue::Str("name".into()),
                 Arc::new(Thunk::value(string_val(name), span.clone())),
@@ -2440,7 +2460,7 @@ fn surface_decl_to_thunk_id(
         SurfaceDeclaration::InstanceDecl {
             class_name, arms, ..
         } => {
-            variant_tag = "InstanceDecl";
+            variant_idx = EXPR_INSTANCE_DECL;
             dict.insert(
                 HashableValue::Str("class".into()),
                 Arc::new(Thunk::value(
@@ -2537,7 +2557,7 @@ fn surface_decl_to_thunk_id(
             pattern,
             message,
         } => {
-            variant_tag = "SyntaxClass";
+            variant_idx = EXPR_SYNTAX_CLASS;
             dict.insert(
                 HashableValue::Str("name".into()),
                 Arc::new(Thunk::value(string_val(name), span.clone())),
@@ -2555,7 +2575,7 @@ fn surface_decl_to_thunk_id(
         }
 
         SurfaceDeclaration::Splice(forms) => {
-            variant_tag = "Splice";
+            variant_idx = EXPR_SPLICE;
             let form_arcs: Vec<Arc<Thunk>> = forms
                 .iter()
                 .map(|form| surface_node_to_thunk_id(form, opts, ctx))
@@ -2592,10 +2612,10 @@ fn surface_decl_to_thunk_id(
     ));
     Ok(Arc::new(Thunk::value(
         Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(variant_tag),
+            type_decl_id: TYPE_ID_EXPR,
+            ctor_index: variant_idx,
             payload: Some(payload),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
         },
         span,
     )))
@@ -2617,12 +2637,13 @@ fn override_bare_in_literal_variant(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Value {
     if let Value::Variant {
-        ref ctor,
+        type_decl_id,
+        ctor_index,
         payload: Some(ref payload_thunk),
         ..
     } = val
     {
-        if ctor.as_ref() == "Expr.Literal" {
+        if type_decl_id == TYPE_ID_EXPR && ctor_index == EXPR_LITERAL {
             // payload_thunk is always Thunk::value(...) — no eval errors possible.
             if let Value::Dict {
                 entries: mut dict, ..
@@ -2645,10 +2666,10 @@ fn override_bare_in_literal_variant(
                     span.clone(),
                 ));
                 return Value::Variant {
-                    type_decl_id: TYPE_ID_DICT,
-                    ctor: ctor.clone(),
+                    type_decl_id,
+                    ctor_index,
                     payload: Some(new_payload),
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(type_decl_id)),
                 };
             }
         }
@@ -2764,10 +2785,10 @@ fn alloc_entry_list_with_opts(
         ));
         // Expr.Entry variant
         let entry_variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from("Expr.Entry"),
+            type_decl_id: TYPE_ID_EXPR,
+            ctor_index: EXPR_ENTRY,
             payload: Some(payload_thunk),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
         };
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
@@ -2808,10 +2829,10 @@ fn surface_node_to_thunk_id(
         ));
         inject_span_into_expr_variant(
             Value::Variant {
-                type_decl_id: TYPE_ID_DICT,
-                ctor: Arc::from("Expr.Dict"),
+                type_decl_id: TYPE_ID_EXPR,
+                ctor_index: EXPR_DICT,
                 payload: Some(payload_thunk),
-                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
             },
             &node.span,
             ctx,
@@ -2847,11 +2868,15 @@ mod tests {
     ) -> (String, IndexMap<HashableValue, Arc<Thunk>>) {
         match val {
             Value::Variant {
-                ctor,
+                type_decl_id,
+                ctor_index,
                 payload: Some(payload_thunk),
                 ..
             } => match peek_value(&payload_thunk) {
-                Some(Value::Dict { entries: map, .. }) => (ctor.as_ref().to_string(), map),
+                Some(Value::Dict { entries: map, .. }) => {
+                    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index);
+                    (display.to_string(), map)
+                }
                 other => panic!("expected Dict payload for Variant, got {:?}", other),
             },
             other => panic!("expected Variant, got {:?}", other),

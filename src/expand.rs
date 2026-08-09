@@ -378,8 +378,8 @@ fn expand_single_dict_entry(entry: Spanned<SurfaceEntry>, out: &mut Vec<Spanned<
 /// - Inner: `Dict` of constructor entries
 ///
 /// Each constructor entry is either:
-/// - **Unit**: `VarRef("Red") → UnitVariant { tycon: "Color", ctor: "Red", type_decl_id }`
-/// - **Payload**: `VarRef("File") → Fn { params: [path, handle], body: MakeVariant { ... } }`
+/// - **Unit**: `VarRef("Red") → UnitVariant { ctor_index: 0, type_decl_id }`
+/// - **Payload**: `VarRef("File") → Fn { params: [path, handle], body: MakeVariant { ctor_index, ... } }`
 ///
 /// When a constructor has an annotation, it is wrapped in a call to
 /// `builtin-make-annotated` (as a VarRef, resolved later by the resolver).
@@ -404,12 +404,7 @@ fn expand_type_alias(
 
     let mut surface_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
 
-    for ctor in ctors {
-        let (tycon, ctor_name) = match &type_name_opt {
-            Some(tn) => (tn.clone(), ctor.name.clone()),
-            None => (String::new(), ctor.name.clone()),
-        };
-
+    for (ctor_idx, ctor) in ctors.iter().enumerate() {
         // Create the key for this constructor entry.
         let key = Some(Arc::new(SurfaceNode::new(
             SurfaceExpression::VarRef {
@@ -427,8 +422,7 @@ fn expand_type_alias(
             // Unit constructor: SurfaceExpression::UnitVariant
             let variant_node = Arc::new(SurfaceNode::new(
                 SurfaceExpression::UnitVariant {
-                    tycon: tycon.clone(),
-                    ctor: ctor_name.clone(),
+                    ctor_index: ctor_idx as u32,
                     type_decl_id,
                 },
                 span.clone(),
@@ -507,8 +501,7 @@ fn expand_type_alias(
             // Build the MakeVariant body.
             let variant_body = Arc::new(SurfaceNode::new(
                 SurfaceExpression::MakeVariant {
-                    tycon: tycon.clone(),
-                    ctor_name: ctor_name.clone(),
+                    ctor_index: ctor_idx as u32,
                     payload: payload_dict,
                     type_decl_id,
                 },
@@ -1418,7 +1411,9 @@ mod tests {
 
         // Each entry value should be a UnitVariant.
         let expected_ctors = ["Red", "Green", "Blue"];
-        for (entry, expected_name) in ctor_entries.iter().zip(expected_ctors.iter()) {
+        for (i, (entry, expected_name)) in
+            ctor_entries.iter().zip(expected_ctors.iter()).enumerate()
+        {
             let key_node = entry
                 .node
                 .key
@@ -1434,9 +1429,12 @@ mod tests {
                 ),
             }
             match &entry.node.value.expr {
-                SurfaceExpression::UnitVariant { tycon, ctor, .. } => {
-                    assert_eq!(tycon, "Color");
-                    assert_eq!(ctor, *expected_name);
+                SurfaceExpression::UnitVariant { ctor_index, .. } => {
+                    assert_eq!(
+                        *ctor_index, i as u32,
+                        "ctor_index mismatch for {}",
+                        expected_name
+                    );
                 }
                 other => panic!(
                     "expected UnitVariant for {}, got {:?}",
@@ -1488,11 +1486,8 @@ mod tests {
 
                 // The body should be a MakeVariant.
                 match &body.expr {
-                    SurfaceExpression::MakeVariant {
-                        tycon, ctor_name, ..
-                    } => {
-                        assert_eq!(tycon, "Shape");
-                        assert_eq!(ctor_name, "Circle");
+                    SurfaceExpression::MakeVariant { ctor_index, .. } => {
+                        assert_eq!(*ctor_index, 0, "Circle should be ctor_index 0");
                     }
                     other => panic!(
                         "expected MakeVariant body, got {:?}",

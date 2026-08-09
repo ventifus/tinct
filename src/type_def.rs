@@ -129,17 +129,17 @@ pub struct TyConDef {
 
     /// Compile-time constants for each variant constructor (T-1357/T-1358).
     ///
-    /// Maps qualified constructor tag → (constant name → constant value).
+    /// Maps ctor_index → (constant name → constant value).
     /// Populated from `name: literal` entries in variant declarations:
-    ///   `[NoError rcode: 0 description: "No Error"]` → `{ "DnsRcode.NoError": { "rcode": 0, "description": "No Error" } }`
+    ///   `[NoError rcode: 0 description: "No Error"]` → `{ 0: { "rcode": 0, "description": "No Error" } }`
     ///
     /// Empty for types without constants. Constants are stored as `Value` literals
     /// (Int, U64, Float, String) — complex expressions are not valid constant entries.
     ///
-    /// Forward lookup: when `.field` is accessed on a `Variant { tag, payload: None }` or
-    /// after payload access fails, the evaluator looks up `tag` in this map and returns the
-    /// constant for that field. This enables `some-rcode.rcode` without a match expression.
-    pub constructor_constants: IndexMap<String, IndexMap<String, crate::value::Value>>,
+    /// Forward lookup: when `.field` is accessed on a `Variant { type_decl_id, ctor_index, payload: None }`
+    /// or after payload access fails, the evaluator looks up `ctor_index` in this map and returns
+    /// the constant for that field. This enables `some-rcode.rcode` without a match expression.
+    pub constructor_constants: IndexMap<u32, IndexMap<String, crate::value::Value>>,
 
     /// Source span of the `[type ...]` declaration that defined this type constructor.
     /// Used in error messages to show where conflicting types were defined.

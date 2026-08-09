@@ -30,12 +30,14 @@ use crate::type_def::TyConDef;
 use crate::type_infer::{
     make_rowtail_uniform, make_typevalue_float_lit, make_typevalue_fn, make_typevalue_int_lit,
     make_typevalue_negation, make_typevalue_never, make_typevalue_nominal,
-    make_typevalue_nominal_variant, make_typevalue_record, make_typevalue_str_lit,
-    make_typevalue_top, make_typevalue_unknown, typevalue_ctor, typevalue_extract_members_pub,
-    typevalue_fn_params_and_ret, typevalue_nominal_variant_has_fields,
-    typevalue_nominal_variant_tag, typevalue_normalize_intersection, typevalue_normalize_union_ctx,
-    typevalue_record_fields_pub, typevalue_var_name, InferState, TypeValue,
+    make_typevalue_nominal_variant, make_typevalue_nominal_variant_by_id, make_typevalue_record,
+    make_typevalue_str_lit, make_typevalue_top, make_typevalue_unknown,
+    typevalue_extract_members_pub, typevalue_fn_params_and_ret,
+    typevalue_nominal_variant_has_fields, typevalue_nominal_variant_tag,
+    typevalue_normalize_intersection, typevalue_normalize_union_ctx, typevalue_record_fields_pub,
+    typevalue_var_name, InferState, TypeValue,
 };
+// typevalue_ctor_index is available via `use crate::type_tags::*` above
 use crate::types::constrain;
 use crate::types::unify;
 use crate::types::{generalize_tv, instantiate_scheme_tv};
@@ -915,34 +917,16 @@ async fn infer_step(
         // Expansion-produced variants: UnitVariant and MakeVariant should infer to their
         // nominal type by looking up the tycon in tycon_env. TypeDecl and ReprDecl wrap
         // an inner expression — recurse into it.
-        SurfaceExpression::UnitVariant { tycon, .. } => {
-            let tv = if state
-                .type_name_to_id
-                .get(tycon.as_str())
-                .is_some_and(|id| state.tycon_env.contains_key(id))
-            {
-                crate::type_infer::make_typevalue_nominal(
-                    state
-                        .type_name_to_id
-                        .get(tycon.as_str())
-                        .copied()
-                        .unwrap_or(0),
-                )
+        SurfaceExpression::UnitVariant { type_decl_id, .. } => {
+            let tv = if state.tycon_env.contains_key(type_decl_id) {
+                crate::type_infer::make_typevalue_nominal(*type_decl_id)
             } else {
                 make_typevalue_unknown()
             };
             TypeCheckAction::Done(tv)
         }
-        SurfaceExpression::MakeVariant {
-            tycon,
-            type_decl_id,
-            ..
-        } => {
-            let tv = if state
-                .type_name_to_id
-                .get(tycon.as_str())
-                .is_some_and(|id| state.tycon_env.contains_key(id))
-            {
+        SurfaceExpression::MakeVariant { type_decl_id, .. } => {
+            let tv = if state.tycon_env.contains_key(type_decl_id) {
                 crate::type_infer::make_typevalue_nominal(*type_decl_id)
             } else {
                 make_typevalue_unknown()
@@ -1009,7 +993,7 @@ async fn apply_cont(
 
             // Helper: check if a TypeValue is "opaque" — Unknown, Top, or an unbound TypeVar.
             let is_opaque = |tv: &TypeValue| -> bool {
-                match typevalue_ctor(tv) {
+                match typevalue_ctor_index(tv) {
                     Some(TV_UNKNOWN) | Some(TV_TOP) => true,
                     Some(TV_VAR) => true,
                     _ => false,
@@ -1020,7 +1004,7 @@ async fn apply_cont(
                 Some(declared_ret) => {
                     // For checkable primitive return annotations, verify the body is consistent.
                     let is_checkable_primitive =
-                        matches!(typevalue_ctor(&declared_ret), Some(TV_NOMINAL));
+                        matches!(typevalue_ctor_index(&declared_ret), Some(TV_NOMINAL));
                     if is_checkable_primitive {
                         let body_resolved = state.apply(&child_ty);
                         let body_is_concrete = !is_opaque(&body_resolved);
@@ -1050,7 +1034,7 @@ async fn apply_cont(
                         }
                     }
                     // For intersection annotations: validate each Fn member.
-                    if typevalue_ctor(&declared_ret) == Some(TV_INTER) {
+                    if typevalue_ctor_index(&declared_ret) == Some(TV_INTER) {
                         let body_resolved = state.apply(&child_ty);
                         let body_is_concrete = !is_opaque(&body_resolved);
                         if body_is_concrete {
@@ -1065,7 +1049,7 @@ async fn apply_cont(
                                 crate::type_infer::typevalue_extract_members_pub(&declared_ret)
                             {
                                 for member in &members {
-                                    if typevalue_ctor(member) == Some(TV_FN)
+                                    if typevalue_ctor_index(member) == Some(TV_FN)
                                         && !crate::bas::is_consistent_subtype(
                                             &body_resolved,
                                             member,
@@ -1088,7 +1072,7 @@ async fn apply_cont(
                     }
 
                     // Emit diagnostic for explicit @Unknown return annotation.
-                    if typevalue_ctor(&declared_ret) == Some(TV_UNKNOWN) {
+                    if typevalue_ctor_index(&declared_ret) == Some(TV_UNKNOWN) {
                         state.diagnostics.push(Diagnostic::info(
                             "explicit-unknown",
                             "explicit @Unknown return annotation — type is not statically known",
@@ -1144,7 +1128,7 @@ async fn apply_cont(
                     }
 
                     // @Unknown return annotation means: use the inferred body type.
-                    if typevalue_ctor(&declared_ret) == Some(TV_UNKNOWN) {
+                    if typevalue_ctor_index(&declared_ret) == Some(TV_UNKNOWN) {
                         child_ty
                     } else {
                         declared_ret
@@ -1325,7 +1309,7 @@ async fn apply_cont(
                     for (original_name, fresh_name) in &renaming {
                         let fresh_tv = crate::type_infer::make_typevar_value(fresh_name);
                         let resolved_var = ctx.state.apply(&fresh_tv);
-                        if crate::type_infer::typevalue_ctor(&resolved_var) != Some(TV_VAR) {
+                        if crate::type_infer::typevalue_ctor_index(&resolved_var) != Some(TV_VAR) {
                             type_inst.insert(original_name.clone(), resolved_var);
                         }
                     }
@@ -1534,7 +1518,7 @@ async fn apply_cont(
             }
 
             // Emit diagnostic for explicit @Unknown annotation
-            if typevalue_ctor(&expected_resolved) == Some(TV_UNKNOWN) {
+            if typevalue_ctor_index(&expected_resolved) == Some(TV_UNKNOWN) {
                 state.diagnostics.push(Diagnostic::info(
                     "explicit-unknown",
                     "explicit @Unknown annotation — type is not statically known",
@@ -1554,8 +1538,10 @@ async fn apply_cont(
                 if !has_default {
                     // Add annotation_span as a secondary label to all diagnostics
                     for err in &mut errs {
-                        err.spans
-                            .push((annotation_span.clone(), "type declared here".to_string()));
+                        err.labels.push(crate::error::SpanLabel {
+                            span: annotation_span.clone(),
+                            message: "type declared here".to_string(),
+                        });
                     }
                     errors.extend(errs);
                     return TypeCheckAction::Done(expected);
@@ -1981,8 +1967,8 @@ async fn infer_var_ref(
 
                         // Build the TypeValue.Scheme variant.
                         let scheme = Arc::new(Value::Variant {
-                            type_decl_id: TYPE_ID_DICT,
-                            ctor: Arc::from(TV_SCHEME),
+                            type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+                            ctor_index: TV_SCHEME,
                             payload: Some(scheme_payload_thunk),
                             type_val: None,
                         });
@@ -2083,7 +2069,7 @@ async fn infer_var_ref(
 
     if let Some(scheme) = scheme {
         // Check if scheme is polymorphic (TypeValue.Scheme) — if so, store in scheme_map for LSP.
-        if typevalue_ctor(&scheme) == Some(TV_SCHEME) {
+        if typevalue_ctor_index(&scheme) == Some(TV_SCHEME) {
             if let Some(ref mut smap) = state.scheme_map {
                 let key = (
                     node.span.start_line,
@@ -2097,7 +2083,7 @@ async fn infer_var_ref(
 
         // Instantiate the scheme: if it's a TypeValue.Scheme, create fresh TypeVars.
         // Otherwise return the TypeValue directly (monomorphic).
-        let result_type = if typevalue_ctor(&scheme) == Some(TV_SCHEME) {
+        let result_type = if typevalue_ctor_index(&scheme) == Some(TV_SCHEME) {
             let current_level = state.ctx.current_level;
             match crate::types::instantiate_scheme_tv_with_renaming(
                 &scheme,
@@ -2238,7 +2224,7 @@ async fn apply_cont_call_func(
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
 ) -> TypeCheckAction {
     // If the function type is Unknown/Never, infer args for errors and return Unknown.
-    match typevalue_ctor(&func_ty) {
+    match typevalue_ctor_index(&func_ty) {
         Some(TV_UNKNOWN) | Some(TV_NEVER) => {
             eval_args_for_errors(
                 &args,
@@ -2268,7 +2254,7 @@ async fn apply_cont_call_func(
         None
     };
 
-    match typevalue_ctor(&func_ty) {
+    match typevalue_ctor_index(&func_ty) {
         Some(TV_FN) => {
             // Extract params and return from TypeValue.Fn.
             let (fn_params_tv, fn_ret_tv) =
@@ -2352,7 +2338,7 @@ async fn apply_cont_call_func(
                     for (original_name, fresh_name) in &renaming {
                         let fresh_tv = crate::type_infer::make_typevar_value(fresh_name);
                         let resolved_var = ctx.state.apply(&fresh_tv);
-                        if crate::type_infer::typevalue_ctor(&resolved_var) != Some(TV_VAR) {
+                        if crate::type_infer::typevalue_ctor_index(&resolved_var) != Some(TV_VAR) {
                             type_inst.insert(original_name.clone(), resolved_var);
                         }
                     }
@@ -2605,7 +2591,7 @@ async fn apply_cont_call_func(
             };
             let fn_members: Vec<TypeValue> = members
                 .into_iter()
-                .filter(|m| typevalue_ctor(m) == Some(TV_FN))
+                .filter(|m| typevalue_ctor_index(m) == Some(TV_FN))
                 .collect();
 
             if fn_members.is_empty() {
@@ -2671,7 +2657,7 @@ async fn apply_cont_call_func(
             };
             let fn_members: Vec<TypeValue> = members
                 .into_iter()
-                .filter(|m| typevalue_ctor(m) == Some(TV_FN))
+                .filter(|m| typevalue_ctor_index(m) == Some(TV_FN))
                 .collect();
 
             if fn_members.is_empty() {
@@ -2899,7 +2885,7 @@ async fn apply_call_args_poly(
             let arg_ty_applied = ctx.state.apply(&arg_types[0]);
 
             // Only check if the arg type is concrete (not TypeVar, not Unknown, not Top).
-            let is_concrete = match typevalue_ctor(&arg_ty_applied) {
+            let is_concrete = match typevalue_ctor_index(&arg_ty_applied) {
                 Some(TV_VAR) | Some(TV_UNKNOWN) | Some(TV_TOP) | Some(TV_NEVER) => false,
                 _ => true,
             };
@@ -2916,7 +2902,7 @@ async fn apply_call_args_poly(
                     // Check if any instance exists for this argument type.
                     // Simple best-effort check: compare TypeValue ctors (e.g., both TypeValue.Repr).
                     // Full structural equality or unification would be more precise but is complex.
-                    let arg_ctor = typevalue_ctor(&arg_ty_applied);
+                    let arg_ctor = typevalue_ctor_index(&arg_ty_applied);
                     let has_matching_instance = env_read.all_instances().iter().any(|(_, inst)| {
                         if inst.class_name != class_decl.name {
                             return false;
@@ -2924,7 +2910,7 @@ async fn apply_call_args_poly(
                         // For single-parameter classes, instance_type is the covered type.
                         // For multi-param, it's a TypeValue.Record with numbered fields.
                         // Check if instance_type ctor matches arg_ty ctor as a simple heuristic.
-                        let inst_ctor = typevalue_ctor(&inst.instance_type);
+                        let inst_ctor = typevalue_ctor_index(&inst.instance_type);
                         arg_ctor == inst_ctor || Arc::ptr_eq(&inst.instance_type, &arg_ty_applied)
                     });
 
@@ -2985,7 +2971,7 @@ async fn apply_call_args_poly(
         // When an Unknown/Any arg flows into a concrete parameter, attach a runtime guard so
         // the evaluator can enforce the type contract at the Unknown→concrete boundary.
         let is_unknown_arg = matches!(
-            typevalue_ctor(&widened_arg),
+            typevalue_ctor_index(&widened_arg),
             Some(TV_UNKNOWN) | Some(TV_TOP)
         );
         if is_unknown_arg && typecheck_call::is_concrete_type(&ctx.state.apply(param_ty)) {
@@ -3304,7 +3290,7 @@ async fn apply_call_args_poly(
 fn extract_seq_elem_type(bucket_ty: &TypeValue) -> TypeValue {
     // Extract element type from a TypeValue.App { op: _, arg: elem }
     use crate::value::HashableValue;
-    if typevalue_ctor(bucket_ty) == Some(TV_APP) {
+    if typevalue_ctor_index(bucket_ty) == Some(TV_APP) {
         if let Some(crate::value::Value::Variant {
             payload: Some(thunk),
             ..
@@ -3819,10 +3805,26 @@ async fn setup_match_arm_env(
                     Some(t) => t,
                     None => String::new(), // Non-constructor dot-access (leading-dot or numeric index) — not a tag pattern.
                 };
+                // Resolve the tag to (type_decl_id, ctor_index) for numeric-identity TypeValue construction.
                 let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
-                let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant(
-                    tycon,
-                    ctor,
+                let type_decl_id = state
+                    .type_name_to_id
+                    .get(tycon)
+                    .copied()
+                    .expect("match arm narrowing: type name not in type_name_to_id");
+                let tycon_def = state
+                    .tycon_env
+                    .get(&type_decl_id)
+                    .expect("match arm narrowing: type_decl_id not in tycon_env");
+                let ctor_index = tycon_def
+                    .constructors
+                    .iter()
+                    .position(|(name, _)| name == ctor)
+                    .expect("match arm narrowing: constructor name not in TyConDef.constructors")
+                    as u32;
+                let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
+                    type_decl_id,
+                    ctor_index,
                     make_typevalue_record(indexmap::IndexMap::new(), None),
                 ));
                 typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
@@ -3834,10 +3836,26 @@ async fn setup_match_arm_env(
                     Some(t) => t,
                     None => String::new(), // Non-constructor dot-access (leading-dot or numeric index) — not a tag pattern.
                 };
+                // Resolve the tag to (type_decl_id, ctor_index) for numeric-identity TypeValue construction.
                 let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
-                let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant(
-                    tycon,
-                    ctor,
+                let type_decl_id = state
+                    .type_name_to_id
+                    .get(tycon)
+                    .copied()
+                    .expect("match arm narrowing: type name not in type_name_to_id");
+                let tycon_def = state
+                    .tycon_env
+                    .get(&type_decl_id)
+                    .expect("match arm narrowing: type_decl_id not in tycon_env");
+                let ctor_index = tycon_def
+                    .constructors
+                    .iter()
+                    .position(|(name, _)| name == ctor)
+                    .expect("match arm narrowing: constructor name not in TyConDef.constructors")
+                    as u32;
+                let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
+                    type_decl_id,
+                    ctor_index,
                     make_typevalue_record(indexmap::IndexMap::new(), None),
                 ));
                 typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
@@ -3894,7 +3912,7 @@ async fn setup_match_arm_env(
 
 /// Extract the (tag, arity) constructor list from a TypeValue ADT body.
 fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
-    match typevalue_ctor(body) {
+    match typevalue_ctor_index(body) {
         Some(TV_NOMINAL_VARIANT) => {
             if let Some((tycon, ctor)) = typevalue_nominal_variant_tag(body) {
                 let tag = if tycon.is_empty() {
@@ -3918,7 +3936,7 @@ fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
             members
                 .iter()
                 .filter_map(|m| {
-                    if typevalue_ctor(m) == Some(TV_NOMINAL_VARIANT) {
+                    if typevalue_ctor_index(m) == Some(TV_NOMINAL_VARIANT) {
                         if let Some((tycon, ctor)) = typevalue_nominal_variant_tag(m) {
                             let tag = if tycon.is_empty() {
                                 ctor
@@ -3984,23 +4002,44 @@ fn run_match_exhaustiveness_check(
     let tycon_env_ref = state.tycon_env_ref();
     // Coverage checking for TypeValue: inspect ctor tag to determine what kind of scrutinee.
     // This is a simplified version — full TypeValue-based coverage would require more helpers.
-    let sig: Option<coverage::ConstructorSignature> = match typevalue_ctor(scrutinee_ty) {
+    let sig: Option<coverage::ConstructorSignature> = match typevalue_ctor_index(scrutinee_ty) {
         Some(TV_UNION) => {
             // Try to extract NominalVariant constructors from union members.
             if let Some(members) = typevalue_extract_members_pub(scrutinee_ty) {
                 let mut constructors = Vec::new();
+                let extract_int_field_local =
+                    |tv: &Arc<crate::value::Value>, field: &str| -> Option<u64> {
+                        match tv.as_ref() {
+                            crate::value::Value::Variant {
+                                payload: Some(thunk),
+                                ..
+                            } => match thunk.peek_result()? {
+                                Ok(crate::value::Value::Dict { entries, .. }) => {
+                                    let key = crate::value::HashableValue::Str(Arc::from(field));
+                                    let val_thunk = entries.get(&key)?;
+                                    match val_thunk.peek_result()? {
+                                        Ok(crate::value::Value::Int { n, .. }) => Some(*n as u64),
+                                        Ok(crate::value::Value::U64 { n, .. }) => Some(*n),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    };
                 for m in &members {
-                    if typevalue_ctor(m) == Some(TV_NOMINAL_VARIANT) {
-                        // Extract ctor and tycon from payload.
-                        if let Some((tycon_s, ctor_s)) = typevalue_nominal_variant_tag(m) {
-                            let tag = if tycon_s.is_empty() {
-                                ctor_s.clone()
-                            } else {
-                                format!("{}.{}", tycon_s, ctor_s)
-                            };
+                    if typevalue_ctor_index(m) == Some(TV_NOMINAL_VARIANT) {
+                        if let (Some(type_decl_id), Some(ctor_index)) = (
+                            extract_int_field_local(m, FIELD_TYCON),
+                            extract_int_field_local(m, FIELD_CTOR),
+                        ) {
                             let has_fields = typevalue_nominal_variant_has_fields(m);
                             constructors.push((
-                                coverage::ConstructorTag::Variant(tag),
+                                coverage::ConstructorTag::Variant {
+                                    type_decl_id,
+                                    ctor_index: ctor_index as u32,
+                                },
                                 if has_fields { 1 } else { 0 },
                             ));
                         }
@@ -4016,16 +4055,41 @@ fn run_match_exhaustiveness_check(
             }
         }
         Some(TV_NOMINAL_VARIANT) => {
-            if let Some((tycon_s, ctor_s)) = typevalue_nominal_variant_tag(scrutinee_ty) {
-                let tag = if tycon_s.is_empty() {
-                    ctor_s.clone()
-                } else {
-                    format!("{}.{}", tycon_s, ctor_s)
-                };
+            // Extract numeric identity from NominalVariant payload.
+            // The payload dict contains FIELD_TYCON (type_decl_id) and FIELD_CTOR (ctor_index)
+            // as Int values when created with make_typevalue_nominal_variant_by_id.
+            let extract_int_field = |tv: &Arc<crate::value::Value>, field: &str| -> Option<u64> {
+                match tv.as_ref() {
+                    crate::value::Value::Variant {
+                        payload: Some(thunk),
+                        ..
+                    } => match thunk.peek_result()? {
+                        Ok(crate::value::Value::Dict { entries, .. }) => {
+                            let key = crate::value::HashableValue::Str(Arc::from(field));
+                            let val_thunk = entries.get(&key)?;
+                            match val_thunk.peek_result()? {
+                                Ok(crate::value::Value::Int { n, .. }) => Some(*n as u64),
+                                Ok(crate::value::Value::U64 { n, .. }) => Some(*n),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            };
+
+            if let (Some(type_decl_id), Some(ctor_index)) = (
+                extract_int_field(scrutinee_ty, FIELD_TYCON),
+                extract_int_field(scrutinee_ty, FIELD_CTOR),
+            ) {
                 let has_fields = typevalue_nominal_variant_has_fields(scrutinee_ty);
                 Some(coverage::ConstructorSignature {
                     constructors: vec![(
-                        coverage::ConstructorTag::Variant(tag),
+                        coverage::ConstructorTag::Variant {
+                            type_decl_id,
+                            ctor_index: ctor_index as u32,
+                        },
                         if has_fields { 1 } else { 0 },
                     )],
                 })
@@ -4035,21 +4099,23 @@ fn run_match_exhaustiveness_check(
         }
         Some(TV_NOMINAL) => {
             // TyCon reference — look up in tycon_env for constructors.
-            let id = crate::type_infer::typevalue_nominal_id(scrutinee_ty)
+            let type_decl_id = crate::type_infer::typevalue_nominal_id(scrutinee_ty)
                 .expect("invariant: TV_NOMINAL TypeValue must have an id field");
-            let _name = state
-                .type_display_names
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| id.to_string());
-            match tycon_env_ref.get(&id) {
+            match tycon_env_ref.get(&type_decl_id) {
                 Some(def) if !def.constructors.is_empty() => {
                     let constructors = def
                         .constructors
                         .iter()
-                        .map(|(tag, arity)| {
+                        .enumerate()
+                        .map(|(idx, (_name, arity))| {
                             let clamped = if *arity == 0 { 0 } else { 1 };
-                            (coverage::ConstructorTag::Variant(tag.clone()), clamped)
+                            (
+                                coverage::ConstructorTag::Variant {
+                                    type_decl_id,
+                                    ctor_index: idx as u32,
+                                },
+                                clamped,
+                            )
                         })
                         .collect();
                     Some(coverage::ConstructorSignature { constructors })
@@ -4155,7 +4221,8 @@ fn compute_type_assert_mismatch(
         state.type_name_to_id.clone(),
     );
     // Check if both are function types (TypeValue.Fn) for arity checking.
-    if typevalue_ctor(actual) == Some(TV_FN) && typevalue_ctor(expected) == Some(TV_FN) {
+    if typevalue_ctor_index(actual) == Some(TV_FN) && typevalue_ctor_index(expected) == Some(TV_FN)
+    {
         // Extract param counts via payload dict inspection.
         let actual_param_count = typevalue_fn_param_count(actual);
         let expected_param_count = typevalue_fn_param_count(expected);
@@ -4173,7 +4240,7 @@ fn compute_type_assert_mismatch(
         }
     }
     // General consistency check.
-    let definitely_fails = if typevalue_ctor(actual) == Some(TV_UNION) {
+    let definitely_fails = if typevalue_ctor_index(actual) == Some(TV_UNION) {
         if let Some(members) = typevalue_extract_members_pub(actual) {
             !members
                 .iter()
@@ -4209,10 +4276,10 @@ fn typevalue_fn_param_count(tv: &TypeValue) -> Option<usize> {
     use crate::value::HashableValue;
     let payload_thunk = match tv.as_ref() {
         crate::value::Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(thunk),
             ..
-        } if ctor.as_ref() == TV_FN => thunk,
+        } if *ctor_index == TV_FN => thunk,
         _ => return None,
     };
     match payload_thunk.peek_result()? {
@@ -4567,7 +4634,7 @@ fn collect_dependencies(
 
 /// Occurs check: returns true if TypeVar `name` appears free anywhere in `ty`.
 pub(crate) fn type_contains_typevar(ty: &TypeValue, name: &str) -> bool {
-    match typevalue_ctor(ty) {
+    match typevalue_ctor_index(ty) {
         Some(TV_VAR) => typevalue_var_name(ty).as_deref() == Some(name),
         Some(TV_UNION) | Some(TV_INTER) => typevalue_extract_members_pub(ty)
             .map(|members| members.iter().any(|m| type_contains_typevar(m, name)))
@@ -4618,7 +4685,7 @@ pub(crate) fn type_contains_typevar(ty: &TypeValue, name: &str) -> bool {
 /// Called from `typecheck_letrec_group` type declaration registration step and from
 /// `process_document` when reconstructing constructor schemes via tycon_env diff.
 pub(crate) fn adt_value_type(alias_body: &TypeValue) -> TypeValue {
-    let members: Vec<TypeValue> = match typevalue_ctor(alias_body) {
+    let members: Vec<TypeValue> = match typevalue_ctor_index(alias_body) {
         Some(TV_UNION) => typevalue_extract_members_pub(alias_body)
             .expect("invariant: TV_UNION TypeValue must have extractable members"),
         Some(TV_NOMINAL_VARIANT) => vec![Arc::clone(alias_body)],
@@ -4626,7 +4693,7 @@ pub(crate) fn adt_value_type(alias_body: &TypeValue) -> TypeValue {
     };
     let mut ctor_dict_fields: indexmap::IndexMap<String, TypeValue> = indexmap::IndexMap::new();
     for m in &members {
-        if typevalue_ctor(m) == Some(TV_NOMINAL_VARIANT) {
+        if typevalue_ctor_index(m) == Some(TV_NOMINAL_VARIANT) {
             if let Some((_, ctor_s)) = typevalue_nominal_variant_tag(m) {
                 let has_fields = typevalue_nominal_variant_has_fields(m);
                 let ctor_type = if !has_fields {
@@ -4678,7 +4745,7 @@ pub(crate) async fn entry_key_name(
                     &mut Vec::new(),
                 ))
                 .await;
-                match typevalue_ctor(&key_ty) {
+                match typevalue_ctor_index(&key_ty) {
                     Some(TV_STR_LIT) => {
                         // Extract the value string from payload.
                         if let crate::value::Value::Variant {
@@ -4894,19 +4961,29 @@ async fn build_tycon_def_for_entry(
         for inner_entry in inner_entries {
             let value_expr = unwrap_annotated(&inner_entry.node.value.expr);
 
+            // Extract the constructor name from the entry key
+            let ctor_str: Option<&str> =
+                inner_entry.node.key.as_ref().and_then(|k| match &k.expr {
+                    SurfaceExpression::StringLiteral { content, .. } => Some(content.as_str()),
+                    SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
+                    _ => None,
+                });
+
             match value_expr {
-                // Unit constructor: UnitVariant { tycon, ctor }
-                SurfaceExpression::UnitVariant { tycon, ctor, .. } => {
-                    let fields_tv = make_typevalue_record(indexmap::IndexMap::new(), None);
-                    variant_members.push(make_typevalue_nominal_variant(tycon, ctor, fields_tv));
+                // Unit constructor: UnitVariant { type_decl_id, ctor_index }
+                SurfaceExpression::UnitVariant { .. } => {
+                    if let Some(ctor_name) = ctor_str {
+                        let fields_tv = make_typevalue_record(indexmap::IndexMap::new(), None);
+                        variant_members.push(make_typevalue_nominal_variant(
+                            type_name, ctor_name, fields_tv,
+                        ));
+                    }
                 }
-                // Payload constructor: Fn { params, body: MakeVariant { tycon, ctor_name, .. } }
+                // Payload constructor: Fn { params, body: MakeVariant { type_decl_id, ctor_index, .. } }
                 SurfaceExpression::Fn { params, body, .. } => {
                     let body_expr = unwrap_annotated(&body.expr);
-                    if let SurfaceExpression::MakeVariant {
-                        tycon, ctor_name, ..
-                    } = body_expr
-                    {
+                    if let SurfaceExpression::MakeVariant { .. } = body_expr {
+                        let ctor_name = ctor_str.unwrap_or("_");
                         let mut field_map: indexmap::IndexMap<String, TypeValue> =
                             indexmap::IndexMap::new();
                         for p in params {
@@ -4917,8 +4994,8 @@ async fn build_tycon_def_for_entry(
                         }
                         let fields_tv = make_typevalue_record(field_map, None);
                         variant_members.push(make_typevalue_nominal_variant(
-                            tycon.as_str(),
-                            ctor_name.as_str(),
+                            type_name.as_str(),
+                            ctor_name,
                             fields_tv,
                         ));
                     }
@@ -5481,7 +5558,7 @@ pub(crate) async fn typecheck_letrec_group(
                                 }
                             }
                             // For TypeValue.Fn placeholders, bind inner ret/param vars.
-                            if typevalue_ctor(&bound_var) == Some(TV_FN) {
+                            if typevalue_ctor_index(&bound_var) == Some(TV_FN) {
                                 if let (Some((pre_params, pre_ret)), Some((act_params, act_ret))) = (
                                     typevalue_fn_params_and_ret(&bound_var),
                                     typevalue_fn_params_and_ret(&value_ty),

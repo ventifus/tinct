@@ -53,8 +53,7 @@ pub type TypeMap = HashMap<(u32, u32, u32, u32), Arc<Value>>;
 
 /// Grouped surface data for a `[class ...]` declaration.
 ///
-/// Passed to [`infer_class_decl_from_surface`] instead of individual arguments,
-/// eliminating the need for `#[allow(clippy::too_many_arguments)]`.
+/// Passed to [`infer_class_decl_from_surface`] instead of individual arguments.
 pub(crate) struct ClassDeclSurface<'a> {
     pub name: &'a str,
     pub params: &'a [String],
@@ -102,10 +101,10 @@ fn extract_record_fields(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
     use crate::value::HashableValue;
     match tv.as_ref() {
         Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(payload_thunk),
             ..
-        } if ctor.as_ref() == TV_RECORD => match payload_thunk.peek_result()? {
+        } if *ctor_index == TV_RECORD => match payload_thunk.peek_result()? {
             Ok(Value::Dict { entries, .. }) => {
                 let fields_key = HashableValue::Str(Arc::from(FIELD_FIELDS));
                 let fields_thunk = entries.get(&fields_key)?;
@@ -186,8 +185,8 @@ fn make_typevalue_record(
         type_val: None,
     };
     Arc::new(Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_RECORD),
+        type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_RECORD,
         payload: Some(Arc::new(Thunk::value(payload_dict, crate::rust_span!()))),
         type_val: None,
     })
@@ -288,8 +287,8 @@ pub(crate) async fn process_document(
     // Everything else:    the type is known to be a non-dict → error.
     {
         let is_dict_ok = match result_ty.as_ref() {
-            Value::Variant { ctor, .. } => {
-                let c = ctor.as_ref();
+            Value::Variant { ctor_index, .. } => {
+                let c = *ctor_index;
                 c == TV_RECORD
                     || c == TV_UNKNOWN
                     || c == TV_TOP
@@ -389,7 +388,7 @@ pub(crate) async fn process_document(
 /// with the widened type (e.g., `@Integer`, never `@42`).
 pub(crate) fn type_to_dispatch_tag(tv: &Arc<Value>) -> Option<String> {
     match tv.as_ref() {
-        Value::Variant { ctor, .. } => match ctor.as_ref() {
+        Value::Variant { ctor_index, .. } => match *ctor_index {
             TV_NOMINAL => {
                 let id = crate::type_infer::typevalue_nominal_id(tv)?;
                 match id {
@@ -609,7 +608,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         // Allow TV_VAR positions (declared TypeVars from bind: in [let ...]).
         // Reject only Unknown (empty dict or TV_UNKNOWN): those indicate missing annotations.
         if pattern_types.iter().any(|tv| {
-            matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNKNOWN)
+            matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_UNKNOWN)
                 || matches!(tv.as_ref(), Value::Dict { entries, .. } if entries.is_empty())
         }) {
             return Err(vec![Diagnostic::error("type-error",
@@ -729,8 +728,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let mut frame = std::collections::HashMap::new();
             for (name, tv) in param_names.iter().zip(pattern_types.iter()) {
                 // Skip TypeValue.Var — unresolved type variable, not a concrete pattern type.
-                let is_var =
-                    matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_VAR);
+                let is_var = matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_VAR);
                 if !is_var {
                     frame.insert(name.clone(), Arc::clone(tv));
                 }

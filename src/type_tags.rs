@@ -1,54 +1,49 @@
-//! TypeValue constructor tag string constants.
+//! TypeValue constructor identity constants and display-name lookup.
 //!
-//! All TypeValue ctor strings used in Rust (in match arms, comparisons, and
-//! construction sites) are defined here as named constants. This is the single
-//! authoritative location — if the tinct-side TypeValue declaration changes a
-//! constructor name, only this file needs to be updated.
+//! Constructor identity is numeric: `(type_decl_id, ctor_index)`. The `type_decl_id`
+//! identifies the type declaration; `ctor_index` is the zero-based position of the
+//! constructor within that declaration. Display names are derived via lookup only —
+//! strings are opaque human-readable representations, never used for identity.
 //!
-//! The canonical source of truth for these names is `stdlib/builtin_core.llt`
-//! (the `TypeValue: [type ...]` declaration). Every constant in the
-//! "declared in builtin_core.llt" section below must match the constructor
-//! name in that declaration exactly. The "Rust-internal-only sentinels" section
-//! is exempt from this invariant — those constants are matched defensively but
-//! are NOT declared in builtin_core.llt.
+//! The canonical source of truth for constructor ordering is `stdlib/builtin_core.llt`
+//! (the `TypeValue: [type ...]` declaration). Constants in the "declared in
+//! builtin_core.llt" sections must match the declaration order exactly.
+//! Rust-internal-only sentinels are assigned indices after the declared constructors.
 
-// ── TypeValue constructors declared in builtin_core.llt ─────────────────────
+// ── TypeValue ctor_index (builtin_core.llt declaration order) ────────────────
 
-pub const TV_VAR: &str = "TypeValue.Var";
-pub const TV_FN: &str = "TypeValue.Fn";
-pub const TV_RECORD: &str = "TypeValue.Record";
-pub const TV_UNION: &str = "TypeValue.Union";
-pub const TV_INTER: &str = "TypeValue.Inter";
-pub const TV_NEG: &str = "TypeValue.Neg";
-pub const TV_NOMINAL: &str = "TypeValue.Nominal";
-pub const TV_APP: &str = "TypeValue.App";
-pub const TV_SCHEME: &str = "TypeValue.Scheme";
-pub const TV_UNKNOWN: &str = "TypeValue.Unknown";
-pub const TV_NEVER: &str = "TypeValue.Never";
-pub const TV_TOP: &str = "TypeValue.Top";
-pub const TV_INT_LIT: &str = "TypeValue.IntLit";
-pub const TV_STR_LIT: &str = "TypeValue.StrLit";
-pub const TV_FLOAT_LIT: &str = "TypeValue.FloatLit";
-pub const TV_RECURSIVE: &str = "TypeValue.Recursive";
-pub const TV_RECURSIVE_REF: &str = "TypeValue.RecursiveRef";
-pub const TV_NOMINAL_VARIANT: &str = "TypeValue.NominalVariant";
-pub const TV_PHANTOM: &str = "TypeValue.Phantom";
+pub const TV_REPR: u32 = 0;
+pub const TV_PHANTOM: u32 = 1;
+pub const TV_VAR: u32 = 2;
+pub const TV_FN: u32 = 3;
+pub const TV_APP: u32 = 4;
+pub const TV_OP: u32 = 5;
+pub const TV_RECORD: u32 = 6;
+pub const TV_UNION: u32 = 7;
+pub const TV_INTER: u32 = 8;
+pub const TV_NEG: u32 = 9;
+pub const TV_SCHEME: u32 = 10;
+pub const TV_INT_LIT: u32 = 11;
+pub const TV_FLOAT_LIT: u32 = 12;
+pub const TV_STR_LIT: u32 = 13;
+pub const TV_RECURSIVE: u32 = 14;
+pub const TV_RECURSIVE_REF: u32 = 15;
+pub const TV_NOMINAL_VARIANT: u32 = 16;
+pub const TV_UNKNOWN: u32 = 17;
+pub const TV_NEVER: u32 = 18;
+pub const TV_TOP: u32 = 19;
 
 // ── Rust-internal-only TypeValue sentinels (not declared in builtin_core.llt) ──
-//
-// These constants are matched defensively in Rust code but are never constructed
-// by normal type inference. If encountered, they indicate a TypeValue produced
-// by an internal mechanism not yet exposed to user code. They are NOT part of
-// the canonical-source invariant above.
 
-pub const TV_STAGE_APP: &str = "TypeValue.StageApp";
-pub const TV_ERROR: &str = "TypeValue.Error";
+pub const TV_STAGE_APP: u32 = 20;
+pub const TV_ERROR: u32 = 21;
+pub const TV_NOMINAL: u32 = 22;
 
-// ── RowTail constructors ─────────────────────────────────────────────────────
+// ── RowTail ctor_index ──────────────────────────────────────────────────────
 
-pub const RT_CLOSED: &str = "RowTail.Closed";
-pub const RT_VAR: &str = "RowTail.Var";
-pub const RT_UNIFORM: &str = "RowTail.Uniform";
+pub const RT_CLOSED: u32 = 0;
+pub const RT_VAR: u32 = 1;
+pub const RT_UNIFORM: u32 = 2;
 
 // ── RowTail payload field constants ─────────────────────────────────────────
 //
@@ -61,6 +56,101 @@ pub const RT_UNIFORM: &str = "RowTail.Uniform";
 pub const RT_FIELD_VALUE_TYPE: &str = "value-type";
 /// Field key for RowTail payload (reserved for typed-key maps): `{ key-type: TypeValue }`
 pub const RT_FIELD_KEY_TYPE: &str = "key-type";
+
+// ── ConstraintDecl (single-ctor structural type) ────────────────────────────
+
+pub const CD_CONSTRAINT_DECL: u32 = 0;
+
+// ── VarDecl (single-ctor structural type) ───────────────────────────────────
+
+pub const VD_VAR_DECL: u32 = 0;
+
+// ── Bool ctor_index ─────────────────────────────────────────────────────────
+
+pub const BOOL_TRUE_IDX: u32 = 0;
+pub const BOOL_FALSE_IDX: u32 = 1;
+
+// ── ProgramItem ctor_index ──────────────────────────────────────────────────
+
+pub const PI_FILE: u32 = 0;
+pub const PI_EXPR: u32 = 1;
+
+// ── TypeNode ctor_index (builtin_core.llt order) ────────────────────────────
+
+pub const TN_INT: u32 = 0;
+pub const TN_STRING: u32 = 1;
+pub const TN_FLOAT: u32 = 2;
+pub const TN_BYTES: u32 = 3;
+pub const TN_NEVER: u32 = 4;
+pub const TN_TOP: u32 = 5;
+pub const TN_UNKNOWN: u32 = 6;
+pub const TN_PROXY: u32 = 7;
+pub const TN_CALLABLE: u32 = 8;
+pub const TN_ABSENT: u32 = 9;
+pub const TN_UNION: u32 = 10;
+pub const TN_INTERSECT: u32 = 11;
+pub const TN_NEGATION: u32 = 12;
+pub const TN_ARROW: u32 = 13;
+pub const TN_RECURSIVE: u32 = 14;
+pub const TN_RECURSIVE_REF: u32 = 15;
+pub const TN_DICT: u32 = 16;
+pub const TN_TYPE_CONSTRUCTOR: u32 = 17;
+pub const TN_TYPE_APPLICATION: u32 = 18;
+pub const TN_TYPE_VAR: u32 = 19;
+pub const TN_INT_LITERAL: u32 = 20;
+pub const TN_STRING_LITERAL: u32 = 21;
+pub const TN_FLOAT_LITERAL: u32 = 22;
+
+// ── Expr ctor_index (ast.llt order + Rust-internal) ─────────────────────────
+
+pub const EXPR_LITERAL: u32 = 0;
+pub const EXPR_VARREF: u32 = 1;
+pub const EXPR_DOT_ACCESS: u32 = 2;
+pub const EXPR_PIPE: u32 = 3;
+pub const EXPR_SEQUENTIAL: u32 = 4;
+pub const EXPR_DICT: u32 = 5;
+pub const EXPR_CALL: u32 = 6;
+pub const EXPR_FN: u32 = 7;
+pub const EXPR_TYPE_ALIAS: u32 = 8;
+pub const EXPR_TYPE_ASSERT: u32 = 9;
+pub const EXPR_ANNOTATED: u32 = 10;
+pub const EXPR_REST: u32 = 11;
+pub const EXPR_MATCH: u32 = 12;
+pub const EXPR_LET_DECL: u32 = 13;
+pub const EXPR_CASE_ARM: u32 = 14;
+pub const EXPR_QUOTE: u32 = 15;
+pub const EXPR_UNQUOTE: u32 = 16;
+pub const EXPR_UNQUOTE_SPLICE: u32 = 17;
+pub const EXPR_SPLICE: u32 = 18;
+pub const EXPR_SYNTAX_CLASS: u32 = 19;
+pub const EXPR_CLASS_DECL: u32 = 20;
+pub const EXPR_INSTANCE_DECL: u32 = 21;
+pub const EXPR_PATTERN_DECL: u32 = 22;
+pub const EXPR_PLACEHOLDER: u32 = 23;
+pub const EXPR_ERROR: u32 = 24;
+// Rust-internal Expr variants (not in ast.llt)
+pub const EXPR_ENTRY: u32 = 25;
+pub const EXPR_NAMED_ARG: u32 = 26;
+pub const EXPR_PARAMETER: u32 = 27;
+
+// ── Entry ctor_index ────────────────────────────────────────────────────────
+
+pub const ENTRY_KEYED: u32 = 0;
+pub const ENTRY_UNKEYED: u32 = 1;
+
+// ── Annotation ctor_index ───────────────────────────────────────────────────
+
+pub const ANN_SIMPLE: u32 = 0;
+pub const ANN_PROP_DICT: u32 = 1;
+pub const ANN_NULL: u32 = 2;
+// Rust-internal
+pub const ANN_ANNOTATED: u32 = 3;
+pub const ANN_UNKNOWN: u32 = 4;
+
+// ── DotKey ctor_index ───────────────────────────────────────────────────────
+
+pub const DOTKEY_IDENT: u32 = 0;
+pub const DOTKEY_INDEX: u32 = 1;
 
 // ── TypeValue payload field name constants ───────────────────────────────────
 //
@@ -129,19 +219,6 @@ pub const FIELD_KIND: &str = "kind";
 /// Field key for TypeValue.Repr payload: { is: Fn | [] } — optional typeclass instance predicate
 pub const FIELD_IS: &str = "is";
 
-// ── ConstraintDecl constructor ───────────────────────────────────────────────
-//
-// ConstraintDecl is the tinct-side variant used to represent typeclass
-// constraints in the inference engine. It is not part of TypeValue itself
-// but is constructed and matched alongside TypeValues in type_class.rs and
-// type_unify.rs. Centralised here so that a rename in builtin_core.llt only
-// requires updating this one constant.
-
-/// Constructor tag for a type-class constraint: `ConstraintDecl { class, args }`.
-pub const TV_CONSTRAINT_DECL: &str = "ConstraintDecl";
-/// Constructor tag for a type variable declaration in TypeValue.Scheme vars dict.
-pub const TV_VAR_DECL: &str = "VarDecl";
-
 // ── Internal gensym prefix characters ───────────────────────────────────────
 //
 // The type checker prefixes internally-generated binding names with special
@@ -160,86 +237,6 @@ pub const INTERNAL_PREFIX_INSTANCE: char = 'ɪ';
 
 /// First character of label-binding gensym names: `ʟ` (U+029F LATIN LETTER SMALL CAPITAL L).
 pub const INTERNAL_PREFIX_LABEL: char = 'ʟ';
-
-// ── Tinct boolean variant ctors ──────────────────────────────────────────────
-//
-// Tinct booleans are represented as unit Variants: `Variant { ctor: "true" }`
-// and `Variant { ctor: "false" }`. This encoding is defined in `stdlib/builtin_core.llt`
-// as the protocol for Rust builtins that return boolean results (e.g., equality checks).
-// These constants are the authoritative spelling — update them if `builtin_core.llt` changes.
-
-/// Unit-variant ctor for tinct `true`.
-pub const BOOL_TRUE: &str = "true";
-/// Unit-variant ctor for tinct `false`.
-pub const BOOL_FALSE: &str = "false";
-
-// ── TypeNode / TypeValue tycon name prefixes ─────────────────────────────────
-
-/// The tycon prefix used by TypeNode constructors (e.g. `"TypeNode.Int"`).
-///
-/// Used by `typenode_value_to_type` (the authorized TypeNode→TypeValue translator) and
-/// `typevalue_to_typenode` (the inverse) to identify TypeNode values. No other Rust code
-/// should branch on this prefix — route through the authorized translators instead.
-pub const TYCON_TYPENODE: &str = "TypeNode";
-
-/// The tycon prefix used by TypeValue constructors (e.g. `"TypeValue.Repr"`).
-pub const TYCON_TYPEVALUE: &str = "TypeValue";
-
-// ── TypeNode constructor tag constants ───────────────────────────────────────
-//
-// Fully-qualified constructor tags for TypeNode variants declared in
-// `stdlib/builtin_core.llt`. Every `"TypeNode.X"` string literal that
-// appears in Rust must use one of these constants — if a TypeNode constructor
-// is renamed in builtin_core.llt, only this file needs to change.
-
-// Primitive leaf types
-pub const TN_INT: &str = "TypeNode.Int";
-pub const TN_FLOAT: &str = "TypeNode.Float";
-pub const TN_STRING: &str = "TypeNode.String";
-pub const TN_BYTES: &str = "TypeNode.Bytes";
-pub const TN_NEVER: &str = "TypeNode.Never";
-pub const TN_UNKNOWN: &str = "TypeNode.Unknown";
-pub const TN_TOP: &str = "TypeNode.Top";
-pub const TN_ABSENT: &str = "TypeNode.Absent";
-pub const TN_PROXY: &str = "TypeNode.Proxy";
-
-// Composite / structural TypeNode constructors
-pub const TN_UNION: &str = "TypeNode.Union";
-pub const TN_INTERSECT: &str = "TypeNode.Intersect";
-pub const TN_NEGATION: &str = "TypeNode.Negation";
-pub const TN_DICT: &str = "TypeNode.Dict";
-pub const TN_ARROW: &str = "TypeNode.Arrow";
-pub const TN_CALLABLE: &str = "TypeNode.Callable";
-
-// Kind-annotated TypeVar sentinel
-pub const TN_TYPE_VAR: &str = "TypeNode.TypeVar";
-
-// Opaque builtin types — each maps to TypeValue.Op
-pub const TN_PROGRAM: &str = "TypeNode.Program";
-pub const TN_DOCUMENT: &str = "TypeNode.Document";
-pub const TN_CORE_DOCUMENT: &str = "TypeNode.CoreDocument";
-pub const TN_TYPE_CONTEXT: &str = "TypeNode.TypeContext";
-pub const TN_DIR_CAP: &str = "TypeNode.DirCap";
-pub const TN_NET_CAP: &str = "TypeNode.NetCap";
-pub const TN_HANDLE: &str = "TypeNode.Handle";
-pub const TN_FILE: &str = "TypeNode.File";
-pub const TN_BUILDER_HANDLE: &str = "TypeNode.BuilderHandle";
-pub const TN_TASK: &str = "TypeNode.Task";
-pub const TN_CHANNEL: &str = "TypeNode.Channel";
-pub const TN_CONTEXT: &str = "TypeNode.Context";
-pub const TN_REACTIVE_CELL: &str = "TypeNode.ReactiveCell";
-pub const TN_CLOCK_CAP: &str = "TypeNode.ClockCap";
-pub const TN_TIMEZONE: &str = "TypeNode.Timezone";
-pub const TN_TIMESTAMP: &str = "TypeNode.Timestamp";
-pub const TN_DURATION: &str = "TypeNode.Duration";
-pub const TN_DECIMAL: &str = "TypeNode.Decimal";
-pub const TN_BIG_INT: &str = "TypeNode.BigInt";
-pub const TN_QUIC_SESSION: &str = "TypeNode.QuicSession";
-pub const TN_QUIC_DATAGRAM_HANDLE: &str = "TypeNode.QuicDatagramHandle";
-pub const TN_HTTP2_SESSION: &str = "TypeNode.Http2Session";
-pub const TN_HTTP3_SESSION: &str = "TypeNode.Http3Session";
-pub const TN_URI: &str = "TypeNode.Uri";
-pub const TN_URN: &str = "TypeNode.Urn";
 
 // ── TypeNode payload field name constants ────────────────────────────────────
 //
@@ -404,23 +401,194 @@ pub const DISPATCH_BYTES: &str = "Bytes";
 
 pub const STRUCTURAL_CLOSED_DICT: &str = "closed-dict";
 
-// ── TypeValue inspection helpers ─────────────────────────────────────────────
+// ── Static display name arrays ──────────────────────────────────────────────
 //
-// Canonical implementations of TypeValue utility functions. Placing them here
-// ensures all modules can import them via `use crate::type_tags::*` without
-// creating circular dependencies — type_tags depends only on value.rs, which
-// imports neither type_tags nor any inference module.
+// Each array maps a ctor_index (used as array index) to the human-readable
+// display name for that constructor. Arrays cover both declared (builtin_core.llt)
+// and Rust-internal constructors.
 
-/// Extract the constructor tag from a TypeValue (`Value::Variant`).
+pub const TYPEVALUE_CTOR_NAMES: &[&str] = &[
+    "TypeValue.Repr",
+    "TypeValue.Phantom",
+    "TypeValue.Var",
+    "TypeValue.Fn",
+    "TypeValue.App",
+    "TypeValue.Op",
+    "TypeValue.Record",
+    "TypeValue.Union",
+    "TypeValue.Inter",
+    "TypeValue.Neg",
+    "TypeValue.Scheme",
+    "TypeValue.IntLit",
+    "TypeValue.FloatLit",
+    "TypeValue.StrLit",
+    "TypeValue.Recursive",
+    "TypeValue.RecursiveRef",
+    "TypeValue.NominalVariant",
+    "TypeValue.Unknown",
+    "TypeValue.Never",
+    "TypeValue.Top",
+    "TypeValue.StageApp",
+    "TypeValue.Error",
+    "TypeValue.Nominal",
+];
+
+pub const ROWTAIL_CTOR_NAMES: &[&str] = &["RowTail.Closed", "RowTail.Var", "RowTail.Uniform"];
+
+pub const TYPENODE_CTOR_NAMES: &[&str] = &[
+    "TypeNode.Int",
+    "TypeNode.String",
+    "TypeNode.Float",
+    "TypeNode.Bytes",
+    "TypeNode.Never",
+    "TypeNode.Top",
+    "TypeNode.Unknown",
+    "TypeNode.Proxy",
+    "TypeNode.Callable",
+    "TypeNode.Absent",
+    "TypeNode.Union",
+    "TypeNode.Intersect",
+    "TypeNode.Negation",
+    "TypeNode.Arrow",
+    "TypeNode.Recursive",
+    "TypeNode.RecursiveRef",
+    "TypeNode.Dict",
+    "TypeNode.TypeConstructor",
+    "TypeNode.TypeApplication",
+    "TypeNode.TypeVar",
+    "TypeNode.IntLiteral",
+    "TypeNode.StringLiteral",
+    "TypeNode.FloatLiteral",
+];
+
+pub const BOOL_CTOR_NAMES: &[&str] = &["true", "false"];
+
+pub const PROGRAM_ITEM_CTOR_NAMES: &[&str] = &["ProgramItem.File", "ProgramItem.Expr"];
+
+pub const EXPR_CTOR_NAMES: &[&str] = &[
+    "Expression.Literal",
+    "Expression.VarRef",
+    "Expression.DotAccess",
+    "Expression.Pipe",
+    "Expression.Sequential",
+    "Expression.Dict",
+    "Expression.Call",
+    "Expression.Fn",
+    "Expression.TypeAlias",
+    "Expression.TypeAssert",
+    "Expression.Annotated",
+    "Expression.Rest",
+    "Expression.Match",
+    "Expression.LetDecl",
+    "Expression.CaseArm",
+    "Expression.Quote",
+    "Expression.Unquote",
+    "Expression.UnquoteSplice",
+    "Expression.Splice",
+    "Expression.SyntaxClass",
+    "Expression.ClassDecl",
+    "Expression.InstanceDecl",
+    "Expression.PatternDecl",
+    "Expression.Placeholder",
+    "Expression.Error",
+    "Expression.Entry",
+    "Expression.NamedArg",
+    "Expression.Parameter",
+];
+
+pub const ENTRY_CTOR_NAMES: &[&str] = &["Entry.Keyed", "Entry.Unkeyed"];
+
+pub const ANNOTATION_CTOR_NAMES: &[&str] = &[
+    "Annotation.Simple",
+    "Annotation.PropDict",
+    "Annotation.Null",
+    "Annotation.Annotated",
+    "Annotation.Unknown",
+];
+
+pub const DOTKEY_CTOR_NAMES: &[&str] = &["DotKey.Ident", "DotKey.Index"];
+
+// ── Display name lookup functions ───────────────────────────────────────────
+
+/// Look up the display name for a constructor by `(type_decl_id, ctor_index)`.
 ///
-/// Returns the bare ctor string (e.g., `"TypeValue.Union"`) or `None` if the
-/// value is not a `Variant` (e.g., an `unknown_type_val` empty Dict).
+/// Returns a static string for known builtin types. Returns `"<user-type>"`
+/// for user-defined types whose display names require a TyConDef lookup.
+pub fn ctor_display_name(type_decl_id: u64, ctor_index: u32) -> &'static str {
+    use crate::value::*;
+    let idx = ctor_index as usize;
+    match type_decl_id {
+        TYPE_ID_TYPE_VALUE => TYPEVALUE_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-tv>"),
+        TYPE_ID_ROW_TAIL => ROWTAIL_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-rt>"),
+        TYPE_ID_TYPE_NODE => TYPENODE_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-tn>"),
+        TYPE_ID_BOOL => BOOL_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-bool>"),
+        TYPE_ID_PROGRAM_ITEM => PROGRAM_ITEM_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-pi>"),
+        TYPE_ID_EXPR => EXPR_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-expr>"),
+        TYPE_ID_ENTRY => ENTRY_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-entry>"),
+        TYPE_ID_ANNOTATION => ANNOTATION_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-ann>"),
+        TYPE_ID_DOT_KEY => DOTKEY_CTOR_NAMES
+            .get(idx)
+            .copied()
+            .unwrap_or("<unknown-dk>"),
+        TYPE_ID_CONSTRAINT_DECL => "ConstraintDecl",
+        TYPE_ID_VAR_DECL => "VarDecl",
+        _ => "<user-type>",
+    }
+}
+
+/// Look up the display name for a constructor, falling back to TyConDef lookup
+/// for user-defined types. Returns a `String` since user-type names are owned.
+pub fn ctor_display_name_full(
+    type_decl_id: u64,
+    ctor_index: u32,
+    tycon_env: Option<&std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>>,
+) -> String {
+    let static_name = ctor_display_name(type_decl_id, ctor_index);
+    if static_name != "<user-type>" {
+        return static_name.to_string();
+    }
+    if let Some(env) = tycon_env {
+        if let Some(def) = env.get(&type_decl_id) {
+            if let Some((tag, _arity)) = def.constructors.get(ctor_index as usize) {
+                return tag.clone();
+            }
+        }
+    }
+    format!("Ctor({type_decl_id}.{ctor_index})")
+}
+
+// ── TypeValue inspection helpers ─────────────────────────────────────────────
+
+/// Extract the constructor index from a TypeValue (`Value::Variant`).
 ///
-/// This is the canonical definition. `type_class::typevalue_ctor` and
-/// `type_infer::typevalue_ctor` both delegate to this function.
-pub fn typevalue_ctor(tv: &std::sync::Arc<crate::value::Value>) -> Option<&str> {
+/// Returns the `ctor_index` or `None` if the value is not a `Variant`.
+pub fn typevalue_ctor_index(tv: &std::sync::Arc<crate::value::Value>) -> Option<u32> {
     match tv.as_ref() {
-        crate::value::Value::Variant { ctor, .. } => Some(ctor.as_ref()),
+        crate::value::Value::Variant { ctor_index, .. } => Some(*ctor_index),
         _ => None,
     }
 }

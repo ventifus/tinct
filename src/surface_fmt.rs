@@ -51,19 +51,26 @@ pub fn fmt_dict(
                 }
                 out.push(':');
             }
-            HashableValue::Variant { tag, payload } => match payload {
-                None => {
-                    out.push_str(tag);
-                    out.push(':');
+            HashableValue::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+            } => {
+                let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+                match payload {
+                    None => {
+                        out.push_str(display);
+                        out.push(':');
+                    }
+                    Some(p) => {
+                        out.push('[');
+                        out.push_str(display);
+                        out.push(' ');
+                        out.push_str(&p.to_string());
+                        out.push_str("]:");
+                    }
                 }
-                Some(p) => {
-                    out.push('[');
-                    out.push_str(tag);
-                    out.push(' ');
-                    out.push_str(&p.to_string());
-                    out.push_str("]:");
-                }
-            },
+            }
             HashableValue::Float(bits) => {
                 // Display float key using the canonical float formatter.
                 // f64::from_bits reconstructs the value; fmt_float produces
@@ -108,14 +115,16 @@ pub fn fmt_dict(
 /// Nullary constructors: `Tag`
 /// Unary constructors: `[Tag payload]`
 pub fn fmt_variant(
-    tag: &str,
+    type_decl_id: u64,
+    ctor_index: u32,
     payload: Option<Arc<Thunk>>,
     ctx: Option<&Arc<EvalContext>>,
 ) -> Result<String, String> {
+    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index);
     match payload {
         None => {
             // Nullary constructor — just the tag
-            Ok(tag.to_string())
+            Ok(display.to_string())
         }
         Some(thunk) => {
             // Unary constructor — [Tag payload]
@@ -124,7 +133,7 @@ pub fn fmt_variant(
                 Some(Err(e)) => return Err(format!("variant payload evaluation error: {}", e)),
                 None => return Err("variant payload not materialized".to_string()),
             };
-            Ok(format!("[{} {}]", tag, value.to_tinct(ctx)?))
+            Ok(format!("[{} {}]", display, value.to_tinct(ctx)?))
         }
     }
 }
@@ -942,32 +951,26 @@ fn core_expr_to_tinct(
 
         // Variant: `TypeName.CtorName` or `[TypeName.CtorName payload]`
         CoreExpr::Variant {
-            tycon,
-            ctor_name,
+            ctor_index,
+            type_decl_id,
             payload,
             ..
         } => {
-            let qualified_tag = if tycon.is_empty() {
-                ctor_name.clone()
-            } else {
-                format!("{}.{}", tycon, ctor_name)
-            };
+            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
             if let Some(inner) = payload {
                 let inner_str =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
                 Ok(format!("[{} {}]", qualified_tag, inner_str))
             } else {
-                Ok(qualified_tag)
+                Ok(qualified_tag.to_string())
             }
         }
 
-        CoreExpr::UnitVariant { tycon, ctor, .. } => {
-            if tycon.is_empty() {
-                Ok(ctor.clone())
-            } else {
-                Ok(format!("{}.{}", tycon, ctor))
-            }
-        }
+        CoreExpr::UnitVariant {
+            ctor_index,
+            type_decl_id,
+            ..
+        } => Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string()),
 
         // ReprDecl: transparent for serialization — emit the inner constructor dict.
         // The repr: metadata is evaluator-only and has no tinct source representation.
@@ -1317,16 +1320,12 @@ fn core_expr_to_tinct_raw(
 
         // Variant: tag is opaque AST data inside quotes — emit as-is.
         CoreExpr::Variant {
-            tycon,
-            ctor_name,
+            ctor_index,
+            type_decl_id,
             payload,
             ..
         } => {
-            let qualified_tag = if tycon.is_empty() {
-                ctor_name.clone()
-            } else {
-                format!("{}.{}", tycon, ctor_name)
-            };
+            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
             if let Some(inner) = payload {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
@@ -1338,17 +1337,15 @@ fn core_expr_to_tinct_raw(
                 )?;
                 Ok(format!("[{} {}]", qualified_tag, s))
             } else {
-                Ok(qualified_tag)
+                Ok(qualified_tag.to_string())
             }
         }
 
-        CoreExpr::UnitVariant { tycon, ctor, .. } => {
-            if tycon.is_empty() {
-                Ok(ctor.clone())
-            } else {
-                Ok(format!("{}.{}", tycon, ctor))
-            }
-        }
+        CoreExpr::UnitVariant {
+            ctor_index,
+            type_decl_id,
+            ..
+        } => Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string()),
 
         // ReprDecl: transparent in quote context — emit the inner constructor dict.
         CoreExpr::ReprDecl { inner, .. } => core_expr_to_tinct_in_quote(
@@ -1433,9 +1430,12 @@ impl Value {
                 source, start, end, ..
             } => Ok(fmt_string(&source[*start..*end])),
             Value::Dict { entries: map, .. } => fmt_dict(map, ctx),
-            Value::Variant { ctor, payload, .. } => {
-                fmt_variant(ctor.as_ref(), payload.clone(), ctx)
-            }
+            Value::Variant {
+                type_decl_id,
+                ctor_index,
+                payload,
+                ..
+            } => fmt_variant(*type_decl_id, *ctor_index, payload.clone(), ctx),
             Value::Builtin { def: b, .. } => Ok(b.name.to_string()),
             Value::Function { clauses, .. } => match ctx {
                 Some(ctx) => {

@@ -547,7 +547,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::from("Closed.Closed"),
+                                ctor_index: 0,
                                 payload: None,
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     crate::value::TYPE_ID_DICT,
@@ -593,7 +593,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::from("Lagged.Lagged"),
+                                ctor_index: 0,
                                 payload: Some(count_thunk),
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     crate::value::TYPE_ID_DICT,
@@ -607,7 +607,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::from("Closed.Closed"),
+                                ctor_index: 0,
                                 payload: None,
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     crate::value::TYPE_ID_DICT,
@@ -654,7 +654,7 @@ pub(crate) fn builtin_recv(
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::from("Closed.Closed"),
+                                ctor_index: 0,
                                 payload: None,
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     crate::value::TYPE_ID_DICT,
@@ -874,7 +874,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::from("Full.Full"),
+                                ctor_index: 0,
                                 payload: None,
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     crate::value::TYPE_ID_DICT,
@@ -888,7 +888,7 @@ pub(crate) fn builtin_try_send(
                         ok_val(
                             Value::Variant {
                                 type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::from("Closed.Closed"),
+                                ctor_index: 0,
                                 payload: None,
                                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                                     crate::value::TYPE_ID_DICT,
@@ -1468,7 +1468,13 @@ pub(crate) fn builtin_signal_channel(
             for (_idx, head_thunk) in &sig_dict {
                 let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
                 let name = match &head_val {
-                    Value::Variant { ctor, .. } => ctor.as_ref().to_string(),
+                    Value::Variant {
+                        type_decl_id,
+                        ctor_index,
+                        ..
+                    } => {
+                        crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string()
+                    }
                     _ => {
                         return Err(EvalError::type_mismatch(
                             "Signal",
@@ -1532,9 +1538,8 @@ pub(crate) fn builtin_signal_channel(
                                     break;
                                 }
                                 match tx_clone.try_send(Value::Variant {
-
                                     type_decl_id: TYPE_ID_DICT,
-                                    ctor: Arc::from(sig_name.as_str()),
+                                    ctor_index: 0,
                                     payload: None,
                                     type_val: Some(crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_DICT)),
                                 }) {
@@ -2078,7 +2083,7 @@ pub(crate) fn builtin_with_cancel(
         ok_val(
             Value::Variant {
                 type_decl_id: TYPE_ID_DICT,
-                ctor: Arc::from("CancelHandle.CancelHandle"),
+                ctor_index: 0,
                 payload: Some(payload_thunk),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DICT,

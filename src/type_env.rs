@@ -52,10 +52,10 @@ pub fn instantiate_scheme_tv(
     // Match TypeValue.Scheme { vars, constraints, body }
     let (vars_thunk, body_thunk) = match scheme.as_ref() {
         Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(payload_thunk),
             ..
-        } if ctor.as_ref() == TV_SCHEME => {
+        } if *ctor_index == TV_SCHEME => {
             // Force the payload dict synchronously (it must be settled — we constructed it).
             match payload_thunk.peek_result()? {
                 Ok(Value::Dict { entries, .. }) => {
@@ -127,10 +127,10 @@ pub fn instantiate_scheme_tv_with_renaming(
 
     let (vars_thunk, body_thunk) = match scheme.as_ref() {
         Value::Variant {
-            ctor,
+            ctor_index,
             payload: Some(payload_thunk),
             ..
-        } if ctor.as_ref() == TV_SCHEME => match payload_thunk.peek_result()? {
+        } if *ctor_index == TV_SCHEME => match payload_thunk.peek_result()? {
             Ok(Value::Dict { entries, .. }) => {
                 let vars_key = HashableValue::Str(Arc::from(FIELD_VARS));
                 let body_key = HashableValue::Str(Arc::from(FIELD_BODY));
@@ -251,8 +251,13 @@ pub fn apply_typevalue_renaming(
     use std::sync::Arc;
 
     match ty.as_ref() {
-        Value::Variant { ctor, payload, .. } => {
-            match ctor.as_ref() {
+        Value::Variant {
+            ctor_index,
+            type_decl_id,
+            payload,
+            ..
+        } => {
+            match *ctor_index {
                 TV_VAR => {
                     // If this var is in the renaming, substitute.
                     if let Some(name) = typevalue_var_name(ty) {
@@ -310,8 +315,8 @@ pub fn apply_typevalue_renaming(
                                 type_val: None,
                             };
                             Arc::new(Value::Variant {
-                                type_decl_id: TYPE_ID_DICT,
-                                ctor: Arc::clone(ctor),
+                                type_decl_id: *type_decl_id,
+                                ctor_index: *ctor_index,
                                 payload: Some(Arc::new(crate::value::Thunk::value(
                                     new_payload_dict,
                                     crate::rust_span!(),
@@ -420,8 +425,8 @@ pub fn generalize_tv_with_meta(
                 }
             };
             let var_decl = Value::Variant {
-                type_decl_id: TYPE_ID_DICT,
-                ctor: Arc::from(TV_VAR_DECL),
+                type_decl_id: crate::value::TYPE_ID_VAR_DECL,
+                ctor_index: VD_VAR_DECL,
                 payload: Some(Arc::new(crate::value::Thunk::value(
                     var_decl_payload,
                     crate::rust_span!(),
@@ -524,8 +529,8 @@ pub fn generalize_tv_with_meta(
     };
 
     Arc::new(Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_SCHEME),
+        type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+        ctor_index: TV_SCHEME,
         payload: Some(Arc::new(crate::value::Thunk::value(
             scheme_payload,
             crate::rust_span!(),
@@ -540,9 +545,9 @@ pub fn generalize_tv_with_meta(
 mod typevalue_scheme_tests {
     use super::*;
     use crate::type_infer::{
-        make_typevalue_unknown, make_typevar_value, typevalue_ctor, typevalue_var_name,
-        InferenceContext,
+        make_typevalue_unknown, make_typevar_value, typevalue_var_name, InferenceContext,
     };
+    use crate::type_tags::typevalue_ctor_index;
 
     /// generalize_tv with a TypeValue.Var at level > enclosing_level produces a
     /// TypeValue.Scheme that quantifies over that variable.
@@ -566,7 +571,7 @@ mod typevalue_scheme_tests {
 
         // Result must be a TypeValue.Scheme
         assert_eq!(
-            typevalue_ctor(&scheme),
+            typevalue_ctor_index(&scheme),
             Some(TV_SCHEME),
             "generalize_tv must produce TypeValue.Scheme when vars are generalizable"
         );
@@ -590,13 +595,13 @@ mod typevalue_scheme_tests {
 
         // Must be returned as-is (not wrapped in Scheme)
         assert_ne!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_SCHEME),
             "generalize_tv must not wrap non-generalizable vars in Scheme"
         );
         // Must still be a TypeValue.Var (same as input)
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_VAR),
             "generalize_tv must return the bare TypeValue for monomorphic types"
         );
@@ -610,7 +615,7 @@ mod typevalue_scheme_tests {
 
         let result = generalize_tv(0, &unknown, &ctx);
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_UNKNOWN),
             "generalize_tv must return Unknown unchanged"
         );
@@ -656,8 +661,8 @@ mod typevalue_scheme_tests {
             type_val: None,
         };
         let var_decl = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_VAR_DECL),
+            type_decl_id: crate::value::TYPE_ID_VAR_DECL,
+            ctor_index: VD_VAR_DECL,
             payload: Some(Arc::new(crate::value::Thunk::value(
                 var_decl_payload,
                 crate::rust_span!(),
@@ -712,8 +717,8 @@ mod typevalue_scheme_tests {
         };
 
         let scheme: crate::type_class::TypeValue = Arc::new(Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_SCHEME),
+            type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+            ctor_index: TV_SCHEME,
             payload: Some(Arc::new(crate::value::Thunk::value(
                 scheme_payload,
                 crate::rust_span!(),
@@ -731,7 +736,7 @@ mod typevalue_scheme_tests {
 
         // Result should be a TypeValue.Var (the body was a TypeValue.Var, substituted with fresh)
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_VAR),
             "instantiated body must be a TypeValue.Var"
         );
@@ -755,7 +760,7 @@ mod typevalue_scheme_tests {
         let result = apply_typevalue_renaming(&unknown, &renaming);
 
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_UNKNOWN),
             "apply_typevalue_renaming on Unknown must return Unknown"
         );
@@ -777,7 +782,7 @@ mod typevalue_scheme_tests {
 
         // Should be Unknown (the replacement)
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_UNKNOWN),
             "apply_typevalue_renaming must substitute matching var 'a' with Unknown"
         );
@@ -811,7 +816,7 @@ mod typevalue_scheme_tests {
 
         // Result must be TypeValue.Scheme (not bare Record).
         assert_eq!(
-            typevalue_ctor(&scheme),
+            typevalue_ctor_index(&scheme),
             Some(TV_SCHEME),
             "generalize_tv on Record with TypeVar field must produce TypeValue.Scheme — \
              collect_free_vars_inner must recurse into Record.fields Dict"
@@ -849,7 +854,7 @@ mod typevalue_scheme_tests {
 
         // Result must be a TypeValue.Record (outer Variant unchanged).
         assert_eq!(
-            typevalue_ctor(&result),
+            typevalue_ctor_index(&result),
             Some(TV_RECORD),
             "apply_typevalue_renaming must preserve the Record wrapper"
         );
@@ -860,7 +865,7 @@ mod typevalue_scheme_tests {
             .get("x")
             .expect("renamed Record must still have field 'x'");
         assert_eq!(
-            typevalue_ctor(x_field),
+            typevalue_ctor_index(x_field),
             Some(TV_NOMINAL),
             "field 'x' in renamed Record must be TypeValue.Repr — \
              apply_typevalue_renaming must recurse into Record.fields Dict"
@@ -900,7 +905,7 @@ mod typevalue_scheme_tests {
         let scheme = generalize_tv(0, &fn_ty, &ctx);
 
         assert_eq!(
-            typevalue_ctor(&scheme),
+            typevalue_ctor_index(&scheme),
             Some(TV_SCHEME),
             "generalize_tv on TypeValue.Fn with free TypeVar must produce TypeValue.Scheme"
         );
@@ -941,7 +946,7 @@ mod typevalue_scheme_tests {
 
         // The instantiated type must still be a TypeValue.Fn.
         assert_eq!(
-            typevalue_ctor(&inst_fn),
+            typevalue_ctor_index(&inst_fn),
             Some(TV_FN),
             "instantiate_scheme_tv of a TypeValue.Fn scheme must produce TypeValue.Fn"
         );
@@ -950,7 +955,7 @@ mod typevalue_scheme_tests {
         let (_, ret_ty) = typevalue_fn_params_and_ret(&inst_fn)
             .expect("instantiated TypeValue.Fn must have params and return type");
         assert_eq!(
-            typevalue_ctor(&ret_ty),
+            typevalue_ctor_index(&ret_ty),
             Some(TV_VAR),
             "return type of instantiated Fn must be a TypeValue.Var"
         );

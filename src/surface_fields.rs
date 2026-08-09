@@ -7,7 +7,7 @@
 //!   for `Value::Document` and `Value::Program`
 //!
 //! The field extraction functions return `Value` variants. Child expression nodes are
-//! returned as `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime
+//! returned as `Value::Variant { type_decl_id: TYPE_ID_EXPR, ctor_index, .. }` — the canonical runtime
 //! representation. `Value::Document` carries its original Arc for efficient sharing.
 //! `Value::Program` carries an `Arc<SurfaceProgram>` directly.
 
@@ -27,14 +27,19 @@ use crate::rust_span;
 // ============================================================================
 
 use crate::ast::{Annotation, DotKey, Spanned};
+use crate::type_tags::{
+    ANN_ANNOTATED, ANN_NULL, ANN_PROP_DICT, ANN_SIMPLE, ANN_UNKNOWN, DOTKEY_IDENT, DOTKEY_INDEX,
+    EXPR_ENTRY, EXPR_NAMED_ARG, EXPR_PARAMETER,
+};
 use crate::value::{
-    string_val, HashableValue, Value, TYPE_ID_DICT, TYPE_ID_FLOAT, TYPE_ID_INT, TYPE_ID_U64,
+    string_val, HashableValue, Value, TYPE_ID_ANNOTATION, TYPE_ID_DICT, TYPE_ID_DOT_KEY,
+    TYPE_ID_EXPR, TYPE_ID_FLOAT, TYPE_ID_INT, TYPE_ID_U64,
 };
 
 /// Extract a named field from a `SurfaceNode` as a `Value`.
 ///
 /// Primitive fields return scalar values. Expression-typed fields (child nodes) return
-/// `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime representation.
+/// `Value::Variant { type_decl_id: TYPE_ID_EXPR, ctor_index, .. }` — the canonical runtime representation.
 /// Sequence-typed fields (args, params, entries, bindings, arms) return
 /// `Value::Dict(IndexMap<HashableValue::Int, Arc<Thunk>>)` — integer-keyed lists of
 /// `Expr.*` variants, allocated into the EvalContext arena.
@@ -244,8 +249,8 @@ fn surface_entries_to_list_dict(
             Arc::new(Thunk::value(val_val, entry.span.clone())),
         );
         let entry_variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: "Expr.Entry".into(),
+            type_decl_id: TYPE_ID_EXPR,
+            ctor_index: EXPR_ENTRY,
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
@@ -254,7 +259,7 @@ fn surface_entries_to_list_dict(
                 },
                 entry.span.clone(),
             ))),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
         };
         let thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -288,8 +293,8 @@ fn named_args_to_list_dict(
             )),
         );
         let na_variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: "Expr.NamedArg".into(),
+            type_decl_id: TYPE_ID_EXPR,
+            ctor_index: EXPR_NAMED_ARG,
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
@@ -298,7 +303,7 @@ fn named_args_to_list_dict(
                 },
                 na.span.clone(),
             ))),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
         };
         let thunk = Arc::new(Thunk::value(na_variant, na.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -342,8 +347,8 @@ fn params_to_list_dict(
             Arc::new(Thunk::value(ann_val, p.span.clone())),
         );
         let p_variant = Value::Variant {
-            type_decl_id: TYPE_ID_DICT,
-            ctor: "Expr.Parameter".into(),
+            type_decl_id: TYPE_ID_EXPR,
+            ctor_index: EXPR_PARAMETER,
             payload: Some(Arc::new(Thunk::value(
                 Value::Dict {
                     entries: payload,
@@ -352,7 +357,7 @@ fn params_to_list_dict(
                 },
                 p.span.clone(),
             ))),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
         };
         let thunk = Arc::new(Thunk::value(p_variant, p.span.clone()));
         map.insert(HashableValue::Int(i as i64), thunk);
@@ -435,8 +440,8 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                 Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             Value::Variant {
-                type_decl_id: TYPE_ID_DICT,
-                ctor: "DotKey.Ident".into(),
+                type_decl_id: TYPE_ID_DOT_KEY,
+                ctor_index: DOTKEY_IDENT,
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: payload_dict,
@@ -445,7 +450,7 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                     },
                     span,
                 ))),
-                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DOT_KEY)),
             }
         }
         DotKey::Int(index) => {
@@ -461,8 +466,8 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                 )),
             );
             Value::Variant {
-                type_decl_id: TYPE_ID_DICT,
-                ctor: "DotKey.Index".into(),
+                type_decl_id: TYPE_ID_DOT_KEY,
+                ctor_index: DOTKEY_INDEX,
                 payload: Some(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: payload_dict,
@@ -471,7 +476,7 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
                     },
                     span,
                 ))),
-                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DOT_KEY)),
             }
         }
     }
@@ -515,13 +520,13 @@ fn annotation_inner_to_value(
         Arc::new(Thunk::value(string_val(&text), span.clone())),
     );
 
-    let (tycon, ctor) = match ann {
+    let ann_ctor_index = match ann {
         Annotation::Simple(name) => {
             payload_map.insert(
                 HashableValue::Str("name".into()),
                 Arc::new(Thunk::value(string_val(name), span.clone())),
             );
-            ("Annotation", "Simple")
+            ANN_SIMPLE
         }
         Annotation::PropertyDict(entries) => {
             // Expose positional entries as a "parts" list (integer-keyed dict of annotation values).
@@ -562,8 +567,8 @@ fn annotation_inner_to_value(
                             )),
                         );
                         Value::Variant {
-                            type_decl_id: TYPE_ID_DICT,
-                            ctor: "Annotation.Annotated".into(),
+                            type_decl_id: TYPE_ID_ANNOTATION,
+                            ctor_index: ANN_ANNOTATED,
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
@@ -574,7 +579,9 @@ fn annotation_inner_to_value(
                                 },
                                 pos_entry.span.clone(),
                             ))),
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                TYPE_ID_ANNOTATION,
+                            )),
                         }
                     }
                     SurfaceExpression::VarRef {
@@ -594,8 +601,8 @@ fn annotation_inner_to_value(
                             Arc::new(Thunk::value(string_val(name), pos_entry.span.clone())),
                         );
                         Value::Variant {
-                            type_decl_id: TYPE_ID_DICT,
-                            ctor: "Annotation.Simple".into(),
+                            type_decl_id: TYPE_ID_ANNOTATION,
+                            ctor_index: ANN_SIMPLE,
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
@@ -606,7 +613,9 @@ fn annotation_inner_to_value(
                                 },
                                 pos_entry.span.clone(),
                             ))),
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                TYPE_ID_ANNOTATION,
+                            )),
                         }
                     }
                     _ => {
@@ -620,8 +629,8 @@ fn annotation_inner_to_value(
                             Arc::new(Thunk::value(string_val(&text), pos_entry.span.clone())),
                         );
                         Value::Variant {
-                            type_decl_id: TYPE_ID_DICT,
-                            ctor: "Annotation.Unknown".into(),
+                            type_decl_id: TYPE_ID_ANNOTATION,
+                            ctor_index: ANN_UNKNOWN,
                             payload: Some(Arc::new(Thunk::value(
                                 Value::Dict {
                                     entries: p,
@@ -632,7 +641,9 @@ fn annotation_inner_to_value(
                                 },
                                 pos_entry.span.clone(),
                             ))),
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+                            type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                TYPE_ID_ANNOTATION,
+                            )),
                         }
                     }
                 };
@@ -676,7 +687,7 @@ fn annotation_inner_to_value(
                     }
                 }
             }
-            ("Annotation", "PropertyDict")
+            ANN_PROP_DICT
         }
         Annotation::Annotated(outer, inner) => {
             // When the outer is Simple, emit a flat "name" string for backward compatibility.
@@ -705,19 +716,19 @@ fn annotation_inner_to_value(
                 HashableValue::Str("inner-ann".into()),
                 Arc::new(Thunk::value(inner_ann_val, span.clone())),
             );
-            ("Annotation", "Annotated")
+            ANN_ANNOTATED
         }
         Annotation::Quote => {
-            // Quoting sentinel — serialised as a distinct "Quote" constructor with an
-            // empty payload dict. Does not mention "Expr" so the wire format is
-            // agnostic to the prelude's type name.
-            ("Annotation", "Quote")
+            // Quoting sentinel — serialised as ANN_NULL (ctor_index 2).
+            // Does not mention "Expr" so the wire format is agnostic to the
+            // prelude's type name.
+            ANN_NULL
         }
     };
 
     Value::Variant {
-        type_decl_id: TYPE_ID_DICT,
-        ctor: format!("{}.{}", tycon, ctor).into(),
+        type_decl_id: TYPE_ID_ANNOTATION,
+        ctor_index: ann_ctor_index,
         payload: Some(Arc::new(Thunk::value(
             Value::Dict {
                 entries: payload_map,
@@ -726,7 +737,9 @@ fn annotation_inner_to_value(
             },
             span,
         ))),
-        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
+        type_val: Some(crate::type_infer::make_typevalue_nominal(
+            TYPE_ID_ANNOTATION,
+        )),
     }
 }
 

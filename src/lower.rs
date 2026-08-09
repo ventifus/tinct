@@ -924,24 +924,20 @@ fn lower_expr(
         },
 
         SurfaceExpression::UnitVariant {
-            tycon,
-            ctor,
+            ctor_index,
             type_decl_id,
         } => CoreExpr::UnitVariant {
-            tycon: tycon.clone(),
-            ctor: ctor.clone(),
+            ctor_index: *ctor_index,
             type_decl_id: *type_decl_id,
             inferred_type: make_typevalue_unknown(),
         },
 
         SurfaceExpression::MakeVariant {
-            tycon,
-            ctor_name,
+            ctor_index,
             payload,
             type_decl_id,
         } => CoreExpr::Variant {
-            tycon: tycon.clone(),
-            ctor_name: ctor_name.clone(),
+            ctor_index: *ctor_index,
             payload: Some(Arc::new(lower_inner(
                 payload,
                 diagnostics,
@@ -1218,25 +1214,25 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.
         CoreExpr::Variant {
-            tycon, ctor_name, ..
+            type_decl_id,
+            ctor_index,
+            ..
         } => SurfaceExpression::VarRef {
-            name: if tycon.is_empty() {
-                ctor_name.clone()
-            } else {
-                format!("{}.{}", tycon, ctor_name)
-            },
+            name: crate::type_tags::ctor_display_name_full(*type_decl_id, *ctor_index, None)
+                .to_string(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
 
             annotation: None,
             do_infer_placeholder: false,
         },
-        CoreExpr::UnitVariant { tycon, ctor, .. } => SurfaceExpression::VarRef {
-            name: if tycon.is_empty() {
-                ctor.clone()
-            } else {
-                format!("{}.{}", tycon, ctor)
-            },
+        CoreExpr::UnitVariant {
+            type_decl_id,
+            ctor_index,
+            ..
+        } => SurfaceExpression::VarRef {
+            name: crate::type_tags::ctor_display_name_full(*type_decl_id, *ctor_index, None)
+                .to_string(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
 

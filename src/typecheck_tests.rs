@@ -15,12 +15,12 @@ use std::sync::Arc;
 /// Check if a TypeValue is TypeValue.IntLit with the given value.
 fn is_int_lit(tv: &Arc<Value>, n: i64) -> bool {
     if let Value::Variant {
-        ctor,
+        ctor_index,
         payload: Some(p),
         ..
     } = tv.as_ref()
     {
-        if ctor.as_ref() == TV_INT_LIT {
+        if *ctor_index == TV_INT_LIT {
             if let Some(Ok(Value::Dict { entries, .. })) = p.peek_result() {
                 let key = HashableValue::Str(Arc::from(FIELD_VALUE));
                 if let Some(Ok(Value::Int { n: actual, .. })) =
@@ -37,12 +37,12 @@ fn is_int_lit(tv: &Arc<Value>, n: i64) -> bool {
 /// Check if a TypeValue is TypeValue.StrLit with the given value.
 fn is_str_lit(tv: &Arc<Value>, s: &str) -> bool {
     if let Value::Variant {
-        ctor,
+        ctor_index,
         payload: Some(p),
         ..
     } = tv.as_ref()
     {
-        if ctor.as_ref() == TV_STR_LIT {
+        if *ctor_index == TV_STR_LIT {
             if let Some(Ok(Value::Dict { entries, .. })) = p.peek_result() {
                 let key = HashableValue::Str(Arc::from(FIELD_VALUE));
                 if let Some(Ok(Value::String {
@@ -60,12 +60,12 @@ fn is_str_lit(tv: &Arc<Value>, s: &str) -> bool {
 /// Check if a TypeValue is TypeValue.FloatLit with the given value (by bit pattern).
 fn is_float_lit(tv: &Arc<Value>, f: f64) -> bool {
     if let Value::Variant {
-        ctor,
+        ctor_index,
         payload: Some(p),
         ..
     } = tv.as_ref()
     {
-        if ctor.as_ref() == TV_FLOAT_LIT {
+        if *ctor_index == TV_FLOAT_LIT {
             if let Some(Ok(Value::Dict { entries, .. })) = p.peek_result() {
                 let key = HashableValue::Str(Arc::from(FIELD_VALUE));
                 if let Some(Ok(Value::Float { n: actual, .. })) =
@@ -81,23 +81,23 @@ fn is_float_lit(tv: &Arc<Value>, f: f64) -> bool {
 
 /// Check if a TypeValue is TypeValue.Unknown (or bootstrap sentinel empty dict).
 fn is_unknown(tv: &Arc<Value>) -> bool {
-    matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNKNOWN)
+    matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_UNKNOWN)
         || matches!(tv.as_ref(), Value::Dict { entries, .. } if entries.is_empty())
 }
 
 /// Check if a TypeValue is TypeValue.Var.
 fn is_var(tv: &Arc<Value>) -> bool {
-    matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_VAR)
+    matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_VAR)
 }
 
 /// Check if a TypeValue is TypeValue.Top (Any).
 fn is_top(tv: &Arc<Value>) -> bool {
-    matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_TOP)
+    matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_TOP)
 }
 
 /// Check if a TypeValue is TypeValue.Union.
 fn is_union(tv: &Arc<Value>) -> bool {
-    matches!(tv.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_UNION)
+    matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_UNION)
 }
 
 /// Create a TypeValue.Union from a Vec of member TypeValues.
@@ -130,7 +130,7 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     };
     Arc::new(Value::Variant {
         type_decl_id: TYPE_ID_DICT,
-        ctor: Arc::from(TV_UNION),
+        ctor_index: TV_UNION,
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload,
             crate::rust_span!(),
@@ -533,8 +533,8 @@ async fn test_normalize_intersection_unknown_is_identity() {
     // A single-member intersection normalizes to just that member.
     let single = crate::type_infer::typevalue_normalize_intersection(vec![Arc::clone(&int_tv)]);
     assert_eq!(
-        crate::type_infer::typevalue_ctor(&single),
-        crate::type_infer::typevalue_ctor(&int_tv),
+        crate::type_tags::typevalue_ctor_index(&single),
+        crate::type_tags::typevalue_ctor_index(&int_tv),
         "single-member normalize_intersection should return the member directly"
     );
 }
@@ -685,7 +685,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
         };
         Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_INTER),
+            ctor_index: TV_INTER,
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
             type_val: None,
         })
@@ -739,7 +739,7 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
         };
         Arc::new(Value::Variant {
             type_decl_id: TYPE_ID_DICT,
-            ctor: Arc::from(TV_RECURSIVE),
+            ctor_index: TV_RECURSIVE,
             payload: Some(Arc::new(Thunk::value(payload, crate::rust_span!()))),
             type_val: None,
         })
@@ -841,7 +841,7 @@ async fn test_is_subtype_recursive_union_terminates() {
 #[tokio::test]
 async fn test_unfold_once_basic() {
     // BAS unfold_recursive_typevalue: one step of μa.{x: a} → {x: μa.{x: a}}.
-    use crate::type_infer::{make_typevalue_record, make_typevalue_recursive, typevalue_ctor};
+    use crate::type_infer::{make_typevalue_record, make_typevalue_recursive};
     let body = make_typevalue_record(
         indexmap::indexmap! { "x".to_string() => crate::type_infer::make_typevalue_recursive_ref(0) },
         None,
@@ -850,7 +850,7 @@ async fn test_unfold_once_basic() {
     let unfolded = crate::bas::unfold_recursive_typevalue(&mu_a);
     // After one unfold, the result should be a Record (not Recursive).
     assert_eq!(
-        typevalue_ctor(&unfolded),
+        crate::type_tags::typevalue_ctor_index(&unfolded),
         Some(TV_RECORD),
         "unfold_once(μa.{{x: a}}) must produce a Record"
     );
@@ -1285,13 +1285,13 @@ async fn test_typenode_float_literal_arm_conversion() {
         type_val: None,
     };
     let typenode_float_literal = Value::Variant {
-        ctor: Arc::from("TypeNode.FloatLiteral"),
+        ctor_index: 22, // TN_FLOAT_LITERAL
         payload: Some(Arc::new(crate::value::Thunk::value(
             payload_dict,
             crate::rust_span!(),
         ))),
 
-        type_decl_id: TYPE_ID_DICT,
+        type_decl_id: crate::value::TYPE_ID_TYPE_NODE,
         type_val: None,
     };
 
@@ -1503,7 +1503,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     // method signature TypeValue.Fn. In this isolated test, the class may not be
     // visible through run_typecheck's env wrapping, so Unknown is acceptable.
     assert!(
-        is_unknown(&inferred_type) || matches!(inferred_type.as_ref(), Value::Variant { ctor, .. } if ctor.as_ref() == TV_FN),
+        is_unknown(&inferred_type) || matches!(inferred_type.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
         "EffectPerform VarRef should infer as TypeValue.Fn or Unknown (gradual fallback); got: {:?}",
         inferred_type
     );

@@ -761,7 +761,7 @@ pub(crate) fn eval_core_expr<'a>(
             // (no parent TypeDecl — shouldn't happen in practice), fall back to crate::type_infer::make_typevalue_unknown().
             // Registered identities are set by CoreExpr::TypeDecl before any constructor is forced.
             CoreExpr::Variant {
-                ctor_name,
+                ctor_index,
                 payload,
                 type_decl_id,
                 ..
@@ -769,7 +769,7 @@ pub(crate) fn eval_core_expr<'a>(
                 None => Ok(Arc::new(Thunk::value(
                     Value::Variant {
                         type_decl_id: *type_decl_id,
-                        ctor: Arc::from(ctor_name.as_str()),
+                        ctor_index: *ctor_index,
                         payload: None,
                         type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                     },
@@ -781,7 +781,7 @@ pub(crate) fn eval_core_expr<'a>(
                     Ok(Arc::new(Thunk::value(
                         Value::Variant {
                             type_decl_id: *type_decl_id,
-                            ctor: Arc::from(ctor_name.as_str()),
+                            ctor_index: *ctor_index,
                             payload: Some(Arc::new(Thunk::value(payload_val, span.clone()))),
                             type_val: Some(crate::type_infer::make_typevalue_nominal(
                                 *type_decl_id,
@@ -797,14 +797,13 @@ pub(crate) fn eval_core_expr<'a>(
             // Color.Red requires first forcing Color to access its "Red" entry), the registry
             // entry for `type_decl_id` exists and every variant of that type carries the same Arc.
             CoreExpr::UnitVariant {
-                tycon,
-                ctor,
+                ctor_index,
                 type_decl_id,
                 ..
             } => Ok(Arc::new(Thunk::value(
                 Value::Variant {
                     type_decl_id: *type_decl_id,
-                    ctor: Arc::from(format!("{}.{}", tycon, ctor).as_str()),
+                    ctor_index: *ctor_index,
                     payload: None,
                     type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                 },
@@ -1088,7 +1087,7 @@ pub(crate) fn eval_core_expr<'a>(
             // identity on the dict's type_val, and return the dict.
             //
             // This is the T-2111 implementation of B-712. The identity is a fresh
-            // Arc<Value::Variant { ctor: type_name, ... }> — unique per TypeDecl evaluation.
+            // Arc<Value::Variant { ctor_index: 0, ... }> — unique per TypeDecl evaluation.
             // Storing and retrieving Arc::clone of the same Arc from the registry ensures
             // that all Value::Variants produced by this type's constructors share the
             // exact same Arc pointer as the constructor dict, enabling Arc::ptr_eq in
@@ -1102,18 +1101,18 @@ pub(crate) fn eval_core_expr<'a>(
             // entries — the entries themselves are NOT materialized. This is the same
             // strictness point as CoreExpr::ReprDecl (which also materializes for registration).
             CoreExpr::TypeDecl {
-                type_name,
+                type_name: _type_name,
                 type_decl_id,
                 inner,
                 ..
             } => {
                 // Create the type identity: a fresh Arc<Value> unique to this type declaration.
-                // The value is a unit Variant with ctor = type_name. This makes the identity
+                // The value is a unit Variant with ctor_index = 0. This makes the identity
                 // self-describing in debug output. Its own type_val is crate::type_infer::make_typevalue_unknown() —
                 // the identity is not itself typed (it is the identity, not a user value).
                 let type_id: Arc<Value> = Arc::new(Value::Variant {
                     type_decl_id: 0, // Identity sentinel — not a user-constructed variant.
-                    ctor: Arc::from(type_name.as_str()),
+                    ctor_index: 0,
                     payload: None,
                     type_val: Some(crate::type_infer::make_typevalue_nominal(0)),
                 });
