@@ -454,7 +454,8 @@ fn typevalue_structural_fingerprint(
                             };
                             if let Some(val) = peek_value(thunk) {
                                 let tv = Arc::new(val.clone());
-                                let fp = typevalue_structural_fingerprint(&tv, depth + 1, tycon_env);
+                                let fp =
+                                    typevalue_structural_fingerprint(&tv, depth + 1, tycon_env);
                                 field_fps.push((key_str, fp));
                             }
                         }

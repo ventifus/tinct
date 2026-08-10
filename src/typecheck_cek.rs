@@ -366,29 +366,6 @@ pub(crate) enum TypeCheckCont {
     UnquoteSplice,
 }
 
-// ===== typecheck_for_errors =====
-
-/// Run type inference for side effects only. Discards the inferred TypeValue.
-///
-/// Used for condition expressions, guard expressions, argument expressions when the callee
-/// type is unknown/any/typevar, and similar cases where inference is needed only to populate
-/// `type_map` and propagate errors via `errors` — not for downstream type inference.
-///
-/// This is the single canonical suppression point for the `run_typecheck` return value.
-/// All call sites that previously used `let _ty = Box::pin(run_typecheck(...)).await` must
-/// use this helper instead — it makes the intentional discard explicit and compiler-verified.
-pub(crate) async fn typecheck_for_errors(
-    node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    errors: &mut Vec<Diagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
-    stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
-) {
-    // Called for error-collection and type_map side effects only.
-    Box::pin(run_typecheck(node, env, state, errors, type_map, stack)).await;
-}
-
 // ===== run_typecheck =====
 
 /// Main CEK loop for type inference.
@@ -904,8 +881,8 @@ async fn infer_step(
                 Ok(t) => TypeCheckAction::Done(t),
                 Err(mut errs) => {
                     errors.append(&mut errs);
-                    // Decl inference failed: fresh TypeVar (unconstrained)
-                    TypeCheckAction::Done(state.fresh_type_var(&node.span))
+                    // Decl inference failed: Never (error recovery)
+                    TypeCheckAction::Done(make_typevalue_never())
                 }
             }
         }
@@ -952,8 +929,8 @@ async fn infer_step(
                 msg.clone(),
                 node.span.clone(),
             ));
-            // Unsupported expr: fresh TypeVar (failed inference, unconstrained)
-            TypeCheckAction::Done(state.fresh_type_var(&node.span))
+            // Unsupported expr: Never (error recovery)
+            TypeCheckAction::Done(make_typevalue_never())
         }
     }
 }
@@ -1332,6 +1309,22 @@ async fn apply_cont(
                 return TypeCheckAction::Done(state.fresh_type_var(&span));
             }
 
+            // Type-check each arm's pattern expression so inferred_type_decl_id is populated
+            // for coverage checking and narrowing.
+            for arm in &arms {
+                let arm_env = build_case_arm_env(&arm.let_bindings, &env, state, &arm.pattern);
+                let mut local_stack = Vec::new();
+                let _pattern_ty = Box::pin(run_typecheck(
+                    &arm.pattern,
+                    &arm_env,
+                    state,
+                    errors,
+                    type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
+
             // Run exhaustiveness checking once upfront (using all arms).
             run_match_exhaustiveness_check(&scrutinee_ty, &arms, &span, state, errors).await;
 
@@ -1368,17 +1361,11 @@ async fn apply_cont(
                     ));
                     // For case arms: set current_parameter_frame to arm_env so
                     // VarAddr::Parameter(i) refs (case arm bindings) resolve directly.
-                    let (arm_binding_envs, saved_parameter_frame) =
-                        if arms[0].let_bindings.is_some() {
-                            let saved = state.current_parameter_frame.take();
-                            state.current_parameter_frame = Some(Arc::clone(&arm_env));
-                            (vec![Arc::clone(&arm_env)], saved)
-                        } else {
-                            (vec![], state.current_parameter_frame.clone())
-                        };
+                    let saved_parameter_frame = state.current_parameter_frame.take();
+                    state.current_parameter_frame = Some(Arc::clone(&arm_env));
                     stack.push((
                         TypeCheckCont::AfterBlock {
-                            binding_envs: arm_binding_envs,
+                            binding_envs: vec![Arc::clone(&arm_env)],
                             pre_final_refs: vec![],
                             saved_use_def: std::mem::take(&mut state.use_def),
                             saved_current_binding: state.current_binding.take(),
@@ -1466,17 +1453,11 @@ async fn apply_cont(
                             },
                             Arc::clone(&match_node),
                         ));
-                        let (arm_binding_envs, saved_parameter_frame) =
-                            if remaining_arms[0].let_bindings.is_some() {
-                                let saved = state.current_parameter_frame.take();
-                                state.current_parameter_frame = Some(Arc::clone(&arm_env));
-                                (vec![Arc::clone(&arm_env)], saved)
-                            } else {
-                                (vec![], state.current_parameter_frame.clone())
-                            };
+                        let saved_parameter_frame = state.current_parameter_frame.take();
+                        state.current_parameter_frame = Some(Arc::clone(&arm_env));
                         stack.push((
                             TypeCheckCont::AfterBlock {
-                                binding_envs: arm_binding_envs,
+                                binding_envs: vec![Arc::clone(&arm_env)],
                                 pre_final_refs: vec![],
                                 saved_use_def: std::mem::take(&mut state.use_def),
                                 saved_current_binding: state.current_binding.take(),
@@ -2104,8 +2085,8 @@ async fn infer_var_ref(
                         "malformed TypeValue.Scheme: instantiation failed (payload corrupt)",
                         node.span.clone(),
                     ));
-                    // Malformed scheme: fresh TypeVar (failed instantiation, unconstrained)
-                    state.fresh_type_var(&node.span)
+                    // Malformed scheme: Never (error recovery)
+                    make_typevalue_never()
                 }
             }
         } else {
@@ -2125,7 +2106,7 @@ async fn infer_var_ref(
                     format!("no type declaration for '{}'", name),
                     node.span.clone(),
                 ));
-                return make_typevalue_unknown();
+                return make_typevalue_never();
             }
         }
 
@@ -2160,8 +2141,8 @@ async fn infer_var_ref(
                 Ok(ty) => ty,
                 Err(e) => {
                     errors.push(e);
-                    // Annotation resolution failed: fresh TypeVar (unconstrained)
-                    state.fresh_type_var(&node.span)
+                    // Annotation resolution failed: Never (error recovery)
+                    make_typevalue_never()
                 }
             };
             state
@@ -2170,44 +2151,9 @@ async fn infer_var_ref(
             ty
         } else {
             errors.push(err);
-            // Undefined variable: fresh TypeVar (unconstrained)
-            state.fresh_type_var(&node.span)
+            // Undefined variable: Never (error recovery)
+            make_typevalue_never()
         }
-    }
-}
-
-// ===== Inline helper: evaluate args for error collection =====
-
-/// Evaluate each positional and named argument in isolation (with a fresh local stack)
-/// to collect any errors nested inside them. Return types are discarded.
-///
-/// Used when an arity mismatch or other definite call-site failure is detected: we still
-/// want to surface errors inside the arguments (e.g., calling an undefined function as an
-/// arg), but we do not want to unify arg types against params — there are none to unify
-/// against in the correct correspondence.
-async fn eval_args_for_errors(
-    args: &[Arc<SurfaceNode>],
-    named_args: &[Spanned<SurfaceNamedArg>],
-    env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    errors: &mut Vec<Diagnostic>,
-    type_map: &mut Option<&mut TypeMap>,
-) {
-    for arg in args {
-        let mut local_stack = Vec::new();
-        typecheck_for_errors(arg, env, state, errors, type_map, &mut local_stack).await;
-    }
-    for na in named_args {
-        let mut local_stack = Vec::new();
-        typecheck_for_errors(
-            &na.node.value,
-            env,
-            state,
-            errors,
-            type_map,
-            &mut local_stack,
-        )
-        .await;
     }
 }
 
@@ -2226,15 +2172,30 @@ async fn apply_cont_call_func(
     // If the function type is Unknown/Never, infer args for errors and return Unknown.
     match typevalue_ctor_index(&func_ty) {
         Some(TV_UNKNOWN) | Some(TV_NEVER) => {
-            eval_args_for_errors(
-                &args,
-                &named_args,
-                &env,
-                ctx.state,
-                ctx.errors,
-                ctx.type_map,
-            )
-            .await;
+            for arg in &args {
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    arg,
+                    &env,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
+            for na in &named_args {
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    &na.node.value,
+                    &env,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
             return TypeCheckAction::Done(make_typevalue_unknown());
         }
         _ => {}
@@ -2268,8 +2229,8 @@ async fn apply_cont_call_func(
                         "malformed TypeValue.Fn: params/return extraction failed (payload corrupt)",
                         call_node.span.clone(),
                     ));
-                        // Malformed Fn: fresh TypeVar (failed extraction, unconstrained return)
-                        return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                        // Malformed Fn: Never (error recovery)
+                        return TypeCheckAction::Done(make_typevalue_never());
                     }
                 };
 
@@ -2358,15 +2319,30 @@ async fn apply_cont_call_func(
                 // no saturating_sub is needed — inst_required already excludes variadic params.
                 let min_req = inst_required;
                 if n_total < min_req || (!inst_variadic && n_positional > inst_params.len()) {
-                    eval_args_for_errors(
-                        &args,
-                        &named_args,
-                        &env,
-                        ctx.state,
-                        ctx.errors,
-                        ctx.type_map,
-                    )
-                    .await;
+                    for arg in &args {
+                        let mut local_stack = Vec::new();
+                        let _ = Box::pin(run_typecheck(
+                            arg,
+                            &env,
+                            ctx.state,
+                            ctx.errors,
+                            ctx.type_map,
+                            &mut local_stack,
+                        ))
+                        .await;
+                    }
+                    for na in &named_args {
+                        let mut local_stack = Vec::new();
+                        let _ = Box::pin(run_typecheck(
+                            &na.node.value,
+                            &env,
+                            ctx.state,
+                            ctx.errors,
+                            ctx.type_map,
+                            &mut local_stack,
+                        ))
+                        .await;
+                    }
                     let mut err = Diagnostic::error(
                         "type-error",
                         format!(
@@ -2379,8 +2355,8 @@ async fn apply_cont_call_func(
                         err = err.with_note(format!("in call to '{}'", name));
                     }
                     ctx.errors.push(err.clone());
-                    // Arity error: fresh TypeVar (failed call, unconstrained return)
-                    return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                    // Arity error: Never (error recovery)
+                    return TypeCheckAction::Done(make_typevalue_never());
                 }
             }
 
@@ -2415,26 +2391,26 @@ async fn apply_cont_call_func(
             // Unbound TypeVar: infer args for side effects, return fresh TypeVar for return
             for arg in &args {
                 let mut local_stack = Vec::new();
-                typecheck_for_errors(
+                let _ = Box::pin(run_typecheck(
                     arg,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                )
+                ))
                 .await;
             }
             for na in &named_args {
                 let mut local_stack = Vec::new();
-                typecheck_for_errors(
+                let _ = Box::pin(run_typecheck(
                     &na.node.value,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                )
+                ))
                 .await;
             }
             let ret_var = ctx.state.fresh_type_var(&call_node.span);
@@ -2444,26 +2420,26 @@ async fn apply_cont_call_func(
         Some(TV_UNKNOWN) | Some(TV_TOP) => {
             for arg in &args {
                 let mut local_stack = Vec::new();
-                typecheck_for_errors(
+                let _ = Box::pin(run_typecheck(
                     arg,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                )
+                ))
                 .await;
             }
             for na in &named_args {
                 let mut local_stack = Vec::new();
-                typecheck_for_errors(
+                let _ = Box::pin(run_typecheck(
                     &na.node.value,
                     &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
                     &mut local_stack,
-                )
+                ))
                 .await;
             }
             ctx.state.diagnostics.push(crate::error::Diagnostic::warn(
@@ -2471,7 +2447,7 @@ async fn apply_cont_call_func(
                 "calling expression of Unknown type — may not be a function",
                 call_node.span.clone(),
             ));
-            TypeCheckAction::Done(make_typevalue_unknown())
+            TypeCheckAction::Done(make_typevalue_never())
         }
 
         Some(TV_NOMINAL_VARIANT) => {
@@ -2480,15 +2456,30 @@ async fn apply_cont_call_func(
             // Arity rule: a variant constructor takes at most 1 positional argument
             // (the payload dict). Named args are always allowed (they build the payload).
             if args.len() > 1 {
-                eval_args_for_errors(
-                    &args,
-                    &named_args,
-                    &env,
-                    ctx.state,
-                    ctx.errors,
-                    ctx.type_map,
-                )
-                .await;
+                for arg in &args {
+                    let mut local_stack = Vec::new();
+                    let _ = Box::pin(run_typecheck(
+                        arg,
+                        &env,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
+                        &mut local_stack,
+                    ))
+                    .await;
+                }
+                for na in &named_args {
+                    let mut local_stack = Vec::new();
+                    let _ = Box::pin(run_typecheck(
+                        &na.node.value,
+                        &env,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
+                        &mut local_stack,
+                    ))
+                    .await;
+                }
                 ctx.errors.push(Diagnostic::error(
                     "type-error",
                     format!(
@@ -2497,8 +2488,8 @@ async fn apply_cont_call_func(
                     ),
                     call_node.span.clone(),
                 ));
-                // Variant arity error: fresh TypeVar (failed call, unconstrained)
-                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                // Variant arity error: Never (error recovery)
+                return TypeCheckAction::Done(make_typevalue_never());
             }
 
             // Extract the declared payload type (fields record) from the NominalVariant.
@@ -2554,14 +2545,14 @@ async fn apply_cont_call_func(
                 // The runtime will assemble them into a payload dict.
                 for na in &named_args {
                     let mut local_stack = Vec::new();
-                    typecheck_for_errors(
+                    let _ = Box::pin(run_typecheck(
                         &na.node.value,
                         &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
                         &mut local_stack,
-                    )
+                    ))
                     .await;
                 }
             }
@@ -2585,8 +2576,8 @@ async fn apply_cont_call_func(
                         "malformed TypeValue.Inter: members extraction failed (payload corrupt)",
                         call_node.span.clone(),
                     ));
-                    // Malformed Inter: fresh TypeVar (failed extraction, unconstrained)
-                    return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                    // Malformed Inter: Never (error recovery)
+                    return TypeCheckAction::Done(make_typevalue_never());
                 }
             };
             let fn_members: Vec<TypeValue> = members
@@ -2601,8 +2592,8 @@ async fn apply_cont_call_func(
                     call_node.span.clone(),
                 );
                 ctx.errors.push(err.clone());
-                // Inter with no Fn members: fresh TypeVar (type error, unconstrained)
-                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                // Inter with no Fn members: Never (error recovery)
+                return TypeCheckAction::Done(make_typevalue_never());
             }
 
             let n_positional = args.len();
@@ -2629,8 +2620,8 @@ async fn apply_cont_call_func(
                     call_node.span.clone(),
                 );
                 ctx.errors.push(err.clone());
-                // No matching overload: fresh TypeVar (arity error, unconstrained)
-                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                // No matching overload: Never (error recovery)
+                return TypeCheckAction::Done(make_typevalue_never());
             }
 
             // Pick the most specific overload: smallest params.len() that fits,
@@ -2667,17 +2658,32 @@ async fn apply_cont_call_func(
                     call_node.span.clone(),
                 );
                 ctx.errors.push(err);
-                eval_args_for_errors(
-                    &args,
-                    &named_args,
-                    &env,
-                    ctx.state,
-                    ctx.errors,
-                    ctx.type_map,
-                )
-                .await;
-                // Union with no Fn members: fresh TypeVar (type error, unconstrained)
-                return TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span));
+                for arg in &args {
+                    let mut local_stack = Vec::new();
+                    let _ = Box::pin(run_typecheck(
+                        arg,
+                        &env,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
+                        &mut local_stack,
+                    ))
+                    .await;
+                }
+                for na in &named_args {
+                    let mut local_stack = Vec::new();
+                    let _ = Box::pin(run_typecheck(
+                        &na.node.value,
+                        &env,
+                        ctx.state,
+                        ctx.errors,
+                        ctx.type_map,
+                        &mut local_stack,
+                    ))
+                    .await;
+                }
+                // Union with no Fn members: Never (error recovery)
+                return TypeCheckAction::Done(make_typevalue_never());
             }
 
             // Call with the first matching Fn member (simplified for TypeValue migration).
@@ -2696,15 +2702,30 @@ async fn apply_cont_call_func(
         }
 
         _ => {
-            eval_args_for_errors(
-                &args,
-                &named_args,
-                &env,
-                ctx.state,
-                ctx.errors,
-                ctx.type_map,
-            )
-            .await;
+            for arg in &args {
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    arg,
+                    &env,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
+            for na in &named_args {
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    &na.node.value,
+                    &env,
+                    ctx.state,
+                    ctx.errors,
+                    ctx.type_map,
+                    &mut local_stack,
+                ))
+                .await;
+            }
             let err = Diagnostic::error(
                 "type-error",
                 format!(
@@ -2717,8 +2738,8 @@ async fn apply_cont_call_func(
                 call_node.span.clone(),
             );
             ctx.errors.push(err);
-            // Non-callable type: fresh TypeVar (type error, unconstrained)
-            TypeCheckAction::Done(ctx.state.fresh_type_var(&call_node.span))
+            // Non-callable type: Never (error recovery)
+            TypeCheckAction::Done(make_typevalue_never())
         }
     }
 }
@@ -2750,8 +2771,8 @@ async fn finalize_call_no_positional_args(
             span.clone(),
         );
         ctx.errors.push(err.clone());
-        // Arity error: fresh TypeVar (failed call, unconstrained return)
-        return ctx.state.fresh_type_var(&span);
+        // Arity error: Never (error recovery)
+        return make_typevalue_never();
     }
 
     let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -2829,14 +2850,14 @@ async fn finalize_call_no_positional_args(
                     ));
                 } else {
                     let mut local_stack = Vec::new();
-                    typecheck_for_errors(
+                    let _ = Box::pin(run_typecheck(
                         &na.node.value,
                         env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
                         &mut local_stack,
-                    )
+                    ))
                     .await;
                 }
             }
@@ -2950,8 +2971,8 @@ async fn apply_call_args_poly(
             span.clone(),
         );
         ctx.errors.push(err.clone());
-        // Arity error: fresh TypeVar (failed call, unconstrained return)
-        return TypeCheckAction::Done(ctx.state.fresh_type_var(&span));
+        // Arity error: Never (error recovery)
+        return TypeCheckAction::Done(make_typevalue_never());
     }
 
     // Unify positional args against fixed params (Robinson unification via unify())
@@ -3389,7 +3410,8 @@ async fn infer_fn_push_cont(
                         // `doc:` alone is ambiguous (could be a record field name).
                         // Only structural keys (return/bind/constraint/kinds) trigger
                         // the fn-metadata path.
-                        const FN_STRUCTURAL_KEYS: &[&str] = &["return", "constraint", "bind", "kinds"];
+                        const FN_STRUCTURAL_KEYS: &[&str] =
+                            &["return", "constraint", "bind", "kinds"];
                         matches!(&k.expr,
                             SurfaceExpression::StringLiteral { content: s, .. }
                                 if FN_STRUCTURAL_KEYS.contains(&s.as_str()))
@@ -3488,8 +3510,8 @@ async fn infer_fn_push_cont(
                         let e =
                             e.with_note(format!("in annotation for parameter '{}'", p.node.name));
                         errors.push(e);
-                        // Annotation resolution failed: fresh TypeVar (unconstrained)
-                        state.fresh_type_var(&p.span)
+                        // Annotation resolution failed: Never (error recovery)
+                        make_typevalue_never()
                     }
                 }
             } else {
@@ -3515,8 +3537,8 @@ async fn infer_fn_push_cont(
                 Err(e) => {
                     let e = e.with_note(format!("in annotation for parameter '{}'", p.node.name));
                     errors.push(e);
-                    // Annotation resolution failed: fresh TypeVar (unconstrained)
-                    state.fresh_type_var(&p.span)
+                    // Annotation resolution failed: Never (error recovery)
+                    make_typevalue_never()
                 }
             }
         } else {
@@ -3769,25 +3791,37 @@ async fn infer_fn_push_cont(
 // Returns (arm_env, next_remaining_scrutinee, guard_narrowings).
 // Returns `None` only if called with no arms (should not happen in practice).
 
-/// Resolve a `TypeName.Ctor` Field pattern to numeric `(type_decl_id, ctor_index)`.
+/// Extract `(type_decl_id, ctor_index)` from a pattern node's `inferred_type_decl_id`.
 ///
-/// Extracts the tycon name from the object VarRef, looks up `type_decl_id` via
-/// `type_name_to_id`, then finds `ctor_index` by position in `TyConDef.constructors`.
-fn resolve_field_ctor_identity(
-    obj: &SurfaceNode,
-    ctor_name: &str,
-    state: &InferState,
-) -> Option<(u64, u32)> {
-    let tycon_name = match &obj.expr {
-        SurfaceExpression::VarRef { name, .. } => name.as_str(),
-        _ => return None,
+/// The type checker populates `inferred_type_decl_id` with a NominalVariant TypeValue
+/// for constructor patterns. This reads the numeric identity from that TypeValue.
+fn extract_ctor_identity_from_inferred_type(node: &SurfaceNode) -> Option<(u64, u32)> {
+    let tv = node.inferred_type_decl_id.get()?;
+    if typevalue_ctor_index(tv) != Some(TV_NOMINAL_VARIANT) {
+        return None;
+    }
+    let extract_int = |field: &str| -> Option<u64> {
+        match tv.as_ref() {
+            crate::value::Value::Variant {
+                payload: Some(thunk),
+                ..
+            } => match thunk.peek_result()? {
+                Ok(crate::value::Value::Dict { entries, .. }) => {
+                    let key = crate::value::HashableValue::Str(Arc::from(field));
+                    let val_thunk = entries.get(&key)?;
+                    match val_thunk.peek_result()? {
+                        Ok(crate::value::Value::Int { n, .. }) => Some(*n as u64),
+                        Ok(crate::value::Value::U64 { n, .. }) => Some(*n),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        }
     };
-    let type_decl_id = state.type_name_to_id.get(tycon_name).copied()?;
-    let tycon_def = state.tycon_env.get(&type_decl_id)?;
-    let ctor_index = tycon_def
-        .constructors
-        .iter()
-        .position(|(name, _)| name == ctor_name)? as u32;
+    let type_decl_id = extract_int(FIELD_TYCON)?;
+    let ctor_index = extract_int(FIELD_CTOR)? as u32;
     Some((type_decl_id, ctor_index))
 }
 
@@ -3803,20 +3837,24 @@ async fn setup_match_arm_env(
     TypeValue,
     Vec<typecheck_narrow::Narrowing>,
 )> {
-    // If arm.let_bindings is Some(...), this is a [case [let names] pattern body] arm.
-    // Build a case arm env with those binding names. Otherwise, the arm env starts as the outer env.
-    let arm_env: Arc<RwLock<Env>> = if let Some(let_bindings) = &arm.let_bindings {
-        build_case_arm_env(let_bindings, env, state, &arm.pattern)
-    } else {
-        Arc::clone(env)
-    };
+    // Build a case arm env with the binding names from let_bindings.
+    // For keyed arms (empty PatternDecl), build_case_arm_env returns a clone of env.
+    let arm_env: Arc<RwLock<Env>> = build_case_arm_env(&arm.let_bindings, env, state, &arm.pattern);
 
     // Guard inference — run for type-map side effects. Extract narrowings WITHOUT applying.
     // The caller saves the outer narrowing_map (take), then applies these narrowings so the
     // arm body sees them. AfterBlock restores the outer narrowing_map after the arm.
     let guard_narrowings = if let Some(guard) = &arm.guard {
         let mut local_stack = Vec::new();
-        typecheck_for_errors(guard, &arm_env, state, errors, type_map, &mut local_stack).await;
+        let _guard_ty = Box::pin(run_typecheck(
+            guard,
+            &arm_env,
+            state,
+            errors,
+            type_map,
+            &mut local_stack,
+        ))
+        .await;
         typecheck_narrow::extract_narrowings(guard, &arm_env, &state.type_name_to_id)
     } else {
         Vec::new()
@@ -3826,8 +3864,15 @@ async fn setup_match_arm_env(
     // Compute updated remaining_scrutinee (I-Case3 negation accumulation) for next arm.
     let next_remaining_scrutinee = if arm.guard.is_none() {
         match &arm.pattern.expr {
-            crate::ast::SurfaceExpression::Field { expr: Some(obj), field: crate::ast::DotKey::Ident(ctor_name), .. } => {
-                if let Some((type_decl_id, ctor_index)) = resolve_field_ctor_identity(obj, ctor_name, state) {
+            // Unit constructor pattern: TypeName.Ctor
+            crate::ast::SurfaceExpression::Field {
+                expr: Some(_),
+                field: crate::ast::DotKey::Ident(_),
+                ..
+            } => {
+                if let Some((type_decl_id, ctor_index)) =
+                    extract_ctor_identity_from_inferred_type(&arm.pattern)
+                {
                     let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
                         type_decl_id,
                         ctor_index,
@@ -3835,25 +3880,40 @@ async fn setup_match_arm_env(
                     ));
                     typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
                 } else {
+                    errors.push(Diagnostic::error(
+                        "type-error",
+                        "pattern constructor identity not resolved",
+                        arm.pattern.span.clone(),
+                    ));
                     Arc::clone(remaining_scrutinee)
                 }
             }
             // Payload constructor pattern: [TypeName.Ctor payload]
             crate::ast::SurfaceExpression::Call { func, .. }
-                if matches!(&func.expr, crate::ast::SurfaceExpression::Field { expr: Some(_), field: crate::ast::DotKey::Ident(_), .. }) =>
-            {
-                if let crate::ast::SurfaceExpression::Field { expr: Some(obj), field: crate::ast::DotKey::Ident(ctor_name), .. } = &func.expr {
-                    if let Some((type_decl_id, ctor_index)) = resolve_field_ctor_identity(obj, ctor_name, state) {
-                        let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
-                            type_decl_id,
-                            ctor_index,
-                            make_typevalue_record(indexmap::IndexMap::new(), None),
-                        ));
-                        typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
-                    } else {
-                        Arc::clone(remaining_scrutinee)
+                if matches!(
+                    &func.expr,
+                    crate::ast::SurfaceExpression::Field {
+                        expr: Some(_),
+                        field: crate::ast::DotKey::Ident(_),
+                        ..
                     }
+                ) =>
+            {
+                if let Some((type_decl_id, ctor_index)) =
+                    extract_ctor_identity_from_inferred_type(&arm.pattern)
+                {
+                    let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
+                        type_decl_id,
+                        ctor_index,
+                        make_typevalue_record(indexmap::IndexMap::new(), None),
+                    ));
+                    typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
                 } else {
+                    errors.push(Diagnostic::error(
+                        "type-error",
+                        "pattern constructor identity not resolved",
+                        arm.pattern.span.clone(),
+                    ));
                     Arc::clone(remaining_scrutinee)
                 }
             }
@@ -4117,9 +4177,8 @@ async fn run_match_exhaustiveness_check(
     if let Some(sig) = sig {
         let mut coverage_patterns: Vec<coverage::CoveragePattern> = Vec::with_capacity(arms.len());
         for arm in arms {
-            coverage_patterns.push(
-                coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref), state, errors).await,
-            );
+            coverage_patterns
+                .push(coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref)).await);
         }
         // Mark arms with explicit guards OR unresolved VarRefs as opaque to coverage.
         // Unresolved VarRefs are resolver errors — treating them as wildcards would mask
@@ -4139,7 +4198,10 @@ async fn run_match_exhaustiveness_check(
                 .collect();
             errors.push(Diagnostic::error(
                 "type-error",
-                format!("non-exhaustive match: missing coverage for {}", witnesses.join(", ")),
+                format!(
+                    "non-exhaustive match: missing coverage for {}",
+                    witnesses.join(", ")
+                ),
                 span.clone(),
             ));
         }
@@ -4565,46 +4627,37 @@ fn collect_dependencies(
                 worklist.push((scrutinee, Arc::clone(&locals)));
                 for arm in arms {
                     worklist.push((&arm.pattern, Arc::clone(&locals)));
-                    if let Some(let_bindings) = &arm.let_bindings {
-                        worklist.push((let_bindings, Arc::clone(&locals)));
-                        // The arm body is scanned with the let-binding names added to locals,
-                        // since those names are locally introduced by this arm.
-                        let arm_local_names: HashSet<String> =
-                            if let SurfaceExpression::LetDecl { bindings } = &let_bindings.expr {
-                                bindings
-                                    .iter()
-                                    .filter_map(|b| {
-                                        if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                                            Some(name.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect()
-                            } else {
-                                HashSet::new()
-                            };
-                        let body_locals = if arm_local_names.is_empty() {
-                            Arc::clone(&locals)
+                    let let_bindings = &arm.let_bindings;
+                    worklist.push((let_bindings, Arc::clone(&locals)));
+                    // The arm body is scanned with the let-binding names added to locals,
+                    // since those names are locally introduced by this arm.
+                    let arm_local_names: HashSet<String> =
+                        if let SurfaceExpression::LetDecl { bindings } = &let_bindings.expr {
+                            bindings
+                                .iter()
+                                .filter_map(|b| {
+                                    if let SurfaceExpression::VarRef { name, .. } = &b.expr {
+                                        Some(name.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
                         } else {
-                            let mut extended = (*locals).clone();
-                            extended.extend(arm_local_names);
-                            Arc::new(extended)
+                            HashSet::new()
                         };
-                        if let Some(guard) = &arm.guard {
-                            worklist.push((guard, body_locals.clone()));
-                        }
-                        for body_expr in &arm.body {
-                            worklist.push((body_expr, Arc::clone(&body_locals)));
-                        }
+                    let body_locals = if arm_local_names.is_empty() {
+                        Arc::clone(&locals)
                     } else {
-                        // No let_bindings — keyed arm, body evaluates in outer env.
-                        if let Some(guard) = &arm.guard {
-                            worklist.push((guard, Arc::clone(&locals)));
-                        }
-                        for body_expr in &arm.body {
-                            worklist.push((body_expr, Arc::clone(&locals)));
-                        }
+                        let mut extended = (*locals).clone();
+                        extended.extend(arm_local_names);
+                        Arc::new(extended)
+                    };
+                    if let Some(guard) = &arm.guard {
+                        worklist.push((guard, body_locals.clone()));
+                    }
+                    for body_expr in &arm.body {
+                        worklist.push((body_expr, Arc::clone(&body_locals)));
                     }
                 }
             }
@@ -5016,7 +5069,9 @@ async fn build_tycon_def_for_entry(
 
             // Unwrap ReprDecl to get the inner Dict, if present.
             let body_node = match &inner.expr {
-                SurfaceExpression::ReprDecl { inner: repr_inner, .. } => repr_inner,
+                SurfaceExpression::ReprDecl {
+                    inner: repr_inner, ..
+                } => repr_inner,
                 _ => inner,
             };
             let body_expr = &body_node.expr;
@@ -5044,7 +5099,7 @@ async fn build_tycon_def_for_entry(
                             let e = e
                                 .with_note(format!("in body of type declaration '{}'", alias_name));
                             errors.push(e);
-                            state.fresh_type_var(&body_node.span)
+                            make_typevalue_never()
                         }
                     }
                 }
@@ -5063,7 +5118,7 @@ async fn build_tycon_def_for_entry(
                         let e =
                             e.with_note(format!("in body of type declaration '{}'", alias_name));
                         errors.push(e);
-                        state.fresh_type_var(&body_node.span)
+                        make_typevalue_never()
                     }
                 },
             }
@@ -5596,8 +5651,8 @@ pub(crate) async fn typecheck_letrec_group(
                         }
                     }
                     Err(mut errs) => {
-                        // Entry inference failed: fresh TypeVar (unconstrained)
-                        let error_ty = state.fresh_type_var(&entry.span);
+                        // Entry inference failed: Never (error recovery)
+                        let error_ty = make_typevalue_never();
                         errors.append(&mut errs);
                         let fallback_ty = error_ty;
                         field_types.insert(name.clone(), fallback_ty.clone());
@@ -5651,14 +5706,14 @@ pub(crate) async fn typecheck_letrec_group(
                 } else {
                     let mut local_errors = Vec::new();
                     let mut local_stack = Vec::new();
-                    typecheck_for_errors(
+                    let _ = Box::pin(run_typecheck(
                         &entry.node.value,
                         &dict_env,
                         state,
                         &mut local_errors,
                         type_map,
                         &mut local_stack,
-                    )
+                    ))
                     .await;
                     errors.append(&mut local_errors);
                 }
@@ -5825,8 +5880,8 @@ pub(crate) async fn typecheck_letrec_group(
                                             Ok(ty) => ty,
                                             Err(e) => {
                                                 errors.push(e);
-                                                // Narrowing annotation failed: fresh TypeVar
-                                                state.fresh_type_var(&ann_span.span)
+                                                // Narrowing annotation failed: Never (error recovery)
+                                                make_typevalue_never()
                                             }
                                         };
                                         break 'narrowing vec![Some(narrow_ty)];
@@ -5870,8 +5925,8 @@ pub(crate) async fn typecheck_letrec_group(
                                                     Ok(ty) => ty,
                                                     Err(e) => {
                                                         errors.push(e);
-                                                        // Narrowing annotation failed: fresh TypeVar
-                                                        state.fresh_type_var(&ann_span.span)
+                                                        // Narrowing annotation failed: Never (error recovery)
+                                                        make_typevalue_never()
                                                     }
                                                 };
                                             break 'narrowing vec![Some(narrow_ty)];

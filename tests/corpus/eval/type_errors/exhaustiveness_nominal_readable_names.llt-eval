@@ -1,0 +1,11 @@
+# Non-exhaustive match — missing Color.Blue.
+# Error should show "Blue" not "Variant(N.M)".
+[
+  Color: [type Red Green Blue]
+  c: Color.Green
+  result: [match c
+    Color.Red:   "red"
+    Color.Green: "green"]
+]
+=== out
+[TypeError] non-exhaustive match: missing coverage for Color.Blue

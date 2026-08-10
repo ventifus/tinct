@@ -1478,7 +1478,8 @@ pub(crate) fn extract_tag_and_dict(
         } => {
             let empty_env = std::collections::HashMap::new();
             let tycon_env = ctx.tycon_env().unwrap_or(&empty_env);
-            let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
+            let display =
+                crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
                 message: format!("Expr variant {} has no payload", display),
                 field_path: vec![],
@@ -1887,7 +1888,10 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
         let body_node = dict_to_surface_node(&body_val, &arm_fallback_span, ctx)?;
         arms.push(SurfaceMatchArm {
             pattern,
-            let_bindings: None,
+            let_bindings: Arc::new(SurfaceNode::new(
+                SurfaceExpression::PatternDecl { bindings: vec![] },
+                arm_fallback_span.clone(),
+            )),
             guard,
             body: vec![body_node],
             guard_matchable_binding: crate::ast::MatchableBinding::new(),
@@ -2888,7 +2892,8 @@ mod tests {
                 Some(Value::Dict { entries: map, .. }) => {
                     let empty = std::collections::HashMap::new();
                     let tycon_env = _ctx.tycon_env().unwrap_or(&empty);
-                    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index, tycon_env);
+                    let display =
+                        crate::type_tags::ctor_display_name(type_decl_id, ctor_index, tycon_env);
                     (display, map)
                 }
                 other => panic!("expected Dict payload for Variant, got {:?}", other),

@@ -2738,276 +2738,202 @@ pub(crate) async fn apply_cont(
                 Ok(scrutinee_value) => {
                     // Try each arm starting from arm_idx
                     for (i, arm) in arms.iter().enumerate().skip(arm_idx) {
-                        // Case arms ([case [let bindings] pattern body]) unconditionally match
-                        // (matched = true) so the case arm body dispatch below can set up the
-                        // arm frame and evaluate the case arm's structural/guard pattern.
-                        //
-                        // Keyed arms (pattern: body) use eval_case_arm_structural_pattern to
-                        // check if the lowered key expression matches the scrutinee.
-                        //
-                        // T-2126: CoreClause no longer has .let_bindings or .pattern fields.
-                        // Case arm detection: params.is_empty() == false means case arm (has bindings).
-                        // Keyed arms always have lowered_pattern = Some (the lowered key expression).
-                        let is_case_arm = !arm.params.is_empty();
-                        let matched = if is_case_arm {
-                            // Case arm: skip keyed pattern check, proceed to clause handling.
-                            true
-                        } else if let Some(lowered_pat) = &arm.lowered_pattern {
-                            // Keyed arm: evaluate the lowered pattern via structural pattern
-                            // matching to check if the arm matches the scrutinee.
-                            //
-                            // The lowered pattern is the key expression from the SurfaceMatchArm,
-                            // lowered to CoreExpr. Dispatch is handled by eval_case_arm_structural_pattern
-                            // with an empty binding_map (no variables to bind for keyed arms):
-                            //
-                            // - CoreExpr::Placeholder → wildcard `...` always matches.
-                            // - Literal patterns (Int, Str, Float) → exact value equality.
-                            // - VarRef patterns (e.g. `Integer:`, `True:`, `False:`) → pin check
-                            //   (compare scrutinee with the named value via primitive_eq).
-                            // - Call patterns with a constructor func (e.g. `[Shape.Square n]:`) →
-                            //   constructor tag match with payload binding.
-                            // - Dot-access patterns (e.g. `Color.Red:`) → lowered as
-                            //   `Call(VarRef("builtin-dict-get"), [Str("Red"), VarRef("Color")])`.
-                            //   The func is the field-getter builtin; the pattern func evaluates to
-                            //   a Builtin value. The guard path in eval_structural_pattern_inner
-                            //   then evaluates the full call expression using pctx.frame (the parent
-                            //   frame passed here) so that `Color` is in scope. The result is a
-                            //   Variant or constructor Function, which is matched via ctor_id_opt.
-                            let empty_binding_map: IndexMap<String, u32> = IndexMap::new();
+                        // S-1043: Unified arm processing — all arms (keyed and case) go
+                        // through the same path. The resolver now pushes fn boundaries for
+                        // ALL match arms, producing captures. The evaluator builds a
+                        // closure env from arm.captures for every arm (empty captures
+                        // produce an empty vec, which is correct).
+
+                        // Build closure_env from arm.captures (may be empty for no-binding arms).
+                        let mut closure_env_vec: Vec<Arc<Thunk>> =
+                            Vec::with_capacity(arm.captures.len());
+                        {
+                            use crate::ast::VarAddr;
+                            for (name, original_addr) in arm.captures.iter() {
+                                let found = match original_addr {
+                                    VarAddr::Dispatch(_, slot) => {
+                                        frame.group.get(*slot as usize).cloned()
+                                    }
+                                    VarAddr::ClosureCapture(i) => {
+                                        frame.closure_env.get(*i as usize).cloned()
+                                    }
+                                    VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
+                                    VarAddr::EffectPerform { .. } => {
+                                        return Action::Continue(Err(EvalError::internal(
+                                            format!(
+                                                "EffectPerform address in match arm closure \
+                                                 capture for '{}' — resolver invariant \
+                                                 violated: EffectPerform addresses cannot \
+                                                 appear in match arm capture lists",
+                                                name
+                                            ),
+                                            match_span.clone(),
+                                        )
+                                        .into()));
+                                    }
+                                };
+                                let thunk = found.unwrap_or_else(|| {
+                                    panic!(
+                                        "match arm capture miss for '{}': {:?}",
+                                        name, original_addr
+                                    )
+                                });
+                                closure_env_vec.push(thunk);
+                            }
+                        }
+
+                        // pre_arm_frame: closure_env populated, params empty.
+                        // Used as pctx.frame in structural pattern matching so that
+                        // pin variables (external names resolved to ClosureCapture(K)
+                        // in the pattern) can be looked up via closure_env_vec.
+                        let pre_arm_frame = std::sync::Arc::new(EvalFrame::for_function_call(
+                            std::sync::Arc::new(closure_env_vec.clone()),
+                            vec![],
+                            crate::value::empty_scope(),
+                        ));
+
+                        let lowered_pattern = arm
+                            .lowered_pattern
+                            .as_ref()
+                            .expect("all match arms must have lowered_pattern (lowerer invariant)");
+
+                        // Determine structural vs guard from lowered_pattern head:
+                        // - CoreExpr::Var with pre-resolved TypeNode binding → structural
+                        // - CoreExpr::Placeholder → wildcard (structural)
+                        // - CoreExpr::Dict → structural dict pattern (field destructure)
+                        // - CoreExpr::Call with nested Call func → structural (constructor
+                        //   pattern: [Type.Ctor arg] lowers to Call(Call(builtin-dict-get,...), args))
+                        // - CoreExpr::Call with Var func → guard expression (predicate: [< x 5])
+                        // - Literal (Int, Str, Float) → structural (exact value equality)
+                        let is_structural = match &lowered_pattern.node {
+                            CoreExpr::Var { .. } => true,
+                            CoreExpr::Placeholder { .. } => true,
+                            CoreExpr::Dict { .. } => true,
+                            CoreExpr::Int { .. } => true,
+                            CoreExpr::Str { .. } => true,
+                            CoreExpr::Float { .. } => true,
+                            CoreExpr::Call { func, .. } => {
+                                matches!(&func.node, CoreExpr::Call { .. })
+                            }
+                            _ => false,
+                        };
+
+                        // Build binding_map from CoreClause.params (empty for keyed arms).
+                        let binding_map: IndexMap<String, u32> = arm
+                            .params
+                            .iter()
+                            .map(|p| (p.node.name.clone(), p.node.slot))
+                            .collect();
+
+                        let arm_bindings = if is_structural {
+                            // Structural pattern: walk pattern, bind [let ...] names at
+                            // their positions, pins = other names (compare for equality).
+                            // pctx.frame = pre_arm_frame so ClosureCapture pin addresses
+                            // resolve via the arm's closure_env.
                             match eval_case_arm_structural_pattern(
-                                lowered_pat,
-                                &empty_binding_map,
+                                lowered_pattern,
+                                &binding_map,
                                 &scrutinee_value,
                                 match_span.clone(),
-                                &frame,
+                                &pre_arm_frame,
                                 &ctx,
                             )
                             .await
                             {
-                                Ok(Some(_)) => true,
-                                Ok(None) => false,
+                                Ok(Some(bindings)) => bindings,
+                                Ok(None) => {
+                                    // Pattern did not match — move to next arm
+                                    continue;
+                                }
                                 Err(e) => return Action::Continue(Err(e)),
                             }
                         } else {
-                            // Unreachable: the lowerer always populates lowered_pattern
-                            // for keyed match arms (see lower.rs SurfaceExpression::Match).
-                            // An absent lowered_pattern on a non-case-arm is a lowerer bug.
-                            unreachable!(
-                                "keyed match arm has no lowered_pattern — lowerer invariant violated"
-                            )
+                            // Guard expression: bind ALL [let ...] names to scrutinee,
+                            // then evaluate pattern as a guard expression.
+                            let mut guard_bindings: Vec<(u32, Arc<Thunk>)> =
+                                Vec::with_capacity(binding_map.len());
+                            for (_name, &slot) in &binding_map {
+                                let thunk = Arc::new(Thunk::value(
+                                    scrutinee_value.clone(),
+                                    match_span.clone(),
+                                ));
+                                guard_bindings.push((slot, thunk));
+                            }
+                            guard_bindings
                         };
 
-                        if matched {
-                            // Arm matched: either a case arm (with binding/guard dispatch) or
-                            // a keyed arm (matched via value equality). For case arms, use params
-                            // and lowered_pattern from CoreClause to set up the arm frame and
-                            // evaluate body. For keyed arms, body evaluates in the parent frame.
-                            let (eval_body, arm_frame) = if is_case_arm {
-                                // 3-arg form: [case [let bindings] pattern body]
-                                // CoreClause.params replaces let_bindings extraction (T-2126).
-                                // CoreClause.lowered_pattern replaces arm.pattern-based dispatch.
-                                let lowered_pattern = arm.lowered_pattern.as_ref().expect(
-                                    "case arm CoreClause must have lowered_pattern when params is non-empty",
-                                );
+                        // Build the arm EvalFrame with closure env and pattern bindings.
+                        //
+                        // All arms use EvalFrame::for_function_call: fresh group=[],
+                        // ClosureCaptures in closure_env for outer references.
+                        // This matches how fn bodies work — the resolver pushes a fn
+                        // boundary for all arm bodies so outer refs become ClosureCapture.
+                        let mut sorted = arm_bindings;
+                        sorted.sort_unstable_by_key(|(slot, _)| *slot);
+                        let mut params_vec: Vec<Arc<Thunk>> = Vec::with_capacity(sorted.len());
+                        for (slot, thunk) in sorted {
+                            let slot = slot as usize;
+                            while params_vec.len() < slot {
+                                params_vec.push(Arc::clone(&thunk));
+                            }
+                            params_vec.push(thunk);
+                        }
+                        let arm_frame = EvalFrame::for_function_call(
+                            Arc::new(closure_env_vec),
+                            params_vec,
+                            frame.caller_evidence.clone(),
+                        );
 
-                                // T-2128: Determine is_structural from lowered_pattern (not surface pattern).
-                                // The lowered_pattern head determines dispatch type:
-                                // - CoreExpr::Var with pre-resolved TypeNode binding → structural
-                                // - CoreExpr::Placeholder → wildcard (structural)
-                                // - CoreExpr::Dict → structural dict pattern (field destructure)
-                                // - CoreExpr::Call with nested Call func → structural (constructor
-                                //   pattern: [Type.Ctor arg] lowers to Call(Call(builtin-dict-get,...), args))
-                                // - CoreExpr::Call with Var func → guard expression (predicate: [< x 5])
-                                let is_structural = match &lowered_pattern.node {
-                                    CoreExpr::Var { .. } => true,
-                                    CoreExpr::Placeholder { .. } => true,
-                                    CoreExpr::Dict { .. } => true,
-                                    CoreExpr::Call { func, .. } => {
-                                        matches!(&func.node, CoreExpr::Call { .. })
-                                    }
-                                    _ => false,
-                                };
-
-                                // Build closure_env from arm.captures (always Arc, never Option).
-                                let mut closure_env_vec: Vec<Arc<Thunk>> =
-                                    Vec::with_capacity(arm.captures.len());
-                                {
-                                    use crate::ast::VarAddr;
-                                    for (name, original_addr) in arm.captures.iter() {
-                                        let found = match original_addr {
-                                            VarAddr::Dispatch(_, slot) => {
-                                                frame.group.get(*slot as usize).cloned()
-                                            }
-                                            VarAddr::ClosureCapture(i) => {
-                                                frame.closure_env.get(*i as usize).cloned()
-                                            }
-                                            VarAddr::Parameter(i) => {
-                                                frame.params.get(*i as usize).cloned()
-                                            }
-                                            VarAddr::EffectPerform { .. } => {
-                                                return Action::Continue(Err(EvalError::internal(
-                                                    format!(
-                                                        "EffectPerform address in case arm closure \
-                                                         capture for '{}' — resolver invariant \
-                                                         violated: EffectPerform addresses cannot \
-                                                         appear in case arm capture lists",
-                                                        name
-                                                    ),
-                                                    match_span.clone(),
-                                                )
-                                                .into()));
-                                            }
-                                        };
-                                        let thunk = found.unwrap_or_else(|| {
-                                            panic!(
-                                                "case arm capture miss for '{}': {:?}",
-                                                name, original_addr
-                                            )
-                                        });
-                                        closure_env_vec.push(thunk);
-                                    }
+                        // If guard expression pattern, evaluate it to check if truthy.
+                        // EXCEPT: when the pattern is a simple VarRef to a Parameter
+                        // (i.e., one of the binding variables), it matches unconditionally.
+                        // Example: [case [let v] v body] — pattern `v` refers to Parameter(0),
+                        // which was just bound to the scrutinee. This is an unconditional match,
+                        // not a guard that needs truthiness checking.
+                        //
+                        // WHY: A binding-var pattern unconditionally captures the scrutinee — it is
+                        // not a guard predicate. Evaluating it as a guard would require calling the
+                        // Matchable instance's `match?` method on the scrutinee itself, which is
+                        // circular and semantically incorrect. The pattern is simply an identity
+                        // binding, not a guard expression.
+                        let pattern_is_binding_var = if !is_structural {
+                            match &lowered_pattern.node {
+                                CoreExpr::Var { addr, .. } => {
+                                    matches!(addr, crate::ast::VarAddr::Parameter(_))
                                 }
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        };
 
-                                // pre_arm_frame: closure_env populated, params empty.
-                                // Used as pctx.frame in structural pattern matching so that
-                                // pin variables (external names resolved to ClosureCapture(K)
-                                // in the pattern) can be looked up via closure_env_vec.
-                                let pre_arm_frame =
-                                    std::sync::Arc::new(EvalFrame::for_function_call(
-                                        std::sync::Arc::new(closure_env_vec.clone()),
-                                        vec![],
-                                        crate::value::empty_scope(),
-                                    ));
+                        if !is_structural && !pattern_is_binding_var {
+                            // Evaluate the pattern expression as a guard.
+                            // Push a MatchGuardCheck continuation to handle the result.
+                            // Pattern guards don't have pre-resolved Matchable bindings —
+                            // use None to fall back to dynamic dispatch in MatchGuardCheck.
+                            stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
+                                arm_idx: i,
+                                match_expr: Arc::clone(&match_expr),
+                                frame: Arc::clone(&arm_frame),
+                                parent_frame: Arc::clone(&frame),
+                                ctx: Arc::clone(&ctx),
+                                match_span: match_span.clone(),
+                                scrutinee_value: scrutinee_value.clone(),
+                                body: Arc::clone(&arm.body),
+                                callable_invoked: false,
+                                guard_matchable_binding: None,
+                            })));
 
-                                // T-2128: Build binding_map from CoreClause.params instead of
-                                // extract_let_binding_names(&let_bindings.node).
-                                // CoreClause.params provides name→slot directly.
-                                // IndexMap preserves declaration order for deterministic slot assignment.
-                                let binding_map: IndexMap<String, u32> = arm
-                                    .params
-                                    .iter()
-                                    .map(|p| (p.node.name.clone(), p.node.slot))
-                                    .collect();
-
-                                let arm_bindings = if is_structural {
-                                    // Structural pattern: walk pattern, bind [let ...] names at
-                                    // their positions, pins = other names (compare for equality).
-                                    // pctx.frame = pre_arm_frame so ClosureCapture pin addresses
-                                    // resolve via the case arm's closure_env.
-                                    match eval_case_arm_structural_pattern(
-                                        lowered_pattern,
-                                        &binding_map,
-                                        &scrutinee_value,
-                                        match_span.clone(),
-                                        &pre_arm_frame,
-                                        &ctx,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(bindings)) => bindings,
-                                        Ok(None) => {
-                                            // Pattern did not match — move to next arm
-                                            continue;
-                                        }
-                                        Err(e) => return Action::Continue(Err(e)),
-                                    }
-                                } else {
-                                    // Guard expression: bind ALL [let ...] names to scrutinee,
-                                    // then evaluate pattern as a guard expression.
-                                    // Build bindings: each name in binding_map gets bound to scrutinee.
-                                    let mut guard_bindings: Vec<(u32, Arc<Thunk>)> =
-                                        Vec::with_capacity(binding_map.len());
-                                    for (_name, &slot) in &binding_map {
-                                        let thunk = Arc::new(Thunk::value(
-                                            scrutinee_value.clone(),
-                                            match_span.clone(),
-                                        ));
-                                        guard_bindings.push((slot, thunk));
-                                    }
-                                    guard_bindings
-                                };
-
-                                // Pattern matched (or guard succeeded). Build the real arm EvalFrame.
-                                //
-                                // Case arms use EvalFrame::for_function_call: fresh group=[],
-                                // ClosureCaptures in closure_env for outer references.
-                                // This matches how fn bodies work — the resolver pushes a fn
-                                // boundary for case arm bodies so outer refs become ClosureCapture
-                                // and Sequential intermediate dict bodies start at LGM slot 0.
-                                //
-                                // Build params vec from arm_bindings (pattern-bound variables).
-                                let mut sorted = arm_bindings;
-                                sorted.sort_unstable_by_key(|(slot, _)| *slot);
-                                let mut params_vec: Vec<Arc<Thunk>> =
-                                    Vec::with_capacity(sorted.len());
-                                for (slot, thunk) in sorted {
-                                    let slot = slot as usize;
-                                    while params_vec.len() < slot {
-                                        params_vec.push(Arc::clone(&thunk));
-                                    }
-                                    params_vec.push(thunk);
-                                }
-                                let arm_frame = EvalFrame::for_function_call(
-                                    Arc::new(closure_env_vec),
-                                    params_vec,
-                                    frame.caller_evidence.clone(),
-                                );
-
-                                // If guard expression pattern, evaluate it to check if truthy.
-                                // EXCEPT: when the pattern is a simple VarRef to a Parameter
-                                // (i.e., one of the binding variables), it matches unconditionally.
-                                // Example: [case [let v] v body] — pattern `v` refers to Parameter(0),
-                                // which was just bound to the scrutinee. This is an unconditional match,
-                                // not a guard that needs truthiness checking.
-                                //
-                                // WHY: A binding-var pattern unconditionally captures the scrutinee — it is
-                                // not a guard predicate. Evaluating it as a guard would require calling the
-                                // Matchable instance's `match?` method on the scrutinee itself, which is
-                                // circular and semantically incorrect. The pattern is simply an identity
-                                // binding, not a guard expression.
-                                let pattern_is_binding_var = if !is_structural {
-                                    match &lowered_pattern.node {
-                                        CoreExpr::Var { addr, .. } => {
-                                            matches!(addr, crate::ast::VarAddr::Parameter(_))
-                                        }
-                                        _ => false,
-                                    }
-                                } else {
-                                    false
-                                };
-
-                                if !is_structural && !pattern_is_binding_var {
-                                    // Evaluate the pattern expression as a guard.
-                                    // Push a MatchGuardCheck continuation to handle the result.
-                                    // Pattern guards don't have pre-resolved Matchable bindings —
-                                    // use None to fall back to dynamic dispatch in MatchGuardCheck.
-                                    stack.push(Cont::MatchGuardCheck(Box::new(
-                                        MatchGuardCheckData {
-                                            arm_idx: i,
-                                            match_expr: Arc::clone(&match_expr),
-                                            frame: Arc::clone(&arm_frame),
-                                            parent_frame: Arc::clone(&frame),
-                                            ctx: Arc::clone(&ctx),
-                                            match_span: match_span.clone(),
-                                            scrutinee_value: scrutinee_value.clone(),
-                                            body: Arc::clone(&arm.body),
-                                            callable_invoked: false,
-                                            guard_matchable_binding: None,
-                                        },
-                                    )));
-
-                                    return Action::EvalCore {
-                                        expr: Arc::clone(lowered_pattern),
-                                        frame: arm_frame,
-                                        ctx,
-                                    };
-                                }
-
-                                (Arc::clone(&arm.body), arm_frame)
-                            } else {
-                                // Keyed arm (no params, no let_bindings) — use the parent frame unchanged.
-                                (Arc::clone(&arm.body), Arc::clone(&frame))
+                            return Action::EvalCore {
+                                expr: Arc::clone(lowered_pattern),
+                                frame: arm_frame,
+                                ctx,
                             };
+                        }
+
+                        {
+                            let (eval_body, arm_frame) = (Arc::clone(&arm.body), arm_frame);
 
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
@@ -3689,7 +3615,8 @@ fn eval_structural_pattern_inner<'a>(
                                                     ann.return_ann.as_ref()
                                                 {
                                                     let empty = std::collections::HashMap::new();
-                                                    let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+                                                    let tycon_env =
+                                                        ctx.tycon_env().unwrap_or(&empty);
                                                     Some(
                                                         crate::type_tags::ctor_display_name(
                                                             *scrutinee_tdid,

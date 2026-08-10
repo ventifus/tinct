@@ -2871,7 +2871,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         };
                                         arms.push(SurfaceMatchArm {
                                             pattern: pattern_val,
-                                            let_bindings: Some(let_bindings_val),
+                                            let_bindings: let_bindings_val,
                                             guard: None,
                                             body: wrapped_body,
                                             guard_matchable_binding:
@@ -5931,9 +5931,13 @@ fn push_expr_to_parent(
                 } else if pending_pattern.is_some() {
                     // We have a pending pattern (raw SurfaceNode) — this must be the body (first expr)
                     let (pattern, guard) = pending_pattern.take().unwrap();
+                    let empty_let = Arc::new(SurfaceNode::new(
+                        SurfaceExpression::PatternDecl { bindings: vec![] },
+                        pattern.span.clone(),
+                    ));
                     arms.push(SurfaceMatchArm {
                         pattern,
-                        let_bindings: None,
+                        let_bindings: empty_let,
                         guard,
                         body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
@@ -9613,14 +9617,10 @@ mod tests {
         assert!(formatted.contains("-->"));
         // The snippet should include the source line
         assert!(formatted.contains("[a: 1"));
-        // Unclosed bracket should include a help line
+        // Unclosed bracket should include a note (help was merged into notes)
         assert!(
-            formatted.contains("= help:"),
-            "unclosed bracket error should include a help line, got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains("add a closing ]"),
-            "help line should mention adding a closing bracket, got:\n{formatted}"
+            formatted.contains("= note:") && formatted.contains("add a closing ]"),
+            "unclosed bracket error should include a note about adding a closing bracket, got:\n{formatted}"
         );
     }
 
@@ -9636,12 +9636,8 @@ mod tests {
         let diag = &output.diagnostics[0];
         let formatted = format_parse_error(diag, source, "test.llt");
         assert!(
-            formatted.contains("= help:"),
-            "fn param error should include a help line, got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains("[fn [let x y] body]"),
-            "help should show the correct form, got:\n{formatted}"
+            formatted.contains("= note:") && formatted.contains("[fn [let x y] body]"),
+            "fn param error should include a note showing the correct form, got:\n{formatted}"
         );
     }
 

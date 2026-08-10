@@ -95,6 +95,11 @@ fn is_top(tv: &Arc<Value>) -> bool {
     matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_TOP)
 }
 
+/// Check if a TypeValue is TypeValue.Never (bottom / error recovery type).
+fn is_never(tv: &Arc<Value>) -> bool {
+    matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_NEVER)
+}
+
 /// Check if a TypeValue is TypeValue.Union.
 fn is_union(tv: &Arc<Value>) -> bool {
     matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_UNION)
@@ -1496,15 +1501,15 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     .await;
 
     // Critical: the EffectPerform VarRef must NOT panic with unreachable!().
-    // The EffectPerform arm returns Unknown when the class is not found in the env
-    // (gradual typing fallback). The critical fix is that the arm EXISTS and handles
-    // EffectPerform gracefully — the old code had unreachable!() which would panic.
-    // When the class IS found (real pipeline with populated env), the arm returns the
-    // method signature TypeValue.Fn. In this isolated test, the class may not be
-    // visible through run_typecheck's env wrapping, so Unknown is acceptable.
+    // The EffectPerform arm returns the method signature TypeValue.Fn when the
+    // class is found in the env. In this isolated test, the class may not be
+    // visible through run_typecheck's env wrapping. T-2303 changed error recovery
+    // to return Never (bottom type) instead of Unknown for unresolved types.
+    // All three are acceptable: Fn (full resolution), Never (error recovery),
+    // or Unknown (legacy gradual fallback).
     assert!(
-        is_unknown(&inferred_type) || matches!(inferred_type.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
-        "EffectPerform VarRef should infer as TypeValue.Fn or Unknown (gradual fallback); got: {:?}",
+        is_unknown(&inferred_type) || is_never(&inferred_type) || matches!(inferred_type.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_FN),
+        "EffectPerform VarRef should infer as TypeValue.Fn, Never (error recovery), or Unknown; got: {:?}",
         inferred_type
     );
 

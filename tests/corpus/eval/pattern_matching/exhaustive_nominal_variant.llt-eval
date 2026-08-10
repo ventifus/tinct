@@ -1,0 +1,13 @@
+# Exhaustive match on a nominal variant type — all constructors covered.
+# Before S-1043, this was falsely reported as non-exhaustive because the
+# coverage checker used hash-based identity instead of real (type_decl_id, ctor_index).
+[
+  Color: [type Red Green Blue]
+  c: Color.Green
+  result: [match c
+    Color.Red:   "red"
+    Color.Green: "green"
+    Color.Blue:  "blue"]
+]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "c": Variant(Color.Green, Null), "result": String("green")})

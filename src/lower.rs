@@ -299,10 +299,7 @@ fn lower_expr(
                 _ => {
                     diagnostics.push(Diagnostic::error(
                         "lower-error",
-                        format!(
-                            "unresolved dot-access `.{}`",
-                            field
-                        ),
+                        format!("unresolved dot-access `.{}`", field),
                         arc.span.clone(),
                     ));
                     return CoreExpr::Placeholder {
@@ -787,70 +784,59 @@ fn lower_expr(
             arms: arms
                 .iter()
                 .map(|arm| {
-                    // Build params from let_bindings for case arms (T-2128).
-                    // For keyed arms (let_bindings == None), params is empty.
-                    let params: Vec<crate::ast::Spanned<CoreParam>> =
-                        if let Some(let_bindings) = &arm.let_bindings {
-                            // Extract binding names from [let name1 name2 ...], mirroring
-                            // resolve.rs::extract_case_arm_binding_names. The resolver assigns
-                            // Parameter(i) to each name via enter_param_scope; lowering now
-                            // materializes that as CoreParam entries (slot = i, variadic = false).
-                            // `_` is excluded — it is a wildcard, not a binding.
-                            let names: Vec<String> = match &let_bindings.expr {
-                                SurfaceExpression::LetDecl { bindings } => bindings
-                                    .iter()
-                                    .filter_map(|b| {
-                                        if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                                            if name == "_" {
-                                                None
-                                            } else {
-                                                Some(name.clone())
-                                            }
-                                        } else {
+                    // Build params from let_bindings (T-2128).
+                    // Extract binding names from [let name1 name2 ...], mirroring
+                    // resolve.rs::extract_case_arm_binding_names. The resolver assigns
+                    // Parameter(i) to each name via enter_param_scope; lowering now
+                    // materializes that as CoreParam entries (slot = i, variadic = false).
+                    // `_` is excluded — it is a wildcard, not a binding.
+                    let let_bindings = &arm.let_bindings;
+                    let params: Vec<crate::ast::Spanned<CoreParam>> = {
+                        let names: Vec<String> = match &let_bindings.expr {
+                            SurfaceExpression::LetDecl { bindings } => bindings
+                                .iter()
+                                .filter_map(|b| {
+                                    if let SurfaceExpression::VarRef { name, .. } = &b.expr {
+                                        if name == "_" {
                                             None
+                                        } else {
+                                            Some(name.clone())
                                         }
-                                    })
-                                    .collect(),
-                                _ => Vec::new(),
-                            };
-                            names
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, name)| {
-                                    Spanned::new(
-                                        CoreParam {
-                                            name,
-                                            slot: i as u32,
-                                            variadic: false,
-                                            annotation: None,
-                                            resolved_type: None,
-                                        },
-                                        let_bindings.span.clone(),
-                                    )
+                                    } else {
+                                        None
+                                    }
                                 })
-                                .collect()
-                        } else {
-                            vec![]
+                                .collect(),
+                            _ => Vec::new(),
                         };
-                    // Lower the arm pattern for ALL match arms (keyed and case).
-                    // - Case arms (let_bindings.is_some()): lowered_pattern is the structural
-                    //   filter expression evaluated against the arm's binding scope.
-                    // - Keyed arms (let_bindings.is_none()): lowered_pattern is the key
-                    //   expression (e.g. CoreExpr::Int, CoreExpr::Str, CoreExpr::Placeholder)
-                    //   used by MatchDispatch for equality matching via eval_structural_pattern_inner.
+                        names
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, name)| {
+                                Spanned::new(
+                                    CoreParam {
+                                        name,
+                                        slot: i as u32,
+                                        variadic: false,
+                                        annotation: None,
+                                        resolved_type: None,
+                                    },
+                                    let_bindings.span.clone(),
+                                )
+                            })
+                            .collect()
+                    };
+                    // Lower the arm pattern for all match arms.
                     let lowered_pattern = Some(Arc::new(lower_inner(
                         &arm.pattern,
                         diagnostics,
                         type_display_names,
                     )));
-                    let captures: Arc<Vec<(String, VarAddr)>> = if arm.let_bindings.is_some() {
-                        arm.case_captures
-                            .get()
-                            .expect("resolver must set case_captures for every case arm")
-                            .clone()
-                    } else {
-                        Arc::new(vec![])
-                    };
+                    let captures: Arc<Vec<(String, VarAddr)>> = arm
+                        .case_captures
+                        .get()
+                        .expect("resolver must set case_captures for every match arm")
+                        .clone();
                     CoreClause {
                         params,
                         lowered_pattern,
@@ -1124,11 +1110,12 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 .iter()
                 .map(|arm| {
                     // Round-trip CoreClause → SurfaceMatchArm (T-2128).
-                    // Case arms have params (non-empty) → reconstruct let_bindings node.
-                    // Keyed arms have no params → let_bindings = None, no scope.
                     let syn_span = rust_span!();
                     let let_bindings = if arm.params.is_empty() {
-                        None
+                        Arc::new(SurfaceNode::new(
+                            SurfaceExpression::PatternDecl { bindings: vec![] },
+                            syn_span.clone(),
+                        ))
                     } else {
                         // Reconstruct [let name1 name2 ...] from params.
                         let binding_nodes: Vec<Arc<SurfaceNode>> = arm
@@ -1147,12 +1134,12 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                                 ))
                             })
                             .collect();
-                        Some(Arc::new(SurfaceNode::new(
+                        Arc::new(SurfaceNode::new(
                             SurfaceExpression::LetDecl {
                                 bindings: binding_nodes,
                             },
                             syn_span.clone(),
-                        )))
+                        ))
                     };
                     // Pattern: reconstruct from lowered_pattern if present, else a wildcard.
                     let pattern = match &arm.lowered_pattern {

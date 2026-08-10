@@ -958,9 +958,9 @@ pub struct SurfaceParam {
 pub struct SurfaceMatchArm {
     pub pattern: Arc<SurfaceNode>,
     /// The `[let ...]` node from `[case [let bindings] pattern body]` syntax. Declares which
-    /// names in `pattern` are binding targets vs pin-comparisons. `None` for keyed arms
-    /// (pattern: body), `Some(...)` for case arms with explicit scoping.
-    pub let_bindings: Option<Arc<SurfaceNode>>,
+    /// names in `pattern` are binding targets vs pin-comparisons. Keyed arms (pattern: body)
+    /// use an empty `PatternDecl { bindings: vec![] }`; case arms carry the parsed `[let ...]`.
+    pub let_bindings: Arc<SurfaceNode>,
     pub guard: Option<Arc<SurfaceNode>>,
     /// Non-empty Vec of body expressions. Single-expression arms have `body.len() == 1`.
     /// Multi-expression arms have all-but-last as intermediate scope dicts and last as result.
@@ -969,9 +969,8 @@ pub struct SurfaceMatchArm {
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
-    /// Closure capture list for case arms (`let_bindings.is_some()`), set by the resolver
-    /// after walking the arm body with a fn boundary. Analogous to `Fn.resolved_captures`.
-    /// Empty OnceLock for keyed arms (no `let_bindings`).
+    /// Closure capture list for all arms, set by the resolver after walking the arm body
+    /// with a fn boundary. Analogous to `Fn.resolved_captures`.
     pub case_captures: CapturesCell,
 }
 

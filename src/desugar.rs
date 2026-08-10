@@ -383,10 +383,14 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
             desugar_surface(inner, depth);
         }
 
-        // Match: recurse into scrutinee and arm bodies (but not patterns).
+        // Match: recurse into scrutinee, arm patterns, guards, and bodies.
         SurfaceExpression::Match { scrutinee, arms } => {
             desugar_surface(scrutinee, depth);
             for arm in arms {
+                desugar_surface(&mut arm.pattern, depth);
+                if let Some(guard) = &mut arm.guard {
+                    desugar_surface(guard, depth);
+                }
                 for body_expr in &mut arm.body {
                     desugar_surface(body_expr, depth);
                 }
