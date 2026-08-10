@@ -1030,11 +1030,15 @@ pub struct CoverageResult {
     pub exhaustive: bool,
     /// Uncovered constructor witnesses — patterns that are not matched.
     pub uncovered: Vec<CoveragePattern>,
-    /// Indices of redundant arms (not even lazily useful).
-    pub redundant: Vec<usize>,
+    /// Redundant arms: `(arm_index, covering_arm_indices)`.
+    /// Each entry identifies a completely dead arm and the prior arms that subsume it.
+    pub redundant: Vec<(usize, Vec<usize>)>,
     /// Indices of arms with inaccessible RHS (lazily useful but not strictly useful —
     /// they are reached only when matching forces ⊥, causing divergence before the RHS).
     pub inaccessible: Vec<usize>,
+    /// Normalized per-arm patterns as the coverage checker sees them.
+    /// Same length as the input `arm_patterns` slice. Useful for diagnostic rendering.
+    pub resolved: Vec<CoveragePattern>,
 }
 
 /// Run full coverage analysis on a match expression.
@@ -1060,6 +1064,9 @@ pub fn check_coverage(
     let arm_patterns = &normalized;
 
     let mut matrix: PatternMatrix = Vec::new();
+    // Track original arm indices for each row in the matrix, so we can report
+    // which prior arms (by original index) cover a redundant arm.
+    let mut matrix_arm_indices: Vec<usize> = Vec::new();
     let mut redundant = Vec::new();
     let mut inaccessible = Vec::new();
 
@@ -1080,8 +1087,16 @@ pub fn check_coverage(
         let is_strict_useful = strict_useful(&matrix, &q, sig);
 
         if !is_lazy_useful {
-            // Not even lazily useful — completely redundant
-            redundant.push(i);
+            // Not even lazily useful — completely redundant.
+            // Find which prior arms individually subsume this pattern.
+            let mut covering = Vec::new();
+            for (row_idx, row) in matrix.iter().enumerate() {
+                let single_row_matrix = vec![row.clone()];
+                if !lazy_useful(&single_row_matrix, &q, sig) {
+                    covering.push(matrix_arm_indices[row_idx]);
+                }
+            }
+            redundant.push((i, covering));
         } else if !is_strict_useful {
             // Lazily useful but not strictly useful — inaccessible RHS
             // (reached only via ⊥, which causes divergence before reaching the body)
@@ -1089,6 +1104,7 @@ pub fn check_coverage(
         }
 
         matrix.push(q);
+        matrix_arm_indices.push(i);
     }
 
     // Check exhaustiveness: is the wildcard vector useful against the full matrix?
@@ -1107,6 +1123,7 @@ pub fn check_coverage(
         uncovered,
         redundant,
         inaccessible,
+        resolved: normalized,
     }
 }
 
@@ -1332,7 +1349,7 @@ mod tests {
         let guards = vec![false, false, false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(result.exhaustive);
-        assert_eq!(result.redundant, vec![2]);
+        assert_eq!(result.redundant, vec![(2, vec![0])]);
     }
 
     #[test]
@@ -1375,7 +1392,7 @@ mod tests {
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(result.exhaustive);
         // Arm 1 has a guard, so it's never marked redundant
-        assert!(!result.redundant.contains(&1));
+        assert!(!result.redundant.iter().any(|(idx, _)| *idx == 1));
     }
 
     #[test]
@@ -1511,7 +1528,7 @@ mod tests {
         let guards = vec![false, false, false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(result.exhaustive);
-        assert_eq!(result.redundant, vec![1]);
+        assert_eq!(result.redundant, vec![(1, vec![0])]);
     }
 
     // ===== Nominal variant tests =====

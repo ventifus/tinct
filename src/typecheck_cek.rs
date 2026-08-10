@@ -4207,34 +4207,55 @@ async fn run_match_exhaustiveness_check(
                 .iter()
                 .map(|w| w.render(tycon_env_ref))
                 .collect();
-            errors.push(Diagnostic::error(
+            let mut diag = Diagnostic::error(
                 "type-error",
                 format!(
                     "non-exhaustive match: missing coverage for {}",
                     witnesses.join(", ")
                 ),
                 span.clone(),
-            ));
+            );
+            for (i, arm) in arms.iter().enumerate() {
+                diag = diag.with_label(
+                    arm.pattern.span.clone(),
+                    format!("arm {}: {}", i + 1, result.resolved[i].render(tycon_env_ref)),
+                );
+            }
+            errors.push(diag);
         }
-        for &idx in &result.redundant {
+        for (idx, covering) in &result.redundant {
+            let mut diag = Diagnostic::error(
+                "type-error",
+                "unreachable match arm: this pattern is already covered by prior arms",
+                arms[*idx].pattern.span.clone(),
+            )
+            .with_note(format!(
+                "pattern resolved to: {}",
+                result.resolved[*idx].render(tycon_env_ref)
+            ));
+            for &cover_idx in covering {
+                diag = diag.with_label(
+                    arms[cover_idx].pattern.span.clone(),
+                    format!(
+                        "covers with: {}",
+                        result.resolved[cover_idx].render(tycon_env_ref)
+                    ),
+                );
+            }
+            errors.push(diag);
+        }
+        for &idx in &result.inaccessible {
             errors.push(
                 Diagnostic::error(
                     "type-error",
-                    "unreachable match arm: this pattern is already covered by prior arms",
+                    "inaccessible match arm: reachable only via diverging (bottom) values",
                     arms[idx].pattern.span.clone(),
                 )
                 .with_note(format!(
                     "pattern resolved to: {}",
-                    coverage_patterns[idx].render(tycon_env_ref)
+                    result.resolved[idx].render(tycon_env_ref)
                 )),
             );
-        }
-        for &idx in &result.inaccessible {
-            errors.push(Diagnostic::error(
-                "type-error",
-                "inaccessible match arm: reachable only via diverging (bottom) values",
-                arms[idx].pattern.span.clone(),
-            ));
         }
     }
 }
