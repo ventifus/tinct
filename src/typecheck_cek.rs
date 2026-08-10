@@ -4224,15 +4224,18 @@ async fn run_match_exhaustiveness_check(
             errors.push(diag);
         }
         for (idx, covering) in &result.redundant {
-            let mut diag = Diagnostic::error(
+            let mut diag = Diagnostic::with_spans(
+                crate::error::DiagnosticLevel::Err,
                 "type-error",
                 "unreachable match arm: this pattern is already covered by prior arms",
-                arms[*idx].pattern.span.clone(),
-            )
-            .with_note(format!(
-                "pattern resolved to: {}",
-                result.resolved[*idx].render(tycon_env_ref)
-            ));
+                vec![crate::error::SpanLabel {
+                    span: arms[*idx].pattern.span.clone(),
+                    message: format!(
+                        "resolved to: {}",
+                        result.resolved[*idx].render(tycon_env_ref)
+                    ),
+                }],
+            );
             for &cover_idx in covering {
                 diag = diag.with_label(
                     arms[cover_idx].pattern.span.clone(),
