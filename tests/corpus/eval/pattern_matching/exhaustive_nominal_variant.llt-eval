@@ -1,4 +1,4 @@
-# Exhaustive match on a nominal variant type — all constructors covered.
+# T-2307: Exhaustive match on a nominal variant type — all constructors covered.
 # Before S-1043, this was falsely reported as non-exhaustive because the
 # coverage checker used hash-based identity instead of real (type_decl_id, ctor_index).
 [

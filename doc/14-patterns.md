@@ -234,12 +234,12 @@ error: no match arm satisfied
 ### Implementation Notes
 
 - **AST node:** `SurfaceExpression::Match { scrutinee, arms }`
-- **Arm pattern type:** `SurfaceMatchArm.pattern: Arc<SurfaceNode>` — the pattern is stored as a raw Surface AST node (no separate Pattern enum)
-- **Type inference:** `infer_match` in `src/typecheck.rs` infers the return type as the union of all arm expression types, narrowed by the scrutinee type
-- **Evaluation:** `eval_materialize.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches. `match_pattern` in `src/eval.rs` dispatches directly on `SurfaceExpression` variants: `Placeholder` = wildcard, `VarRef` = pin (resolved) or undefined (silently no-match), literals = equality, `Field` = constructor tag, `Call` = constructor+sub-pattern, `Dict` = dict field presence
-- **`flatten_dot_access_to_tag`:** defined in `src/ast.rs` as `pub(crate)`; called from `src/eval.rs` (Field and Call pattern arms), `src/coverage.rs` (Field and Call coverage arms), and `src/typecheck_cek.rs` (arm narrowing and tag extraction)
+- **Arm representation:** `SurfaceMatchArm.let_bindings: Arc<SurfaceNode>` (always present — keyed arms use empty `PatternDecl`), `pattern: Arc<SurfaceNode>`. All arms take the same code path through resolver, type checker, and evaluator.
+- **Pattern type-checking:** Before coverage and narrowing, each arm's pattern is type-checked via `run_typecheck`, populating `inferred_type_decl_id` on the pattern node. Coverage and narrowing read this to determine constructor identity.
+- **Evaluation:** `eval_materialize.rs` materializes the scrutinee, then evaluates arms in order. All arms build a closure env from captures and use `eval_case_arm_structural_pattern` for pattern dispatch.
+- **Error recovery:** Error-path type inference returns `Never` (bottom type), not `Unknown` or a fresh TypeVar.
 
-See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.
+See `doc/feature/nominal-variants.md` for the nominal variant design and `src/coverage.rs` for the exhaustiveness algorithm.
 
 ### Variable Names in Keyed Patterns
 

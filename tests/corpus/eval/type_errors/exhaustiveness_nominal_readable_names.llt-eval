@@ -1,4 +1,4 @@
-# Non-exhaustive match — missing Color.Blue.
+# T-2307: Non-exhaustive match — missing Color.Blue.
 # Error should show "Blue" not "Variant(N.M)".
 [
   Color: [type Red Green Blue]
