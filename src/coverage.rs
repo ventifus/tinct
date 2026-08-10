@@ -140,7 +140,7 @@ impl CoveragePattern {
                 }
                 _ => tag.render(tycon_env),
             },
-            CoveragePattern::Wildcard => "_".to_string(),
+            CoveragePattern::Wildcard => "...".to_string(),
         }
     }
 }
@@ -1812,7 +1812,7 @@ mod tests {
     fn test_render_witnesses_dict() {
         let empty_env = std::collections::HashMap::new();
         let w = con(dict_key("err"), vec![wc()]);
-        assert_eq!(w.render(&empty_env), "[err: _]");
+        assert_eq!(w.render(&empty_env), "[err: ...]");
     }
 
     #[test]
@@ -1824,8 +1824,8 @@ mod tests {
         ];
         let formatted: Vec<String> = witnesses.iter().map(|w| w.render(&empty_env)).collect();
         let joined = formatted.join(", ");
-        assert!(joined.contains("[err: _]"));
-        assert!(joined.contains("[warn: _]"));
+        assert!(joined.contains("[err: ...]"));
+        assert!(joined.contains("[warn: ...]"));
     }
 
     // ===== normalize_constructor_arities tests =====

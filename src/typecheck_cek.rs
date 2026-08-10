@@ -1310,11 +1310,13 @@ async fn apply_cont(
             }
 
             // Type-check each arm's pattern expression so inferred_type_decl_id is populated
-            // for coverage checking and narrowing.
+            // for coverage checking and narrowing. If any pattern has an error (Never),
+            // the whole match is an error — skip coverage analysis entirely.
+            let mut pattern_error = false;
             for arm in &arms {
                 let arm_env = build_case_arm_env(&arm.let_bindings, &env, state, &arm.pattern);
                 let mut local_stack = Vec::new();
-                let _pattern_ty = Box::pin(run_typecheck(
+                let pattern_ty = Box::pin(run_typecheck(
                     &arm.pattern,
                     &arm_env,
                     state,
@@ -1323,10 +1325,15 @@ async fn apply_cont(
                     &mut local_stack,
                 ))
                 .await;
+                if typevalue_ctor_index(&pattern_ty) == Some(TV_NEVER) {
+                    pattern_error = true;
+                }
             }
 
-            // Run exhaustiveness checking once upfront (using all arms).
-            run_match_exhaustiveness_check(&scrutinee_ty, &arms, &span, state, errors).await;
+            if !pattern_error {
+                // Run exhaustiveness checking only when all patterns are valid.
+                run_match_exhaustiveness_check(&scrutinee_ty, &arms, &span, state, errors).await;
+            }
 
             // Set up the first arm's environment iteratively; subsequent arms via MatchArm.
             let remaining_scrutinee = scrutinee_ty.clone();
@@ -2169,7 +2176,6 @@ async fn apply_cont_call_func(
     ctx: &mut TypeCheckCtx<'_, '_>,
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
 ) -> TypeCheckAction {
-    // If the function type is Unknown/Never, infer args for errors and return Unknown.
     match typevalue_ctor_index(&func_ty) {
         Some(TV_UNKNOWN) | Some(TV_NEVER) => {
             for arg in &args {
@@ -2196,7 +2202,12 @@ async fn apply_cont_call_func(
                 ))
                 .await;
             }
-            return TypeCheckAction::Done(make_typevalue_unknown());
+            let result_ty = if typevalue_ctor_index(&func_ty) == Some(TV_NEVER) {
+                make_typevalue_never()
+            } else {
+                make_typevalue_unknown()
+            };
+            return TypeCheckAction::Done(result_ty);
         }
         _ => {}
     }
@@ -4206,11 +4217,17 @@ async fn run_match_exhaustiveness_check(
             ));
         }
         for &idx in &result.redundant {
-            errors.push(Diagnostic::error(
-                "type-error",
-                "unreachable match arm: this pattern is already covered by prior arms",
-                arms[idx].pattern.span.clone(),
-            ));
+            errors.push(
+                Diagnostic::error(
+                    "type-error",
+                    "unreachable match arm: this pattern is already covered by prior arms",
+                    arms[idx].pattern.span.clone(),
+                )
+                .with_note(format!(
+                    "pattern resolved to: {}",
+                    coverage_patterns[idx].render(tycon_env_ref)
+                )),
+            );
         }
         for &idx in &result.inaccessible {
             errors.push(Diagnostic::error(

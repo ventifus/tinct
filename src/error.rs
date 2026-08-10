@@ -338,8 +338,7 @@ impl Diagnostic {
                     label.boundary_span,
                     format!("typed/untyped boundary ({})", party),
                 );
-            self.notes
-                .push(format!("blame: {} responsible", party));
+            self.notes.push(format!("blame: {} responsible", party));
         }
         self
     }
@@ -1050,7 +1049,10 @@ mod tests {
         let err = Diagnostic::internal("oops".to_string(), span);
         let display = format!("{err}");
         // Format is now "line:col: message"
-        assert_eq!(display, "error[internal-error]: oops\n --> src/test_util.rs:3:5");
+        assert_eq!(
+            display,
+            "error[internal-error]: oops\n --> src/test_util.rs:3:5"
+        );
     }
 
     #[test]
@@ -1064,9 +1066,18 @@ mod tests {
             .with_frame("outer".to_string(), frame1_span)
             .with_frame("inner".to_string(), frame2_span);
         let display = format!("{err}");
-        assert!(display.contains("error[internal-error]: bad value"), "got: {display}");
-        assert!(display.contains("--> src/test_util.rs:3:5"), "got: {display}");
-        assert!(display.contains("--> src/test_util.rs:20:1"), "got: {display}");
+        assert!(
+            display.contains("error[internal-error]: bad value"),
+            "got: {display}"
+        );
+        assert!(
+            display.contains("--> src/test_util.rs:3:5"),
+            "got: {display}"
+        );
+        assert!(
+            display.contains("--> src/test_util.rs:20:1"),
+            "got: {display}"
+        );
         assert!(display.contains("evaluated here"), "got: {display}");
         assert!(display.contains("outer"), "got: {display}");
         assert!(display.contains("inner"), "got: {display}");

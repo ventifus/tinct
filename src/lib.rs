@@ -202,8 +202,8 @@ pub async fn run_loader_pipeline(
     // Process builtin_core.llt inline — same pipeline, same context.
     let core_source = include_str!("../stdlib/builtin_core.llt");
     let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
-    let core_parsed = parse(core_source, core_sf)
-        .map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    let core_parsed =
+        parse(core_source, core_sf).map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
     let core_program = desugar::desugar_program_full(&core_parsed.program);
     let core_program = expand::expand_program(&core_program);
     for doc in &core_program.documents {
