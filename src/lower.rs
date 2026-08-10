@@ -294,17 +294,13 @@ fn lower_expr(
             resolution,
             ..
         } => {
-            // Build the getter function Var and the key argument.
-            // The resolver writes a VarAddr for FIELD_GETTER_NAME into Field.resolution
-            // (because the resolver is always seeded with root_group via root_group_resolver_map).
-            // All dot-access desugars to [FIELD_GETTER_NAME key target] — one correct path.
             let getter_addr = match resolution.get() {
                 Some(Some(addr)) => addr.clone(),
                 _ => {
                     diagnostics.push(Diagnostic::error(
                         "lower-error",
                         format!(
-                            "{FIELD_GETTER_NAME}: resolver did not populate Field.resolution for `.{}` — resolver must be seeded with root_group",
+                            "unresolved dot-access `.{}`",
                             field
                         ),
                         arc.span.clone(),

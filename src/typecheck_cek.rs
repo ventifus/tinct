@@ -1333,7 +1333,7 @@ async fn apply_cont(
             }
 
             // Run exhaustiveness checking once upfront (using all arms).
-            run_match_exhaustiveness_check(&scrutinee_ty, &arms, &span, state, errors);
+            run_match_exhaustiveness_check(&scrutinee_ty, &arms, &span, state, errors).await;
 
             // Set up the first arm's environment iteratively; subsequent arms via MatchArm.
             let remaining_scrutinee = scrutinee_ty.clone();
@@ -3980,7 +3980,7 @@ fn arm_has_unresolved_varrefs(node: &SurfaceNode) -> bool {
     }
 }
 
-fn run_match_exhaustiveness_check(
+async fn run_match_exhaustiveness_check(
     scrutinee_ty: &TypeValue,
     arms: &[SurfaceMatchArm],
     span: &Span,
@@ -4115,10 +4115,12 @@ fn run_match_exhaustiveness_check(
     };
 
     if let Some(sig) = sig {
-        let coverage_patterns: Vec<coverage::CoveragePattern> = arms
-            .iter()
-            .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref)))
-            .collect();
+        let mut coverage_patterns: Vec<coverage::CoveragePattern> = Vec::with_capacity(arms.len());
+        for arm in arms {
+            coverage_patterns.push(
+                coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref), state, errors).await,
+            );
+        }
         // Mark arms with explicit guards OR unresolved VarRefs as opaque to coverage.
         // Unresolved VarRefs are resolver errors — treating them as wildcards would mask
         // non-exhaustiveness. Making them opaque means they neither contribute to coverage
@@ -4130,10 +4132,14 @@ fn run_match_exhaustiveness_check(
         let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
 
         if !result.exhaustive {
-            let witnesses = coverage::format_witnesses(&result.uncovered);
+            let witnesses: Vec<String> = result
+                .uncovered
+                .iter()
+                .map(|w| w.render(tycon_env_ref))
+                .collect();
             errors.push(Diagnostic::error(
                 "type-error",
-                format!("non-exhaustive match: missing coverage for {}", witnesses),
+                format!("non-exhaustive match: missing coverage for {}", witnesses.join(", ")),
                 span.clone(),
             ));
         }

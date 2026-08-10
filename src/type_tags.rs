@@ -65,11 +65,6 @@ pub const CD_CONSTRAINT_DECL: u32 = 0;
 
 pub const VD_VAR_DECL: u32 = 0;
 
-// ── Bool ctor_index ─────────────────────────────────────────────────────────
-
-pub const BOOL_TRUE_IDX: u32 = 0;
-pub const BOOL_FALSE_IDX: u32 = 1;
-
 // ── ProgramItem ctor_index ──────────────────────────────────────────────────
 
 pub const PI_FILE: u32 = 0;

@@ -128,17 +128,17 @@ fn payload_float_field_bits(payload: &Value, field: &str) -> Option<u64> {
 
 /// Extract a boolean field from a TypeValue payload dict.
 ///
-/// Tinct booleans are `Variant { ctor_index: BOOL_TRUE_IDX | BOOL_FALSE_IDX }`. Returns
-/// `Some(true)` when the field value is the true unit variant, `Some(false)` when it is
-/// false, and `None` when the field is absent or has a non-boolean value.
+/// Boolean flags in the Rust-tinct protocol are stored as Int 0/1.
+/// Returns `Some(true)` when the field is 1, `Some(false)` when 0,
+/// and `None` when the field is absent or has a non-integer value.
 fn payload_bool_field(payload: &Value, field: &str) -> Option<bool> {
     if let Value::Dict { entries, .. } = payload {
         let key = HashableValue::Str(Arc::from(field));
         if let Some(thunk) = entries.get(&key) {
-            if let Some(Value::Variant { ctor_index, .. }) = peek_value(thunk) {
-                return match *ctor_index {
-                    BOOL_TRUE_IDX => Some(true),
-                    BOOL_FALSE_IDX => Some(false),
+            if let Some(Value::Int { n, .. }) = peek_value(thunk) {
+                return match *n {
+                    1 => Some(true),
+                    0 => Some(false),
                     _ => None,
                 };
             }

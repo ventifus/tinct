@@ -3941,30 +3941,21 @@ pub(crate) async fn as_type_dispatch(
 /// Errors propagate to callers. `resolve_property_dict_as_record` falls back to
 /// type-stage evaluation when type-dict resolution fails; on eval failure it returns
 /// the eval error as the primary diagnostic with the dict-resolution error as a note.
-pub(crate) async fn eval_type_stage_expr(
+/// Evaluate a surface expression to a raw Value using the real evaluator pipeline.
+/// Lowers the node to CoreExpr, wraps it as a thunk, and materializes it.
+/// Handles arbitrary expressions including dot-access chains of any depth.
+pub(crate) async fn eval_expr(
     node: &Arc<SurfaceNode>,
-    state: &mut InferState,
-) -> Result<TypeValue, Diagnostic> {
+    state: &InferState,
+) -> Result<crate::value::Value, Diagnostic> {
     let node_span = node.span.clone();
 
-    // Build the EvalContext for evaluating the annotation node.
-    // Prefer state.eval_ctx (threaded from the loader pipeline) so type-stage evaluation
-    // uses the same capabilities and root scope as the surrounding evaluation. This covers
-    // the production path (builtin-typecheck-doc) and the bootstrap path (imports.rs).
-    // new_empty(): type-stage evaluation is pure compute — no filesystem I/O occurs.
     let ctx: std::sync::Arc<crate::eval::EvalContext> = if let Some(ref eval_ctx) = state.eval_ctx {
         std::sync::Arc::clone(eval_ctx)
     } else {
         crate::eval::EvalContext::new_empty()
     };
 
-    // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes
-    // (written at definition time). Names resolve via the env chain at eval time.
-    // All type annotations are inline on AST nodes — no external tables needed.
-
-    // Lower the SurfaceNode to CoreExpr, then wrap as a CoreExpr thunk for lazy evaluation.
-    // No loader frames in type-stage context; lower() uses inline resolution coordinates
-    // written on nodes at definition time.
     let (lowered, lower_diags) = crate::lower::lower(node, &state.type_display_names);
     {
         let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
@@ -3985,15 +3976,12 @@ pub(crate) async fn eval_type_stage_expr(
         }
         if let Some(lower_err) = err_opt {
             return Err(Diagnostic::error(
-                "type-error",
-                format!("type-stage expression lowering failed: {lower_err}"),
+                "eval-error",
+                format!("expression lowering failed: {lower_err}"),
                 node_span.clone(),
             ));
         }
     }
-    // Use an empty scope as the root frame. Type-stage annotations resolve names
-    // through the EvalContext (ctx) which carries all accumulated entries via its
-    // root_group and scope_frames. An explicit scope is not needed here.
     let root_frame = {
         let group = crate::value::empty_scope();
         std::sync::Arc::new(crate::value::EvalFrame {
@@ -4011,16 +3999,29 @@ pub(crate) async fn eval_type_stage_expr(
         node_span.clone(),
     ));
 
-    // Materialize — type-stage evaluation is pure compute, no I/O.
-    let typenode_val = crate::eval::materialize(&core_thunk, Some(&node_span), &ctx)
+    crate::eval::materialize(&core_thunk, Some(&node_span), &ctx)
         .await
         .map_err(|e| {
             Diagnostic::error(
-                "type-error",
-                format!("type-stage expression evaluation failed: {e}"),
+                "eval-error",
+                format!("expression evaluation failed: {e}"),
                 node_span.clone(),
             )
-        })?;
+        })
+}
+
+pub(crate) async fn eval_type_stage_expr(
+    node: &Arc<SurfaceNode>,
+    state: &mut InferState,
+) -> Result<TypeValue, Diagnostic> {
+    let node_span = node.span.clone();
+    let typenode_val = eval_expr(node, state).await?;
+
+    let ctx: std::sync::Arc<crate::eval::EvalContext> = if let Some(ref eval_ctx) = state.eval_ctx {
+        std::sync::Arc::clone(eval_ctx)
+    } else {
+        crate::eval::EvalContext::new_empty()
+    };
 
     // Convert the materialized TypeNode Value to a Type.
     // If the direct structural conversion fails (unrecognised TypeNode tag), try

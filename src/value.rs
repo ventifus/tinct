@@ -777,7 +777,6 @@ pub const TYPE_ID_ROW_TAIL: u64 = 51;
 pub const TYPE_ID_TYPE_NODE: u64 = 52;
 pub const TYPE_ID_CONSTRAINT_DECL: u64 = 53;
 pub const TYPE_ID_VAR_DECL: u64 = 54;
-pub const TYPE_ID_BOOL: u64 = 55;
 pub const TYPE_ID_PROGRAM_ITEM: u64 = 56;
 pub const TYPE_ID_DOT_KEY: u64 = 57;
 

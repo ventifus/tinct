@@ -72,7 +72,6 @@
     Int@[as-type: [fn [let t] t]  guarding: 1]:        []
     Float@[as-type: [fn [let t] t]  guarding: 1]:      []
     String@[as-type: [fn [let t] t]  guarding: 1]:     []
-    Bool@[as-type: [fn [let t] t]  guarding: 1]:       []
     Absent@[as-type: [fn [let t] t]  guarding: 1]:     []
     Unknown@[as-type: [fn [let t] t]  guarding: 1]:    []
     Never@[as-type: [fn [let t] t]  guarding: 1]:      []

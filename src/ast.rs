@@ -947,41 +947,6 @@ pub struct SurfaceParam {
 /// chain contains a non-identifier segment (e.g., a numeric index).
 ///
 /// Examples:
-/// - `VarRef("Result")` → `"Result"`
-/// - `Field(VarRef("Result"), "Ok")` → `"Result.Ok"`
-/// - `Field(Field(VarRef("Net"), "Transport"), "Tcp")` → `"Net.Transport.Tcp"`
-/// - `Field(_, Int(0))` → `None` (numeric index)
-///
-/// Used by the parser (constructor patterns) and `typecheck_special.rs` (monad resolution).
-/// Defined in `src/ast.rs` as `pub(crate)` since both callers import from here.
-pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<String> {
-    match expr {
-        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-        SurfaceExpression::Field {
-            expr: Some(inner),
-            field: DotKey::Ident(s),
-            ..
-        } => Some(format!("{}.{}", flatten_dot_access_to_tag(&inner.expr)?, s)),
-        SurfaceExpression::Field { expr: None, .. } => None, // leading-dot form is not a constructor name (no prefix available)
-        SurfaceExpression::Field {
-            field: DotKey::Int(_),
-            ..
-        } => None, // numeric index in a dot chain is not a constructor name
-        _ => None,
-    }
-}
-
-/// Flatten a dot-access chain rooted at a `SurfaceNode` to a qualified tag string.
-///
-/// Returns `Some(tag)` when the node is a VarRef or a chain of `Field` (dot-access) nodes
-/// over an Ident key. Returns `None` for leading-dot forms, numeric indices, or other
-/// expression shapes that cannot be constructor names.
-///
-/// This is the `SurfaceNode`-level wrapper over `flatten_dot_access_to_tag`. Prefer this
-/// version when the caller already has an `Arc<SurfaceNode>`.
-pub(crate) fn flatten_dot_access_to_tag_node(node: &SurfaceNode) -> Option<String> {
-    flatten_dot_access_to_tag(&node.expr)
-}
 
 /// A match arm in a SurfaceExpression::Match.
 ///

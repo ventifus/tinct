@@ -17,7 +17,7 @@ use crate::type_tags::*;
 // The definition lives in type_class.rs — re-export it here so callers can import
 // TypeValue from type_infer without reaching into type_class directly.
 pub use crate::type_class::TypeValue;
-use crate::value::{TYPE_ID_BOOL, TYPE_ID_DICT, TYPE_ID_ROW_TAIL, TYPE_ID_TYPE_VALUE};
+use crate::value::{TYPE_ID_DICT, TYPE_ID_ROW_TAIL, TYPE_ID_TYPE_VALUE};
 
 // ── TypeValue helper functions ────────────────────────────────────────────────
 
@@ -269,17 +269,13 @@ pub fn make_typevalue_fn_with_flags(
         }
     }
     if variadic {
-        // Store "variadic: true" as a unit Variant with ctor BOOL_TRUE ("true").
-        let true_variant = crate::value::Value::Variant {
-            type_decl_id: TYPE_ID_BOOL,
-            ctor_index: BOOL_TRUE_IDX,
-            payload: None,
-            type_val: None,
-        };
         payload_entries.insert(
             HashableValue::Str(Arc::from(FIELD_VARIADIC)),
             Arc::new(crate::value::Thunk::value(
-                true_variant,
+                crate::value::Value::Int {
+                    n: 1,
+                    type_val: None,
+                },
                 crate::rust_span!(),
             )),
         );
@@ -1015,7 +1011,7 @@ pub fn typevalue_fn_is_variadic(tv: &TypeValue) -> bool {
     };
     let key = HashableValue::Str(Arc::from(FIELD_VARIADIC));
     match entries.get(&key).and_then(|t| t.peek_result()) {
-        Some(Ok(crate::value::Value::Variant { ctor_index, .. })) => *ctor_index == BOOL_TRUE_IDX,
+        Some(Ok(crate::value::Value::Int { n, .. })) => *n == 1,
         _ => false,
     }
 }

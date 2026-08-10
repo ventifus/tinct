@@ -1945,7 +1945,7 @@ fn extract_fn_parts(tv: &TypeValue) -> Option<(Vec<TypeValue>, TypeValue)> {
     }
 }
 
-/// Check if a TypeValue.Fn has variadic params (variadic: "true" variant in payload).
+/// Check if a TypeValue.Fn has variadic params (variadic: 1 in payload).
 fn is_fn_variadic(tv: &TypeValue) -> bool {
     match tv.as_ref() {
         crate::value::Value::Variant {
@@ -1956,11 +1956,8 @@ fn is_fn_variadic(tv: &TypeValue) -> bool {
             if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result() {
                 let key = crate::value::HashableValue::Str(Arc::from(FIELD_VARIADIC));
                 if let Some(vt) = entries.get(&key) {
-                    if let Some(Ok(crate::value::Value::Variant {
-                        ctor_index: b_idx, ..
-                    })) = vt.peek_result()
-                    {
-                        return *b_idx == BOOL_TRUE_IDX;
+                    if let Some(Ok(crate::value::Value::Int { n, .. })) = vt.peek_result() {
+                        return *n == 1;
                     }
                 }
             }
