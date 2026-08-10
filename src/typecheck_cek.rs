@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::ast::{
     class_decl_name, node_id, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
-    SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, STANDARD_ANN_KEYS,
+    SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode,
 };
 use crate::coverage;
 use crate::env::Env;
@@ -3386,9 +3386,13 @@ async fn infer_fn_push_cont(
             Annotation::PropertyDict(entries)
                 if entries.iter().any(|e| {
                     e.node.key.as_ref().is_some_and(|k| {
+                        // `doc:` alone is ambiguous (could be a record field name).
+                        // Only structural keys (return/bind/constraint/kinds) trigger
+                        // the fn-metadata path.
+                        const FN_STRUCTURAL_KEYS: &[&str] = &["return", "constraint", "bind", "kinds"];
                         matches!(&k.expr,
                             SurfaceExpression::StringLiteral { content: s, .. }
-                                if STANDARD_ANN_KEYS.contains(&s.as_str()))
+                                if FN_STRUCTURAL_KEYS.contains(&s.as_str()))
                     })
                 }) =>
             {
@@ -3765,6 +3769,28 @@ async fn infer_fn_push_cont(
 // Returns (arm_env, next_remaining_scrutinee, guard_narrowings).
 // Returns `None` only if called with no arms (should not happen in practice).
 
+/// Resolve a `TypeName.Ctor` Field pattern to numeric `(type_decl_id, ctor_index)`.
+///
+/// Extracts the tycon name from the object VarRef, looks up `type_decl_id` via
+/// `type_name_to_id`, then finds `ctor_index` by position in `TyConDef.constructors`.
+fn resolve_field_ctor_identity(
+    obj: &SurfaceNode,
+    ctor_name: &str,
+    state: &InferState,
+) -> Option<(u64, u32)> {
+    let tycon_name = match &obj.expr {
+        SurfaceExpression::VarRef { name, .. } => name.as_str(),
+        _ => return None,
+    };
+    let type_decl_id = state.type_name_to_id.get(tycon_name).copied()?;
+    let tycon_def = state.tycon_env.get(&type_decl_id)?;
+    let ctor_index = tycon_def
+        .constructors
+        .iter()
+        .position(|(name, _)| name == ctor_name)? as u32;
+    Some((type_decl_id, ctor_index))
+}
+
 async fn setup_match_arm_env(
     arm: &SurfaceMatchArm,
     remaining_scrutinee: &TypeValue,
@@ -3800,65 +3826,36 @@ async fn setup_match_arm_env(
     // Compute updated remaining_scrutinee (I-Case3 negation accumulation) for next arm.
     let next_remaining_scrutinee = if arm.guard.is_none() {
         match &arm.pattern.expr {
-            crate::ast::SurfaceExpression::Field { .. } => {
-                let tag = match crate::ast::flatten_dot_access_to_tag_node(&arm.pattern) {
-                    Some(t) => t,
-                    None => String::new(), // Non-constructor dot-access (leading-dot or numeric index) — not a tag pattern.
-                };
-                // Resolve the tag to (type_decl_id, ctor_index) for numeric-identity TypeValue construction.
-                let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
-                let type_decl_id = state
-                    .type_name_to_id
-                    .get(tycon)
-                    .copied()
-                    .expect("match arm narrowing: type name not in type_name_to_id");
-                let tycon_def = state
-                    .tycon_env
-                    .get(&type_decl_id)
-                    .expect("match arm narrowing: type_decl_id not in tycon_env");
-                let ctor_index = tycon_def
-                    .constructors
-                    .iter()
-                    .position(|(name, _)| name == ctor)
-                    .expect("match arm narrowing: constructor name not in TyConDef.constructors")
-                    as u32;
-                let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
-                    type_decl_id,
-                    ctor_index,
-                    make_typevalue_record(indexmap::IndexMap::new(), None),
-                ));
-                typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
+            crate::ast::SurfaceExpression::Field { expr: Some(obj), field: crate::ast::DotKey::Ident(ctor_name), .. } => {
+                if let Some((type_decl_id, ctor_index)) = resolve_field_ctor_identity(obj, ctor_name, state) {
+                    let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
+                        type_decl_id,
+                        ctor_index,
+                        make_typevalue_record(indexmap::IndexMap::new(), None),
+                    ));
+                    typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
+                } else {
+                    Arc::clone(remaining_scrutinee)
+                }
             }
+            // Payload constructor pattern: [TypeName.Ctor payload]
             crate::ast::SurfaceExpression::Call { func, .. }
-                if matches!(&func.expr, crate::ast::SurfaceExpression::Field { .. }) =>
+                if matches!(&func.expr, crate::ast::SurfaceExpression::Field { expr: Some(_), field: crate::ast::DotKey::Ident(_), .. }) =>
             {
-                let tag = match crate::ast::flatten_dot_access_to_tag_node(func) {
-                    Some(t) => t,
-                    None => String::new(), // Non-constructor dot-access (leading-dot or numeric index) — not a tag pattern.
-                };
-                // Resolve the tag to (type_decl_id, ctor_index) for numeric-identity TypeValue construction.
-                let (tycon, ctor) = tag.split_once('.').unwrap_or(("", tag.as_str()));
-                let type_decl_id = state
-                    .type_name_to_id
-                    .get(tycon)
-                    .copied()
-                    .expect("match arm narrowing: type name not in type_name_to_id");
-                let tycon_def = state
-                    .tycon_env
-                    .get(&type_decl_id)
-                    .expect("match arm narrowing: type_decl_id not in tycon_env");
-                let ctor_index = tycon_def
-                    .constructors
-                    .iter()
-                    .position(|(name, _)| name == ctor)
-                    .expect("match arm narrowing: constructor name not in TyConDef.constructors")
-                    as u32;
-                let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
-                    type_decl_id,
-                    ctor_index,
-                    make_typevalue_record(indexmap::IndexMap::new(), None),
-                ));
-                typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
+                if let crate::ast::SurfaceExpression::Field { expr: Some(obj), field: crate::ast::DotKey::Ident(ctor_name), .. } = &func.expr {
+                    if let Some((type_decl_id, ctor_index)) = resolve_field_ctor_identity(obj, ctor_name, state) {
+                        let neg_tag = make_typevalue_negation(make_typevalue_nominal_variant_by_id(
+                            type_decl_id,
+                            ctor_index,
+                            make_typevalue_record(indexmap::IndexMap::new(), None),
+                        ));
+                        typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
+                    } else {
+                        Arc::clone(remaining_scrutinee)
+                    }
+                } else {
+                    Arc::clone(remaining_scrutinee)
+                }
             }
             // Dict pattern — narrow the scrutinee by excluding the matched shape.
             crate::ast::SurfaceExpression::Dict(entries) => {
@@ -3910,22 +3907,18 @@ async fn setup_match_arm_env(
 
 // ===== Inline helper: Match exhaustiveness checking =====
 
-/// Extract the (tag, arity) constructor list from a TypeValue ADT body.
+/// Extract the (bare_ctor_name, arity) constructor list from a TypeValue ADT body.
+/// Position in the returned vec = ctor_index.
 fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
     match typevalue_ctor_index(body) {
         Some(TV_NOMINAL_VARIANT) => {
-            if let Some((tycon, ctor)) = typevalue_nominal_variant_tag(body) {
-                let tag = if tycon.is_empty() {
-                    ctor
-                } else {
-                    format!("{}.{}", tycon, ctor)
-                };
+            if let Some((_tycon, ctor)) = typevalue_nominal_variant_tag(body) {
                 let arity = if typevalue_nominal_variant_has_fields(body) {
                     1
                 } else {
                     0
                 };
-                vec![(tag, arity)]
+                vec![(ctor, arity)]
             } else {
                 Vec::new()
             }
@@ -3937,18 +3930,13 @@ fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
                 .iter()
                 .filter_map(|m| {
                     if typevalue_ctor_index(m) == Some(TV_NOMINAL_VARIANT) {
-                        if let Some((tycon, ctor)) = typevalue_nominal_variant_tag(m) {
-                            let tag = if tycon.is_empty() {
-                                ctor
-                            } else {
-                                format!("{}.{}", tycon, ctor)
-                            };
+                        if let Some((_tycon, ctor)) = typevalue_nominal_variant_tag(m) {
                             let arity = if typevalue_nominal_variant_has_fields(m) {
                                 1
                             } else {
                                 0
                             };
-                            Some((tag, arity))
+                            Some((ctor, arity))
                         } else {
                             None
                         }
@@ -5020,14 +5008,20 @@ async fn build_tycon_def_for_entry(
             }
             let mut ann_map_for_body = alias_ann_map.clone();
 
-            match &inner.expr {
+            // Unwrap ReprDecl to get the inner Dict, if present.
+            let body_node = match &inner.expr {
+                SurfaceExpression::ReprDecl { inner: repr_inner, .. } => repr_inner,
+                _ => inner,
+            };
+            let body_expr = &body_node.expr;
+            match body_expr {
                 SurfaceExpression::Dict(body_entries) => {
                     let mut ann_map_opt: Option<&mut HashMap<String, String>> =
                         Some(&mut ann_map_for_body);
                     let mut row_m: Option<&mut HashMap<String, String>> = None;
                     match super::typecheck_annot::resolve_type_dict(
                         body_entries,
-                        inner.span.clone(),
+                        body_node.span.clone(),
                         &mut *state,
                         &mut alias_constraints,
                         &mut ann_map_opt,
@@ -5044,12 +5038,12 @@ async fn build_tycon_def_for_entry(
                             let e = e
                                 .with_note(format!("in body of type declaration '{}'", alias_name));
                             errors.push(e);
-                            state.fresh_type_var(&inner.span)
+                            state.fresh_type_var(&body_node.span)
                         }
                     }
                 }
                 _ => match super::typecheck_annot::resolve_type_expr(
-                    inner,
+                    body_node,
                     state,
                     &mut alias_constraints,
                     &mut Some(&mut ann_map_for_body),
@@ -5063,7 +5057,7 @@ async fn build_tycon_def_for_entry(
                         let e =
                             e.with_note(format!("in body of type declaration '{}'", alias_name));
                         errors.push(e);
-                        state.fresh_type_var(&inner.span)
+                        state.fresh_type_var(&body_node.span)
                     }
                 },
             }

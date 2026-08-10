@@ -74,20 +74,51 @@ impl PipelineState {
     /// Use this for processing user programs: the env, tycon_env, type_stage_data,
     /// and type_name_to_id come from `build_builtin_core_envs` /
     /// `get_builtin_core_type_stage_scope` (which process `builtin_core.llt`).
-    /// The resolver frame is built from the env's slot_index so that the resolver
-    /// can find all builtin + builtin_core names by their slot addresses.
+    /// The resolver frame is derived from the eval context's scope arena — the
+    /// authoritative source of runtime slot assignments.
     pub fn from_core_envs(
         env: Arc<RwLock<Env>>,
         tycon_env: crate::type_def::TyConEnv,
         type_stage_data: TypeStageData,
         type_name_to_id: HashMap<String, u64>,
+        eval_ctx: Option<&Arc<EvalContext>>,
     ) -> Self {
-        // Build resolver frame from the env's full scope chain — walk parent
-        // frames to collect all names (builtins + builtin_core.llt exports)
-        // at their assigned slots. Inner scopes shadow outer ones.
-        let resolver_frame: indexmap::IndexMap<String, u32> = {
+        // Build the resolver frame — the name-to-slot mapping for the resolver.
+        //
+        // When an eval context is provided, derive slots from its scope arena.
+        // The env chain from build_builtin_core_envs carries type information
+        // (type schemes) but its slot indices are from a different eval context
+        // and cannot be reused. Names not in the scope arena (type declarations
+        // from builtin_core.llt) get fresh slots beyond the arena length.
+        //
+        // When no eval context is provided (typecheck-only callers), fall back
+        // to env-chain slots — no eval will happen so the mismatch is harmless.
+        let resolver_frame: indexmap::IndexMap<String, u32> = if let Some(ctx) = eval_ctx {
+            let mut frame = ctx.root_group_resolver_map();
+            let mut next_slot = frame.len() as u32;
+            fn collect_names(env: &Env, out: &mut Vec<String>) {
+                if let Some(ref parent) = env.parent {
+                    let p = parent.read().unwrap();
+                    collect_names(&p, out);
+                }
+                for name in env.slot_index.keys() {
+                    out.push(name.clone());
+                }
+            }
+            let mut names = Vec::new();
+            {
+                let env_guard = env.read().unwrap();
+                collect_names(&env_guard, &mut names);
+            }
+            for name in names {
+                if !frame.contains_key(&name) {
+                    frame.insert(name, next_slot);
+                    next_slot += 1;
+                }
+            }
+            frame
+        } else {
             let mut frame = indexmap::IndexMap::new();
-            // Collect from outermost to innermost so inner wins on collision.
             fn collect_slots(env: &Env, out: &mut Vec<(String, u32)>) {
                 if let Some(ref parent) = env.parent {
                     let p = parent.read().unwrap();

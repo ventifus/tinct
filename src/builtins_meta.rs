@@ -5502,9 +5502,9 @@ mod tests {
                 constraints: vec![],
                 variance: vec![],
                 constructors: vec![
-                    ("Color.Red".to_string(), 0),
-                    ("Color.Green".to_string(), 0),
-                    ("Color.Blue".to_string(), 0),
+                    ("Red".to_string(), 0),
+                    ("Green".to_string(), 0),
+                    ("Blue".to_string(), 0),
                 ],
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
@@ -5520,7 +5520,7 @@ mod tests {
                 body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
-                constructors: vec![("SimpleType.Leaf".to_string(), 0)],
+                constructors: vec![("Leaf".to_string(), 0)],
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
@@ -5535,7 +5535,7 @@ mod tests {
                 body: crate::type_infer::make_typevalue_unknown(),
                 constraints: vec![],
                 variance: vec![],
-                constructors: vec![("Shape.Circle".to_string(), 1)],
+                constructors: vec![("Circle".to_string(), 1)],
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
                 constructor_constants: indexmap::IndexMap::new(),
@@ -5583,7 +5583,7 @@ mod tests {
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
-        assert_eq!(val, string_val("Color.Red"));
+        assert_eq!(val, string_val("Red"));
         Ok(())
     }
 
@@ -5622,7 +5622,7 @@ mod tests {
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
-        assert_eq!(val, string_val("SimpleType.Leaf"));
+        assert_eq!(val, string_val("Leaf"));
         Ok(())
     }
 
@@ -5669,7 +5669,7 @@ mod tests {
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
-        assert_eq!(val, string_val("Shape.Circle"));
+        assert_eq!(val, string_val("Circle"));
         Ok(())
     }
 

@@ -2370,7 +2370,7 @@ async fn run_fmt(
         let ts_data = tinct::get_builtin_core_type_stage_scope().await?;
         let ctx = EvalContext::new_empty();
         let mut state =
-            tinct::PipelineState::from_core_envs(env_arc, tycon_env, ts_data, type_name_to_id);
+            tinct::PipelineState::from_core_envs(env_arc, tycon_env, ts_data, type_name_to_id, Some(&ctx));
 
         // Process each document through the pipeline: resolve → typecheck → eval.
         for doc in &program.documents {

@@ -573,8 +573,8 @@ pub fn ctor_display_name_full(
     }
     if let Some(env) = tycon_env {
         if let Some(def) = env.get(&type_decl_id) {
-            if let Some((tag, _arity)) = def.constructors.get(ctor_index as usize) {
-                return tag.clone();
+            if let Some((bare_name, _arity)) = def.constructors.get(ctor_index as usize) {
+                return bare_name.clone();
             }
         }
     }

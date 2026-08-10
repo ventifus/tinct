@@ -1116,7 +1116,7 @@ async fn test_tycondef_construction() {
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Covariant],
-        constructors: vec![("Maybe.Some".to_string(), 1), ("Maybe.None".to_string(), 0)],
+        constructors: vec![("Some".to_string(), 1), ("None".to_string(), 0)],
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -1125,8 +1125,8 @@ async fn test_tycondef_construction() {
 
     assert_eq!(def.variance, vec![Variance::Covariant]);
     assert_eq!(def.constructors.len(), 2);
-    assert_eq!(def.constructors[0], ("Maybe.Some".to_string(), 1));
-    assert_eq!(def.constructors[1], ("Maybe.None".to_string(), 0));
+    assert_eq!(def.constructors[0], ("Some".to_string(), 1));
+    assert_eq!(def.constructors[1], ("None".to_string(), 0));
 }
 
 /// T-1020e: TyConDef with multiple variance parameters (bivariant map).
@@ -1451,7 +1451,7 @@ async fn test_tycondef_partialeq() {
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
-        constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
+        constructors: vec![("A".to_string(), 0), ("B".to_string(), 1)],
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),
@@ -1463,7 +1463,7 @@ async fn test_tycondef_partialeq() {
         body: crate::type_infer::make_typevalue_unknown(),
         constraints: vec![],
         variance: vec![Variance::Invariant],
-        constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
+        constructors: vec![("A".to_string(), 0), ("B".to_string(), 1)],
         annotation: None,
         field_annotations: indexmap::IndexMap::new(),
         constructor_constants: indexmap::IndexMap::new(),

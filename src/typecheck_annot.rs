@@ -765,11 +765,15 @@ async fn resolve_fn_type(
             // (return:, constraint:, doc:, bind:, kinds:), treat as fn metadata dict.
             // If all entries are positional, delegate to resolve_type_dict (handles
             // [Fn@Return [Params]] and union-style type expressions).
+            // `doc:` alone is ambiguous — it could be a record field name.
+            // Only treat as fn metadata when a structural key (return/bind/constraint/kinds)
+            // is present. `doc:` piggybacks on those.
+            const FN_STRUCTURAL_KEYS: &[&str] = &["return", "constraint", "bind", "kinds"];
             let has_fn_key = surface_entries.iter().any(|e| {
                 if let Some(ref key) = e.node.key {
                     matches!(&key.expr,
                         SurfaceExpression::StringLiteral { content: s, .. }
-                            if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
+                            if FN_STRUCTURAL_KEYS.contains(&s.as_str()))
                 } else {
                     false
                 }
@@ -795,12 +799,9 @@ async fn resolve_fn_type(
                 }
             }
 
-            if has_fn_key || all_keyed {
-                // If any entry has a standard key, or if ALL entries are keyed (custom
-                // annotation keys like `[cache: true]`), treat as fn metadata dict.
-                // fn@[only-custom-keys: val] is correctly handled here: when all entries
-                // are keyed (no positional entries), treat as fn metadata dict even without
-                // a standard key (has_fn_key false), because all_keyed triggers this path.
+            if has_fn_key {
+                // A structural fn-metadata key (return/bind/constraint/kinds) is present,
+                // so this is a fn metadata dict.
                 if !all_keyed {
                     return Err(Diagnostic::error("type-error",
                         "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
@@ -2372,16 +2373,13 @@ pub(crate) async fn resolve_type_expr(
 /// name is available (e.g. bare uppercase VarRef fallback, implied-call constructor).
 fn lookup_tycon_for_ctor(state: &InferState, ctor_name: &str) -> String {
     for (tycon_id, def) in &state.tycon_env {
-        for (display_name, _arity) in &def.constructors {
-            // Display name format: "TyConName.CtorName"
-            if let Some((_, bare_ctor)) = display_name.split_once('.') {
-                if bare_ctor == ctor_name {
-                    return state
-                        .type_display_names
-                        .get(tycon_id)
-                        .cloned()
-                        .unwrap_or_else(|| tycon_id.to_string());
-                }
+        for (bare_ctor, _arity) in &def.constructors {
+            if bare_ctor == ctor_name {
+                return state
+                    .type_display_names
+                    .get(tycon_id)
+                    .cloned()
+                    .unwrap_or_else(|| tycon_id.to_string());
             }
         }
     }

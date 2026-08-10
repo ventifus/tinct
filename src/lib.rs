@@ -201,6 +201,7 @@ pub async fn run_loader_pipeline(
         core_tycon_env,
         core_type_stage_data,
         core_type_name_to_id,
+        Some(eval_ctx),
     );
     state.infer_state.eval_ctx = Some(Arc::clone(eval_ctx));
 
@@ -266,7 +267,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
         .await
         .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
     let mut state =
-        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
+        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id, None);
     let mut diagnostics = Vec::new();
     for doc in &program.documents {
         let mut doc_diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
@@ -305,7 +306,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
         .await
         .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
     let mut state =
-        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id);
+        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id, None);
     let mut diagnostics = Vec::new();
     for doc in &program.documents {
         let mut doc_diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;

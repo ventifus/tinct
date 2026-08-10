@@ -10,7 +10,7 @@
 [
   # Minimal TypeNode declaration for bootstrap — full declaration is in prelude.llt.
   # Constructors used by this type-stage section only.
-  TypeNode: [type
+  TypeNode: [type repr: 52
     Int
     String
     Float
@@ -400,6 +400,7 @@
   CoreDocument:      [type repr: 38]
   TypeContext:       [type repr: 37]
   Scope:             [type repr: 39]
+  BuilderHandle:     [type repr: 6]
 
   # ── Callable typeclass ────────────────────────────────────────────────────
   # Abstracts over function-like values (Fn and Builtin).
